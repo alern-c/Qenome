@@ -1,0 +1,19 @@
+# Zig build artifacts
+# `zig build` / `zig test` が生成するキャッシュと出力先。追跡不要。
+.zig-cache/
+zig-cache/
+zig-out/
+.zig-cache-global/
+
+# Zig が生成するコンパイル済みバイナリの残骸
+*.o
+*.obj
+
+# macOS
+.DS_Store
+
+# エディタ / IDE
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
