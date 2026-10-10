@@ -3,6 +3,8 @@ const std = @import("std");
 const Io = std.Io;
 
 pub const sqlite = @import("sqlite.zig");
+pub const db = @import("db.zig");
+pub const cli = @import("cli.zig");
 
 /// This is a documentation comment to explain the `printAnotherMessage` function below.
 ///
@@ -17,6 +19,8 @@ pub fn add(a: i32, b: i32) i32 {
 
 test {
     _ = @import("sqlite.zig");
+    _ = @import("db.zig");
+    _ = @import("cli.zig");
 }
 
 test "basic add functionality" {
