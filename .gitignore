@@ -19,3 +19,6 @@ zig-out/
 .idea/
 
 .workmux.yaml
+
+# 工程1のダミーDB生成物（testdata/README.md の手順で再生成する）
+testdata/generated/
