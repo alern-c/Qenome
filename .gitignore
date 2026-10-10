@@ -17,3 +17,5 @@ zig-out/
 !.vscode/settings.json
 !.vscode/extensions.json
 .idea/
+
+.workmux.yaml
