@@ -1,0 +1,52 @@
+# Qenome の品質チェック（整形・ビルド・テスト）
+#
+# 最小手順（Zig 0.17.0 で確認済み。Zig の版は build.zig.zon の minimum_zig_version が唯一の宣言）
+#   zig version        # 0.17.0 を期待
+#   zig build          # ビルド（Build Summary: 3/3 steps succeeded）
+#   zig build run      # 実行（"All your codebase are belong to us." などを出力）
+#   zig build test     # テスト（成功時は無出力。--summary all を付けると判定が見える）
+#   zig fmt --check .  # 整形チェック（.zig を再帰、build.zig.zon も対象）
+#
+# 補足:
+# - setup-zig の version は指定しない。build.zig.zon の minimum_zig_version から解決させるため。
+#   解決に失敗すると latest に落ちるので、直後のステップで実 version の一致を検証する。
+# - runs-on は ubuntu-latest のみ（macOS ランナーは分数消費が大きいため）。zig build run は実行しない。
+
+name: quality
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Zig (resolved from build.zig.zon)
+        uses: mlugg/setup-zig@v2
+
+      - name: Verify the effective Zig version
+        run: |
+          pattern='s/.*minimum_zig_version *= *"\([^"]*\)".*/\1/p'
+          expected="$(sed -n "$pattern" build.zig.zon)"
+          actual="$(zig version)"
+          echo "build.zig.zon minimum_zig_version: ${expected:-<not found>}"
+          echo "effective zig version: $actual"
+          test -n "$expected"
+          test "$actual" = "$expected"
+
+      - name: Check formatting
+        run: zig fmt --check .
+
+      - name: Build
+        run: zig build --summary all
+
+      - name: Test
+        run: zig build test --summary all
