@@ -2,6 +2,8 @@
 const std = @import("std");
 const Io = std.Io;
 
+pub const sqlite = @import("sqlite.zig");
+
 /// This is a documentation comment to explain the `printAnotherMessage` function below.
 ///
 /// Accepting an `Io.Writer` instance is a handy way to write reusable code.
@@ -11,6 +13,10 @@ pub fn printAnotherMessage(writer: *Io.Writer) Io.Writer.Error!void {
 
 pub fn add(a: i32, b: i32) i32 {
     return a + b;
+}
+
+test {
+    _ = @import("sqlite.zig");
 }
 
 test "basic add functionality" {

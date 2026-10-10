@@ -39,6 +39,21 @@ pub fn build(b: *std.Build) void {
         // Later on we'll use this module as the root module of a test executable
         // which requires us to specify a target.
         .target = target,
+        // The vendored SQLite amalgamation is C code and needs the C standard
+        // library.
+        .link_libc = true,
+    });
+
+    // The vendored SQLite amalgamation is declared once here so that the
+    // executable and every test binary share a single definition. See
+    // vendor/sqlite3/PROVENANCE.txt for the pinned release, hashes, and flags.
+    mod.addCSourceFiles(.{
+        .files = &.{"vendor/sqlite3/sqlite3.c"},
+        .flags = &.{
+            "-DSQLITE_THREADSAFE=0",
+            "-DSQLITE_OMIT_LOAD_EXTENSION",
+            "-DNDEBUG",
+        },
     });
 
     // Here we define an executable. An executable needs to have a root module
