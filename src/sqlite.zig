@@ -46,6 +46,7 @@ pub const SQLITE_OK = 0;
 pub const SQLITE_READONLY = 8;
 pub const SQLITE_AUTH = 23;
 pub const SQLITE_ROW = 100;
+pub const SQLITE_DONE = 101;
 
 // Flags for `sqlite3_open_v2` (`sqlite3.h`).
 pub const SQLITE_OPEN_READONLY = 0x0000_0001;
@@ -58,6 +59,16 @@ pub const SQLITE_DENY = 1;
 // Configuration verbs for `sqlite3_db_config` (`sqlite3.h`).
 pub const SQLITE_DBCONFIG_DQS_DML = 1013;
 pub const SQLITE_DBCONFIG_DQS_DDL = 1014;
+
+// Limits for `sqlite3_limit` (`sqlite3.h`).
+pub const SQLITE_LIMIT_VARIABLE_NUMBER = 9;
+
+/// Largest positional parameter number in the vendored build.
+/// `SQLITE_MAX_VARIABLE_NUMBER` defaults to 32766 and `build.zig` does not
+/// override it, so `sqlite3_bind_parameter_count` cannot report more. The test
+/// "the vendored parameter limit matches the pinned bound" ties this constant
+/// to the engine.
+pub const max_parameter_number: u32 = 32766;
 
 // Authorizer action codes (`sqlite3.h`). The numeric values are part of the
 // public ABI, so they must not be changed.
@@ -76,6 +87,8 @@ pub const SQLITE_RECURSIVE = 33;
 pub extern fn sqlite3_open_v2(filename: [*:0]const u8, ppDb: *?*sqlite3, flags: c_int, zVfs: ?[*:0]const u8) c_int;
 pub extern fn sqlite3_close(db: ?*sqlite3) c_int;
 pub extern fn sqlite3_errmsg(db: ?*sqlite3) [*:0]const u8;
+/// Result code of the most recent failed call on the connection.
+pub extern fn sqlite3_errcode(db: ?*sqlite3) c_int;
 pub extern fn sqlite3_db_readonly(db: ?*sqlite3, zDbName: [*:0]const u8) c_int;
 /// Variadic; the arguments depend on `op`. The `SQLITE_DBCONFIG_DQS_*` verbs
 /// take `(c_int, ?*c_int)`.
@@ -89,6 +102,24 @@ pub extern fn sqlite3_stmt_isexplain(stmt: ?*sqlite3_stmt) c_int;
 pub extern fn sqlite3_step(stmt: ?*sqlite3_stmt) c_int;
 pub extern fn sqlite3_finalize(stmt: ?*sqlite3_stmt) c_int;
 pub extern fn sqlite3_column_int64(stmt: ?*sqlite3_stmt, column: c_int) i64;
+pub extern fn sqlite3_column_double(stmt: ?*sqlite3_stmt, column: c_int) f64;
+pub extern fn sqlite3_column_text(stmt: ?*sqlite3_stmt, column: c_int) ?[*:0]const u8;
+
+// Bindings (`sqlite3.h`). `sqlite3_bind_text` receives the C destructor
+// sentinel `SQLITE_TRANSIENT`, whose value is `(void *)-1`; `align(1)` on the
+// function pointer type keeps that non-canonical address representable.
+pub const Destructor = fn (?*anyopaque) callconv(.c) void;
+pub const DestructorPtr = ?*align(1) const Destructor;
+pub const SQLITE_TRANSIENT: DestructorPtr = @ptrFromInt(@as(usize, @bitCast(@as(isize, -1))));
+
+pub extern fn sqlite3_bind_parameter_count(stmt: ?*sqlite3_stmt) c_int;
+pub extern fn sqlite3_bind_int64(stmt: ?*sqlite3_stmt, index: c_int, value: i64) c_int;
+pub extern fn sqlite3_bind_double(stmt: ?*sqlite3_stmt, index: c_int, value: f64) c_int;
+pub extern fn sqlite3_bind_null(stmt: ?*sqlite3_stmt, index: c_int) c_int;
+/// `text` is copied by SQLite because `destructor` is `SQLITE_TRANSIENT`.
+pub extern fn sqlite3_bind_text(stmt: ?*sqlite3_stmt, index: c_int, text: [*]const u8, bytes: c_int, destructor: DestructorPtr) c_int;
+/// A negative `new_value` reports the current limit without changing it.
+pub extern fn sqlite3_limit(db: ?*sqlite3, id: c_int, new_value: c_int) c_int;
 
 test "vendored sqlite version matches the pinned version" {
     try std.testing.expectEqualStrings(pinned_version, std.mem.span(sqlite3_libversion()));
