@@ -34,6 +34,11 @@ pub const StepError = error{
     Interrupted,
 };
 
+pub const ExplainError = error{
+    /// The query plan of an accepted SELECT could not be read.
+    ExplainFailed,
+};
+
 /// Why the progress handler stopped a statement before it finished.
 pub const InterruptReason = enum { timeout, signal };
 
@@ -245,6 +250,63 @@ pub const Db = struct {
         }
     }
 
+    /// Reads the query plan of `sql` with `binds` bound, as
+    /// `EXPLAIN QUERY PLAN` would print it. The rows and their `detail` text
+    /// are owned by `allocator`.
+    ///
+    /// The plan comes from a statement of its own (D-302): switching a
+    /// statement to `EXPLAIN QUERY PLAN` re-prepares it with plan opcodes that
+    /// stay in its program, so the statement that runs the SELECT would count
+    /// more VM steps. Same connection, SQL and binds give the same plan.
+    ///
+    /// The switch re-prepares under the select allowlist, so the authorizer
+    /// stays as strict as for `prepareSelect`.
+    pub fn explainPlan(
+        self: *Db,
+        allocator: std.mem.Allocator,
+        sql: [:0]const u8,
+        binds: []const BindArg,
+    ) (CheckError || BindError || ExplainError || std.mem.Allocator.Error)!Plan {
+        const statement = try self.prepareSelect(sql);
+        defer _ = sqlite.sqlite3_finalize(statement);
+        try bindAll(statement, binds);
+
+        // Entered after `prepareSelect`, which resets the observed actions,
+        // so the list shows what the re-prepare reported.
+        const previous = self.enterMode(.user_select);
+        defer self.mode = previous;
+
+        if (sqlite.sqlite3_stmt_explain(statement, 2) != sqlite.SQLITE_OK) return error.ExplainFailed;
+        // `EXPLAIN QUERY PLAN` rows are (id, parent, notused, detail).
+        if (sqlite.sqlite3_column_count(statement) != 4) return error.ExplainFailed;
+
+        var rows: std.ArrayList(PlanRow) = .empty;
+        errdefer {
+            for (rows.items) |row| allocator.free(row.detail);
+            rows.deinit(allocator);
+        }
+        while (true) {
+            switch (sqlite.sqlite3_step(statement)) {
+                sqlite.SQLITE_ROW => {
+                    // The text is only valid until the next step, so it is
+                    // copied before the row is kept.
+                    const text = sqlite.sqlite3_column_text(statement, 3) orelse return error.ExplainFailed;
+                    const detail = try allocator.dupe(u8, std.mem.span(text));
+                    errdefer allocator.free(detail);
+                    try rows.append(allocator, .{
+                        .id = sqlite.sqlite3_column_int64(statement, 0),
+                        .parent = sqlite.sqlite3_column_int64(statement, 1),
+                        .label = classifyDetail(detail),
+                        .detail = detail,
+                    });
+                },
+                sqlite.SQLITE_DONE => break,
+                else => return error.ExplainFailed,
+            }
+        }
+        return .{ .rows = try rows.toOwnedSlice(allocator) };
+    }
+
     /// Message SQLite reported for the connection.
     pub fn message(self: *const Db) []const u8 {
         return std.mem.span(sqlite.sqlite3_errmsg(self.connection()));
@@ -403,6 +465,109 @@ pub fn bindAll(statement: *sqlite.sqlite3_stmt, binds: []const BindArg) BindErro
         };
         if (rc != sqlite.SQLITE_OK) return error.BindFailed;
     }
+}
+
+/// Main shape of one query plan line.
+pub const PlanKind = enum {
+    /// `SCAN ...`: reads a table, an index, a subquery, or constant rows from
+    /// start to end.
+    scan,
+    /// `SEARCH ...`: looks rows up through a key or an index.
+    search,
+    /// `USE TEMP B-TREE ...`: sorts or deduplicates into a temporary tree.
+    temp_btree,
+    /// Any other line, including wording this release does not produce.
+    other,
+};
+
+/// A rough label for one plan line (D-303). SQLite does not promise a stable
+/// wording, so the label is a hint; the raw `detail` stays the source of
+/// truth and the counters carry the judgement.
+pub const PlanLabel = struct {
+    kind: PlanKind,
+    /// The index holds every column the line needs (`COVERING INDEX`).
+    covering: bool = false,
+    /// SQLite builds the index while the statement runs (`AUTOMATIC`).
+    automatic: bool = false,
+};
+
+pub const PlanRow = struct {
+    id: i64,
+    /// `id` of the enclosing line, or 0 at the top level.
+    parent: i64,
+    label: PlanLabel,
+    detail: []const u8,
+};
+
+/// Query plan lines in the order SQLite reports them.
+pub const Plan = struct {
+    rows: []PlanRow,
+
+    pub fn deinit(self: Plan, allocator: std.mem.Allocator) void {
+        for (self.rows) |row| allocator.free(row.detail);
+        allocator.free(self.rows);
+    }
+};
+
+/// Labels one `EXPLAIN QUERY PLAN` detail line.
+///
+/// The main kind comes from the first word only. The attributes come from the
+/// text after the first `" USING "` of a scan or search line. Names are
+/// printed unquoted, so a table or alias that contains `" USING "` can still
+/// mislead the attributes; D-303 accepts that for a hint.
+pub fn classifyDetail(detail: []const u8) PlanLabel {
+    const kind: PlanKind = if (std.mem.startsWith(u8, detail, "SCAN "))
+        .scan
+    else if (std.mem.startsWith(u8, detail, "SEARCH "))
+        .search
+    else if (std.mem.startsWith(u8, detail, "USE TEMP B-TREE"))
+        .temp_btree
+    else
+        .other;
+    if (kind != .scan and kind != .search) return .{ .kind = kind };
+
+    const using = " USING ";
+    const at = std.mem.indexOf(u8, detail, using) orelse return .{ .kind = kind };
+    var rest = detail[at + using.len ..];
+    const automatic = std.mem.startsWith(u8, rest, "AUTOMATIC ");
+    if (automatic) {
+        rest = rest["AUTOMATIC ".len..];
+        if (std.mem.startsWith(u8, rest, "PARTIAL ")) rest = rest["PARTIAL ".len..];
+    }
+    return .{
+        .kind = kind,
+        .covering = std.mem.startsWith(u8, rest, "COVERING INDEX"),
+        .automatic = automatic,
+    };
+}
+
+/// Per-statement counters from `sqlite3_stmt_status`, read after the run.
+pub const Counters = struct {
+    /// Steps forward through a table or index read from start to end.
+    fullscan_steps: u32,
+    /// Virtual machine instructions executed.
+    vm_steps: u32,
+    /// Sort operations.
+    sort_ops: u32,
+    /// Rows inserted into automatic indexes.
+    autoindex_rows: u32,
+};
+
+/// Reads the counters of `statement` without resetting them. The counters
+/// survive a re-prepare, so they cover the whole run.
+pub fn statementCounters(statement: *sqlite.sqlite3_stmt) Counters {
+    return .{
+        .fullscan_steps = readCounter(statement, sqlite.SQLITE_STMTSTATUS_FULLSCAN_STEP),
+        .vm_steps = readCounter(statement, sqlite.SQLITE_STMTSTATUS_VM_STEP),
+        .sort_ops = readCounter(statement, sqlite.SQLITE_STMTSTATUS_SORT),
+        .autoindex_rows = readCounter(statement, sqlite.SQLITE_STMTSTATUS_AUTOINDEX),
+    };
+}
+
+/// The engine keeps each counter as `u32` and returns it as `int`, so the
+/// bits are reinterpreted instead of range-checked.
+fn readCounter(statement: *sqlite.sqlite3_stmt, op: c_int) u32 {
+    return @bitCast(sqlite.sqlite3_stmt_status(statement, op, 0));
 }
 
 fn isSchemaTable(name: ?[*:0]const u8) bool {
@@ -1089,6 +1254,10 @@ test "source db bytes are unchanged and no journal files appear" {
     // `sqlite3_close` refuses to close while a statement is open, so the
     // finalize-before-close order is part of the D-105 contract.
     _ = sqlite.sqlite3_finalize(statement);
+    const plan = try db.explainPlan(testing.allocator, "SELECT count(*) FROM t WHERE a = ?1", &.{
+        .{ .number = 1, .value = .{ .int = 1 } },
+    });
+    plan.deinit(testing.allocator);
     try db.checkCreateIndex("CREATE INDEX idx_after ON t(a)");
     try db.close();
 
@@ -1098,4 +1267,249 @@ test "source db bytes are unchanged and no journal files appear" {
     try testing.expectError(error.FileNotFound, fixture.tmp.dir.openFile(testing.io, "fixture.db-journal", .{}));
     try testing.expectError(error.FileNotFound, fixture.tmp.dir.openFile(testing.io, "fixture.db-wal", .{}));
     try testing.expectError(error.FileNotFound, fixture.tmp.dir.openFile(testing.io, "fixture.db-shm", .{}));
+}
+
+/// Plan tests need enough rows for a full scan to differ from a search, a
+/// table with one index (`idx_b`), and a second table for joins.
+const plan_schema: [:0]const u8 =
+    \\CREATE TABLE t(a INTEGER, b TEXT);
+    \\WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 1000)
+    \\INSERT INTO t SELECT x, 'v' || x FROM c;
+    \\CREATE INDEX idx_b ON t(b);
+    \\CREATE TABLE u(x INTEGER, y TEXT);
+    \\INSERT INTO u SELECT a, b FROM t;
+;
+
+/// Test-only helper: the first plan row whose detail starts with `prefix`.
+fn findRow(plan: Plan, prefix: []const u8) ?PlanRow {
+    for (plan.rows) |row| {
+        if (std.mem.startsWith(u8, row.detail, prefix)) return row;
+    }
+    return null;
+}
+
+/// Test-only helper: runs a checked SELECT to the end and reads its counters.
+fn runCounters(db: *Db, sql: [:0]const u8, binds: []const BindArg) !Counters {
+    const statement = try prepareBoundSelect(db, sql, binds);
+    defer _ = sqlite.sqlite3_finalize(statement);
+    var cancel = std.atomic.Value(bool).init(false);
+    var control = StepControl.init(testing.io, 0, &cancel);
+    _ = try db.stepAll(statement, &control);
+    return statementCounters(statement);
+}
+
+test "classify detail splits main kind and attributes" {
+    // Wording reported by the vendored 3.51.2 release. A new release may
+    // change it; then this table is re-checked, not the raw detail.
+    const cases = [_]struct { detail: []const u8, label: PlanLabel }{
+        .{ .detail = "SCAN t", .label = .{ .kind = .scan } },
+        .{ .detail = "SCAN t USING INDEX idx_a", .label = .{ .kind = .scan } },
+        .{ .detail = "SCAN t USING COVERING INDEX idx_b", .label = .{ .kind = .scan, .covering = true } },
+        .{ .detail = "SEARCH t USING INDEX idx_b (b=?)", .label = .{ .kind = .search } },
+        .{ .detail = "SEARCH t USING INTEGER PRIMARY KEY (rowid=?)", .label = .{ .kind = .search } },
+        .{ .detail = "SEARCH t USING COVERING INDEX idx_b (b>? AND b<?)", .label = .{ .kind = .search, .covering = true } },
+        .{ .detail = "SEARCH u USING AUTOMATIC COVERING INDEX (x=?)", .label = .{ .kind = .search, .covering = true, .automatic = true } },
+        .{ .detail = "SEARCH u USING AUTOMATIC PARTIAL COVERING INDEX (x=?)", .label = .{ .kind = .search, .covering = true, .automatic = true } },
+        .{ .detail = "USE TEMP B-TREE FOR ORDER BY", .label = .{ .kind = .temp_btree } },
+        // Constant rows are labelled scan; their full scan counter stays 0.
+        .{ .detail = "SCAN CONSTANT ROW", .label = .{ .kind = .scan } },
+        .{ .detail = "BLOOM FILTER ON u (x=?)", .label = .{ .kind = .other } },
+        .{ .detail = "MULTI-INDEX OR", .label = .{ .kind = .other } },
+        .{ .detail = "CO-ROUTINE c", .label = .{ .kind = .other } },
+        .{ .detail = "LIST SUBQUERY 1", .label = .{ .kind = .other } },
+        // Only the first word decides the kind, so a later "SEARCH" does not.
+        .{ .detail = "CORRELATED SCALAR SUBQUERY 1 SEARCH", .label = .{ .kind = .other } },
+        .{ .detail = "", .label = .{ .kind = .other } },
+    };
+    for (cases) |case| {
+        const label = classifyDetail(case.detail);
+        if (!std.meta.eql(label, case.label)) std.debug.print("unexpected label for '{s}'\n", .{case.detail});
+        try testing.expectEqual(case.label, label);
+    }
+}
+
+test "explain plan reports scan without an index and search with one" {
+    var fixture = try Fixture.initWithSchema(testing.allocator, plan_schema);
+    defer fixture.deinit();
+    var db: Db = .{};
+    try db.openReadOnly(fixture.path);
+    defer db.close() catch unreachable;
+
+    const scan = try db.explainPlan(testing.allocator, "SELECT a, b FROM t WHERE a = ?1", &.{
+        .{ .number = 1, .value = .{ .int = 7 } },
+    });
+    defer scan.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), scan.rows.len);
+    try testing.expectEqual(PlanKind.scan, scan.rows[0].label.kind);
+    try testing.expect(std.mem.indexOf(u8, scan.rows[0].detail, "t") != null);
+
+    const search = try db.explainPlan(testing.allocator, "SELECT a, b FROM t WHERE b = ?1", &.{
+        .{ .number = 1, .value = .{ .text = "v7" } },
+    });
+    defer search.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), search.rows.len);
+    try testing.expectEqual(PlanKind.search, search.rows[0].label.kind);
+    try testing.expect(std.mem.indexOf(u8, search.rows[0].detail, "idx_b") != null);
+}
+
+test "explain plan reflects bound values" {
+    // `GLOB` with a fixed prefix can use the index on `b`; a leading wildcard
+    // cannot. Both use the same SQL, so only the bound value differs.
+    var fixture = try Fixture.initWithSchema(testing.allocator, plan_schema);
+    defer fixture.deinit();
+    var db: Db = .{};
+    try db.openReadOnly(fixture.path);
+    defer db.close() catch unreachable;
+
+    const sql = "SELECT b FROM t WHERE b GLOB ?1";
+    const prefix = try db.explainPlan(testing.allocator, sql, &.{.{ .number = 1, .value = .{ .text = "v1*" } }});
+    defer prefix.deinit(testing.allocator);
+    try testing.expectEqual(PlanKind.search, prefix.rows[0].label.kind);
+
+    const suffix = try db.explainPlan(testing.allocator, sql, &.{.{ .number = 1, .value = .{ .text = "*1" } }});
+    defer suffix.deinit(testing.allocator);
+    try testing.expectEqual(PlanKind.scan, suffix.rows[0].label.kind);
+}
+
+test "explain plan keeps raw detail and parent links" {
+    var fixture = try Fixture.initWithSchema(testing.allocator, plan_schema);
+    defer fixture.deinit();
+    var db: Db = .{};
+    try db.openReadOnly(fixture.path);
+    defer db.close() catch unreachable;
+
+    const sorted = try db.explainPlan(testing.allocator, "SELECT a FROM t ORDER BY a", &.{});
+    defer sorted.deinit(testing.allocator);
+    const temp = findRow(sorted, "USE TEMP B-TREE") orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(PlanKind.temp_btree, temp.label.kind);
+
+    // Each branch of an OR over two indexes is a child of the MULTI-INDEX
+    // line, and the searches below are children of those branches.
+    const multi = try db.explainPlan(testing.allocator, "SELECT a FROM t WHERE b = 'v1' OR rowid = 3", &.{});
+    defer multi.deinit(testing.allocator);
+    const root = findRow(multi, "MULTI-INDEX OR") orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(PlanKind.other, root.label.kind);
+    const branch = findRow(multi, "INDEX 1") orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(root.id, branch.parent);
+    const search = findRow(multi, "SEARCH t USING INDEX idx_b") orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(branch.id, search.parent);
+}
+
+test "explain plan reports only allowlisted actions" {
+    var fixture = try Fixture.initWithSchema(testing.allocator, plan_schema);
+    defer fixture.deinit();
+    var db: Db = .{};
+    try db.openReadOnly(fixture.path);
+    defer db.close() catch unreachable;
+
+    const plan = try db.explainPlan(testing.allocator, "SELECT count(abs(a)) FROM t WHERE b = ?1", &.{
+        .{ .number = 1, .value = .{ .text = "v1" } },
+    });
+    defer plan.deinit(testing.allocator);
+
+    // The list holds what the switch to EXPLAIN QUERY PLAN re-prepared.
+    const actions = db.observedActions();
+    try testing.expect(actions.len > 0);
+    for (actions) |action_code| {
+        const allowed = switch (action_code) {
+            sqlite.SQLITE_SELECT, sqlite.SQLITE_READ, sqlite.SQLITE_FUNCTION, sqlite.SQLITE_RECURSIVE => true,
+            else => false,
+        };
+        if (!allowed) std.debug.print("explain action {d} is not allowlisted\n", .{action_code});
+        try testing.expect(allowed);
+    }
+    try testing.expectEqual(Mode.internal, db.mode);
+
+    // The plan reuses the SELECT contract, so a rejected input stays rejected.
+    try testing.expectError(error.StatementRejected, db.explainPlan(testing.allocator, "DELETE FROM t", &.{}));
+    try testing.expectError(error.MissingBindNumber, db.explainPlan(testing.allocator, "SELECT ?1", &.{}));
+    try testing.expectEqual(Mode.internal, db.mode);
+}
+
+test "explain plan labels an automatic index without creating it" {
+    var fixture = try Fixture.initWithSchema(testing.allocator, plan_schema);
+    defer fixture.deinit();
+    var db: Db = .{};
+    try db.openReadOnly(fixture.path);
+    defer db.close() catch unreachable;
+
+    const count_indexes = "SELECT count(*) FROM sqlite_master WHERE type = 'index'";
+    const before = try queryInt(&db, count_indexes);
+    const plan = try db.explainPlan(testing.allocator, "SELECT a FROM t JOIN u ON u.x = t.a", &.{});
+    defer plan.deinit(testing.allocator);
+    // The automatic index of this join exists only while a statement runs.
+    const automatic = findRow(plan, "SEARCH u USING AUTOMATIC") orelse return error.TestUnexpectedResult;
+    try testing.expect(automatic.label.automatic);
+    try testing.expectEqual(before, try queryInt(&db, count_indexes));
+}
+
+test "counters show full scan steps only without an index" {
+    var fixture = try Fixture.initWithSchema(testing.allocator, plan_schema);
+    defer fixture.deinit();
+    var db: Db = .{};
+    try db.openReadOnly(fixture.path);
+    defer db.close() catch unreachable;
+
+    const scan = try runCounters(&db, "SELECT a, b FROM t WHERE a = ?1", &.{.{ .number = 1, .value = .{ .int = 7 } }});
+    const search = try runCounters(&db, "SELECT a, b FROM t WHERE b = ?1", &.{.{ .number = 1, .value = .{ .text = "v7" } }});
+
+    // A full scan steps once per row after the first.
+    try testing.expectEqual(@as(u32, 999), scan.fullscan_steps);
+    try testing.expectEqual(@as(u32, 0), search.fullscan_steps);
+    try testing.expect(search.vm_steps < scan.vm_steps);
+    try testing.expectEqual(@as(u32, 0), scan.sort_ops);
+    try testing.expectEqual(@as(u32, 0), scan.autoindex_rows);
+
+    const joined = try runCounters(&db, "SELECT a FROM t JOIN u ON u.x = t.a", &.{});
+    try testing.expect(joined.autoindex_rows > 0);
+    // `a` has no index, so the order needs a sort (USE TEMP B-TREE).
+    const sorted = try runCounters(&db, "SELECT a FROM t ORDER BY a", &.{});
+    try testing.expect(sorted.sort_ops > 0);
+}
+
+test "explaining does not change the execution counters" {
+    // D-302: the plan is read from a statement of its own, so the statement
+    // that runs the SELECT counts the same work with or without it. The
+    // control below shows why: switching the running statement itself to
+    // EXPLAIN QUERY PLAN and back leaves plan opcodes in its program.
+    var fixture = try Fixture.initWithSchema(testing.allocator, plan_schema);
+    defer fixture.deinit();
+    var db: Db = .{};
+    try db.openReadOnly(fixture.path);
+    defer db.close() catch unreachable;
+
+    const sql = "SELECT a FROM t WHERE a IN (SELECT x FROM u WHERE x < ?1)";
+    const binds: []const BindArg = &.{.{ .number = 1, .value = .{ .int = 100 } }};
+    const plain = try runCounters(&db, sql, binds);
+
+    // Control: reuse one statement for the plan and the run.
+    {
+        const reused = try prepareBoundSelect(&db, sql, binds);
+        defer _ = sqlite.sqlite3_finalize(reused);
+        {
+            const previous = db.enterMode(.user_select);
+            defer db.mode = previous;
+            try testing.expectEqual(@as(c_int, sqlite.SQLITE_OK), sqlite.sqlite3_stmt_explain(reused, 2));
+            while (sqlite.sqlite3_step(reused) == sqlite.SQLITE_ROW) {}
+            _ = sqlite.sqlite3_reset(reused);
+            try testing.expectEqual(@as(c_int, sqlite.SQLITE_OK), sqlite.sqlite3_stmt_explain(reused, 0));
+        }
+        var cancel = std.atomic.Value(bool).init(false);
+        var control = StepControl.init(testing.io, 0, &cancel);
+        _ = try db.stepAll(reused, &control);
+        const counters = statementCounters(reused);
+        try testing.expectEqual(plain.fullscan_steps, counters.fullscan_steps);
+        try testing.expect(counters.vm_steps > plain.vm_steps);
+    }
+
+    const statement = try prepareBoundSelect(&db, sql, binds);
+    defer _ = sqlite.sqlite3_finalize(statement);
+    const plan = try db.explainPlan(testing.allocator, sql, binds);
+    defer plan.deinit(testing.allocator);
+    var cancel = std.atomic.Value(bool).init(false);
+    var control = StepControl.init(testing.io, 0, &cancel);
+    _ = try db.stepAll(statement, &control);
+
+    try testing.expect(plan.rows.len > 0);
+    try testing.expectEqual(plain, statementCounters(statement));
 }

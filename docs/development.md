@@ -64,6 +64,31 @@ zig build run -- --db <DB> --select <SELECTファイル> --index-sql <候補DDL�
 
 未確認：時間上限はSELECTの実行中だけ効き、prepare段階は対象外。WAL構成のDBの読み取りは工程4で扱う。Windowsは未対応（シグナル処理がPOSIXのみ）。
 
+### 工程3の計画表示と実行確認（2026-10-11、Zig 0.17.0・同梱SQLite 3.51.2）
+
+受け付けたSELECTの実行後、stdoutの `index-sql:` と `rows:` の間に `measured-on: db (candidate index not applied)` を出す。`rows`・`plan:`・カウンタはすべて `--db` に指定したDBそのもので測ったもので、候補CREATE INDEXは検査しただけで適用していない、という意味（DBにもともと索引が入っていても同じ表示）。続けて `rows:` の後に次を出す。
+
+- `sqlite:` / `sqlite-source-id:`：実行時の `sqlite3_libversion()` / `sqlite3_sourceid()`
+- `plan:`：`EXPLAIN QUERY PLAN` の各行。`id` / `parent` と目安のラベル（`kind` = scan / search / temp_btree / other、`covering`、`automatic`）、行末にSQLiteの文言そのもの（`detail=`）
+- `fullscan-steps:` / `vm-steps:` / `sort-ops:` / `autoindex-rows:`：実行に使ったstatementの `sqlite3_stmt_status`（`SQLITE_STMTSTATUS_FULLSCAN_STEP` / `VM_STEP` / `SORT` / `AUTOINDEX`）
+
+計画は、同じSQLと同じバインドで別に用意したstatementに `sqlite3_stmt_explain(S, 2)` をかけて読む。実行用statementを切り替えると計画用の命令がプログラムに残り、VMステップが増えるため（実測で11,705→11,807）。ラベルは文言の先頭語と `USING` 以降から付ける目安で、EQPの文言は安定APIではない。判定にはカウンタを主に使い、版を上げたら分類テストと下表を再確認する。計画が読めなければ終了コード1でstdoutは空。時間切れ・SIGINTでは計画もカウンタも出さない。
+
+参照資料：sqlite.org の「EXPLAIN QUERY PLAN」説明、`vendor/sqlite3/sqlite3.h` の `sqlite3_stmt_explain` と `sqlite3_stmt_status` / `SQLITE_STMTSTATUS_*` の説明。
+
+[testdata/README.md](../testdata/README.md) の手順でfixtureを作り（SHA-256は工程2と同じ `ddca8dd2…`）、実バイナリで確認した。索引ありは、一時コピーに `testdata/cases/*.index.sql` を適用したDB。
+
+| 実行 | 計画（kind / detail） | fullscan-steps | vm-steps | rows |
+| --- | --- | --- | --- | --- |
+| 改善する例・索引なし（`--bind 1:int:1234`） | scan / `SCAN events` | 199,999 | 600,407 | 100 |
+| 改善する例・索引あり | search / `SEARCH events USING INDEX ix_events_customer_id (customer_id=?)` | 0 | 710 | 100 |
+| 効果のない例・索引なし（`--bind 1:text:ok`） | scan / `SCAN events` | 199,999 | 933,339 | 66,666 |
+| 効果のない例・索引あり | scan / `SCAN events` | 199,999 | 933,339 | 66,666 |
+
+いずれも終了コード0で、README の期待値表と一致した。重いSELECTに `--timeout-ms 50` を付けた実行は終了コード124・stdout 0バイト。実行の前後でfixtureのSHA-256は変わらず、`-journal` / `-wal` / `-shm` は残らなかった。
+
+未確認：計画を読めないときの終了コード1の分岐（再現が難しくテストなし）。窓関数・仮想テーブル・トリガー関連のEQP文言の分類。計画の取得と実行の間に外部プロセスが元DBのスキーマや統計を変えると、表示した計画と実行計画が食い違いうる（工程4のsnapshotで解消予定）。
+
 ## 次の開発の進め方
 
 MVPタスクの順に進める。初期化済みのコードを再生成しない。各工程の未決契約を確認し、最小の変更と検証結果を残す。新しい本番依存、大規模な設計変更、commit、pushは事前確認が必要。
