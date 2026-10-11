@@ -53,6 +53,14 @@ pub fn build(b: *std.Build) void {
             "-DSQLITE_THREADSAFE=0",
             "-DSQLITE_OMIT_LOAD_EXTENSION",
             "-DNDEBUG",
+            // D-106: SQLite's C code assumes that signed integer overflow
+            // wraps (for example the aggregate step counter that
+            // sqlite3_aggregate_count() returns). Zig compiles C with
+            // overflow checks, so without this flag a query whose aggregate
+            // steps more than 2^31 times aborts the process (SIGABRT, exit
+            // 134) instead of returning a documented exit code. Wrapping is
+            // defined for this file only; Zig sources keep their checks.
+            "-fwrapv",
         },
     });
 

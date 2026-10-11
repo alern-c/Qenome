@@ -56,6 +56,21 @@ Compile flags (kept in sync with build.zig)
   -DSQLITE_THREADSAFE=0         single-threaded CLI, no mutexing
   -DSQLITE_OMIT_LOAD_EXTENSION  no loadable extensions
   -DNDEBUG                      no C assertions (release behaviour)
+  -fwrapv                       signed integer overflow wraps instead of
+                                trapping. Zig compiles C with overflow
+                                checks, but SQLite's code assumes wrapping
+                                (for example the aggregate step counter at
+                                sqlite3.c:103146, which backs the deprecated
+                                sqlite3_aggregate_count()). Without this
+                                flag an aggregate stepped more than 2^31
+                                times aborts the process (SIGABRT, exit 134)
+                                instead of returning a documented exit code
+                                (D-106). It applies to the whole vendored
+                                file: other signed add/sub/mul overflows in
+                                it also stop trapping, while zero-division,
+                                shift and pointer checks stay enabled. Do not
+                                remove it without re-reading D-106 in the
+                                working plan/TODO.
 
 Note: the version string of the SQLite CLI installed on the development machine
 (3.51.2 ... cbalt1) is a different build product; the vendored amalgamation
