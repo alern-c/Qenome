@@ -3,12 +3,13 @@
 //! `run` takes a database path, one read-only SELECT file, one candidate
 //! CREATE INDEX file, typed bind values, and an optional time limit. The
 //! database is opened read-only, the candidate DDL is only validated, and the
-//! SELECT is executed to count its rows.
+//! SELECT is executed to count its rows. The summary also shows the SQLite
+//! release, the query plan, and the execution counters of the SELECT.
 //!
 //! Every outcome is a process exit code:
 //!
 //! * 0: the SELECT was accepted and executed
-//! * 1: an input was rejected (file, database, SQL, DDL, bind, step)
+//! * 1: an input was rejected (file, database, SQL, DDL, bind, query plan, step)
 //! * 2: the arguments cannot be used
 //! * 5: the connection could not be closed after an otherwise successful run
 //! * 124: the time limit interrupted the SELECT
@@ -210,8 +211,11 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\usage: Qenome --db <PATH> --select <FILE> --index-sql <FILE> [options]
         \\
         \\Checks one read-only SELECT and one candidate CREATE INDEX against a
-        \\local SQLite database, then reports how many rows the SELECT returns.
+        \\local SQLite database, then runs the SELECT and reports its row count,
+        \\the SQLite release, the query plan, and the execution counters.
         \\The database is opened read-only and the candidate DDL is not applied.
+        \\Plan labels (kind, covering, automatic) are hints read from SQLite's
+        \\wording; the detail text after them is what SQLite reported.
         \\
         \\options:
         \\  --db <PATH>          SQLite database file (required)
@@ -286,7 +290,7 @@ pub fn run(
     };
 
     var cleanup_failed = false;
-    const code = runChecked(io, inputs, stdout, stderr, &cleanup_failed);
+    const code = runChecked(io, arena, inputs, stdout, stderr, &cleanup_failed);
     return finalExitCode(code, cleanup_failed);
 }
 
@@ -311,10 +315,12 @@ pub fn finalExitCode(code: ExitCode, cleanup_failed: bool) ExitCode {
 }
 
 /// Opens the database and walks the accepted order: check the SELECT, bind,
-/// check the candidate DDL, then run the SELECT. `cleanup_failed` is set when
-/// the connection cannot be closed.
+/// check the candidate DDL, read the query plan, then run the SELECT.
+/// `cleanup_failed` is set when the connection cannot be closed. The plan
+/// lives in `arena`.
 fn runChecked(
     io: Io,
+    arena: std.mem.Allocator,
     inputs: Inputs,
     stdout: *Io.Writer,
     stderr: *Io.Writer,
@@ -351,6 +357,19 @@ fn runChecked(
         return .rejected;
     };
 
+    // The plan is read before the run, from a statement of its own (D-302).
+    // The same SQL and binds were accepted above, so a failure here is the
+    // plan read itself or memory. Like prepare and bind, it is outside the
+    // time limit.
+    const plan = database.explainPlan(arena, inputs.select_sql, inputs.binds) catch |err| {
+        const detail = if (err == error.ExplainFailed and database.errorCode() != sqlite.SQLITE_OK)
+            database.message()
+        else
+            @errorName(err);
+        stderr.print("error: --select: the query plan could not be read: {s}\n", .{detail}) catch {};
+        return .rejected;
+    };
+
     // The time limit and the SIGINT flag cover the SELECT execution only, so
     // the control is built here and the deadline starts inside `stepAll`.
     var control = db.StepControl.init(io, inputs.timeout_ms, &sigint_flag);
@@ -371,13 +390,42 @@ fn runChecked(
     if (sigint_flag.load(.monotonic)) return reportInterrupted(stderr);
 
     // The summary is the result of the run, so a failed write is a rejection.
-    stdout.print("db: {s}\nselect: {s}\nindex-sql: {s}\nrows: {d}\n", .{
-        inputs.database_path, inputs.select_path, inputs.index_path, rows,
-    }) catch {
+    // It is written only here, after a finished run, so a rejection, timeout,
+    // or interruption leaves stdout empty.
+    writeSummary(stdout, inputs, rows, plan, db.statementCounters(statement)) catch {
         stderr.print("error: the summary could not be written\n", .{}) catch {};
         return .rejected;
     };
     return .ok;
+}
+
+/// Writes the accepted summary as `key: value` lines. A plan line keeps its
+/// SQLite detail last because the detail contains spaces.
+///
+/// `measured-on` comes right before `rows` because every value after it was
+/// measured on `db` as given: the candidate index is only checked, so a
+/// `SCAN` or a full scan count below is not the effect of that index (D-304).
+fn writeSummary(
+    stdout: *Io.Writer,
+    inputs: Inputs,
+    rows: u64,
+    plan: db.Plan,
+    counters: db.Counters,
+) Io.Writer.Error!void {
+    try stdout.print("db: {s}\nselect: {s}\nindex-sql: {s}\nmeasured-on: db (candidate index not applied)\nrows: {d}\n", .{
+        inputs.database_path, inputs.select_path, inputs.index_path, rows,
+    });
+    try stdout.print("sqlite: {s}\nsqlite-source-id: {s}\n", .{
+        sqlite.sqlite3_libversion(), sqlite.sqlite3_sourceid(),
+    });
+    for (plan.rows) |row| {
+        try stdout.print("plan: id={d} parent={d} kind={t} covering={} automatic={} detail={s}\n", .{
+            row.id, row.parent, row.label.kind, row.label.covering, row.label.automatic, row.detail,
+        });
+    }
+    try stdout.print("fullscan-steps: {d}\nvm-steps: {d}\nsort-ops: {d}\nautoindex-rows: {d}\n", .{
+        counters.fullscan_steps, counters.vm_steps, counters.sort_ops, counters.autoindex_rows,
+    });
 }
 
 fn missingArgument(stderr: *Io.Writer, option: []const u8) ExitCode {
@@ -702,6 +750,45 @@ test "accepted run prints summary on stdout and nothing on stderr (exit 0)" {
     try testing.expect(std.mem.indexOf(u8, result.stdout, "rows: 1") != null);
     try testing.expect(std.mem.indexOf(u8, result.stdout, fixture.db_path) != null);
     try testing.expect(std.mem.indexOf(u8, result.stdout, fixture.index_path) != null);
+}
+
+test "accepted run prints plan and counters" {
+    var fixture = try CliFixture.init("SELECT a FROM t WHERE b = ?1", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+
+    var stdout_buffer: [2048]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const result = callRun(testing.allocator, &.{
+        "Qenome",
+        "--db",
+        fixture.db_path,
+        "--select",
+        fixture.select_path,
+        "--index-sql",
+        fixture.index_path,
+        "--bind",
+        "1:text:x",
+    }, &stdout_buffer, &stderr_buffer);
+
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+    // Every value after `measured-on` comes from the database as given, so
+    // the line sits between the inputs and `rows` (D-304).
+    const expected_head = try std.fmt.allocPrint(
+        testing.allocator,
+        "index-sql: {s}\nmeasured-on: db (candidate index not applied)\nrows: 1\n",
+        .{fixture.index_path},
+    );
+    defer testing.allocator.free(expected_head);
+    try testing.expect(std.mem.indexOf(u8, result.stdout, expected_head) != null);
+    try testing.expect(std.mem.indexOf(u8, result.stdout, "sqlite: " ++ sqlite.pinned_version ++ "\n") != null);
+    try testing.expect(std.mem.indexOf(u8, result.stdout, "sqlite-source-id: " ++ sqlite.pinned_source_id ++ "\n") != null);
+    // The labels come before the raw detail, which ends the line.
+    try testing.expect(std.mem.indexOf(u8, result.stdout, "kind=search covering=false automatic=false detail=SEARCH t USING INDEX idx_b") != null);
+    try testing.expect(std.mem.indexOf(u8, result.stdout, "fullscan-steps: 0\n") != null);
+    try testing.expect(std.mem.indexOf(u8, result.stdout, "vm-steps: ") != null);
+    try testing.expect(std.mem.indexOf(u8, result.stdout, "sort-ops: 0\n") != null);
+    try testing.expect(std.mem.indexOf(u8, result.stdout, "autoindex-rows: 0\n") != null);
 }
 
 test "rejected run prints error on stderr (exit 1)" {
