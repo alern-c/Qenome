@@ -4,31 +4,26 @@ const Io = std.Io;
 const Qenome = @import("Qenome");
 
 pub fn main(init: std.process.Init) !void {
-    // Prints to stderr, unbuffered, ignoring potential errors.
-    std.debug.print("All your {s} are belong to us.\n", .{"codebase"});
-
-    // This is appropriate for anything that lives as long as the process.
-    const arena: std.mem.Allocator = init.arena.allocator();
-
-    // Accessing command line arguments:
-    const args = try init.minimal.args.toSlice(arena);
-    for (args) |arg| {
-        std.log.info("arg: {s}", .{arg});
-    }
-
-    // In order to do I/O operations need an `Io` instance.
+    // Command line arguments and transient CLI state live in the process
+    // arena; `cli.run` gets the general allocator for its own arena.
+    const arena = init.arena.allocator();
+    const argv = try init.minimal.args.toSlice(arena);
     const io = init.io;
 
-    // Stdout is for the actual output of your application, for example if you
-    // are implementing gzip, then only the compressed bytes should be sent to
-    // stdout, not any debugging messages.
-    var stdout_buffer: [1024]u8 = undefined;
+    // Stdout carries the summary, stderr carries diagnostics. Both are flushed
+    // before the process exits with the code that `cli.run` decided.
+    var stdout_buffer: [4096]u8 = undefined;
     var stdout_file_writer: Io.File.Writer = .init(.stdout(), io, &stdout_buffer);
-    const stdout_writer = &stdout_file_writer.interface;
+    const stdout = &stdout_file_writer.interface;
+    var stderr_buffer: [4096]u8 = undefined;
+    var stderr_file_writer: Io.File.Writer = .init(.stderr(), io, &stderr_buffer);
+    const stderr = &stderr_file_writer.interface;
 
-    try Qenome.printAnotherMessage(stdout_writer);
+    const code = Qenome.cli.run(io, init.gpa, argv, stdout, stderr);
 
-    try stdout_writer.flush(); // Don't forget to flush!
+    try stdout.flush();
+    try stderr.flush();
+    if (code != .ok) std.process.exit(@backingInt(code));
 }
 
 test "simple test" {
