@@ -108,9 +108,28 @@ pub extern fn sqlite3_stmt_readonly(stmt: ?*sqlite3_stmt) c_int;
 pub extern fn sqlite3_stmt_isexplain(stmt: ?*sqlite3_stmt) c_int;
 pub extern fn sqlite3_step(stmt: ?*sqlite3_stmt) c_int;
 pub extern fn sqlite3_finalize(stmt: ?*sqlite3_stmt) c_int;
+pub extern fn sqlite3_reset(stmt: ?*sqlite3_stmt) c_int;
 pub extern fn sqlite3_column_int64(stmt: ?*sqlite3_stmt, column: c_int) i64;
 pub extern fn sqlite3_column_double(stmt: ?*sqlite3_stmt, column: c_int) f64;
 pub extern fn sqlite3_column_text(stmt: ?*sqlite3_stmt, column: c_int) ?[*:0]const u8;
+pub extern fn sqlite3_column_count(stmt: ?*sqlite3_stmt) c_int;
+
+/// Switches `stmt` between a normal statement (`eMode = 0`), `EXPLAIN` (1) and
+/// `EXPLAIN QUERY PLAN` (2). Switching a normally prepared statement to 2
+/// always re-prepares it, which runs the authorizer again; other switches
+/// re-prepare only when the program lacks what the new mode needs. The call
+/// fails while the statement is running, so reset it first when it has run.
+pub extern fn sqlite3_stmt_explain(stmt: ?*sqlite3_stmt, eMode: c_int) c_int;
+
+/// Reads one per-statement counter. The engine keeps the counters as `u32`,
+/// so a value above `maxInt(c_int)` comes back negative.
+pub extern fn sqlite3_stmt_status(stmt: ?*sqlite3_stmt, op: c_int, resetFlg: c_int) c_int;
+
+// Counters for `sqlite3_stmt_status` (`sqlite3.h`).
+pub const SQLITE_STMTSTATUS_FULLSCAN_STEP = 1;
+pub const SQLITE_STMTSTATUS_SORT = 2;
+pub const SQLITE_STMTSTATUS_AUTOINDEX = 3;
+pub const SQLITE_STMTSTATUS_VM_STEP = 4;
 
 // Bindings (`sqlite3.h`). `sqlite3_bind_text` receives the C destructor
 // sentinel `SQLITE_TRANSIENT`, whose value is `(void *)-1`; `align(1)` on the
