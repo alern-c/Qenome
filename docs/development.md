@@ -89,6 +89,67 @@ zig build run -- --db <DB> --select <SELECTファイル> --index-sql <候補DDL�
 
 未確認：計画を読めないときの終了コード1の分岐（再現が難しくテストなし）。窓関数・仮想テーブル・トリガー関連のEQP文言の分類。計画の取得と実行の間に外部プロセスが元DBのスキーマや統計を変えると、表示した計画と実行計画が食い違いうる（工程4のsnapshotで解消予定）。
 
+### 工程4の整合コピーと実行確認（2026-10-11、Zig 0.17.0・同梱SQLite 3.51.2）
+
+工程4から、SELECTの検証・計画・実行は元DBではなく、一時フォルダに作ったsnapshot（baseline）で行う。stdoutの `measured-on:` は `baseline (candidate index not applied)` になり、`db:` には `--db` に指定したパスをそのまま出す。
+
+処理の順番は次のとおり。
+
+1. `$TMPDIR`（未設定・空なら `/tmp`）の下に `qenome-<乱数24桁>` を権限0700で作る。同じ名前がすでにあれば、別の乱数で作り直す。
+2. 元DBを読み取り専用で開き、`sqlite3_backup_step(-1)` を1回だけ呼んで `baseline.db` に写す。1回の呼び出しは1つの読み取りトランザクションの中で全ページを写すので、WALのうちcheckpointされていない確定分も含めて、ある1時点のsnapshotになる。
+3. baseline の `journal_mode` を DELETE に戻して閉じる。1ページ目はそのまま写るので、元DBがWALなら baseline もWALになっていて、工程5の索引作成が `-wal` 側に入ってしまうため。
+4. 閉じた baseline を通常のファイルコピーで `variant.db` にする（工程5で使う）。
+5. 終わり方にかかわらず、すべての接続を閉じてから一時フォルダごと削除する。
+
+元DBへの接続には `SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE` を設定し、close 時に元DBへcheckpointが走らないようにする。元DBがbusyのときは待たずに終了コード1にする。
+
+終了コードの一覧：
+
+| 終了コード | 意味 |
+| --- | --- |
+| 0 | 受け付けて実行した |
+| 1 | 入力の拒否（ファイル、DB、snapshot、一時フォルダ、SQL、DDL、バインド、計画、実行） |
+| 2 | 引数を使えない |
+| 5 | 本来は成功した実行の後片付け（接続のclose、一時フォルダの削除）に失敗した。1/124/129/130/143 のときは元のコードを保つ。どちらの場合も残ったパスをstderrに出す |
+| 124 | 時間上限 |
+| 129 / 130 / 143 | SIGHUP / SIGINT / SIGTERM で中断した。stderrにシグナル名を出す。続けて別のシグナルを受けても、最初に受けたものを採る |
+
+#### 利用条件と制約
+
+- **WALのDBの付属ファイル**：読み取り専用で開いても、SQLiteは元DBの横に `-shm` と `-wal` を作る（すでにある場合も、`-shm` の中身は書き換わりうる）。本体ファイルの中身は変えない。「元DBを変更しない」は、本体の中身を変えないことを指す（D-001）。
+- **外部writerがいる場合**：WALのDBなら、外部writerを止めずにcopy開始時点のsnapshotを取れる。ただしcopyの間は、外部側のcheckpointがcopy開始時点より先へ進めない（`-wal` が大きくなり、RESTART/TRUNCATE checkpointは待たされるか、BUSYになる）。通常方式（rollback journal）のDBでは、copyの間ずっと外部writerのコミットを待たせる（相手に待ち時間の設定がなければ、相手側が `SQLITE_BUSY` になる）（D-002）。
+- **中断のタイミング**：copy（`backup_step(-1)`）は途中で止められない。SIGINT・SIGTERM・SIGHUP はcopyが終わった時点で反映し、後片付けをしてから終了する。時間上限はSELECTの実行中だけに効き、copyには効かない。SQLの誤りも、copyが終わった後で見つかる。
+- **強制終了**：`kill -9` や、猶予の後にSIGKILLを送る仕組み（docker・systemdなど）で止めると、一時フォルダが残る（大きなDBではcopyが猶予より長くかかりうる）。中身は元DBのコピーなので、`$TMPDIR/qenome-*` を手で消す。自動の掃除はしない。
+- **一時領域**：元DBの約2倍の空き容量が必要。`$TMPDIR` がメモリ上（Linuxのtmpfsなど）にあると、ディスクI/Oが実DBと違うので、時間の前提が崩れる。工程6では測定先のファイルシステムも記録する候補にする。
+- **hot journal**：通常方式のDBに、クラッシュしたwriterのhot journalが残っている場合、読み取り専用では元に戻せないので終了コード1になる。
+
+#### 実行確認
+
+[testdata/README.md](../testdata/README.md) の手順で作ったfixture（SHA-256は工程2と同じ `ddca8dd2…`）と実バイナリで、`TMPDIR` を作業用の空フォルダにして確認した。各実行の後、そのフォルダは空だった。
+
+| 実行 | 終了コード | 出力 |
+| --- | --- | --- |
+| 改善する例（`--bind 1:int:1234`） | 0 | `measured-on: baseline …`、`rows: 100`、`SCAN events`、fullscan-steps 199,999、vm-steps 600,407（工程3と同じ） |
+| 効果のない例（`--bind 1:text:ok`） | 0 | `rows: 66666`、fullscan-steps 199,999、vm-steps 933,339（工程3と同じ） |
+| 書込SQL | 1 | `error: --select: the statement is not allowed here: not authorized` |
+| 重いSELECT＋`--timeout-ms 50` | 124 | 約0.07秒、stdout 0バイト |
+| 重いSELECT＋開始約1秒後に SIGINT / SIGTERM / SIGHUP | 130 / 143 / 129 | `error: interrupted by SIGINT` / `SIGTERM` / `SIGHUP` |
+| `TMPDIR` が書込不可のフォルダ | 1 | `error: cannot create a temporary directory under '…': AccessDenied` |
+| `TMPDIR` が空文字列 | 0 | `/tmp` を使い、`/tmp` に `qenome-*` は残らない |
+
+WALのDBは、fixtureのコピーをWALにして確認した（Python の sqlite3 で、自動checkpointを止めた書込接続を開いたまま実行）。
+
+| 実行 | 終了コード | 結果 |
+| --- | --- | --- |
+| checkpointされていない確定分が `-wal` にある（customer_id=1234 を100行追加） | 0 | `rows: 200`。元DB本体と `-wal` のSHA-256は前後で同じ |
+| 実行中も別スレッドがINSERTを続ける | 0 | `rows: 9182`（copy開始時点の件数） |
+| 書込が止まっていて `-wal` / `-shm` が無いWALのDB | 0 | `rows: 100`。本体のSHA-256は同じ。実行後、本体の横に `-shm` と `-wal` が残った（D-001どおり） |
+| 通常方式のDBで、別接続が `BEGIN EXCLUSIVE` 中 | 1 | `error: cannot copy '…': the database is locked by another connection: database is locked` |
+
+一時フォルダの削除失敗は、独立した実行確認で `chflags uchg` により baseline.db を削除不能にして再現した。終了コード5で、stdoutには通常の結果が出て、stderrに `the temporary directory '…' could not be removed: PermissionDenied` と残ったパスが出た。
+
+未確認：hot journal が残る通常方式のDBで終了コード1になる分岐（読み取り専用では戻せない hot journal を安定して作れなかった）。Linux（tmpfs、`copy_file_range`）。
+
 ## 次の開発の進め方
 
 MVPタスクの順に進める。初期化済みのコードを再生成しない。各工程の未決契約を確認し、最小の変更と検証結果を残す。新しい本番依存、大規模な設計変更、commit、pushは事前確認が必要。
