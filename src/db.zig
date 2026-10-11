@@ -7,6 +7,7 @@
 //! release reports, so a new action cannot pass unnoticed.
 
 const std = @import("std");
+const Io = std.Io;
 const builtin = @import("builtin");
 const sqlite = @import("sqlite.zig");
 
@@ -25,7 +26,60 @@ pub const OpenError = error{
 
 pub const CloseError = error{CloseFailed};
 
-pub const StepError = error{StepFailed};
+pub const StepError = error{
+    StepFailed,
+    /// The time limit expired while the statement was running.
+    Timeout,
+    /// The cancel flag was set (SIGINT) while the statement was running.
+    Interrupted,
+};
+
+/// Why the progress handler stopped a statement before it finished.
+pub const InterruptReason = enum { timeout, signal };
+
+/// Interruption state for `stepAll`.
+///
+/// `stepAll` installs a progress handler that reads this value, so the control
+/// must stay alive until the call returns. The callback runs on the stepping
+/// thread and never calls a SQLite API; the SIGINT handler only writes the
+/// atomic `cancel` flag, which is the one field it may touch.
+pub const StepControl = struct {
+    io: Io,
+    /// Time limit in milliseconds. `0` disables the limit, as `--timeout-ms 0`
+    /// does.
+    timeout_ms: u64,
+    /// Set by the CLI's SIGINT handler, or by a test.
+    cancel: *const std.atomic.Value(bool),
+    /// Why the last `stepAll` was interrupted, or null when it was not.
+    reason: ?InterruptReason = null,
+    /// Absolute deadline on the `awake` clock. `stepAll` fills this in from
+    /// `timeout_ms` when it starts, because the limit covers the execution and
+    /// not the prepare or bind phases.
+    deadline_ns: ?i96 = null,
+
+    pub fn init(io: Io, timeout_ms: u64, cancel: *const std.atomic.Value(bool)) StepControl {
+        return .{ .io = io, .timeout_ms = timeout_ms, .cancel = cancel };
+    }
+
+    fn shouldStop(self: *StepControl) bool {
+        // A signal is the user's own request, so it wins over the deadline.
+        if (self.cancel.load(.monotonic)) {
+            self.reason = .signal;
+            return true;
+        }
+        if (self.deadline_ns) |deadline| {
+            if (Io.Clock.now(.awake, self.io).nanoseconds >= deadline) {
+                self.reason = .timeout;
+                return true;
+            }
+        }
+        return false;
+    }
+};
+
+/// Approximate VM instructions between progress callbacks. Small enough that a
+/// heavy SELECT notices a deadline or a signal within a few milliseconds.
+const progress_opcodes: c_int = 1000;
 
 pub const CheckError = error{
     /// The input holds no statement (empty, whitespace, or comments only).
@@ -154,19 +208,39 @@ pub const Db = struct {
     /// on an indexed column decides its plan from the bound value, for
     /// example), and that re-prepare runs the authorizer again.
     ///
-    /// The deadline and signal checks arrive with the CLI interruption unit,
-    /// which will install a progress handler and turn `SQLITE_INTERRUPT` into a
-    /// reason.
-    pub fn stepAll(self: *Db, statement: *sqlite.sqlite3_stmt) StepError!u64 {
+    /// A progress handler checks `control` every `progress_opcodes`
+    /// instructions: the time limit starts here, and the cancel flag arrives
+    /// from the CLI's SIGINT handler. The handler itself never calls a SQLite
+    /// API.
+    pub fn stepAll(self: *Db, statement: *sqlite.sqlite3_stmt, control: *StepControl) StepError!u64 {
         const previous = self.enterMode(.user_select);
         defer self.mode = previous;
+
+        control.reason = null;
+        const start = Io.Clock.now(.awake, control.io).nanoseconds;
+        control.deadline_ns = if (control.timeout_ms == 0) null else start + @as(i96, @intCast(control.timeout_ms)) * std.time.ns_per_ms;
+
+        // The callback reads `control`, so the handler must be gone again
+        // before the control goes out of scope.
+        sqlite.sqlite3_progress_handler(self.connection(), progress_opcodes, progressHandler, control);
+        defer sqlite.sqlite3_progress_handler(self.connection(), 0, null, null);
 
         var rows: u64 = 0;
         while (true) {
             switch (sqlite.sqlite3_step(statement)) {
                 sqlite.SQLITE_ROW => rows += 1,
                 sqlite.SQLITE_DONE => return rows,
-                else => return error.StepFailed,
+                else => |rc| {
+                    // Only an interruption becomes a timeout or signal report;
+                    // every other failure keeps its engine message.
+                    if (rc == sqlite.SQLITE_INTERRUPT) {
+                        if (control.reason) |reason| return switch (reason) {
+                            .timeout => error.Timeout,
+                            .signal => error.Interrupted,
+                        };
+                    }
+                    return error.StepFailed;
+                },
             }
         }
     }
@@ -352,6 +426,13 @@ fn authorizer(
     const self: *Db = @ptrCast(@alignCast(user_data orelse return sqlite.SQLITE_DENY));
     self.record(action_code);
     return if (self.allows(action_code, arg1, arg3)) sqlite.SQLITE_OK else sqlite.SQLITE_DENY;
+}
+
+/// Progress callback installed around `sqlite3_step`. A non-zero return makes
+/// the step fail with `SQLITE_INTERRUPT`.
+fn progressHandler(user_data: ?*anyopaque) callconv(.c) c_int {
+    const control: *StepControl = @ptrCast(@alignCast(user_data orelse return 1));
+    return if (control.shouldStop()) 1 else 0;
 }
 
 const testing = std.testing;
@@ -912,6 +993,109 @@ test "stepping a select that SQLite re-prepares keeps working" {
     });
     defer _ = sqlite.sqlite3_finalize(statement);
 
-    try testing.expectEqual(@as(u64, 1), try db.stepAll(statement));
+    var cancel = std.atomic.Value(bool).init(false);
+    var control = StepControl.init(testing.io, 0, &cancel);
+    try testing.expectEqual(@as(u64, 1), try db.stepAll(statement, &control));
     try testing.expectEqual(Mode.internal, db.mode);
+}
+
+/// A statement that needs far longer than any test time limit, so the progress
+/// handler is what ends it.
+const heavy_select: [:0]const u8 =
+    "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 20000000) SELECT count(*) FROM c";
+
+/// A bounded statement that still crosses many progress intervals, but finishes
+/// in milliseconds.
+const bounded_select: [:0]const u8 =
+    "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 200000) SELECT count(*) FROM c";
+
+test "time limit interrupts a heavy select (timeout)" {
+    var fixture = try Fixture.init(testing.allocator);
+    defer fixture.deinit();
+    var db: Db = .{};
+    try db.openReadOnly(fixture.path);
+    defer db.close() catch unreachable;
+
+    const statement = try prepareBoundSelect(&db, heavy_select, &.{});
+    defer _ = sqlite.sqlite3_finalize(statement);
+
+    var cancel = std.atomic.Value(bool).init(false);
+    var control = StepControl.init(testing.io, 1, &cancel);
+    try testing.expectError(error.Timeout, db.stepAll(statement, &control));
+    try testing.expectEqual(InterruptReason.timeout, control.reason.?);
+
+    // The progress handler must be uninstalled when `stepAll` returns, because
+    // `control` lives on this stack frame. With the cancel flag set, a direct
+    // step of a fresh statement only runs to completion when no handler is
+    // left to read the stale control.
+    cancel.store(true, .monotonic);
+    const probe = try prepareBoundSelect(&db, bounded_select, &.{});
+    defer _ = sqlite.sqlite3_finalize(probe);
+    try testing.expectEqual(sqlite.SQLITE_ROW, sqlite.sqlite3_step(probe));
+}
+
+test "a heavy select inside the time limit finishes (positive control)" {
+    // The deadline comparison is load-bearing in both directions: with an
+    // inverted test the first progress callback would interrupt every
+    // statement that has a time limit at all. This pins the direction.
+    var fixture = try Fixture.init(testing.allocator);
+    defer fixture.deinit();
+    var db: Db = .{};
+    try db.openReadOnly(fixture.path);
+    defer db.close() catch unreachable;
+
+    const statement = try prepareBoundSelect(&db, bounded_select, &.{});
+    defer _ = sqlite.sqlite3_finalize(statement);
+
+    var cancel = std.atomic.Value(bool).init(false);
+    var control = StepControl.init(testing.io, 60_000, &cancel);
+    try testing.expectEqual(@as(u64, 1), try db.stepAll(statement, &control));
+    try testing.expect(control.reason == null);
+}
+
+test "cancel flag interrupts a heavy select (signal)" {
+    var fixture = try Fixture.init(testing.allocator);
+    defer fixture.deinit();
+    var db: Db = .{};
+    try db.openReadOnly(fixture.path);
+    defer db.close() catch unreachable;
+
+    const statement = try prepareBoundSelect(&db, heavy_select, &.{});
+    defer _ = sqlite.sqlite3_finalize(statement);
+
+    var cancel = std.atomic.Value(bool).init(true);
+    var control = StepControl.init(testing.io, 0, &cancel);
+    try testing.expectError(error.Interrupted, db.stepAll(statement, &control));
+    try testing.expectEqual(InterruptReason.signal, control.reason.?);
+    try testing.expectEqual(Mode.internal, db.mode);
+}
+
+test "source db bytes are unchanged and no journal files appear" {
+    var fixture = try Fixture.init(testing.allocator);
+    defer fixture.deinit();
+
+    const before = try fixture.tmp.dir.readFileAlloc(testing.io, "fixture.db", testing.allocator, .unlimited);
+    defer testing.allocator.free(before);
+
+    var db: Db = .{};
+    try db.openReadOnly(fixture.path);
+    const statement = try prepareBoundSelect(&db, "SELECT count(*) FROM t WHERE a = ?1", &.{
+        .{ .number = 1, .value = .{ .int = 1 } },
+    });
+
+    var cancel = std.atomic.Value(bool).init(false);
+    var control = StepControl.init(testing.io, 0, &cancel);
+    try testing.expectEqual(@as(u64, 1), try db.stepAll(statement, &control));
+    // `sqlite3_close` refuses to close while a statement is open, so the
+    // finalize-before-close order is part of the D-105 contract.
+    _ = sqlite.sqlite3_finalize(statement);
+    try db.checkCreateIndex("CREATE INDEX idx_after ON t(a)");
+    try db.close();
+
+    const after = try fixture.tmp.dir.readFileAlloc(testing.io, "fixture.db", testing.allocator, .unlimited);
+    defer testing.allocator.free(after);
+    try testing.expectEqualSlices(u8, before, after);
+    try testing.expectError(error.FileNotFound, fixture.tmp.dir.openFile(testing.io, "fixture.db-journal", .{}));
+    try testing.expectError(error.FileNotFound, fixture.tmp.dir.openFile(testing.io, "fixture.db-wal", .{}));
+    try testing.expectError(error.FileNotFound, fixture.tmp.dir.openFile(testing.io, "fixture.db-shm", .{}));
 }

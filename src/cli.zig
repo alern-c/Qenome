@@ -11,11 +11,12 @@
 //! * 1: an input was rejected (file, database, SQL, DDL, bind, step)
 //! * 2: the arguments cannot be used
 //! * 5: the connection could not be closed after an otherwise successful run
-//! * 124: the time limit interrupted the SELECT (interruption unit)
-//! * 130: a signal interrupted the SELECT (interruption unit)
+//! * 124: the time limit interrupted the SELECT
+//! * 130: SIGINT interrupted the SELECT
 
 const std = @import("std");
 const Io = std.Io;
+const builtin = @import("builtin");
 const db = @import("db.zig");
 const sqlite = @import("sqlite.zig");
 
@@ -66,6 +67,33 @@ pub const ExitCode = enum(u8) {
     interrupted = 130,
 };
 
+/// True on platforms with POSIX signal handling. Windows and WASI stay out of
+/// scope for this CLI, as the plan records.
+const supports_sigint = switch (builtin.os.tag) {
+    .windows, .wasi => false,
+    else => true,
+};
+
+/// SIGINT flag. The handler only writes this atomic; `runChecked` and the
+/// SELECT progress handler read it. `run` clears it when the run ends.
+var sigint_flag: std.atomic.Value(bool) = .init(false);
+
+fn handleSigint(_: std.posix.SIG) callconv(.c) void {
+    sigint_flag.store(true, .monotonic);
+}
+
+/// Routes Ctrl+C to the flag. `SA.RESTART` keeps the handler itself to a
+/// single atomic store and lets interrupted syscalls continue.
+fn installSigintHandler() void {
+    if (!supports_sigint) return;
+    const action: std.posix.Sigaction = .{
+        .handler = .{ .handler = handleSigint },
+        .mask = std.posix.sigemptyset(),
+        .flags = std.posix.SA.RESTART,
+    };
+    std.posix.sigaction(std.posix.SIG.INT, &action, null);
+}
+
 /// Parsed command line. `binds` is owned by the allocator passed to
 /// `parseArgs`.
 pub const Args = struct {
@@ -73,7 +101,7 @@ pub const Args = struct {
     select: ?[:0]const u8 = null,
     index_sql: ?[:0]const u8 = null,
     binds: []const db.BindArg = &.{},
-    /// Parsed here; the interruption unit wires it to the progress handler.
+    /// Time limit for the SELECT execution; `0` disables it.
     timeout_ms: u64 = default_timeout_ms,
     help: bool = false,
 };
@@ -197,6 +225,9 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\  --timeout-ms <MS>    statement time limit, 0 disables it (default 30000)
         \\  --help, -h           print this message and exit with status 0
         \\
+        \\exit status: 0 accepted, 1 rejected, 2 usage error, 5 cleanup failure,
+        \\124 time limit reached, 130 interrupted by SIGINT
+        \\
     );
 }
 
@@ -209,6 +240,12 @@ pub fn run(
     stdout: *Io.Writer,
     stderr: *Io.Writer,
 ) ExitCode {
+    // Ctrl+C only sets a flag; `runChecked` and the SELECT progress handler
+    // consume it. Clearing it here keeps a later run in the same process from
+    // seeing a stale interrupt.
+    installSigintHandler();
+    defer sigint_flag.store(false, .monotonic);
+
     // Every input below lives until the run ends, so one arena keeps the
     // cleanup path short.
     var arena_state = std.heap.ArenaAllocator.init(allocator);
@@ -245,14 +282,12 @@ pub fn run(
         .select_sql = select_sql,
         .index_sql = index_sql,
         .binds = args.binds,
+        .timeout_ms = args.timeout_ms,
     };
 
     var cleanup_failed = false;
-    const code = runChecked(inputs, stdout, stderr, &cleanup_failed);
-    // D-105=案1: the cleanup failure is diagnosed inside `runChecked` and only
-    // changes the exit code when nothing else failed.
-    if (cleanup_failed and code == .ok) return .cleanup;
-    return code;
+    const code = runChecked(io, inputs, stdout, stderr, &cleanup_failed);
+    return finalExitCode(code, cleanup_failed);
 }
 
 /// Everything one checked run needs.
@@ -263,17 +298,31 @@ const Inputs = struct {
     select_sql: [:0]const u8,
     index_sql: [:0]const u8,
     binds: []const db.BindArg,
+    timeout_ms: u64,
 };
+
+/// D-105=案1: after an otherwise successful run a cleanup failure is reported
+/// with exit code 5. A rejection, usage error, timeout, or interruption keeps
+/// its own code. The diagnostic itself is always written where the failure is
+/// found.
+pub fn finalExitCode(code: ExitCode, cleanup_failed: bool) ExitCode {
+    if (cleanup_failed and code == .ok) return .cleanup;
+    return code;
+}
 
 /// Opens the database and walks the accepted order: check the SELECT, bind,
 /// check the candidate DDL, then run the SELECT. `cleanup_failed` is set when
 /// the connection cannot be closed.
 fn runChecked(
+    io: Io,
     inputs: Inputs,
     stdout: *Io.Writer,
     stderr: *Io.Writer,
     cleanup_failed: *bool,
 ) ExitCode {
+    // A signal that arrived before the SELECT started still maps to exit 130.
+    if (sigint_flag.load(.monotonic)) return reportInterrupted(stderr);
+
     var database: db.Db = .{};
     database.openReadOnly(inputs.database_path) catch |err| {
         stderr.print("error: cannot open '{s}' read-only: {s}\n", .{ inputs.database_path, openErrorMessage(err) }) catch {};
@@ -288,6 +337,8 @@ fn runChecked(
         reportCheckFailure(stderr, "--select", err, &database);
         return .rejected;
     };
+    // Declared after the `database.close` defer, so `finalize` always runs
+    // first, on every return path (D-105=案1).
     defer _ = sqlite.sqlite3_finalize(statement);
 
     db.bindAll(statement, inputs.binds) catch |err| {
@@ -300,10 +351,24 @@ fn runChecked(
         return .rejected;
     };
 
-    const rows = database.stepAll(statement) catch {
-        stderr.print("error: --select failed while running: {s}\n", .{database.message()}) catch {};
-        return .rejected;
+    // The time limit and the SIGINT flag cover the SELECT execution only, so
+    // the control is built here and the deadline starts inside `stepAll`.
+    var control = db.StepControl.init(io, inputs.timeout_ms, &sigint_flag);
+    const rows = database.stepAll(statement, &control) catch |err| switch (err) {
+        error.Timeout => {
+            stderr.print("error: --select exceeded the time limit of {d} ms\n", .{inputs.timeout_ms}) catch {};
+            return .timeout;
+        },
+        error.Interrupted => return reportInterrupted(stderr),
+        error.StepFailed => {
+            stderr.print("error: --select failed while running: {s}\n", .{database.message()}) catch {};
+            return .rejected;
+        },
     };
+
+    // A signal that arrives after the last progress check but before the run
+    // ends still wins over the summary.
+    if (sigint_flag.load(.monotonic)) return reportInterrupted(stderr);
 
     // The summary is the result of the run, so a failed write is a rejection.
     stdout.print("db: {s}\nselect: {s}\nindex-sql: {s}\nrows: {d}\n", .{
@@ -318,6 +383,11 @@ fn runChecked(
 fn missingArgument(stderr: *Io.Writer, option: []const u8) ExitCode {
     stderr.print("error: {s} is required (see --help)\n", .{option}) catch {};
     return .usage;
+}
+
+fn reportInterrupted(stderr: *Io.Writer) ExitCode {
+    stderr.print("error: interrupted by SIGINT\n", .{}) catch {};
+    return .interrupted;
 }
 
 /// Prints a check failure. The engine message is appended only when SQLite
@@ -771,4 +841,74 @@ test "the candidate ddl is validated but not applied" {
     const second = callRun(testing.allocator, &argv, &second_stdout, &second_stderr);
     try testing.expectEqual(ExitCode.ok, second.code);
     try testing.expectEqualStrings("", second.stderr);
+}
+
+test "sigint handler sets the cancel flag" {
+    sigint_flag.store(false, .monotonic);
+    defer sigint_flag.store(false, .monotonic);
+
+    handleSigint(std.posix.SIG.INT);
+    try testing.expect(sigint_flag.load(.monotonic));
+}
+
+test "cleanup failure maps to exit 5 and does not override an earlier failure" {
+    try testing.expectEqual(ExitCode.cleanup, finalExitCode(.ok, true));
+    try testing.expectEqual(ExitCode.ok, finalExitCode(.ok, false));
+    try testing.expectEqual(ExitCode.rejected, finalExitCode(.rejected, true));
+    try testing.expectEqual(ExitCode.usage, finalExitCode(.usage, true));
+    try testing.expectEqual(ExitCode.timeout, finalExitCode(.timeout, true));
+    try testing.expectEqual(ExitCode.interrupted, finalExitCode(.interrupted, true));
+    // The other half of this path is the real close failure in the db test
+    // "a failed close keeps the connection for the caller", which sets
+    // `cleanup_failed` by returning `error.CloseFailed`.
+}
+
+test "timeout exits 124" {
+    var fixture = try CliFixture.init(
+        "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 20000000) SELECT count(*) FROM c",
+        "CREATE INDEX idx_a ON t(a)",
+    );
+    defer fixture.deinit();
+
+    var stdout_buffer: [1024]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const result = callRun(testing.allocator, &.{
+        "Qenome",
+        "--db",
+        fixture.db_path,
+        "--select",
+        fixture.select_path,
+        "--index-sql",
+        fixture.index_path,
+        "--timeout-ms",
+        "1",
+    }, &stdout_buffer, &stderr_buffer);
+
+    try testing.expectEqual(ExitCode.timeout, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try testing.expect(std.mem.indexOf(u8, result.stderr, "time limit") != null);
+}
+
+test "pre-set cancel flag exits 130" {
+    var fixture = try CliFixture.init("SELECT count(*) FROM t", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+
+    sigint_flag.store(true, .monotonic);
+    defer sigint_flag.store(false, .monotonic);
+
+    var stdout_buffer: [1024]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const result = callRun(testing.allocator, &.{
+        "Qenome",
+        "--db",
+        fixture.db_path,
+        "--select",
+        fixture.select_path,
+        "--index-sql",
+        fixture.index_path,
+    }, &stdout_buffer, &stderr_buffer);
+
+    try testing.expectEqual(ExitCode.interrupted, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try testing.expect(std.mem.indexOf(u8, result.stderr, "SIGINT") != null);
 }
