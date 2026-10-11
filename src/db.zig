@@ -26,6 +26,33 @@ pub const OpenError = error{
 
 pub const CloseError = error{CloseFailed};
 
+pub const SnapshotError = error{
+    /// Another connection holds a lock that the copy needs (`SQLITE_BUSY`),
+    /// for example a writer inside `BEGIN EXCLUSIVE`. There is no busy
+    /// handler, so the copy fails at once instead of waiting (D-003).
+    SourceBusy,
+    /// The destination could not be created, filled, switched to the rollback
+    /// journal, or closed. `SnapshotDetail` holds the engine message.
+    SnapshotFailed,
+};
+
+/// Engine message of a failed `copySnapshotTo`, copied before the destination
+/// connection is closed. Longer messages are cut.
+pub const SnapshotDetail = struct {
+    buffer: [256]u8 = undefined,
+    len: usize = 0,
+
+    pub fn text(self: *const SnapshotDetail) []const u8 {
+        return self.buffer[0..self.len];
+    }
+
+    fn capture(self: *SnapshotDetail, conn: *sqlite.sqlite3) void {
+        const message_text = std.mem.span(sqlite.sqlite3_errmsg(conn));
+        self.len = @min(message_text.len, self.buffer.len);
+        @memcpy(self.buffer[0..self.len], message_text[0..self.len]);
+    }
+};
+
 pub const StepError = error{
     StepFailed,
     /// The time limit expired while the statement was running.
@@ -148,6 +175,13 @@ pub const Db = struct {
         if (sqlite.sqlite3_db_config(conn, sqlite.SQLITE_DBCONFIG_DQS_DML, @as(c_int, 0), @as(?*c_int, null)) != sqlite.SQLITE_OK) {
             return error.GuardSetupFailed;
         }
+        // The `-wal` file is opened read-write even on a read-only connection,
+        // so only the missing exclusive lock on the main file keeps the last
+        // close of a WAL database from checkpointing into it. Make that a
+        // setting instead of a side effect.
+        if (sqlite.sqlite3_db_config(conn, sqlite.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, @as(c_int, 1), @as(?*c_int, null)) != sqlite.SQLITE_OK) {
+            return error.GuardSetupFailed;
+        }
 
         // The authorizer keeps the connection in `internal` mode between
         // checks. Its third argument is the address of this instance.
@@ -168,6 +202,61 @@ pub const Db = struct {
         const conn = self.handle orelse return;
         if (sqlite.sqlite3_close(conn) != sqlite.SQLITE_OK) return error.CloseFailed;
         self.* = .{};
+    }
+
+    /// Copies the database into a new file at `dest_path` as one snapshot.
+    ///
+    /// One `sqlite3_backup_step(-1)` copies every page inside a single read
+    /// transaction on this connection, so the copy holds the committed WAL
+    /// frames as of that moment, and a writer elsewhere cannot tear it. The
+    /// source is only read. Page 1 is copied as is, so a WAL source would leave
+    /// the copy in WAL mode; the copy is switched back to the rollback journal
+    /// before it is closed, so that later writes to it stay in the file.
+    ///
+    /// The destination is the only connection this module opens read-write.
+    /// `dest_path` must not exist yet and should sit in a private directory.
+    pub fn copySnapshotTo(self: *Db, dest_path: [:0]const u8, detail: *SnapshotDetail) SnapshotError!void {
+        detail.len = 0;
+        var handle: ?*sqlite.sqlite3 = null;
+        const flags = sqlite.SQLITE_OPEN_READWRITE | sqlite.SQLITE_OPEN_CREATE | sqlite.SQLITE_OPEN_NOFOLLOW;
+        const open_rc = sqlite.sqlite3_open_v2(dest_path, &handle, flags, null);
+        const dest = handle orelse return error.SnapshotFailed;
+        var closed = false;
+        defer if (!closed) {
+            _ = sqlite.sqlite3_close(dest);
+        };
+        if (open_rc != sqlite.SQLITE_OK) {
+            detail.capture(dest);
+            return error.SnapshotFailed;
+        }
+
+        const backup = sqlite.sqlite3_backup_init(dest, "main", self.connection(), "main") orelse {
+            detail.capture(dest);
+            return error.SnapshotFailed;
+        };
+        const step_rc = sqlite.sqlite3_backup_step(backup, -1);
+        // `finish` is required after every outcome, `SQLITE_BUSY` included,
+        // and it leaves the backup's error on the destination connection.
+        const finish_rc = sqlite.sqlite3_backup_finish(backup);
+        if (step_rc != sqlite.SQLITE_DONE or finish_rc != sqlite.SQLITE_OK) {
+            detail.capture(dest);
+            if (step_rc & 0xff == sqlite.SQLITE_BUSY) return error.SourceBusy;
+            return error.SnapshotFailed;
+        }
+
+        if (sqlite.sqlite3_exec(dest, "PRAGMA journal_mode=DELETE", null, null, null) != sqlite.SQLITE_OK) {
+            detail.capture(dest);
+            return error.SnapshotFailed;
+        }
+
+        closed = true;
+        if (sqlite.sqlite3_close(dest) != sqlite.SQLITE_OK) {
+            // No statement is left on `dest`, so this only happens when the
+            // last write cannot be completed; the copy is not trusted then.
+            detail.capture(dest);
+            _ = sqlite.sqlite3_close(dest);
+            return error.SnapshotFailed;
+        }
     }
 
     /// Accepts exactly one read-only SELECT and returns the prepared statement
@@ -638,9 +727,10 @@ const Fixture = struct {
 };
 
 /// Test-only helper that creates a database file at `path` and runs `schema`.
-/// Production code only ever opens with `SQLITE_OPEN_READONLY`; this function
-/// exists so that tests can build fixture databases without the `sqlite3` CLI.
-/// `SQLITE_OPEN_READWRITE` appears here and nowhere else.
+/// Production code opens user databases with `SQLITE_OPEN_READONLY` only; the
+/// one production read-write open is the snapshot destination in
+/// `copySnapshotTo`. This function exists so that tests can build fixture
+/// databases without the `sqlite3` CLI.
 pub fn createTestDatabase(path: [:0]const u8, schema: [:0]const u8) !void {
     comptime std.debug.assert(builtin.is_test);
     var handle: ?*sqlite.sqlite3 = null;
@@ -652,6 +742,20 @@ pub fn createTestDatabase(path: [:0]const u8, schema: [:0]const u8) !void {
     if (sqlite.sqlite3_exec(connection, schema, null, null, null) != sqlite.SQLITE_OK) {
         return error.TestFixtureFailed;
     }
+}
+
+/// Test-only helper: opens `path` read-write and runs `sql`, keeping the
+/// connection open so that a test can hold a lock or keep WAL frames from
+/// being checkpointed. Close it with `sqlite3_close`.
+pub fn openTestWriter(path: [:0]const u8, sql: [:0]const u8) !*sqlite.sqlite3 {
+    comptime std.debug.assert(builtin.is_test);
+    var handle: ?*sqlite.sqlite3 = null;
+    const rc = sqlite.sqlite3_open_v2(path, &handle, sqlite.SQLITE_OPEN_READWRITE | sqlite.SQLITE_OPEN_CREATE, null);
+    const connection = handle orelse return error.TestFixtureFailed;
+    errdefer _ = sqlite.sqlite3_close(connection);
+    if (rc != sqlite.SQLITE_OK) return error.TestFixtureFailed;
+    if (sqlite.sqlite3_exec(connection, sql, null, null, null) != sqlite.SQLITE_OK) return error.TestFixtureFailed;
+    return connection;
 }
 
 /// Test-only helper: runs one scalar query through the select allowlist.
@@ -1512,4 +1616,166 @@ test "explaining does not change the execution counters" {
 
     try testing.expect(plan.rows.len > 0);
     try testing.expectEqual(plain, statementCounters(statement));
+}
+
+/// A directory holding a source database and the paths a snapshot test needs.
+const SnapshotFixture = struct {
+    tmp: testing.TmpDir,
+    source: [:0]u8,
+    dest: [:0]u8,
+
+    fn init() !SnapshotFixture {
+        var tmp = testing.tmpDir(.{});
+        errdefer tmp.cleanup();
+        try tmp.dir.writeFile(testing.io, .{ .sub_path = "source.db", .data = "" });
+        const source = try tmp.dir.realPathFileAlloc(testing.io, "source.db", testing.allocator);
+        errdefer testing.allocator.free(source);
+        const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+        defer testing.allocator.free(dir_path);
+        const dest = try std.fmt.allocPrintSentinel(testing.allocator, "{s}/baseline.db", .{dir_path}, 0);
+        return .{ .tmp = tmp, .source = source, .dest = dest };
+    }
+
+    fn deinit(self: *SnapshotFixture) void {
+        testing.allocator.free(self.source);
+        testing.allocator.free(self.dest);
+        self.tmp.cleanup();
+    }
+
+    fn read(self: *SnapshotFixture, sub_path: []const u8) ![]u8 {
+        return self.tmp.dir.readFileAlloc(testing.io, sub_path, testing.allocator, .unlimited);
+    }
+
+    fn exists(self: *SnapshotFixture, sub_path: []const u8) bool {
+        self.tmp.dir.access(testing.io, sub_path, .{}) catch return false;
+        return true;
+    }
+
+    /// Copies the source into `dest` through a read-only connection.
+    fn snapshot(self: *SnapshotFixture) !void {
+        var source: Db = .{};
+        try source.openReadOnly(self.source);
+        defer source.close() catch unreachable;
+        var detail: SnapshotDetail = .{};
+        try source.copySnapshotTo(self.dest, &detail);
+    }
+
+    fn countRows(path: [:0]const u8) !i64 {
+        var copy: Db = .{};
+        try copy.openReadOnly(path);
+        defer copy.close() catch unreachable;
+        return queryInt(&copy, "SELECT count(*) FROM t");
+    }
+};
+
+/// WAL source whose rows exist only as frames in `-wal`: the automatic
+/// checkpoint is off and the writer stays open, so nothing reaches the main
+/// file.
+const wal_writer_sql: [:0]const u8 =
+    \\PRAGMA journal_mode=WAL;
+    \\PRAGMA wal_autocheckpoint=0;
+    \\CREATE TABLE t(a INTEGER);
+    \\WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 1000) INSERT INTO t SELECT x FROM c;
+;
+
+test "snapshot of a wal database includes frames not yet checkpointed" {
+    var fixture = try SnapshotFixture.init();
+    defer fixture.deinit();
+    const writer = try openTestWriter(fixture.source, wal_writer_sql);
+    defer _ = sqlite.sqlite3_close(writer);
+
+    try fixture.snapshot();
+    try testing.expectEqual(@as(i64, 1000), try SnapshotFixture.countRows(fixture.dest));
+
+    // A copy of the main file alone misses the table, which is why the plain
+    // file copy is not used.
+    const main_only = try fixture.read("source.db");
+    defer testing.allocator.free(main_only);
+    try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = "main-only.db", .data = main_only });
+    const main_only_path = try fixture.tmp.dir.realPathFileAlloc(testing.io, "main-only.db", testing.allocator);
+    defer testing.allocator.free(main_only_path);
+    try testing.expectError(error.StatementInvalid, SnapshotFixture.countRows(main_only_path));
+}
+
+test "baseline uses the rollback journal" {
+    var fixture = try SnapshotFixture.init();
+    defer fixture.deinit();
+    const writer = try openTestWriter(fixture.source, wal_writer_sql);
+    defer _ = sqlite.sqlite3_close(writer);
+
+    try fixture.snapshot();
+
+    // Header bytes 18 and 19 are the write and read format versions: 1 means
+    // rollback journal, 2 means WAL.
+    const bytes = try fixture.read("baseline.db");
+    defer testing.allocator.free(bytes);
+    try testing.expectEqual(@as(u8, 1), bytes[18]);
+    try testing.expectEqual(@as(u8, 1), bytes[19]);
+    try testing.expect(!fixture.exists("baseline.db-wal"));
+    try testing.expect(!fixture.exists("baseline.db-shm"));
+}
+
+test "source db and wal bytes are unchanged by the snapshot" {
+    var fixture = try SnapshotFixture.init();
+    defer fixture.deinit();
+    const writer = try openTestWriter(fixture.source, wal_writer_sql);
+    defer _ = sqlite.sqlite3_close(writer);
+
+    const main_before = try fixture.read("source.db");
+    defer testing.allocator.free(main_before);
+    const wal_before = try fixture.read("source.db-wal");
+    defer testing.allocator.free(wal_before);
+    try testing.expect(wal_before.len > 0);
+
+    try fixture.snapshot();
+
+    const main_after = try fixture.read("source.db");
+    defer testing.allocator.free(main_after);
+    const wal_after = try fixture.read("source.db-wal");
+    defer testing.allocator.free(wal_after);
+    try testing.expectEqualSlices(u8, main_before, main_after);
+    try testing.expectEqualSlices(u8, wal_before, wal_after);
+}
+
+test "snapshot of a quiescent wal database" {
+    var fixture = try SnapshotFixture.init();
+    defer fixture.deinit();
+    // Closing the only writer checkpoints and removes `-wal` and `-shm`, so
+    // the source is a WAL database with no side files.
+    const writer = try openTestWriter(fixture.source, wal_writer_sql);
+    try testing.expectEqual(sqlite.SQLITE_OK, sqlite.sqlite3_close(writer));
+    try testing.expect(!fixture.exists("source.db-wal"));
+    const main_before = try fixture.read("source.db");
+    defer testing.allocator.free(main_before);
+    try testing.expectEqual(@as(u8, 2), main_before[18]);
+
+    try fixture.snapshot();
+
+    try testing.expectEqual(@as(i64, 1000), try SnapshotFixture.countRows(fixture.dest));
+    // D-001: the read-only connection may leave `-wal` and `-shm` next to the
+    // source; only the main file must keep its bytes.
+    const main_after = try fixture.read("source.db");
+    defer testing.allocator.free(main_after);
+    try testing.expectEqualSlices(u8, main_before, main_after);
+}
+
+test "busy source is reported" {
+    var fixture = try SnapshotFixture.init();
+    defer fixture.deinit();
+    try createTestDatabase(fixture.source, fixture_schema);
+
+    var source: Db = .{};
+    try source.openReadOnly(fixture.source);
+    defer source.close() catch unreachable;
+
+    // A rollback-journal writer inside an exclusive transaction blocks every
+    // reader, and without a busy handler the copy gives up at once.
+    const writer = try openTestWriter(fixture.source, "BEGIN EXCLUSIVE; INSERT INTO t VALUES (9, 'w');");
+    defer _ = sqlite.sqlite3_close(writer);
+
+    var detail: SnapshotDetail = .{};
+    try testing.expectError(error.SourceBusy, source.copySnapshotTo(fixture.dest, &detail));
+    try testing.expect(detail.text().len > 0);
+    // The destination connection was closed, so the file can be removed.
+    try fixture.tmp.dir.deleteFile(testing.io, "baseline.db");
 }

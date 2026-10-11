@@ -26,6 +26,7 @@ pub extern fn sqlite3_sourceid() [*:0]const u8;
 // Opaque handles (`sqlite3.h`).
 pub const sqlite3 = opaque {};
 pub const sqlite3_stmt = opaque {};
+pub const sqlite3_backup = opaque {};
 
 /// Callback type of `sqlite3_set_authorizer`. Every `const char *` argument
 /// may be NULL.
@@ -47,6 +48,7 @@ pub const ProgressCallback = fn (?*anyopaque) callconv(.c) c_int;
 
 // Result codes (`sqlite3.h`).
 pub const SQLITE_OK = 0;
+pub const SQLITE_BUSY = 5;
 pub const SQLITE_READONLY = 8;
 pub const SQLITE_INTERRUPT = 9;
 pub const SQLITE_AUTH = 23;
@@ -57,6 +59,7 @@ pub const SQLITE_DONE = 101;
 pub const SQLITE_OPEN_READONLY = 0x0000_0001;
 pub const SQLITE_OPEN_READWRITE = 0x0000_0002;
 pub const SQLITE_OPEN_CREATE = 0x0000_0004;
+pub const SQLITE_OPEN_NOFOLLOW = 0x0100_0000;
 
 // Authorizer verdicts (`sqlite3.h`).
 pub const SQLITE_DENY = 1;
@@ -64,6 +67,9 @@ pub const SQLITE_DENY = 1;
 // Configuration verbs for `sqlite3_db_config` (`sqlite3.h`).
 pub const SQLITE_DBCONFIG_DQS_DML = 1013;
 pub const SQLITE_DBCONFIG_DQS_DDL = 1014;
+/// Takes `(c_int, ?*c_int)`; 1 skips the checkpoint that the last connection
+/// to a WAL database would otherwise run on close.
+pub const SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE = 1006;
 
 // Limits for `sqlite3_limit` (`sqlite3.h`).
 pub const SQLITE_LIMIT_VARIABLE_NUMBER = 9;
@@ -124,6 +130,15 @@ pub extern fn sqlite3_stmt_explain(stmt: ?*sqlite3_stmt, eMode: c_int) c_int;
 /// Reads one per-statement counter. The engine keeps the counters as `u32`,
 /// so a value above `maxInt(c_int)` comes back negative.
 pub extern fn sqlite3_stmt_status(stmt: ?*sqlite3_stmt, op: c_int, resetFlg: c_int) c_int;
+
+// Online backup API (`sqlite3.h`). `init` returns null on failure and leaves
+// the error on the destination connection. `step` with `nPage = -1` copies
+// every page inside one read transaction on the source, so the copy is one
+// snapshot. Every successful `init` needs exactly one `finish`, including
+// after `SQLITE_BUSY`.
+pub extern fn sqlite3_backup_init(pDest: ?*sqlite3, zDestName: [*:0]const u8, pSource: ?*sqlite3, zSourceName: [*:0]const u8) ?*sqlite3_backup;
+pub extern fn sqlite3_backup_step(p: ?*sqlite3_backup, nPage: c_int) c_int;
+pub extern fn sqlite3_backup_finish(p: ?*sqlite3_backup) c_int;
 
 // Counters for `sqlite3_stmt_status` (`sqlite3.h`).
 pub const SQLITE_STMTSTATUS_FULLSCAN_STEP = 1;
