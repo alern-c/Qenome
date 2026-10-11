@@ -6,15 +6,28 @@
 
 2026-10-10にmainブランチを確認した。src/main.zigとsrc/root.zigは初期サンプル。この整理ではコード実装、commit、pushを行っていない。
 
+2026-10-11時点：工程2（入力と読取制限）の実装をmainへ取り込み済み（単位1〜4。2026-10-11時点のmainは `0d7e632`）。`src/main.zig` は `src/cli.zig` のCLIへ接続し、`src/root.zig` は `cli` / `db` / `sqlite` を再エクスポートする。同梱SQLite（3.51.2）でDBを読み取り専用に開き、SELECT 1文・型付きバインド・候補CREATE INDEXの検証と、時間上限・Ctrl+Cによる中断までを実装した。
+
 原資料はリポジトリ外のローカルノートで、この文書はその内容を整理したもの。
 
 原資料の「全項目未チェック」という説明と工程0の完了チェックには差がある。工程0は原資料のチェック状態を記録し、今回の実行確認とは区別した。実装済みの判定にはソースと実行結果を使う。
 
 ## 環境と既存手順
 
-[build.zig.zon](../build.zig.zon)のminimum_zig_versionは0.17.0。[build.zig](../build.zig)にbuild、run、testの手順がある。[品質チェック設定](../.github/workflows/quality.yml)は版の一致、整形、build、testを検査する。CIの実行結果は今回未確認。
+[build.zig.zon](../build.zig.zon)のminimum_zig_versionは0.17.0。[build.zig](../build.zig)にbuild、run、testの手順がある。[品質チェック設定](../.github/workflows/quality.yml)は版の一致、整形、build、testを検査する。CIの実測（2026-10-11にGitHub APIで再確認。runの開始から完了まで）は、PR #2が44秒、PR #1が143秒、PR #2のマージ後のmain pushが127秒で、いずれも10分枠（`timeout-minutes: 10`）に十分収まる。
 
-既存の確認コマンドは `zig version`、`zig build --summary all`、`zig build run`、`zig build test --summary all`、`zig fmt --check .`。SQLite比較CLIの実行例は未実装のため掲載しない。
+既存の確認コマンドは `zig version`、`zig build --summary all`、`zig build run`、`zig build test --summary all`、`zig fmt --check .`。SQLite比較CLIは `--help` で使い方と終了コードを確認できる（終了コード0）。
+
+```sh
+zig build run -- --help
+zig build run -- --db <DB> --select <SELECTファイル> --index-sql <候補DDLファイル> --bind 1:int:1234
+```
+
+### 同梱SQLite
+
+- 使う版は3.51.2。[src/sqlite.zig](../src/sqlite.zig)の `pinned_version` と一致することをテストで確認する。取得元のURL、公式公開SHA3-256、source id、同梱2ファイルのハッシュ、コンパイルフラグは [vendor/sqlite3/PROVENANCE.txt](../vendor/sqlite3/PROVENANCE.txt) に記録する
+- `vendor/sqlite3/sqlite3.c` / `sqlite3.h` は `build.zig` の `Qenome` モジュール1か所にだけ登録し、実行ファイルと2つのテストが同じ定義を共有する（二重定義を避ける。Cソースのコンパイルは各アーティファクトのビルドで行われる）。システムの `libsqlite3` や `sqlite3` CLIには依存しない
+- CIに追加パッケージは不要。`quality.yml` の手順は `mlugg/setup-zig`、Zigの版の一致確認、整形、build、testだけで、パッケージ導入のステップがない（同梱SQLiteのCソースはZigがコンパイルする）
 
 ### 工程0の実行確認（2026-10-10、Zig 0.17.0）
 
@@ -29,6 +42,27 @@
 1回目のbuild、run、testはビルドキャッシュが温まっていたため、`--cache-dir /tmp/qenome-cold-cache` で局所キャッシュを作り直して再確認した。`compile exe Qenome debug native success 1s`、`zig build test` は `5/5 steps succeeded; 3/3 tests passed` となり、初回ビルドでも成功する。`build.zig.zon` の依存はすべて例示のコメントで、ネットワーク取得は発生しない。
 
 未確認：Zigの版を固定するツールチェーン設定は無く、`zig version` が0.17.0であることは実行環境に依存する。0.17.0以外の版での挙動は未確認。
+
+### 工程2の実行確認（2026-10-11、Zig 0.17.0・同梱SQLite 3.51.2）
+
+フィクスチャは [testdata/README.md](../testdata/README.md) の手順で生成した（SQLite CLI 3.51.2、`verify.sql` は17項目すべて `ok`、終了コード0）。生成した `testdata/generated/` は追跡しない。
+
+リポジトリ外に置いたSQLファイル（書込SQL、複数文、重いSELECT）と実バイナリ `zig-out/bin/Qenome` で、次を確認した。改善する例・効果のない例のSELECTと候補DDLは `testdata/cases/` のものを使った。
+
+| 実行 | 終了コード | 出力 |
+| --- | --- | --- |
+| 改善する例（`--bind 1:int:1234`） | 0 | stdoutに `rows: 100`。stderrなし |
+| 効果のない例（`--bind 1:text:ok`） | 0 | stdoutに `rows: 66666`。stderrなし |
+| 書込SQL（`INSERT`） | 1 | stderrに `error: --select: the statement is not allowed here: not authorized` |
+| 複数文（`SELECT 1; SELECT 2;`） | 1 | stderrに `error: --select: the file must hold exactly one statement` |
+| バインド不足（1つも与えない）・重複（`?1` へ2つ） | 1 | stderrに `error: --bind: ...` |
+| 候補DDLがCREATE INDEXでない | 1 | stderrに `error: --index-sql: the statement is not allowed here: not authorized` |
+| 重いSELECT（fixtureのクロス結合）＋ `--timeout-ms 50` | 124（実測89ms） | stderrに `error: --select exceeded the time limit of 50 ms` |
+| 同じ重いSELECT＋SIGINT（開始約1秒後に `kill -INT`） | 130 | stderrに `error: interrupted by SIGINT` |
+
+実行の前後で `testdata/generated/qenome-fixture.db` のSHA-256は `ddca8dd288e9a1fee22e441e51064362c19a9d2646bd990f940b700c7bf87d39` のまま変わらず、`testdata/generated` に `-journal` / `-wal` / `-shm` は残らなかった。
+
+未確認：時間上限はSELECTの実行中だけ効き、prepare段階は対象外。WAL構成のDBの読み取りは工程4で扱う。Windowsは未対応（シグナル処理がPOSIXのみ）。
 
 ## 次の開発の進め方
 
