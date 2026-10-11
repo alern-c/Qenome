@@ -19,7 +19,9 @@ pub fn main(init: std.process.Init) !void {
     var stderr_file_writer: Io.File.Writer = .init(.stderr(), io, &stderr_buffer);
     const stderr = &stderr_file_writer.interface;
 
-    const code = Qenome.cli.run(io, init.gpa, argv, stdout, stderr);
+    // The snapshot lives in a private directory under TMPDIR.
+    const temp_parent = init.environ_map.get("TMPDIR");
+    const code = Qenome.cli.run(io, init.gpa, argv, temp_parent, stdout, stderr);
 
     try stdout.flush();
     try stderr.flush();
