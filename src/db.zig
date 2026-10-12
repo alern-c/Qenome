@@ -10,6 +10,7 @@ const std = @import("std");
 const Io = std.Io;
 const builtin = @import("builtin");
 const sqlite = @import("sqlite.zig");
+const result = @import("result.zig");
 
 /// Which actions the authorizer accepts.
 ///
@@ -36,8 +37,8 @@ pub const SnapshotError = error{
     SnapshotFailed,
 };
 
-/// Engine message of a failed `copySnapshotTo`, copied before the destination
-/// connection is closed. Longer messages are cut.
+/// Engine message of a failed `copySnapshotTo` or `applyCreateIndex`, copied
+/// before the connection is closed. Longer messages are cut.
 pub const SnapshotDetail = struct {
     buffer: [256]u8 = undefined,
     len: usize = 0,
@@ -59,6 +60,20 @@ pub const StepError = error{
     Timeout,
     /// The cancel flag was set (SIGINT) while the statement was running.
     Interrupted,
+};
+
+pub const ApplyError = CheckError || error{
+    /// The variant could not be opened read-write.
+    OpenFailed,
+    /// The guards (double-quoted strings off, authorizer) could not be set.
+    GuardSetupFailed,
+    /// The time limit expired while the index was being built.
+    Timeout,
+    /// The cancel flag was set (a signal) while the index was being built.
+    Interrupted,
+    /// SQLite could not build the index (for example a UNIQUE index over
+    /// duplicate rows, or a full disk) or could not close the variant.
+    ApplyFailed,
 };
 
 pub const ExplainError = error{
@@ -91,6 +106,14 @@ pub const StepControl = struct {
 
     pub fn init(io: Io, timeout_ms: u64, cancel: *const std.atomic.Value(bool)) StepControl {
         return .{ .io = io, .timeout_ms = timeout_ms, .cancel = cancel };
+    }
+
+    /// Starts the time limit for one statement. Each statement gets the full
+    /// `timeout_ms` of its own (D-509).
+    fn start(self: *StepControl) void {
+        self.reason = null;
+        const now = Io.Clock.now(.awake, self.io).nanoseconds;
+        self.deadline_ns = if (self.timeout_ms == 0) null else now + @as(i96, @intCast(self.timeout_ms)) * std.time.ns_per_ms;
     }
 
     fn shouldStop(self: *StepControl) bool {
@@ -130,6 +153,82 @@ pub const CheckError = error{
     StatementNotCreateIndex,
 };
 
+/// Hints, gathered while a SELECT is prepared, that its rows may differ
+/// between the baseline and the variant for reasons other than a broken
+/// index. The authorizer only records them; it never denies because of them.
+pub const Clues = struct {
+    /// A function whose result can change between two runs (D-502). Rows of
+    /// such a SELECT are never compared.
+    nondeterministic_function: ?[]const u8 = null,
+    /// A table that describes the database itself (D-507). The candidate
+    /// index changes the schema, so rows of such a SELECT are never compared.
+    schema_table: ?[]const u8 = null,
+    /// An aggregate or window function whose result can depend on the order
+    /// rows are read in (D-505). Only a mismatch becomes incomparable.
+    order_dependent_function: ?[]const u8 = null,
+    /// A date or time function, which may read the current time (D-512).
+    /// Only a mismatch becomes incomparable.
+    time_function: ?[]const u8 = null,
+    /// The SELECT reads through a view or a WITH clause, which may hold a
+    /// LIMIT of its own (D-504). Only a mismatch becomes incomparable.
+    view_or_cte: bool = false,
+
+    /// The clues of both copies together. The SQL is the same on both, so
+    /// they agree unless the engine re-prepared one of them differently.
+    pub fn merge(a: Clues, b: Clues) Clues {
+        return .{
+            .nondeterministic_function = a.nondeterministic_function orelse b.nondeterministic_function,
+            .schema_table = a.schema_table orelse b.schema_table,
+            .order_dependent_function = a.order_dependent_function orelse b.order_dependent_function,
+            .time_function = a.time_function orelse b.time_function,
+            .view_or_cte = a.view_or_cte or b.view_or_cte,
+        };
+    }
+
+    /// True when the rows must not be compared at all.
+    pub fn alwaysIncomparable(self: Clues) bool {
+        return self.nondeterministic_function != null or self.schema_table != null;
+    }
+};
+
+/// Functions of the vendored build whose result changes between two runs of
+/// the same SELECT (D-502). The test "function lists match the vendored
+/// function list" ties these lists to the engine.
+const nondeterministic_functions = [_][]const u8{
+    "random", "randomblob", "changes", "last_insert_rowid", "total_changes",
+};
+
+/// Date and time functions (D-512). They read the current time when given
+/// `'now'` or no argument, which `'now'` hides in an argument, so they are
+/// listed as a whole. A match is still observed, so only a mismatch becomes
+/// incomparable.
+const time_functions = [_][]const u8{
+    "julianday", "unixepoch", "date",         "time",         "datetime",
+    "strftime",  "timediff",  "current_time", "current_date", "current_timestamp",
+};
+
+/// Aggregate and window functions whose result can depend on the order rows
+/// are read in (D-505): the sum of REAL values, concatenations, and the
+/// window functions that number or pick rows.
+const order_dependent_functions = [_][]const u8{
+    "sum",              "avg",               "total",             "group_concat",       "string_agg",
+    "json_group_array", "json_group_object", "jsonb_group_array", "jsonb_group_object", "row_number",
+    "ntile",            "first_value",       "last_value",        "nth_value",          "lag",
+    "lead",
+};
+
+/// Tables that describe the database itself (D-507). `sqlite_stat` names are
+/// matched by prefix.
+const schema_tables = [_][]const u8{ "sqlite_schema", "sqlite_master", "sqlite_temp_schema", "sqlite_temp_master" };
+const stat_table_prefix = "sqlite_stat";
+
+fn findName(list: []const []const u8, name: []const u8) ?[]const u8 {
+    for (list) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry, name)) return entry;
+    }
+    return null;
+}
+
 /// Actions recorded per check. The list only feeds diagnostics: tests read it
 /// to pin the allowlists, and it never affects the accept/deny decision.
 const max_observed_actions = 64;
@@ -143,6 +242,14 @@ pub const Db = struct {
     handle: ?*sqlite.sqlite3 = null,
     mode: Mode = .internal,
     seen_create_index: bool = false,
+    /// Name of the index that the last CREATE INDEX check reported, so that a
+    /// SELECT naming it in `INDEXED BY` can be explained (D-508). Empty when
+    /// the name did not fit.
+    candidate_index: [256]u8 = undefined,
+    candidate_index_len: usize = 0,
+    /// What the authorizer learnt about the last SELECT. `prepareSelect`
+    /// resets it; a re-prepare during `stepAll` only adds to it.
+    clues: Clues = .{},
     observed: [max_observed_actions]c_int = @splat(0),
     observed_count: usize = 0,
 
@@ -165,16 +272,7 @@ pub const Db = struct {
         // Fail closed: a connection that can write is not usable here.
         if (sqlite.sqlite3_db_readonly(conn, "main") != 1) return error.NotReadOnlyConnection;
 
-        // SQLite accepts double-quoted string literals by default, so a
-        // mistyped identifier such as `CREATE INDEX i ON t("nope")` would
-        // prepare as a constant expression instead of failing. Turn that off
-        // for DDL and DML; a setting that cannot be applied is fatal.
-        if (sqlite.sqlite3_db_config(conn, sqlite.SQLITE_DBCONFIG_DQS_DDL, @as(c_int, 0), @as(?*c_int, null)) != sqlite.SQLITE_OK) {
-            return error.GuardSetupFailed;
-        }
-        if (sqlite.sqlite3_db_config(conn, sqlite.SQLITE_DBCONFIG_DQS_DML, @as(c_int, 0), @as(?*c_int, null)) != sqlite.SQLITE_OK) {
-            return error.GuardSetupFailed;
-        }
+        if (!disableDoubleQuotedStrings(conn)) return error.GuardSetupFailed;
         // The `-wal` file is opened read-write even on a read-only connection,
         // so only the missing exclusive lock on the main file keeps the last
         // close of a WAL database from checkpointing into it. Make that a
@@ -263,6 +361,7 @@ pub const Db = struct {
     /// so that the caller can bind and step it. The caller owns the statement
     /// and must finalize it.
     pub fn prepareSelect(self: *Db, sql: [:0]const u8) CheckError!*sqlite.sqlite3_stmt {
+        self.clues = .{};
         const previous = self.enterMode(.user_select);
         defer self.mode = previous;
 
@@ -306,13 +405,15 @@ pub const Db = struct {
     /// instructions: the time limit starts here, and the cancel flag arrives
     /// from the CLI's SIGINT handler. The handler itself never calls a SQLite
     /// API.
-    pub fn stepAll(self: *Db, statement: *sqlite.sqlite3_stmt, control: *StepControl) StepError!u64 {
+    ///
+    /// When `collector` is given, every row is also normalized into it for the
+    /// result comparison; a collector that runs out of room stops keeping rows
+    /// but never stops the statement.
+    pub fn stepAll(self: *Db, statement: *sqlite.sqlite3_stmt, control: *StepControl, collector: ?*result.RowCollector) StepError!u64 {
         const previous = self.enterMode(.user_select);
         defer self.mode = previous;
 
-        control.reason = null;
-        const start = Io.Clock.now(.awake, control.io).nanoseconds;
-        control.deadline_ns = if (control.timeout_ms == 0) null else start + @as(i96, @intCast(control.timeout_ms)) * std.time.ns_per_ms;
+        control.start();
 
         // The callback reads `control`, so the handler must be gone again
         // before the control goes out of scope.
@@ -322,7 +423,10 @@ pub const Db = struct {
         var rows: u64 = 0;
         while (true) {
             switch (sqlite.sqlite3_step(statement)) {
-                sqlite.SQLITE_ROW => rows += 1,
+                sqlite.SQLITE_ROW => {
+                    rows += 1;
+                    if (collector) |rows_out| rows_out.add(statement);
+                },
                 sqlite.SQLITE_DONE => return rows,
                 else => |rc| {
                     // Only an interruption becomes a timeout or signal report;
@@ -408,6 +512,13 @@ pub const Db = struct {
         return sqlite.sqlite3_errcode(self.connection());
     }
 
+    /// Name of the index that the last `checkCreateIndex` would create, or
+    /// null when no name was reported or it was too long to keep.
+    pub fn candidateIndexName(self: *const Db) ?[]const u8 {
+        if (self.candidate_index_len == 0) return null;
+        return self.candidate_index[0..self.candidate_index_len];
+    }
+
     /// Action codes the authorizer saw during the current check, in order.
     pub fn observedActions(self: *const Db) []const c_int {
         return self.observed[0..self.observed_count];
@@ -454,6 +565,7 @@ pub const Db = struct {
         const previous = self.mode;
         self.mode = mode;
         self.seen_create_index = false;
+        self.candidate_index_len = 0;
         self.observed_count = 0;
         return previous;
     }
@@ -462,6 +574,40 @@ pub const Db = struct {
         if (self.observed_count == self.observed.len) return;
         self.observed[self.observed_count] = action_code;
         self.observed_count += 1;
+    }
+
+    /// Records what an allowed SELECT action says about the result. Names
+    /// are compared ASCII case-insensitively and kept as the list entries, so
+    /// nothing points into SQLite's buffers.
+    fn noteClues(self: *Db, action_code: c_int, arg1: ?[*:0]const u8, arg2: ?[*:0]const u8, arg4: ?[*:0]const u8) void {
+        // The innermost view or WITH clause that the action belongs to.
+        if (arg4 != null) self.clues.view_or_cte = true;
+        switch (action_code) {
+            sqlite.SQLITE_FUNCTION => {
+                const name = std.mem.span(arg2 orelse return);
+                if (self.clues.nondeterministic_function == null) {
+                    self.clues.nondeterministic_function = findName(&nondeterministic_functions, name);
+                }
+                if (self.clues.order_dependent_function == null) {
+                    self.clues.order_dependent_function = findName(&order_dependent_functions, name);
+                }
+                if (self.clues.time_function == null) {
+                    self.clues.time_function = findName(&time_functions, name);
+                }
+            },
+            sqlite.SQLITE_READ => {
+                // A table read without any column (`count(*)`) still names
+                // the table, as the user spelled it.
+                const name = std.mem.span(arg1 orelse return);
+                if (self.clues.schema_table != null) return;
+                if (findName(&schema_tables, name)) |entry| {
+                    self.clues.schema_table = entry;
+                } else if (name.len >= stat_table_prefix.len and std.ascii.eqlIgnoreCase(name[0..stat_table_prefix.len], stat_table_prefix)) {
+                    self.clues.schema_table = stat_table_prefix ++ "*";
+                }
+            },
+            else => {},
+        }
     }
 
     fn allows(self: *Db, action_code: c_int, arg1: ?[*:0]const u8, arg3: ?[*:0]const u8) bool {
@@ -481,6 +627,9 @@ pub const Db = struct {
                 // engine has confirmed the CREATE INDEX itself.
                 sqlite.SQLITE_CREATE_INDEX => {
                     self.seen_create_index = true;
+                    const name = std.mem.span(arg1 orelse "");
+                    self.candidate_index_len = if (name.len <= self.candidate_index.len) name.len else 0;
+                    @memcpy(self.candidate_index[0..self.candidate_index_len], name[0..self.candidate_index_len]);
                     return true;
                 },
                 sqlite.SQLITE_READ, sqlite.SQLITE_FUNCTION => return true,
@@ -659,6 +808,140 @@ fn readCounter(statement: *sqlite.sqlite3_stmt, op: c_int) u32 {
     return @bitCast(sqlite.sqlite3_stmt_status(statement, op, 0));
 }
 
+/// Builds the candidate index in the database at `path`, which must be the
+/// private variant copy: it is the only database this module ever changes.
+///
+/// The statement goes through the same DDL allowlist as `checkCreateIndex`,
+/// and it stays under that allowlist while it runs. The time limit and the
+/// cancel flag in `control` cover the build (D-509); an interrupted build is
+/// rolled back by SQLite. On failure `detail` holds the engine message, when
+/// SQLite reported one.
+pub fn applyCreateIndex(path: [:0]const u8, sql: [:0]const u8, control: *StepControl, detail: *SnapshotDetail) ApplyError!void {
+    detail.len = 0;
+    var handle: ?*sqlite.sqlite3 = null;
+    // No `SQLITE_OPEN_CREATE`: a missing variant is an error, not a new file.
+    const open_rc = sqlite.sqlite3_open_v2(path, &handle, sqlite.SQLITE_OPEN_READWRITE | sqlite.SQLITE_OPEN_NOFOLLOW, null);
+    const conn = handle orelse return error.OpenFailed;
+    var closed = false;
+    defer if (!closed) {
+        _ = sqlite.sqlite3_close(conn);
+    };
+    if (open_rc != sqlite.SQLITE_OK) {
+        detail.capture(conn);
+        return error.OpenFailed;
+    }
+
+    // The authorizer reads this value, so it lives until the connection is
+    // closed below.
+    var target: Db = .{ .handle = conn };
+    if (!disableDoubleQuotedStrings(conn)) return error.GuardSetupFailed;
+    if (sqlite.sqlite3_set_authorizer(conn, authorizer, &target) != sqlite.SQLITE_OK) return error.GuardSetupFailed;
+
+    {
+        const previous = target.enterMode(.user_ddl);
+        defer target.mode = previous;
+
+        const statement = (target.prepareSingle(sql) catch |err| {
+            if (sqlite.sqlite3_errcode(conn) != sqlite.SQLITE_OK) detail.capture(conn);
+            return err;
+        }) orelse return error.EmptyStatement;
+        defer _ = sqlite.sqlite3_finalize(statement);
+        if (!target.seen_create_index or sqlite.sqlite3_stmt_readonly(statement) != 0) return error.StatementNotCreateIndex;
+
+        control.start();
+        sqlite.sqlite3_progress_handler(conn, progress_opcodes, progressHandler, control);
+        defer sqlite.sqlite3_progress_handler(conn, 0, null, null);
+        const step_rc = sqlite.sqlite3_step(statement);
+        if (step_rc != sqlite.SQLITE_DONE) {
+            if (step_rc == sqlite.SQLITE_INTERRUPT) {
+                if (control.reason) |reason| return switch (reason) {
+                    .timeout => error.Timeout,
+                    .signal => error.Interrupted,
+                };
+            }
+            detail.capture(conn);
+            return error.ApplyFailed;
+        }
+    }
+
+    closed = true;
+    if (sqlite.sqlite3_close(conn) != sqlite.SQLITE_OK) {
+        detail.capture(conn);
+        _ = sqlite.sqlite3_close(conn);
+        return error.ApplyFailed;
+    }
+}
+
+/// True when `sql` holds the keyword LIMIT or OFFSET outside string literals,
+/// quoted identifiers, comments, and bind names (D-504). The authorizer does
+/// not report LIMIT, so the text is scanned. LIMIT cannot be an unquoted
+/// name, but OFFSET can, so a column called `offset` also counts; that only
+/// turns a mismatch into an incomparable result. A LIMIT inside a view is not
+/// in this text; `Clues.view_or_cte` covers it.
+pub fn mentionsLimitOrOffset(sql: []const u8) bool {
+    var i: usize = 0;
+    while (i < sql.len) {
+        const c = sql[i];
+        switch (c) {
+            '\'', '"', '`' => i = skipQuoted(sql, i, c),
+            '[' => i = if (std.mem.indexOfScalarPos(u8, sql, i + 1, ']')) |end| end + 1 else sql.len,
+            '-' => i = if (i + 1 < sql.len and sql[i + 1] == '-')
+                (std.mem.indexOfScalarPos(u8, sql, i, '\n') orelse sql.len)
+            else
+                i + 1,
+            '/' => i = if (i + 1 < sql.len and sql[i + 1] == '*')
+                (if (std.mem.indexOfPos(u8, sql, i + 2, "*/")) |end| end + 2 else sql.len)
+            else
+                i + 1,
+            else => {
+                // A bind name (`:limit`, `@limit`, `$limit`) or a number is
+                // read as one word together with its prefix. `:` and `@` only
+                // start a word: in `LIMIT:n` they end the keyword, as SQLite
+                // reads it.
+                if (!isWordByte(c) and c != ':' and c != '@') {
+                    i += 1;
+                    continue;
+                }
+                const start = i;
+                i += 1;
+                while (i < sql.len and isWordByte(sql[i])) i += 1;
+                const word = sql[start..i];
+                if (std.ascii.eqlIgnoreCase(word, "limit") or std.ascii.eqlIgnoreCase(word, "offset")) return true;
+            },
+        }
+    }
+    return false;
+}
+
+/// Bytes that continue a keyword, a name, a number, or a bind name. `$` is
+/// part of a name in SQLite; `:` and `@` are not.
+fn isWordByte(c: u8) bool {
+    return std.ascii.isAlphanumeric(c) or c == '_' or c == '$' or c >= 0x80;
+}
+
+/// Index after the closing quote of the literal or name that starts at
+/// `start`. A doubled quote stays inside; an unclosed one runs to the end.
+fn skipQuoted(sql: []const u8, start: usize, quote: u8) usize {
+    var i = start + 1;
+    while (std.mem.indexOfScalarPos(u8, sql, i, quote)) |end| {
+        if (end + 1 < sql.len and sql[end + 1] == quote) {
+            i = end + 2;
+            continue;
+        }
+        return end + 1;
+    }
+    return sql.len;
+}
+
+/// SQLite accepts double-quoted string literals by default, so a mistyped
+/// identifier such as `CREATE INDEX i ON t("nope")` would prepare as a
+/// constant expression instead of failing. Turns that off for DDL and DML;
+/// false means a setting could not be applied, which callers treat as fatal.
+fn disableDoubleQuotedStrings(conn: *sqlite.sqlite3) bool {
+    return sqlite.sqlite3_db_config(conn, sqlite.SQLITE_DBCONFIG_DQS_DDL, @as(c_int, 0), @as(?*c_int, null)) == sqlite.SQLITE_OK and
+        sqlite.sqlite3_db_config(conn, sqlite.SQLITE_DBCONFIG_DQS_DML, @as(c_int, 0), @as(?*c_int, null)) == sqlite.SQLITE_OK;
+}
+
 fn isSchemaTable(name: ?[*:0]const u8) bool {
     return std.mem.eql(u8, std.mem.span(name orelse return false), "sqlite_master");
 }
@@ -675,11 +958,13 @@ fn authorizer(
     arg3: ?[*:0]const u8,
     arg4: ?[*:0]const u8,
 ) callconv(.c) c_int {
-    _ = arg2;
-    _ = arg4;
     const self: *Db = @ptrCast(@alignCast(user_data orelse return sqlite.SQLITE_DENY));
     self.record(action_code);
-    return if (self.allows(action_code, arg1, arg3)) sqlite.SQLITE_OK else sqlite.SQLITE_DENY;
+    if (!self.allows(action_code, arg1, arg3)) return sqlite.SQLITE_DENY;
+    // Never `SQLITE_IGNORE`: it would turn a function into NULL and change
+    // the result instead of reporting it.
+    if (self.mode == .user_select) self.noteClues(action_code, arg1, arg2, arg4);
+    return sqlite.SQLITE_OK;
 }
 
 /// Progress callback installed around `sqlite3_step`. A non-zero return makes
@@ -1264,7 +1549,7 @@ test "stepping a select that SQLite re-prepares keeps working" {
 
     var cancel = std.atomic.Value(bool).init(false);
     var control = StepControl.init(testing.io, 0, &cancel);
-    try testing.expectEqual(@as(u64, 1), try db.stepAll(statement, &control));
+    try testing.expectEqual(@as(u64, 1), try db.stepAll(statement, &control, null));
     try testing.expectEqual(Mode.internal, db.mode);
 }
 
@@ -1290,7 +1575,7 @@ test "time limit interrupts a heavy select (timeout)" {
 
     var cancel = std.atomic.Value(bool).init(false);
     var control = StepControl.init(testing.io, 1, &cancel);
-    try testing.expectError(error.Timeout, db.stepAll(statement, &control));
+    try testing.expectError(error.Timeout, db.stepAll(statement, &control, null));
     try testing.expectEqual(InterruptReason.timeout, control.reason.?);
 
     // The progress handler must be uninstalled when `stepAll` returns, because
@@ -1318,7 +1603,7 @@ test "a heavy select inside the time limit finishes (positive control)" {
 
     var cancel = std.atomic.Value(bool).init(false);
     var control = StepControl.init(testing.io, 60_000, &cancel);
-    try testing.expectEqual(@as(u64, 1), try db.stepAll(statement, &control));
+    try testing.expectEqual(@as(u64, 1), try db.stepAll(statement, &control, null));
     try testing.expect(control.reason == null);
 }
 
@@ -1334,7 +1619,7 @@ test "cancel flag interrupts a heavy select (signal)" {
 
     var cancel = std.atomic.Value(bool).init(true);
     var control = StepControl.init(testing.io, 0, &cancel);
-    try testing.expectError(error.Interrupted, db.stepAll(statement, &control));
+    try testing.expectError(error.Interrupted, db.stepAll(statement, &control, null));
     try testing.expectEqual(InterruptReason.signal, control.reason.?);
     try testing.expectEqual(Mode.internal, db.mode);
 }
@@ -1354,7 +1639,7 @@ test "source db bytes are unchanged and no journal files appear" {
 
     var cancel = std.atomic.Value(bool).init(false);
     var control = StepControl.init(testing.io, 0, &cancel);
-    try testing.expectEqual(@as(u64, 1), try db.stepAll(statement, &control));
+    try testing.expectEqual(@as(u64, 1), try db.stepAll(statement, &control, null));
     // `sqlite3_close` refuses to close while a statement is open, so the
     // finalize-before-close order is part of the D-105 contract.
     _ = sqlite.sqlite3_finalize(statement);
@@ -1398,7 +1683,7 @@ fn runCounters(db: *Db, sql: [:0]const u8, binds: []const BindArg) !Counters {
     defer _ = sqlite.sqlite3_finalize(statement);
     var cancel = std.atomic.Value(bool).init(false);
     var control = StepControl.init(testing.io, 0, &cancel);
-    _ = try db.stepAll(statement, &control);
+    _ = try db.stepAll(statement, &control, null);
     return statementCounters(statement);
 }
 
@@ -1600,7 +1885,7 @@ test "explaining does not change the execution counters" {
         }
         var cancel = std.atomic.Value(bool).init(false);
         var control = StepControl.init(testing.io, 0, &cancel);
-        _ = try db.stepAll(reused, &control);
+        _ = try db.stepAll(reused, &control, null);
         const counters = statementCounters(reused);
         try testing.expectEqual(plain.fullscan_steps, counters.fullscan_steps);
         try testing.expect(counters.vm_steps > plain.vm_steps);
@@ -1612,7 +1897,7 @@ test "explaining does not change the execution counters" {
     defer plan.deinit(testing.allocator);
     var cancel = std.atomic.Value(bool).init(false);
     var control = StepControl.init(testing.io, 0, &cancel);
-    _ = try db.stepAll(statement, &control);
+    _ = try db.stepAll(statement, &control, null);
 
     try testing.expect(plan.rows.len > 0);
     try testing.expectEqual(plain, statementCounters(statement));
@@ -1778,4 +2063,355 @@ test "busy source is reported" {
     try testing.expect(detail.text().len > 0);
     // The destination connection was closed, so the file can be removed.
     try fixture.tmp.dir.deleteFile(testing.io, "baseline.db");
+}
+
+test "applyCreateIndex creates the index and the variant opens read-only afterwards" {
+    var fixture = try Fixture.init(testing.allocator);
+    defer fixture.deinit();
+
+    var cancel = std.atomic.Value(bool).init(false);
+    var control = StepControl.init(testing.io, 0, &cancel);
+    var detail: SnapshotDetail = .{};
+    try applyCreateIndex(fixture.path, "CREATE INDEX idx_new ON t(b)", &control, &detail);
+
+    var db: Db = .{};
+    try db.openReadOnly(fixture.path);
+    defer db.close() catch unreachable;
+    const plan = try db.explainPlan(testing.allocator, "SELECT a FROM t WHERE b = ?1", &.{
+        .{ .number = 1, .value = .{ .text = "x" } },
+    });
+    defer plan.deinit(testing.allocator);
+    try testing.expect(findRow(plan, "SEARCH t USING INDEX idx_new (b=?)") != null);
+    try testing.expectError(error.FileNotFound, fixture.tmp.dir.openFile(testing.io, "fixture.db-journal", .{}));
+}
+
+test "applyCreateIndex keeps the ddl allowlist" {
+    var fixture = try Fixture.init(testing.allocator);
+    defer fixture.deinit();
+
+    var cancel = std.atomic.Value(bool).init(false);
+    var control = StepControl.init(testing.io, 0, &cancel);
+    var detail: SnapshotDetail = .{};
+    try testing.expectError(error.StatementRejected, applyCreateIndex(fixture.path, "DROP TABLE t", &control, &detail));
+    try testing.expectError(error.MultipleStatements, applyCreateIndex(fixture.path, "CREATE INDEX i1 ON t(b); DROP TABLE t", &control, &detail));
+    // SQLite refuses a temp index on a main table, and a single statement
+    // cannot create a temp table first, so the temp schema is out of reach.
+    try testing.expectError(error.StatementInvalid, applyCreateIndex(fixture.path, "CREATE INDEX temp.i2 ON t(b)", &control, &detail));
+    // An existing name with IF NOT EXISTS never reports a CREATE INDEX.
+    try testing.expectError(error.StatementNotCreateIndex, applyCreateIndex(fixture.path, "CREATE INDEX IF NOT EXISTS existing_idx ON t(b)", &control, &detail));
+
+    var db: Db = .{};
+    try db.openReadOnly(fixture.path);
+    defer db.close() catch unreachable;
+    try testing.expectEqual(@as(i64, 3), try queryInt(&db, "SELECT count(*) FROM t"));
+}
+
+test "applyCreateIndex rejects a unique index on duplicate rows" {
+    var fixture = try Fixture.initWithSchema(testing.allocator,
+        \\CREATE TABLE t(a INTEGER, b TEXT);
+        \\INSERT INTO t VALUES (1, 'x'), (1, 'y');
+    );
+    defer fixture.deinit();
+
+    var cancel = std.atomic.Value(bool).init(false);
+    var control = StepControl.init(testing.io, 0, &cancel);
+    var detail: SnapshotDetail = .{};
+    try testing.expectError(error.ApplyFailed, applyCreateIndex(fixture.path, "CREATE UNIQUE INDEX u_a ON t(a)", &control, &detail));
+    try testing.expect(std.mem.indexOf(u8, detail.text(), "UNIQUE constraint failed") != null);
+
+    // The failed build left nothing behind.
+    var db: Db = .{};
+    try db.openReadOnly(fixture.path);
+    defer db.close() catch unreachable;
+    try testing.expectEqual(@as(i64, 0), try queryInt(&db, "SELECT count(*) FROM sqlite_master WHERE name = 'u_a'"));
+}
+
+test "applyCreateIndex is interrupted by the cancel flag and by the time limit" {
+    var fixture = try Fixture.initWithSchema(testing.allocator,
+        \\CREATE TABLE t(a INTEGER, b TEXT);
+        \\WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 300000)
+        \\INSERT INTO t SELECT x, 'v' || x FROM c;
+    );
+    defer fixture.deinit();
+    var detail: SnapshotDetail = .{};
+
+    var cancel = std.atomic.Value(bool).init(true);
+    var signalled = StepControl.init(testing.io, 0, &cancel);
+    try testing.expectError(error.Interrupted, applyCreateIndex(fixture.path, "CREATE INDEX idx_b ON t(b)", &signalled, &detail));
+    try testing.expectEqual(InterruptReason.signal, signalled.reason.?);
+
+    cancel.store(false, .monotonic);
+    var limited = StepControl.init(testing.io, 1, &cancel);
+    try testing.expectError(error.Timeout, applyCreateIndex(fixture.path, "CREATE INDEX idx_b ON t(b)", &limited, &detail));
+    try testing.expectEqual(InterruptReason.timeout, limited.reason.?);
+
+    // Both builds were rolled back, so the same index can still be created.
+    var unlimited = StepControl.init(testing.io, 0, &cancel);
+    try applyCreateIndex(fixture.path, "CREATE INDEX idx_b ON t(b)", &unlimited, &detail);
+}
+
+test "the candidate index name is kept for the INDEXED BY message" {
+    var fixture = try Fixture.init(testing.allocator);
+    defer fixture.deinit();
+    var db: Db = .{};
+    try db.openReadOnly(fixture.path);
+    defer db.close() catch unreachable;
+
+    try db.checkCreateIndex("CREATE INDEX \"Idx New\" ON t(b)");
+    try testing.expectEqualStrings("Idx New", db.candidateIndexName().?);
+    try testing.expectError(error.StatementInvalid, db.checkCreateIndex("CREATE INDEX existing_idx ON t(b)"));
+}
+
+/// Schema for the clue tests: a table, views that call functions or read the
+/// schema, and a view without any table.
+const clue_schema: [:0]const u8 =
+    \\CREATE TABLE t(a INTEGER, b TEXT);
+    \\INSERT INTO t VALUES (1, 'x'), (2, 'y');
+    \\CREATE VIEW v AS SELECT random() AS r, a FROM t;
+    \\CREATE VIEW v2 AS SELECT a FROM v;
+    \\CREATE VIEW vs AS SELECT name FROM sqlite_master;
+    \\CREATE VIEW k AS SELECT 1 AS one;
+    \\CREATE VIEW vl AS SELECT a FROM t LIMIT 1;
+    \\CREATE INDEX idx_a ON t(a);
+    \\ANALYZE;
+;
+
+/// Test-only helper: the clues of one accepted SELECT.
+fn cluesOf(db: *Db, sql: [:0]const u8) !Clues {
+    const statement = try db.prepareSelect(sql);
+    _ = sqlite.sqlite3_finalize(statement);
+    return db.clues;
+}
+
+test "authorizer records nondeterministic functions without denying" {
+    var fixture = try Fixture.initWithSchema(testing.allocator, clue_schema);
+    defer fixture.deinit();
+    var db: Db = .{};
+    try db.openReadOnly(fixture.path);
+    defer db.close() catch unreachable;
+
+    const cases = [_]struct { sql: [:0]const u8, name: []const u8 }{
+        .{ .sql = "SELECT RANDOM()", .name = "random" },
+        .{ .sql = "SELECT a FROM t WHERE a > abs(random())", .name = "random" },
+        .{ .sql = "SELECT a FROM t ORDER BY randomblob(1)", .name = "randomblob" },
+        .{ .sql = "SELECT (SELECT changes()) FROM t", .name = "changes" },
+        .{ .sql = "WITH c AS (SELECT total_changes() AS n) SELECT n FROM c", .name = "total_changes" },
+        .{ .sql = "SELECT a FROM v2", .name = "random" },
+        // The view column with the function is not even read.
+        .{ .sql = "SELECT count(*) FROM v", .name = "random" },
+    };
+    for (cases) |case| {
+        const clues = try cluesOf(&db, case.sql);
+        try testing.expectEqualStrings(case.name, clues.nondeterministic_function.?);
+        try testing.expect(clues.alwaysIncomparable());
+    }
+}
+
+test "date and time functions are recorded as mismatch-only" {
+    var fixture = try Fixture.initWithSchema(testing.allocator, clue_schema);
+    defer fixture.deinit();
+    var db: Db = .{};
+    try db.openReadOnly(fixture.path);
+    defer db.close() catch unreachable;
+
+    const cases = [_]struct { sql: [:0]const u8, name: []const u8 }{
+        // The keyword form and the call without an argument read the clock.
+        .{ .sql = "SELECT current_timestamp", .name = "current_timestamp" },
+        .{ .sql = "SELECT DATE()", .name = "date" },
+        .{ .sql = "WITH c AS (SELECT datetime('now') AS d) SELECT d FROM c", .name = "datetime" },
+        // A date of a column does not, but the name alone cannot tell.
+        .{ .sql = "SELECT a FROM t WHERE date(b) IS NULL", .name = "date" },
+        .{ .sql = "SELECT strftime('%Y', b) FROM t GROUP BY 1", .name = "strftime" },
+    };
+    for (cases) |case| {
+        const clues = try cluesOf(&db, case.sql);
+        try testing.expectEqualStrings(case.name, clues.time_function.?);
+        try testing.expect(!clues.alwaysIncomparable());
+    }
+}
+
+test "order-dependent aggregates and window functions are recorded as mismatch-only" {
+    var fixture = try Fixture.initWithSchema(testing.allocator, clue_schema);
+    defer fixture.deinit();
+    var db: Db = .{};
+    try db.openReadOnly(fixture.path);
+    defer db.close() catch unreachable;
+
+    const cases = [_]struct { sql: [:0]const u8, name: []const u8 }{
+        .{ .sql = "SELECT SUM(a) FROM t", .name = "sum" },
+        .{ .sql = "SELECT sum(a) OVER () FROM t", .name = "sum" },
+        .{ .sql = "SELECT group_concat(b ORDER BY b) FROM t", .name = "group_concat" },
+        .{ .sql = "SELECT string_agg(b, ',') FROM t", .name = "string_agg" },
+        .{ .sql = "SELECT row_number() OVER (ORDER BY a) FROM t", .name = "row_number" },
+        .{ .sql = "SELECT json_group_array(a) FROM t", .name = "json_group_array" },
+    };
+    for (cases) |case| {
+        const clues = try cluesOf(&db, case.sql);
+        try testing.expectEqualStrings(case.name, clues.order_dependent_function.?);
+        try testing.expect(!clues.alwaysIncomparable());
+    }
+}
+
+test "count, rank, min, max, and count filter are not recorded" {
+    var fixture = try Fixture.initWithSchema(testing.allocator, clue_schema);
+    defer fixture.deinit();
+    var db: Db = .{};
+    try db.openReadOnly(fixture.path);
+    defer db.close() catch unreachable;
+
+    const plain = [_][:0]const u8{
+        "SELECT count(*) FROM t",
+        "SELECT count(*) FILTER (WHERE a > 1) FROM t",
+        "SELECT min(a), max(b) FROM t",
+        "SELECT rank() OVER (ORDER BY a) FROM t",
+        "SELECT lower(b), abs(a), length(b) FROM t WHERE b LIKE 'x%'",
+        "SELECT a FROM t",
+    };
+    for (plain) |sql| {
+        const clues = try cluesOf(&db, sql);
+        try testing.expectEqual(Clues{}, clues);
+    }
+}
+
+test "reading schema tables is recorded" {
+    var fixture = try Fixture.initWithSchema(testing.allocator, clue_schema);
+    defer fixture.deinit();
+    var db: Db = .{};
+    try db.openReadOnly(fixture.path);
+    defer db.close() catch unreachable;
+
+    const cases = [_]struct { sql: [:0]const u8, name: []const u8 }{
+        .{ .sql = "SELECT count(*) FROM sqlite_master", .name = "sqlite_master" },
+        // Without a column read the name comes as the user spelled it.
+        .{ .sql = "SELECT 1 FROM SQLITE_Schema", .name = "sqlite_schema" },
+        // A column read reports the canonical name.
+        .{ .sql = "SELECT name FROM main.sqlite_schema", .name = "sqlite_master" },
+        .{ .sql = "SELECT name FROM temp.sqlite_schema", .name = "sqlite_temp_master" },
+        .{ .sql = "SELECT name FROM vs", .name = "sqlite_master" },
+        .{ .sql = "SELECT * FROM SQLITE_STAT1", .name = "sqlite_stat*" },
+    };
+    for (cases) |case| {
+        const clues = try cluesOf(&db, case.sql);
+        try testing.expectEqualStrings(case.name, clues.schema_table.?);
+        try testing.expect(clues.alwaysIncomparable());
+    }
+}
+
+test "view and cte reads are recorded" {
+    var fixture = try Fixture.initWithSchema(testing.allocator, clue_schema);
+    defer fixture.deinit();
+    var db: Db = .{};
+    try db.openReadOnly(fixture.path);
+    defer db.close() catch unreachable;
+
+    const through = [_][:0]const u8{
+        "SELECT * FROM vl",
+        "SELECT count(*) FROM vl",
+        "SELECT * FROM k",
+        "SELECT a FROM v2",
+        "SELECT 1 WHERE EXISTS (SELECT 1 FROM vl)",
+        "WITH c AS (SELECT a FROM t) SELECT a FROM c",
+    };
+    for (through) |sql| {
+        try testing.expect((try cluesOf(&db, sql)).view_or_cte);
+    }
+    try testing.expect(!(try cluesOf(&db, "SELECT a FROM t WHERE a IN (SELECT a FROM t)")).view_or_cte);
+}
+
+test "the clues survive a re-prepare during step" {
+    // `LIKE` with a bound value makes SQLite re-prepare on the first step.
+    var fixture = try Fixture.initWithSchema(testing.allocator,
+        \\CREATE TABLE t(a INTEGER, b TEXT);
+        \\INSERT INTO t VALUES (1, 'x'), (2, 'y');
+        \\CREATE INDEX idx_b ON t(b);
+    );
+    defer fixture.deinit();
+    var db: Db = .{};
+    try db.openReadOnly(fixture.path);
+    defer db.close() catch unreachable;
+
+    const statement = try prepareBoundSelect(&db, "SELECT sum(a) FROM t WHERE b LIKE ?1", &.{
+        .{ .number = 1, .value = .{ .text = "x%" } },
+    });
+    defer _ = sqlite.sqlite3_finalize(statement);
+    var cancel = std.atomic.Value(bool).init(false);
+    var control = StepControl.init(testing.io, 0, &cancel);
+    _ = try db.stepAll(statement, &control, null);
+    try testing.expectEqualStrings("sum", db.clues.order_dependent_function.?);
+}
+
+test "function lists match the vendored function list" {
+    // Every built-in function without the deterministic flag must be known
+    // to change between runs or known to be safe, and every aggregate or
+    // window function must be order-dependent or known not to be. A new
+    // release that adds a function fails here until it is classified.
+    const deterministic_flag = 0x800;
+    // The same binary answers the same on both copies.
+    const known_safe_scalars = [_][]const u8{ "sqlite_version", "sqlite_source_id", "sqlite_compileoption_used", "sqlite_compileoption_get" };
+    const known_safe_aggregates = [_][]const u8{
+        "count", "min", "max", "rank", "dense_rank", "percent_rank", "cume_dist",
+    };
+
+    var handle: ?*sqlite.sqlite3 = null;
+    defer _ = sqlite.sqlite3_close(handle);
+    try testing.expectEqual(sqlite.SQLITE_OK, sqlite.sqlite3_open_v2(":memory:", &handle, sqlite.SQLITE_OPEN_READWRITE, null));
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    try testing.expectEqual(sqlite.SQLITE_OK, sqlite.sqlite3_prepare_v2(handle, "SELECT DISTINCT name, type, flags FROM pragma_function_list WHERE builtin = 1", -1, &statement, null));
+    defer _ = sqlite.sqlite3_finalize(statement);
+
+    var unclassified: usize = 0;
+    var seen_listed: usize = 0;
+    while (sqlite.sqlite3_step(statement) == sqlite.SQLITE_ROW) {
+        const name = std.mem.span(sqlite.sqlite3_column_text(statement, 0).?);
+        const kind = std.mem.span(sqlite.sqlite3_column_text(statement, 1).?);
+        const flags = sqlite.sqlite3_column_int64(statement, 2);
+        const lists = [_][]const []const u8{ &nondeterministic_functions, &order_dependent_functions, &time_functions };
+        var hits: usize = 0;
+        for (lists) |list| {
+            if (findName(list, name) != null) hits += 1;
+        }
+        // A name belongs to one list only.
+        try testing.expect(hits <= 1);
+        const listed = hits == 1;
+        if (listed) seen_listed += 1;
+        const known = listed or (if (std.mem.eql(u8, kind, "s"))
+            flags & deterministic_flag != 0 or findName(&known_safe_scalars, name) != null
+        else
+            findName(&known_safe_aggregates, name) != null);
+        if (!known) {
+            std.debug.print("unclassified built-in function: {s} (type {s}, flags 0x{x})\n", .{ name, kind, flags });
+            unclassified += 1;
+        }
+    }
+    try testing.expectEqual(@as(usize, 0), unclassified);
+    // Every listed name exists in the build (no typo in the lists).
+    try testing.expectEqual(nondeterministic_functions.len + order_dependent_functions.len + time_functions.len, seen_listed);
+}
+
+test "limit scan skips strings, comments, quoted identifiers, and bind names" {
+    const without = [_][]const u8{
+        "SELECT 'LIMIT 1' FROM t",
+        "SELECT 'it''s LIMIT' FROM t",
+        "SELECT a FROM t -- LIMIT 1",
+        "SELECT a FROM t /* LIMIT 1 */",
+        "SELECT \"limit\" FROM t",
+        "SELECT [limit] FROM t",
+        "SELECT `offset` FROM t",
+        "SELECT a FROM t WHERE a = :limit OR a = @offset OR a = $limit",
+        "SELECT limited, offsets FROM t",
+        "SELECT a FROM t /* unclosed LIMIT",
+    };
+    for (without) |sql| try testing.expect(!mentionsLimitOrOffset(sql));
+
+    const with = [_][]const u8{
+        "SELECT a FROM t LIMIT 1",
+        "select a from t limit 1 offset 2",
+        "SELECT a FROM t WHERE a IN (SELECT a FROM t LIMIT 2)",
+        "SELECT offset FROM t",
+        "SELECT a FROM t\nLIMIT\t1",
+        "SELECT 'x' FROM t LIMIT(1)",
+        "SELECT a FROM t LIMIT:n",
+        "SELECT a FROM t LIMIT 1 OFFSET@o",
+    };
+    for (with) |sql| try testing.expect(mentionsLimitOrOffset(sql));
 }

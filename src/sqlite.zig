@@ -119,6 +119,21 @@ pub extern fn sqlite3_column_int64(stmt: ?*sqlite3_stmt, column: c_int) i64;
 pub extern fn sqlite3_column_double(stmt: ?*sqlite3_stmt, column: c_int) f64;
 pub extern fn sqlite3_column_text(stmt: ?*sqlite3_stmt, column: c_int) ?[*:0]const u8;
 pub extern fn sqlite3_column_count(stmt: ?*sqlite3_stmt) c_int;
+/// Storage class of a result column. Read it before `sqlite3_column_text` or
+/// `sqlite3_column_blob`, which may convert the value and change the answer.
+pub extern fn sqlite3_column_type(stmt: ?*sqlite3_stmt, column: c_int) c_int;
+/// Byte length of the value that the last `sqlite3_column_text` or
+/// `sqlite3_column_blob` call on the column returned.
+pub extern fn sqlite3_column_bytes(stmt: ?*sqlite3_stmt, column: c_int) c_int;
+/// Null for an empty blob as well as for NULL.
+pub extern fn sqlite3_column_blob(stmt: ?*sqlite3_stmt, column: c_int) ?*const anyopaque;
+
+// Storage classes returned by `sqlite3_column_type` (`sqlite3.h`).
+pub const SQLITE_INTEGER = 1;
+pub const SQLITE_FLOAT = 2;
+pub const SQLITE_TEXT = 3;
+pub const SQLITE_BLOB = 4;
+pub const SQLITE_NULL = 5;
 
 /// Switches `stmt` between a normal statement (`eMode = 0`), `EXPLAIN` (1) and
 /// `EXPLAIN QUERY PLAN` (2). Switching a normally prepared statement to 2

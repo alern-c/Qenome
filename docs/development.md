@@ -62,7 +62,7 @@ zig build run -- --db <DB> --select <SELECTファイル> --index-sql <候補DDL�
 
 実行の前後で `testdata/generated/qenome-fixture.db` のSHA-256は `ddca8dd288e9a1fee22e441e51064362c19a9d2646bd990f940b700c7bf87d39` のまま変わらず、`testdata/generated` に `-journal` / `-wal` / `-shm` は残らなかった。
 
-未確認：時間上限はSELECTの実行中だけ効き、prepare段階は対象外。WAL構成のDBの読み取りは工程4で扱う。Windowsは未対応（シグナル処理がPOSIXのみ）。
+未確認：時間上限はSELECTの実行中だけ効き、prepare段階は対象外（工程5から索引作成にも効く。「工程5の索引適用と結果比較」）。WAL構成のDBの読み取りは工程4で扱う。Windowsは未対応（シグナル処理がPOSIXのみ）。
 
 ### 工程3の計画表示と実行確認（2026-10-11、Zig 0.17.0・同梱SQLite 3.51.2）
 
@@ -114,11 +114,13 @@ zig build run -- --db <DB> --select <SELECTファイル> --index-sql <候補DDL�
 | 124 | 時間上限 |
 | 129 / 130 / 143 | SIGHUP / SIGINT / SIGTERM で中断した。stderrにシグナル名を出す。続けて別のシグナルを受けても、最初に受けたものを採る |
 
+工程5で0の意味を「結果が一致した」に変え、3・4を足した（「工程5の索引適用と結果比較」の終了コード表）。
+
 #### 利用条件と制約
 
 - **WALのDBの付属ファイル**：読み取り専用で開いても、SQLiteは元DBの横に `-shm` と `-wal` を作る（すでにある場合も、`-shm` の中身は書き換わりうる）。本体ファイルの中身は変えない。「元DBを変更しない」は、本体の中身を変えないことを指す（D-001）。
 - **外部writerがいる場合**：WALのDBなら、外部writerを止めずにcopy開始時点のsnapshotを取れる。ただしcopyの間は、外部側のcheckpointがcopy開始時点より先へ進めない（`-wal` が大きくなり、RESTART/TRUNCATE checkpointは待たされるか、BUSYになる）。通常方式（rollback journal）のDBでは、copyの間ずっと外部writerのコミットを待たせる（相手に待ち時間の設定がなければ、相手側が `SQLITE_BUSY` になる）（D-002）。
-- **中断のタイミング**：copy（`backup_step(-1)`）は途中で止められない。SIGINT・SIGTERM・SIGHUP はcopyが終わった時点で反映し、後片付けをしてから終了する。時間上限はSELECTの実行中だけに効き、copyには効かない。SQLの誤りも、copyが終わった後で見つかる。
+- **中断のタイミング**：copy（`backup_step(-1)`）は途中で止められない。SIGINT・SIGTERM・SIGHUP はcopyが終わった時点で反映し、後片付けをしてから終了する。時間上限はcopyには効かない（SELECTの実行と、工程5からは索引作成に効く）。SQLの誤りも、copyが終わった後で見つかる。
 - **強制終了**：`kill -9` や、猶予の後にSIGKILLを送る仕組み（docker・systemdなど）で止めると、一時フォルダが残る（大きなDBではcopyが猶予より長くかかりうる）。中身は元DBのコピーなので、`$TMPDIR/qenome-*` を手で消す。自動の掃除はしない。
 - **一時領域**：元DBの約2倍の空き容量が必要。`$TMPDIR` がメモリ上（Linuxのtmpfsなど）にあると、ディスクI/Oが実DBと違うので、時間の前提が崩れる。工程6では測定先のファイルシステムも記録する候補にする。
 - **hot journal**：通常方式のDBに、クラッシュしたwriterのhot journalが残っている場合、読み取り専用では元に戻せないので終了コード1になる。
@@ -149,6 +151,116 @@ WALのDBは、fixtureのコピーをWALにして確認した（Python の sqlite
 一時フォルダの削除失敗は、独立した実行確認で `chflags uchg` により baseline.db を削除不能にして再現した。終了コード5で、stdoutには通常の結果が出て、stderrに `the temporary directory '…' could not be removed: PermissionDenied` と残ったパスが出た。
 
 未確認：hot journal が残る通常方式のDBで終了コード1になる分岐（読み取り専用では戻せない hot journal を安定して作れなかった）。Linux（tmpfs、`copy_file_range`）。
+
+### 工程5の索引適用と結果比較（2026-10-12、Zig 0.17.0・同梱SQLite 3.51.2）
+
+工程5から、候補索引を variant だけに作り、同じSELECTとバインドを baseline と variant の両方で実行して、計画・カウンタ・結果を並べる。結果は行の多重集合として比べ、一致・不一致・比較不能のどれかを終了コードとstdoutで示す。
+
+処理の順番は次のとおり。
+
+1. 工程4のとおり、一時フォルダに baseline と variant を作る。
+2. baseline を読み取り専用で開き、SELECTの検査・バインド・候補CREATE INDEXの検査を行う（工程2のまま）。このとき authorizer が、SELECTが呼ぶ関数名・読む表・ビュー / WITH句経由かを記録する（拒否はしない）。
+3. variant だけを読み書きで開いて候補索引を作る。同じ DDL 許可リストで prepare と実行を行い、終わったら閉じる。読み書きで開くのはこの接続だけで、SELECTを実行する接続はすべて読み取り専用のまま。
+4. baseline で計画を読んでSELECTを実行し、行を集める。続いて variant を読み取り専用で開き、同じことをする。
+5. 行を比べ、結果を決めてから、stdoutに1回だけ書く。どの終わり方でも接続を閉じて一時フォルダを消す（工程4のまま）。
+
+索引作成を先に行うのは、UNIQUE索引が重複行で失敗する場合などを、重いSELECTの前に見つけるため。
+
+#### 行の比べ方
+
+- 各行を「型＋値」に直して比べる。INTEGER・REAL・TEXT・BLOB・NULLを区別するので、`1`・`1.0`・`'1'` は別の値、NULLと `''` と `x''` も別の値。REALはビット単位で比べる（`0.0` と `-0.0` も別）。同じ行の数（重複）も比べる。
+- 並び順は無視する（行の多重集合）。ORDER BY があっても同じ。並びが同じだったかは `row-order:` に参考として出すだけで、結果には影響しない。ORDER BY の正しさは確かめない。
+- 保持する行は baseline と variant の合計で 64MiB まで（正規化した値のバイト数と、行ごとの管理分）。数えるのは保持するデータの量で、配列の伸び方により実際のメモリはおよそ1.5倍まで上回りうる。超えた場合やメモリが足りない場合は比較不能にする。
+
+#### 比較不能にする条件
+
+比較不能のときは、理由（`incomparable-reason:`）ごとに、次に試すこと（`incomparable-hint:`）を1行ずつ対で出す（列数違いとメモリ不足はヒントなし）。
+
+| 条件 | 扱い | 理由（例） | ヒント（要旨） |
+| --- | --- | --- | --- |
+| 実行のたびに値が変わる関数：`random`、`randomblob`、`changes`、`last_insert_rowid`、`total_changes` | 常に比較不能。行を集めず比べない（計画とカウンタは出す） | `the SELECT calls random(), whose result changes between runs` | その関数を外したSELECTで比べる |
+| スキーマを表す表：`sqlite_schema`、`sqlite_master`、`sqlite_temp_schema`、`sqlite_temp_master`、`sqlite_stat*` | 常に比較不能（スキーマ表は候補索引で中身が変わる。`sqlite_stat*` は ANALYZE しない限り変わらないが、安全側として含める） | `the SELECT reads sqlite_master, which describes the database itself` | 対象外 |
+| 行の保持が 64MiB を超えた | 常に比較不能 | `the result rows exceed the 64 MiB kept for the comparison` | WHERE で行を絞る（LIMIT は使わない） |
+| メモリが足りない、列の数が違う | 常に比較不能 | `out of memory while keeping the result rows` など | なし |
+| 日付・時刻の関数：`date`、`time`、`datetime`、`julianday`、`unixepoch`、`strftime`、`timediff`、`current_date`、`current_time`、`current_timestamp`（`'now'` や引数なしで現在時刻を読みうる） | 一致なら一致。不一致なら比較不能（片側だけの行の件数と例も出す） | `the rows differ, and the SELECT calls date(), which can read the current time ...` | 現在時刻を読むなら、時刻をバインド値で固定する |
+| 読む順で結果が変わりうる集約・ウィンドウ関数：`sum`、`avg`、`total`、`group_concat`、`string_agg`、`json_group_array`、`json_group_object`、`jsonb_group_array`、`jsonb_group_object`、`row_number`、`ntile`、`first_value`、`last_value`、`nth_value`、`lag`、`lead` | 同上 | `the rows differ, and the SELECT calls sum(), ...` | `sum` / `avg` / `total` は末尾の桁の違いか片側だけの行で確かめる。連結は関数の中に ORDER BY、ウィンドウは OVER の ORDER BY を一意な列で終える |
+| SQLの文字列に LIMIT か OFFSET がある（文字列リテラル・コメント・引用した名前・バインド名は除く） | 同上 | `the rows differ, and the SELECT has LIMIT or OFFSET, ...` | LIMIT の箇所の ORDER BY を NOT NULL で一意な列で終えるか、LIMIT / OFFSET を外す。変えたSELECTの計画に候補索引が出るか確かめる |
+| ビューか WITH句（CTE）を通して読む | 同上 | `the rows differ, and the SELECT reads through a view or a WITH clause, ...` | ビューやWITH句の中身のSELECTを直接比べる |
+
+ヒントに従ってSELECTを変えると、元とは別のSELECTになる。比べたい候補索引が変えたSELECTでも使われているかを、`plan:` の行で確かめてから結果を読む。
+
+関数名は、同梱SQLiteの組み込み関数一覧（`pragma_function_list`）とテストで突き合わせている。SQLiteの版を上げて関数が増えると、分類するまでテストが失敗する。
+
+`INDEXED BY` で候補索引の名前を指定したSELECTは、候補索引のない baseline では prepare できないので、入力の拒否（終了コード1）にする。stderrに「SELECT（参照するビューを含む）が INDEXED BY で候補索引を指定しているが、baseline にはその索引がない」と出す。
+
+#### 制限（不一致と出うるもの）
+
+次は名前では見つけられないので、答えが正しくても「不一致（3）」と出ることがある。不一致の文言は「索引が結果を壊した」と断定しない（`the cause is not determined`）。
+
+- GROUP BY の対象外の列（どの行の値が出るか決まっていない）
+- 等しいとみなされる別の値のうち、どれが代表として返るか（`min` / `max`、DISTINCT・GROUP BY・UNION のキー。NOCASE の大文字小文字、`1` と `1.0`、`0.0` と `-0.0` など）
+- ROWS で範囲を決める窓で使う集約関数（`count(*) OVER (ORDER BY a ROWS ...)` など）
+- スカラーサブクエリが複数行のうち先頭の1行だけを使う場合
+
+反対に、比べられるのに比較不能になるものもある（安全側）。`changes()` は読み取り専用の接続では両側0でも比較不能、ビューの使わない列にある関数も検出される、列名 `offset` も LIMIT/OFFSET と見なす。
+
+日付・時刻の関数（D-512）には次の性質がある。`'now'` を使うSELECTは、2回の実行の間に時刻が進むと結果が変わるので、同じSELECTでも実行ごとに0と4が入れ替わりうる（`date('now')` は日の境目、`datetime('now')` は秒の境目をまたいだときだけ、`julianday('now')` や `strftime('%f', 'now')` はほぼ毎回4）。また、日付・時刻の関数を使うSELECTでは、本当の不一致も3ではなく4になる。終了コードで判断するスクリプトでは、時刻をバインド値で固定する。
+
+#### 終了コード
+
+| 終了コード | 意味 |
+| --- | --- |
+| 0 | 受け付けて両方で実行し、結果が一致した（行の多重集合） |
+| 1 | 入力の拒否（工程4の一覧に加え、索引作成の失敗、variant 側の失敗、INDEXED BY で候補索引を指定したSELECT） |
+| 2 | 引数を使えない |
+| 3 | 受け付けて両方で実行し、結果が違った |
+| 4 | 受け付けて両方で実行したが、結果を比べられない |
+| 5 | 0になるはずだった実行の後片付けに失敗した。1/3/4/124/129/130/143 のときは元のコードを保つ。どの場合も残ったパスをstderrに出す |
+| 124 | 時間上限（索引作成、baseline のSELECT、variant のSELECT のどこか。stderrにどこかを出す） |
+| 129 / 130 / 143 | SIGHUP / SIGINT / SIGTERM で中断した |
+
+1・124・129/130/143 では stdout は空。3・4 でも stdout に要約を出す。要約を書けなかったときは1。
+
+時間上限（`--timeout-ms`、既定30秒）は、索引作成・baseline のSELECT・variant のSELECT のそれぞれに、同じ値を別々にかける。copy は止められないので、最悪の待ち時間は copy＋上限の3倍。索引作成と SELECT の上限を別々には指定できない。索引作成の中断は、外部ソートの書き出しや fsync の間は効かず、止まるまで遅れることがある。
+
+#### stdoutの形式
+
+入力（`db:`・`select:`・`index-sql:`）を1回出し、baseline の段落（`measured-on: baseline (candidate index not applied)` から。工程3・4と同じ文字列）と variant の段落（`measured-on: variant (candidate index applied)`、`rows:`・`plan:`・カウンタ）を順に出す。キーが段落ごとに繰り返されるので、行の順番で読む。最後に比較結果を出す。
+
+| キー | 内容 |
+| --- | --- |
+| `result:` | `match (row multiset)` / `mismatch (row multiset; the cause is not determined)` / `incomparable` |
+| `incomparable-reason:` | 比較不能の理由。複数あれば1行ずつ |
+| `incomparable-hint:` | 直前の理由に対して次に試すこと（ないときは出さない） |
+| `baseline-only-rows:` / `variant-only-rows:` | 片側にしかない行の件数（行を比べて違ったときだけ） |
+| `baseline-only-row:` / `variant-only-row:` | その例を最大5件ずつ。`[値, 値, ...]` の1行 |
+| `row-order:` | 一致のときだけ `same` / `differs`（参考）。それ以外は `not applicable` |
+
+例の値の書き方：INTEGERは10進、REALは元の値に戻せる最短の指数形式（`1e0`、`-0e0`）、TEXTは `'...'` で `\\`・`\'`・`\n`・`\r`・`\t`・`\xNN`（ASCIIの制御文字と不正なUTF-8）・`\uXXXX`（C1制御文字、行・段落区切り、双方向の上書き）をエスケープ、BLOBは `x'...'`、NULLは `NULL`。TEXTとBLOBは200バイトで切り、`...(N bytes)` を添える。DBの中身が端末を操作したり、行を分けたりしないようにするため。
+
+不一致のときは **DBの行の内容が最大5行×2 stdoutに出る**。stdoutをCIのログなどに残す使い方では、個人情報を含むDBに注意する。
+
+#### 実行確認
+
+[testdata/README.md](../testdata/README.md) の手順で作ったfixture（SHA-256 `ddca8dd2…`）と実バイナリで、`TMPDIR` を作業用の空フォルダにして確認した。各実行の後、そのフォルダは空で、fixtureのSHA-256は変わらなかった。
+
+| 実行 | 終了コード | 出力 |
+| --- | --- | --- |
+| 改善する例（`--bind 1:int:1234`） | 0 | baseline `SCAN events`・fullscan 199,999・vm 600,407、variant `SEARCH events USING INDEX ix_events_customer_id (customer_id=?)`・fullscan 0・vm 710、rows 100 / 100、`result: match`、`row-order: same` |
+| 効果のない例（`--bind 1:text:ok`） | 0 | 両方 `SCAN events`・199,999・933,339、rows 66,666 / 66,666、`result: match` |
+| `SELECT id, random() FROM events WHERE customer_id = ?` | 4 | 両方の計画（variant は SEARCH）と `the SELECT calls random(), ...`、ヒント `compare the SELECT without random()` |
+| `SELECT name FROM sqlite_schema` | 4 | rows 1 / 2（variant には候補索引の行が増える）と `the SELECT reads sqlite_master, which describes the database itself` |
+| `SELECT id FROM events WHERE customer_id > ? LIMIT 3`（`1:int:1990`） | 4 | baseline と variant で別の3行。`the rows differ, and the SELECT has LIMIT or OFFSET, ...` |
+| 改善する例＋`--timeout-ms 1` | 124 | stdout 0バイト、stderr `error: --index-sql exceeded the time limit of 1 ms` |
+| 重いSELECT中に SIGINT | 130 | stdout 0バイト |
+| 70行×1MiBの BLOB を返すSELECT | 4 | 両方の段落と `the result rows exceed the 64 MiB kept for the comparison` |
+| 日付の列を持つ5,000行のDBで `WHERE date(created_at) = ?` と式索引 `ON orders(date(created_at))` | 0 | variant `SEARCH orders USING INDEX ix_d (<expr>=?)`、`result: match` |
+| 同じDBで `WHERE created_at > datetime('now', '-400 days')` | 0 | 2回の実行の間で結果が同じだった |
+| 同じDBで `SELECT id, julianday('now') ...` | 4 | `the rows differ, and the SELECT calls julianday(), ...` とヒント `bind a fixed time instead` |
+
+独立した実行時評価では、ほかに GROUP BY の対象外の列で3、UNIQUE索引の重複で1、INDEXED BY の3通り（大小違い・引用符・別の索引名）で1、索引作成中の SIGINT で130、SELECT中の SIGTERM / SIGHUP で143 / 129、WAL構成のDBで0を確認した。
+
+未確認：Linux（tmpfs）。索引作成の中断が止まるまでの遅れ（大きなDB）。不一致の例の表示で、U+200E/U+200F・ゼロ幅文字など見た目を偽れる文字はエスケープしていない。
 
 ## 次の開発の進め方
 
