@@ -7,7 +7,10 @@
 //! `variant`. The candidate index is built on the variant only, and the SELECT
 //! runs on both copies. The summary shows, per copy, the row count, the query
 //! plan, and the execution counters, then whether the result rows are the
-//! same. The temporary directory is removed on every return path.
+//! same. Same rows are then timed again on both copies in alternating rounds,
+//! and the times, the database sizes, and a verdict that never changes the
+//! exit code are added. The temporary directory is removed on every return
+//! path.
 //!
 //! Every outcome is a process exit code:
 //!
@@ -66,6 +69,14 @@ pub fn readSqlFile(io: Io, allocator: std.mem.Allocator, path: []const u8) (SqlF
 
 /// Default value of `--timeout-ms`.
 pub const default_timeout_ms: u64 = 30_000;
+
+/// Timed rounds per run unless `--runs` says otherwise. One round times the
+/// SELECT once on each copy.
+pub const default_runs: u32 = 10;
+
+/// Most rounds `--runs` accepts, so that the samples and the wait stay
+/// bounded.
+pub const max_runs: u32 = 1000;
 
 /// Process exit codes. The numbers are part of the CLI contract.
 pub const ExitCode = enum(u8) {
@@ -144,6 +155,10 @@ pub const Args = struct {
     /// Time limit for the index build and for each SELECT run; `0` disables
     /// it.
     timeout_ms: u64 = default_timeout_ms,
+    /// Timed rounds after the result comparison; `0` skips the timing.
+    runs: u32 = default_runs,
+    /// Print the bind values in the summary instead of their types only.
+    show_binds: bool = false,
     help: bool = false,
 };
 
@@ -158,6 +173,8 @@ pub const ParseError = error{
     InvalidBindFormat,
     /// `--timeout-ms` is not a non-negative decimal integer.
     InvalidTimeout,
+    /// `--runs` is not a decimal integer in `0..max_runs`.
+    InvalidRuns,
     OutOfMemory,
 };
 
@@ -188,6 +205,12 @@ pub fn parseArgs(allocator: std.mem.Allocator, argv: []const [:0]const u8) Parse
         } else if (std.mem.eql(u8, arg, "--timeout-ms")) {
             const raw = try nextValue(argv, &index);
             args.timeout_ms = std.fmt.parseUnsigned(u64, raw, 10) catch return error.InvalidTimeout;
+        } else if (std.mem.eql(u8, arg, "--show-binds")) {
+            args.show_binds = true;
+        } else if (std.mem.eql(u8, arg, "--runs")) {
+            const raw = try nextValue(argv, &index);
+            args.runs = std.fmt.parseUnsigned(u32, raw, 10) catch return error.InvalidRuns;
+            if (args.runs > max_runs) return error.InvalidRuns;
         } else if (arg.len != 0 and arg[0] == '-') {
             return error.UnknownOption;
         } else {
@@ -257,7 +280,11 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\the variant only, and the database itself is never changed. The
         \\SELECT runs on both copies; for each, the row count, the query plan,
         \\and the execution counters are reported, followed by whether the
-        \\result rows match. The directory is removed before exit.
+        \\result rows match. When they match, the SELECT is timed again on
+        \\both copies in alternating rounds, and the times, the database
+        \\sizes, and a verdict (improved, no-effect, needs-check) are
+        \\reported; the verdict never changes the exit status. The directory
+        \\is removed before exit.
         \\Plan labels (kind, covering, automatic) are hints read from SQLite's
         \\wording; the detail text after them is what SQLite reported.
         \\
@@ -271,7 +298,15 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\                       value); every number in 1..parameter count must
         \\                       be given exactly once
         \\  --timeout-ms <MS>    time limit for the index build and for each SELECT
-        \\                       run, 0 disables it (default 30000)
+        \\                       run, 0 disables it (default 30000); a run can
+        \\                       wait up to the copy plus (3 + 2 x runs) limits
+        \\  --runs <N>           timed rounds after a match, each timing the SELECT
+        \\                       once per copy; 0 skips the timing (default 10,
+        \\                       at most 1000); a timing that takes longer
+        \\                       than a second reports its progress on stderr
+        \\  --show-binds         print the bind values in the summary; by default
+        \\                       only their numbers, types and text lengths are
+        \\                       printed, so that the values stay out of logs
         \\  --help, -h           print this message and exit with status 0
         \\
         \\exit status: 0 result rows match, 1 rejected, 2 usage error,
@@ -354,6 +389,9 @@ pub fn run(
             .index_sql = index_sql,
             .binds = args.binds,
             .timeout_ms = args.timeout_ms,
+            .runs = args.runs,
+            .work_parent = parent_path,
+            .show_binds = args.show_binds,
         };
         break :blk runChecked(io, arena, allocator, inputs, stdout, stderr, &cleanup_failed);
     };
@@ -492,6 +530,14 @@ const Inputs = struct {
     index_sql: [:0]const u8,
     binds: []const db.BindArg,
     timeout_ms: u64,
+    runs: u32,
+    /// Where the temporary directory was made, for the measurement
+    /// conditions.
+    work_parent: []const u8,
+    show_binds: bool = false,
+    /// Least time between two progress lines of the timing (D-603). Tests
+    /// set it to 0 to see every line.
+    progress_interval_ns: u64 = std.time.ns_per_s,
 };
 
 /// D-105=案1: after a run that would have exited 0 a cleanup failure is
@@ -665,10 +711,32 @@ fn runChecked(
         .limit_or_offset = db.mentionsLimitOrOffset(inputs.select_sql),
     });
 
+    // Times are only worth reading for the same rows (D-601), and the first
+    // run of each copy above was the warm-up.
+    var report: TimeReport = .{ .judgement = .{ .verdict = .not_judged } };
+    if (outcome.verdict == .mismatch) {
+        report.judgement.add("the result rows do not match, so the SELECT is not timed");
+    } else if (outcome.verdict == .incomparable) {
+        report.judgement.add("the result rows cannot be compared, so the SELECT is not timed");
+    } else if (inputs.runs == 0) {
+        report.judgement.add("--runs 0 skips the timing");
+    } else {
+        const timing = timeRuns(io, arena, .{ .database = &baseline, .statement = statement }, .{ .database = &variant, .statement = variant_statement }, inputs, &control, stderr, &failure) orelse return failure;
+        report.timing = timing.summary();
+        report.judgement = judgeTime(before, after, report.timing.?);
+    }
+    report.sizes = .{
+        .baseline = fileSize(io, inputs.baseline_path, .baseline, stderr) orelse return .rejected,
+        .variant = fileSize(io, inputs.variant_path, .variant, stderr) orelse return .rejected,
+    };
+
+    // The timed runs end on the same checks as the first ones.
+    if (signalPending()) return reportInterrupted(stderr);
+
     // The summary is the result of the run, so a failed write is a rejection,
-    // whatever the comparison said. It is written only here, after both runs,
+    // whatever the comparison said. It is written only here, after every run,
     // so a rejection, timeout, or interruption leaves stdout empty.
-    writeSummary(stdout, inputs, before, after, outcome) catch {
+    writeSummary(stdout, inputs, before, after, outcome, report) catch {
         stderr.print("error: the summary could not be written\n", .{}) catch {};
         return .rejected;
     };
@@ -703,17 +771,7 @@ fn measure(
     };
 
     const rows = database.stepAll(statement, control, rows_out) catch |err| {
-        failure.* = switch (err) {
-            error.Timeout => blk: {
-                stderr.print("error: --select exceeded the time limit of {d} ms on the {t}\n", .{ inputs.timeout_ms, side }) catch {};
-                break :blk .timeout;
-            },
-            error.Interrupted => reportInterrupted(stderr),
-            error.StepFailed => blk: {
-                stderr.print("error: --select failed while running on the {t}: {s}\n", .{ side, database.message() }) catch {};
-                break :blk .rejected;
-            },
-        };
+        failure.* = reportStepFailure(err, database, inputs, side, null, stderr);
         return null;
     };
     return .{
@@ -722,6 +780,286 @@ fn measure(
         .counters = db.statementCounters(statement),
         .columns = sqlite.sqlite3_column_count(statement),
     };
+}
+
+/// Reports a SELECT run that did not reach its end and returns its exit code.
+/// `timed_run` numbers a timed run from 1; null is the first, untimed run.
+fn reportStepFailure(err: db.StepError, database: *db.Db, inputs: Inputs, side: Side, timed_run: ?usize, stderr: *Io.Writer) ExitCode {
+    var buffer: [32]u8 = undefined;
+    const run_name = if (timed_run) |number| std.fmt.bufPrint(&buffer, " (timed run {d})", .{number}) catch "" else "";
+    switch (err) {
+        error.Timeout => {
+            stderr.print("error: --select exceeded the time limit of {d} ms on the {t}{s}\n", .{ inputs.timeout_ms, side, run_name }) catch {};
+            return .timeout;
+        },
+        error.Interrupted => return reportInterrupted(stderr),
+        error.StepFailed => {
+            stderr.print("error: --select failed while running on the {t}{s}: {s}\n", .{ side, run_name, database.message() }) catch {};
+            return .rejected;
+        },
+    }
+}
+
+/// One copy's connection and its bound SELECT, ready to run again.
+const Copy = struct {
+    database: *db.Db,
+    statement: *sqlite.sqlite3_stmt,
+};
+
+/// The timed runs of both copies in nanoseconds, by round.
+const Timing = struct {
+    baseline: []u64,
+    variant: []u64,
+
+    /// Counts the rounds the variant won, then sorts the samples for the
+    /// quantiles, so the round order is gone afterwards.
+    fn summary(self: Timing) TimeSummary {
+        var faster: usize = 0;
+        for (self.baseline, self.variant) |baseline, variant| {
+            if (variant < baseline) faster += 1;
+        }
+        return .{
+            .baseline = summarize(self.baseline),
+            .variant = summarize(self.variant),
+            .rounds = self.baseline.len,
+            .variant_faster_rounds = faster,
+        };
+    }
+};
+
+/// Times the SELECT `inputs.runs` times on each copy (D-601). A round runs
+/// each copy once; even rounds start with the baseline and odd rounds with the
+/// variant (ABBA), so a steady drift of the machine falls on both copies.
+///
+/// A run is `sqlite3_step` from the reset statement to SQLITE_DONE without
+/// reading the columns, so it includes the progress checks of `stepAll` but
+/// not prepare, bind, or the plan read. The binds survive the reset. The
+/// statement counters are cumulative, so the ones of the first run stay the
+/// reported ones. Each run gets the full time limit, and a signal is checked
+/// between runs too, because a short run never reaches a progress check.
+///
+/// A round that ends at least `progress_interval_ns` after the last progress
+/// line writes the next one to stderr and flushes it, outside the timed part
+/// (D-603). A stderr that cannot take it gets no further progress lines.
+/// Returns null after reporting a failure, with its exit code in `failure`.
+fn timeRuns(
+    io: Io,
+    arena: std.mem.Allocator,
+    baseline: Copy,
+    variant: Copy,
+    inputs: Inputs,
+    control: *db.StepControl,
+    stderr: *Io.Writer,
+    failure: *ExitCode,
+) ?Timing {
+    const timing: Timing = .{
+        .baseline = arena.alloc(u64, inputs.runs) catch return outOfMemory(stderr, failure),
+        .variant = arena.alloc(u64, inputs.runs) catch return outOfMemory(stderr, failure),
+    };
+    var last_progress = Io.Clock.now(.awake, io).nanoseconds;
+    var progress_works = true;
+    for (0..inputs.runs) |round| {
+        const order: [2]Side = if (round % 2 == 0) .{ .baseline, .variant } else .{ .variant, .baseline };
+        for (order) |side| {
+            if (signalPending()) {
+                failure.* = reportInterrupted(stderr);
+                return null;
+            }
+            const copy = if (side == .baseline) baseline else variant;
+            // The result of the reset is the one of the previous run, which
+            // was already checked.
+            _ = sqlite.sqlite3_reset(copy.statement);
+            const start = Io.Clock.now(.awake, io).nanoseconds;
+            _ = copy.database.stepAll(copy.statement, control, null) catch |err| {
+                failure.* = reportStepFailure(err, copy.database, inputs, side, round + 1, stderr);
+                return null;
+            };
+            const elapsed: u64 = @intCast(Io.Clock.now(.awake, io).nanoseconds - start);
+            if (side == .baseline) timing.baseline[round] = elapsed else timing.variant[round] = elapsed;
+        }
+        const now = Io.Clock.now(.awake, io).nanoseconds;
+        if (progress_works and now - last_progress >= inputs.progress_interval_ns) {
+            last_progress = now;
+            stderr.print("progress: timed round {d} of {d} done\n", .{ round + 1, inputs.runs }) catch {
+                progress_works = false;
+            };
+            if (progress_works) stderr.flush() catch {
+                progress_works = false;
+            };
+        }
+    }
+    return timing;
+}
+
+fn outOfMemory(stderr: *Io.Writer, failure: *ExitCode) ?Timing {
+    stderr.writeAll("error: out of memory\n") catch {};
+    failure.* = .rejected;
+    return null;
+}
+
+/// The size of a closed-to-writes copy, or null after reporting why it could
+/// not be read.
+fn fileSize(io: Io, path: [:0]const u8, side: Side, stderr: *Io.Writer) ?u64 {
+    const stat = Io.Dir.cwd().statFile(io, path, .{}) catch |err| {
+        stderr.print("error: cannot read the size of the {t} '{s}': {s}\n", .{ side, path, @errorName(err) }) catch {};
+        return null;
+    };
+    return stat.size;
+}
+
+/// Representative value and spread of one copy's timed runs, in nanoseconds.
+const Stats = struct {
+    median: u64,
+    p25: u64,
+    p75: u64,
+    min: u64,
+    max: u64,
+};
+
+/// Sorts `samples` in place and reads the quantiles by linear interpolation
+/// between the closest ranks (position q x (n - 1), Hyndman-Fan type 7), so an
+/// even count gets the mean of its two middle samples as the median.
+fn summarize(samples: []u64) Stats {
+    std.debug.assert(samples.len != 0);
+    std.mem.sort(u64, samples, {}, std.sort.asc(u64));
+    return .{
+        .median = quantile(samples, 0.5),
+        .p25 = quantile(samples, 0.25),
+        .p75 = quantile(samples, 0.75),
+        .min = samples[0],
+        .max = samples[samples.len - 1],
+    };
+}
+
+fn quantile(sorted: []const u64, q: f64) u64 {
+    const position = q * @as(f64, @floatFromInt(sorted.len - 1));
+    const low: usize = @intFromFloat(@floor(position));
+    const high = @min(low + 1, sorted.len - 1);
+    const low_value: f64 = @floatFromInt(sorted[low]);
+    const high_value: f64 = @floatFromInt(sorted[high]);
+    return @intFromFloat(@round(low_value + (high_value - low_value) * (position - @floor(position))));
+}
+
+const TimeSummary = struct {
+    baseline: Stats,
+    variant: Stats,
+    rounds: usize,
+    variant_faster_rounds: usize,
+};
+
+const Sizes = struct {
+    baseline: u64 = 0,
+    variant: u64 = 0,
+};
+
+/// What the timing adds to the summary.
+const TimeReport = struct {
+    /// Null when the SELECT was not timed.
+    timing: ?TimeSummary = null,
+    sizes: Sizes = .{},
+    judgement: Judgement,
+};
+
+/// How far apart two medians may be and still count as the same time:
+/// testdata/README.md's measurement noise band (D-602).
+const noise_band_percent = 20;
+
+const TimeVerdict = enum {
+    improved,
+    no_effect,
+    needs_check,
+    not_judged,
+
+    fn text(self: TimeVerdict) []const u8 {
+        return switch (self) {
+            .improved => "improved",
+            .no_effect => "no-effect",
+            .needs_check => "needs-check",
+            .not_judged => "not-judged",
+        };
+    }
+};
+
+const Judgement = struct {
+    verdict: TimeVerdict,
+    reasons: [max_reasons][]const u8 = undefined,
+    reason_count: usize = 0,
+
+    const max_reasons = 3;
+
+    fn add(self: *Judgement, reason: []const u8) void {
+        if (self.reason_count == max_reasons) return;
+        self.reasons[self.reason_count] = reason;
+        self.reason_count += 1;
+    }
+};
+
+/// Judges the times together with the plans and counters (D-602), so that
+/// time alone never makes a success:
+///
+/// * improved: no counter grew, the VM steps went down, the variant median is
+///   below the noise band under the baseline median, and the variant won
+///   every round.
+/// * no-effect: the plans and all counters are the same, and the medians
+///   are within the noise band of the baseline median.
+/// * needs-check: anything else, with the reasons.
+fn judgeTime(before: Measurement, after: Measurement, times: TimeSummary) Judgement {
+    var judgement: Judgement = .{ .verdict = .needs_check };
+    const baseline = times.baseline.median;
+    const variant = times.variant.median;
+    if (baseline == 0) {
+        judgement.add("the baseline median is 0 ns, so the times cannot be compared");
+        return judgement;
+    }
+    const b = before.counters;
+    const a = after.counters;
+    const same_work = std.meta.eql(b, a) and samePlan(before.plan, after.plan);
+    const less_work = a.vm_steps < b.vm_steps and a.fullscan_steps <= b.fullscan_steps and
+        a.sort_ops <= b.sort_ops and a.autoindex_rows <= b.autoindex_rows;
+    const difference = if (variant > baseline) variant - baseline else baseline - variant;
+    const within_band = @as(u128, difference) * 100 <= @as(u128, baseline) * noise_band_percent;
+
+    if (same_work) {
+        if (within_band) {
+            judgement.verdict = .no_effect;
+        } else {
+            judgement.add(std.fmt.comptimePrint("the plans and counters are the same, but the medians differ by more than {d}%", .{noise_band_percent}));
+        }
+        return judgement;
+    }
+    if (!less_work) {
+        judgement.add("the plan or the counters changed, but not to fewer VM steps without any other counter growing");
+        return judgement;
+    }
+    if (variant >= baseline or within_band) {
+        judgement.add(std.fmt.comptimePrint("the variant runs fewer VM steps, but its median is not more than {d}% below the baseline median", .{noise_band_percent}));
+    }
+    if (times.variant_faster_rounds != times.rounds) {
+        judgement.add("the variant runs fewer VM steps, but it was not faster in every round");
+    }
+    if (judgement.reason_count == 0) judgement.verdict = .improved;
+    return judgement;
+}
+
+/// Two plans are the same when their lines say the same and hang under the
+/// same lines. The ids themselves are positions in the VM program, which can
+/// move without the plan changing, so a parent is compared by its line.
+fn samePlan(before: db.Plan, after: db.Plan) bool {
+    if (before.rows.len != after.rows.len) return false;
+    for (before.rows, after.rows) |b, a| {
+        if (!std.mem.eql(u8, b.detail, a.detail)) return false;
+        if (parentLine(before, b.parent) != parentLine(after, a.parent)) return false;
+    }
+    return true;
+}
+
+/// The line number of the plan line with id `parent`, or null at the top
+/// level.
+fn parentLine(plan: db.Plan, parent: i64) ?usize {
+    for (plan.rows, 0..) |row, line| {
+        if (row.id == parent) return line;
+    }
+    return null;
 }
 
 const over_budget_reason = std.fmt.comptimePrint(
@@ -841,6 +1179,7 @@ fn writeSummary(
     before: Measurement,
     after: Measurement,
     outcome: Outcome,
+    report: TimeReport,
 ) Io.Writer.Error!void {
     try stdout.print("db: {s}\nselect: {s}\nindex-sql: {s}\nmeasured-on: baseline (candidate index not applied)\nrows: {d}\n", .{
         inputs.database_path, inputs.select_path, inputs.index_path, before.rows,
@@ -884,6 +1223,94 @@ fn writeSummary(
     else
         "differs (reference only; rows may change order without ORDER BY or among equal ORDER BY keys, and ORDER BY itself is not checked)";
     try stdout.print("row-order: {s}\n", .{order});
+    try writeTimeReport(stdout, inputs, report);
+}
+
+/// Writes the measurement after the comparison (D-601, D-602): the binds and
+/// the conditions, the versions, the times, the sizes, then the verdict. The
+/// lines come after `row-order`, so the blocks above keep their shape.
+fn writeTimeReport(stdout: *Io.Writer, inputs: Inputs, report: TimeReport) Io.Writer.Error!void {
+    if (inputs.binds.len == 0) try stdout.writeAll("bind: none\n");
+    for (inputs.binds) |bind| {
+        try stdout.print("bind: {d}:", .{bind.number});
+        // The values may be someone's data, and the summary may end up in a
+        // log, so only the shape is printed unless asked for (D-605).
+        if (!inputs.show_binds) {
+            switch (bind.value) {
+                .text => |value| try stdout.print("text ({d} bytes)\n", .{value.len}),
+                else => |value| try stdout.print("{t}\n", .{value}),
+            }
+            continue;
+        }
+        switch (bind.value) {
+            .int => |value| try stdout.print("int:{d}", .{value}),
+            .real => |value| try stdout.print("real:{e}", .{value}),
+            .text => |value| {
+                try stdout.writeAll("text:");
+                try result_rows.writeText(stdout, value);
+            },
+            .null => try stdout.writeAll("null"),
+        }
+        try stdout.writeByte('\n');
+    }
+    const rounds = if (report.timing) |timing| timing.rounds else 0;
+    try stdout.print(
+        \\measure-runs: {d} per copy
+        \\measure-warmup: 1 per copy (the run whose rows were compared, not timed)
+        \\measure-order: rounds alternate baseline-variant and variant-baseline (ABBA)
+        \\measure-scope: sqlite3_step from the reset statement to SQLITE_DONE with the interrupt checks; columns are not read; prepare, bind, and the plan read are not timed
+        \\measure-cache: warm; each copy reuses its connection and page cache, and its file was just written
+        \\work-dir-parent: {s}
+        \\zig: {s}
+        \\build-mode: {t}
+        \\os-arch: {t}-{t}
+        \\
+    , .{ rounds, inputs.work_parent, builtin.zig_version_string, builtin.mode, builtin.os.tag, builtin.cpu.arch });
+    if (report.timing) |timing| {
+        try writeStats(stdout, "time-baseline-ns", timing.baseline);
+        try writeStats(stdout, "time-variant-ns", timing.variant);
+        if (timing.baseline.median == 0) {
+            try stdout.writeAll("time-ratio: n/a (the baseline median is 0)\n");
+        } else {
+            const ratio = @as(f64, @floatFromInt(timing.variant.median)) / @as(f64, @floatFromInt(timing.baseline.median));
+            try stdout.print("time-ratio: {d:.3} (variant median / baseline median)\n", .{ratio});
+        }
+        try stdout.print("variant-faster-rounds: {d}/{d}\n", .{ timing.variant_faster_rounds, timing.rounds });
+    }
+    const sizes = report.sizes;
+    try stdout.print(
+        \\db-bytes-baseline: {d} (the snapshot file)
+        \\db-bytes-variant: {d} (the snapshot file with the candidate index)
+        \\db-bytes-increase: {d} (the whole database file, not the index alone)
+        \\time-verdict: {s}
+        \\
+    , .{ sizes.baseline, sizes.variant, @as(i128, sizes.variant) - @as(i128, sizes.baseline), report.judgement.verdict.text() });
+    for (report.judgement.reasons[0..report.judgement.reason_count]) |reason| {
+        try stdout.print("time-verdict-reason: {s}\n", .{reason});
+    }
+}
+
+fn writeStats(stdout: *Io.Writer, key: []const u8, stats: Stats) Io.Writer.Error!void {
+    try stdout.print("{s}: median={d} p25={d} p75={d} min={d} max={d} (median ", .{ key, stats.median, stats.p25, stats.p75, stats.min, stats.max });
+    try writeDuration(stdout, stats.median);
+    try stdout.writeAll(")\n");
+}
+
+/// Writes `ns` in the largest of ns, us, ms and s that keeps it under 1000
+/// after rounding to two decimals, so 999999 ns is `1.00 ms`, not
+/// `1000.00 us` (D-603). The units are ASCII.
+fn writeDuration(writer: *Io.Writer, ns: u64) Io.Writer.Error!void {
+    if (ns < 1000) return writer.print("{d} ns", .{ns});
+    const units = [_]struct { name: []const u8, ns: f64 }{
+        .{ .name = "us", .ns = 1e3 },
+        .{ .name = "ms", .ns = 1e6 },
+    };
+    const value: f64 = @floatFromInt(ns);
+    for (units) |unit| {
+        const hundredths = @round(value / unit.ns * 100);
+        if (hundredths < 100_000) return writer.print("{d:.2} {s}", .{ hundredths / 100, unit.name });
+    }
+    return writer.print("{d:.2} s", .{value / 1e9});
 }
 
 fn writePlanAndCounters(stdout: *Io.Writer, measurement: Measurement) Io.Writer.Error!void {
@@ -962,6 +1389,7 @@ fn parseErrorMessage(err: ParseError) []const u8 {
         error.UnexpectedArgument => "unexpected argument (see --help)",
         error.InvalidBindFormat => "--bind expects <N>:<TYPE>[:<VALUE>] with TYPE int, real, text or null",
         error.InvalidTimeout => "--timeout-ms expects a non-negative integer",
+        error.InvalidRuns => std.fmt.comptimePrint("--runs expects an integer from 0 to {d}", .{max_runs}),
         error.OutOfMemory => "out of memory",
     };
 }
@@ -1138,7 +1566,7 @@ const CliFixture = struct {
     /// Runs the CLI on this fixture with `extra` arguments after the required
     /// ones.
     fn run(self: *CliFixture, extra: []const [:0]const u8, stdout_buffer: []u8, stderr_buffer: []u8) RunResult {
-        var argv: [16][:0]const u8 = undefined;
+        var argv: [24][:0]const u8 = undefined;
         const required = [_][:0]const u8{ "Qenome", "--db", self.db_path, "--select", self.select_path, "--index-sql", self.index_path };
         @memcpy(argv[0..required.len], &required);
         @memcpy(argv[required.len..][0..extra.len], extra);
@@ -1265,6 +1693,25 @@ test "bind parsing keeps colons and types" {
     try testing.expectEqual(@as(u64, 0), args.timeout_ms);
 }
 
+test "runs parsing accepts 0 to 1000 and rejects the rest" {
+    for ([_][:0]const u8{ "0", "1", "1000" }) |raw| {
+        const args = try parseArgs(testing.allocator, &.{ "Qenome", "--runs", raw });
+        defer testing.allocator.free(args.binds);
+        try testing.expectEqual(try std.fmt.parseUnsigned(u32, raw, 10), args.runs);
+    }
+    for ([_][:0]const u8{ "1001", "-1", "x", "", "4294967296" }) |raw| {
+        var stdout_buffer: [512]u8 = undefined;
+        var stderr_buffer: [512]u8 = undefined;
+        const result = callRun(testing.allocator, &.{ "Qenome", "--runs", raw }, null, &stdout_buffer, &stderr_buffer);
+        try testing.expectEqual(ExitCode.usage, result.code);
+        try testing.expectEqualStrings("", result.stdout);
+        try testing.expectEqualStrings("error: --runs expects an integer from 0 to 1000\n", result.stderr);
+    }
+    const args = try parseArgs(testing.allocator, &.{"Qenome"});
+    defer testing.allocator.free(args.binds);
+    try testing.expectEqual(default_runs, args.runs);
+}
+
 test "timeout defaults to 30000" {
     const args = try parseArgs(testing.allocator, &.{"Qenome"});
     defer testing.allocator.free(args.binds);
@@ -1274,7 +1721,7 @@ test "timeout defaults to 30000" {
 test "help exits 0" {
     const options = [_][:0]const u8{ "--help", "-h" };
     for (options) |option| {
-        var stdout_buffer: [2048]u8 = undefined;
+        var stdout_buffer: [4096]u8 = undefined;
         var stderr_buffer: [512]u8 = undefined;
         const result = callRun(testing.allocator, &.{ "Qenome", option }, null, &stdout_buffer, &stderr_buffer);
         try testing.expectEqual(ExitCode.ok, result.code);
@@ -1624,6 +2071,8 @@ test "a timeout on the variant names the variant and is not a comparison" {
         .index_sql = "",
         .binds = &.{},
         .timeout_ms = 1,
+        .runs = 0,
+        .work_parent = "",
     };
     try testing.expectEqual(@as(?Measurement, null), measure(arena_state.allocator(), &database, statement, inputs, &control, &rows, .variant, &stderr, &failure));
     try testing.expectEqual(ExitCode.timeout, failure);
@@ -2034,4 +2483,358 @@ test "a run on a wal database counts rows that are still in the wal" {
     try testing.expectEqualStrings("", result.stderr);
     try testing.expect(std.mem.indexOf(u8, result.stdout, "rows: 3\n") != null);
     try fixture.expectNoLeftovers();
+}
+
+test "summarize gives the median and quartiles for odd and even counts" {
+    var odd = [_]u64{ 50, 10, 40, 20, 30 };
+    try testing.expectEqual(Stats{ .median = 30, .p25 = 20, .p75 = 40, .min = 10, .max = 50 }, summarize(&odd));
+    // Positions 0.75, 1.5 and 2.25 fall between ranks.
+    var even = [_]u64{ 40, 10, 30, 20 };
+    try testing.expectEqual(Stats{ .median = 25, .p25 = 18, .p75 = 33, .min = 10, .max = 40 }, summarize(&even));
+}
+
+test "summarize of one sample has no spread" {
+    var one = [_]u64{7};
+    try testing.expectEqual(Stats{ .median = 7, .p25 = 7, .p75 = 7, .min = 7, .max = 7 }, summarize(&one));
+}
+
+const scan_line = [_]db.PlanRow{.{ .id = 2, .parent = 0, .label = .{ .kind = .scan }, .detail = "SCAN t" }};
+const search_line = [_]db.PlanRow{.{ .id = 3, .parent = 0, .label = .{ .kind = .search }, .detail = "SEARCH t USING INDEX idx_a (a=?)" }};
+
+/// A first run with the given plan lines and counters.
+fn testMeasurement(plan: []const db.PlanRow, fullscan_steps: u32, vm_steps: u32) Measurement {
+    return .{
+        .rows = 1,
+        .plan = .{ .rows = @constCast(plan) },
+        .counters = .{ .fullscan_steps = fullscan_steps, .vm_steps = vm_steps, .sort_ops = 0, .autoindex_rows = 0 },
+        .columns = 1,
+    };
+}
+
+/// Times whose medians are `baseline` and `variant`, with the variant faster
+/// in `faster` of 10 rounds.
+fn testTimes(baseline: u64, variant: u64, faster: usize) TimeSummary {
+    return .{
+        .baseline = .{ .median = baseline, .p25 = baseline, .p75 = baseline, .min = baseline, .max = baseline },
+        .variant = .{ .median = variant, .p25 = variant, .p75 = variant, .min = variant, .max = variant },
+        .rounds = 10,
+        .variant_faster_rounds = faster,
+    };
+}
+
+fn expectJudgement(expected: TimeVerdict, reason: ?[]const u8, judgement: Judgement) !void {
+    try testing.expectEqual(expected, judgement.verdict);
+    if (reason) |text| {
+        try testing.expectEqual(@as(usize, 1), judgement.reason_count);
+        try testing.expect(contains(judgement.reasons[0], text));
+    } else {
+        try testing.expectEqual(@as(usize, 0), judgement.reason_count);
+    }
+}
+
+test "judgeTime improved needs fewer steps, a median below the band and every round faster" {
+    const before = testMeasurement(&scan_line, 1000, 5000);
+    const after = testMeasurement(&search_line, 0, 50);
+    try expectJudgement(.improved, null, judgeTime(before, after, testTimes(1000, 799, 10)));
+}
+
+test "judgeTime one slower round is needs-check" {
+    const before = testMeasurement(&scan_line, 1000, 5000);
+    const after = testMeasurement(&search_line, 0, 50);
+    try expectJudgement(.needs_check, "not faster in every round", judgeTime(before, after, testTimes(1000, 100, 9)));
+}
+
+test "judgeTime an improvement inside the noise band is needs-check" {
+    const before = testMeasurement(&scan_line, 1000, 5000);
+    const after = testMeasurement(&search_line, 0, 50);
+    try expectJudgement(.needs_check, "not more than 20% below", judgeTime(before, after, testTimes(1000, 800, 10)));
+}
+
+test "judgeTime the same work within 20 percent is no-effect" {
+    const before = testMeasurement(&scan_line, 1000, 5000);
+    // The plan id is a VM address, so it may move without the plan changing.
+    const moved = [_]db.PlanRow{.{ .id = 7, .parent = 0, .label = .{ .kind = .scan }, .detail = "SCAN t" }};
+    const after = testMeasurement(&moved, 1000, 5000);
+    try expectJudgement(.no_effect, null, judgeTime(before, after, testTimes(1000, 1200, 0)));
+    try expectJudgement(.no_effect, null, judgeTime(before, after, testTimes(1000, 800, 10)));
+}
+
+test "judgeTime the same work beyond 20 percent is needs-check" {
+    const before = testMeasurement(&scan_line, 1000, 5000);
+    const after = testMeasurement(&scan_line, 1000, 5000);
+    try expectJudgement(.needs_check, "differ by more than 20%", judgeTime(before, after, testTimes(1000, 1201, 0)));
+    try expectJudgement(.needs_check, "differ by more than 20%", judgeTime(before, after, testTimes(1000, 799, 10)));
+}
+
+test "judgeTime more work on the variant is needs-check even when it is faster" {
+    const before = testMeasurement(&scan_line, 1000, 5000);
+    const more_scans = testMeasurement(&search_line, 1001, 50);
+    try expectJudgement(.needs_check, "not to fewer VM steps", judgeTime(before, more_scans, testTimes(1000, 10, 10)));
+    const same_steps_other_plan = testMeasurement(&search_line, 1000, 5000);
+    try expectJudgement(.needs_check, "not to fewer VM steps", judgeTime(before, same_steps_other_plan, testTimes(1000, 10, 10)));
+}
+
+test "judgeTime a zero baseline median is needs-check" {
+    const before = testMeasurement(&scan_line, 1000, 5000);
+    const after = testMeasurement(&search_line, 0, 50);
+    try expectJudgement(.needs_check, "median is 0 ns", judgeTime(before, after, testTimes(0, 0, 0)));
+}
+
+/// The value after `key=` on the first line that starts with `line_key: `.
+fn reportValue(stdout: []const u8, line_key: []const u8, key: []const u8) !u64 {
+    const line_start = std.mem.indexOf(u8, stdout, line_key) orelse return error.MissingLine;
+    const line_end = std.mem.indexOfScalarPos(u8, stdout, line_start, '\n') orelse stdout.len;
+    const line = stdout[line_start..line_end];
+    const at = std.mem.indexOf(u8, line, key) orelse return error.MissingKey;
+    const rest = line[at + key.len ..];
+    const end = std.mem.indexOfAny(u8, rest, " /\n") orelse rest.len;
+    return std.fmt.parseUnsigned(u64, rest[0..end], 10);
+}
+
+test "runs 3 prints binds, conditions, versions, times, sizes and the verdict after row-order" {
+    var fixture = try CliFixture.init("SELECT a FROM t WHERE b = ?1", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+
+    var stdout_buffer: [8192]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const result = fixture.run(&.{ "--bind", "1:text:x\n", "--runs", "3" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    const keys = [_][]const u8{
+        "row-order: ",
+        "bind: 1:text (2 bytes)\n",
+        "measure-runs: 3 per copy\n",
+        "measure-warmup: 1 per copy",
+        "measure-order: ",
+        "measure-scope: ",
+        "measure-cache: ",
+        "work-dir-parent: ",
+        "zig: " ++ builtin.zig_version_string ++ "\n",
+        "build-mode: ",
+        "os-arch: ",
+        "time-baseline-ns: median=",
+        "time-variant-ns: median=",
+        "time-ratio: ",
+        "variant-faster-rounds: ",
+        "db-bytes-baseline: ",
+        "db-bytes-variant: ",
+        "db-bytes-increase: ",
+        "time-verdict: ",
+    };
+    var from: usize = 0;
+    for (keys) |key| {
+        const at = std.mem.indexOfPos(u8, result.stdout, from, key) orelse {
+            std.debug.print("missing or out of order: {s}\n", .{key});
+            return error.TestUnexpectedResult;
+        };
+        from = at + key.len;
+    }
+    try testing.expect(contains(result.stdout, fixture.work_parent));
+    for ([_][]const u8{ "time-baseline-ns: ", "time-variant-ns: " }) |line| {
+        const min = try reportValue(result.stdout, line, "min=");
+        const p25 = try reportValue(result.stdout, line, "p25=");
+        const median = try reportValue(result.stdout, line, "median=");
+        const p75 = try reportValue(result.stdout, line, "p75=");
+        const max = try reportValue(result.stdout, line, "max=");
+        try testing.expect(min <= p25 and p25 <= median and median <= p75 and p75 <= max);
+        const line_start = std.mem.indexOf(u8, result.stdout, line).?;
+        const line_end = std.mem.indexOfScalarPos(u8, result.stdout, line_start, '\n').?;
+        const tail = result.stdout[line_start..line_end];
+        try testing.expect(contains(tail, " (median ") and tail[tail.len - 1] == ')');
+    }
+    try testing.expect(try reportValue(result.stdout, "variant-faster-rounds: ", "variant-faster-rounds: ") <= 3);
+    try fixture.expectNoLeftovers();
+}
+
+test "runs 0 skips the timing and keeps exit 0" {
+    var fixture = try CliFixture.init("SELECT a FROM t WHERE a = ?1", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+
+    var stdout_buffer: [8192]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const result = fixture.run(&.{ "--bind", "1:int:1", "--runs", "0" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expect(contains(result.stdout, "bind: 1:int\nmeasure-runs: 0 per copy\n"));
+    try testing.expect(!contains(result.stdout, "time-baseline-ns"));
+    try testing.expect(contains(result.stdout, "time-verdict: not-judged\ntime-verdict-reason: --runs 0 skips the timing\n"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a mismatch is not timed and keeps exit 3" {
+    var fixture = try CliFixture.initWithSchema("SELECT a, b FROM t GROUP BY a", "CREATE INDEX idx_ab ON t(a, b DESC)",
+        \\CREATE TABLE t(a INTEGER, b TEXT);
+        \\INSERT INTO t VALUES (1, 'x'), (1, 'y');
+    );
+    defer fixture.deinit();
+
+    var stdout_buffer: [8192]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const result = fixture.run(&.{}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.mismatch, result.code);
+    try testing.expect(contains(result.stdout, "bind: none\nmeasure-runs: 0 per copy\n"));
+    try testing.expect(!contains(result.stdout, "time-baseline-ns"));
+    try testing.expect(contains(result.stdout, "time-verdict: not-judged\ntime-verdict-reason: the result rows do not match, so the SELECT is not timed\n"));
+}
+
+test "the size increase is the variant size minus the snapshot size" {
+    var fixture = try CliFixture.init("SELECT a FROM t", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+
+    var stdout_buffer: [8192]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const result = fixture.run(&.{ "--runs", "0" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    const baseline = try reportValue(result.stdout, "db-bytes-baseline: ", "db-bytes-baseline: ");
+    const variant = try reportValue(result.stdout, "db-bytes-variant: ", "db-bytes-variant: ");
+    const increase = try reportValue(result.stdout, "db-bytes-increase: ", "db-bytes-increase: ");
+    // The snapshot holds the same pages as the database.
+    const stat = try Io.Dir.cwd().statFile(testing.io, fixture.db_path, .{});
+    try testing.expectEqual(stat.size, baseline);
+    try testing.expect(variant > baseline);
+    try testing.expectEqual(variant - baseline, increase);
+}
+
+/// Opens the fixture database twice, as a stand-in for the two copies, and
+/// times its SELECT.
+/// Returns false after a failure, as `timeRuns` reported it. After the timed
+/// runs, each statement runs once more, and its first column must be
+/// `expected_first` when that is given.
+fn timeFixture(fixture: *CliFixture, timeout_ms: u64, binds: []const db.BindArg, expected_first: ?i64, stderr: *Io.Writer, failure: *ExitCode) !bool {
+    const sql = try readSqlFile(testing.io, testing.allocator, fixture.select_path);
+    defer testing.allocator.free(sql);
+    var baseline: db.Db = .{};
+    try baseline.openReadOnly(fixture.db_path);
+    defer baseline.close() catch unreachable;
+    const baseline_statement = try baseline.prepareSelect(sql);
+    defer _ = sqlite.sqlite3_finalize(baseline_statement);
+    var variant: db.Db = .{};
+    try variant.openReadOnly(fixture.db_path);
+    defer variant.close() catch unreachable;
+    const variant_statement = try variant.prepareSelect(sql);
+    defer _ = sqlite.sqlite3_finalize(variant_statement);
+    try db.bindAll(baseline_statement, binds);
+    try db.bindAll(variant_statement, binds);
+
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    var control = db.StepControl.init(testing.io, timeout_ms, &signal_flag);
+    const inputs: Inputs = .{
+        .database_path = fixture.db_path,
+        .baseline_path = fixture.db_path,
+        .variant_path = fixture.db_path,
+        .select_path = fixture.select_path,
+        .index_path = fixture.index_path,
+        .select_sql = sql,
+        .index_sql = "",
+        .binds = binds,
+        .timeout_ms = timeout_ms,
+        .runs = 2,
+        .work_parent = fixture.work_parent,
+        .progress_interval_ns = 0,
+    };
+    const timing = timeRuns(testing.io, arena_state.allocator(), .{ .database = &baseline, .statement = baseline_statement }, .{ .database = &variant, .statement = variant_statement }, inputs, &control, stderr, failure) orelse return false;
+    // Every run reached SQLITE_DONE, so each took some time.
+    for (timing.baseline, timing.variant) |b, v| try testing.expect(b > 0 and v > 0);
+    if (expected_first) |expected| for ([_]*sqlite.sqlite3_stmt{ baseline_statement, variant_statement }) |statement| {
+        _ = sqlite.sqlite3_reset(statement);
+        try testing.expectEqual(sqlite.SQLITE_ROW, sqlite.sqlite3_step(statement));
+        try testing.expectEqual(expected, sqlite.sqlite3_column_int64(statement, 0));
+    };
+    return true;
+}
+
+test "timed runs keep the binds across the resets" {
+    // Without the bind, `a = NULL` would count 0 rows.
+    var fixture = try CliFixture.init("SELECT count(*) FROM t WHERE a = ?1", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+    var stderr_buffer: [256]u8 = undefined;
+    var stderr = Io.Writer.fixed(&stderr_buffer);
+    var failure: ExitCode = .ok;
+    const binds = [_]db.BindArg{.{ .number = 1, .value = .{ .int = 2 } }};
+    try testing.expect(try timeFixture(&fixture, 0, &binds, 1, &stderr, &failure));
+    // With no interval, every round reports its progress.
+    try testing.expectEqualStrings("progress: timed round 1 of 2 done\nprogress: timed round 2 of 2 done\n", stderr.buffered());
+}
+
+test "a signal before a short timed run stops the timing" {
+    // A short SELECT never reaches a progress check, so the flag is only seen
+    // between runs.
+    var fixture = try CliFixture.init("SELECT count(*) FROM t", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+    signal_flag.store(true, .release);
+    defer clearSignals();
+    var stderr_buffer: [256]u8 = undefined;
+    var stderr = Io.Writer.fixed(&stderr_buffer);
+    var failure: ExitCode = .ok;
+    try testing.expect(!try timeFixture(&fixture, 0, &.{}, null, &stderr, &failure));
+    try testing.expectEqual(ExitCode.interrupted, failure);
+    try testing.expectEqualStrings("error: interrupted by SIGINT\n", stderr.buffered());
+}
+
+test "a timed run over the time limit names the copy and the run" {
+    var fixture = try CliFixture.init(
+        "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 20000000) SELECT count(*) FROM c",
+        "CREATE INDEX idx_a ON t(a)",
+    );
+    defer fixture.deinit();
+    var stderr_buffer: [256]u8 = undefined;
+    var stderr = Io.Writer.fixed(&stderr_buffer);
+    var failure: ExitCode = .ok;
+    try testing.expect(!try timeFixture(&fixture, 1, &.{}, null, &stderr, &failure));
+    try testing.expectEqual(ExitCode.timeout, failure);
+    try testing.expectEqualStrings("error: --select exceeded the time limit of 1 ms on the baseline (timed run 1)\n", stderr.buffered());
+}
+
+test "an incomparable select is not timed and keeps exit 4" {
+    var fixture = try CliFixture.init("SELECT a, random() FROM t", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+
+    var stdout_buffer: [8192]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const result = fixture.run(&.{}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.incomparable, result.code);
+    try testing.expect(contains(result.stdout, "measure-runs: 0 per copy\n"));
+    try testing.expect(!contains(result.stdout, "time-baseline-ns"));
+    try testing.expect(contains(result.stdout, "time-verdict: not-judged\ntime-verdict-reason: the result rows cannot be compared, so the SELECT is not timed\n"));
+}
+
+test "binds show only their shape unless --show-binds is given" {
+    var fixture = try CliFixture.init("SELECT a FROM t WHERE a = ?1 AND b <> ?2 AND ?3 IS NULL AND ?4 < 9", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+    const binds = [_][:0]const u8{ "--bind", "1:int:1", "--bind", "2:text:secret", "--bind", "3:null", "--bind", "4:real:1.5", "--runs", "0" };
+
+    var stdout_buffer: [8192]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const hidden = fixture.run(&binds, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, hidden.code);
+    try testing.expect(contains(hidden.stdout, "bind: 1:int\nbind: 2:text (6 bytes)\nbind: 3:null\nbind: 4:real\n"));
+    try testing.expect(!contains(hidden.stdout, "secret"));
+    try testing.expect(!contains(hidden.stdout, "1.5"));
+
+    var shown_stdout_buffer: [8192]u8 = undefined;
+    var shown_stderr_buffer: [1024]u8 = undefined;
+    const shown = fixture.run(&(binds ++ [_][:0]const u8{"--show-binds"}), &shown_stdout_buffer, &shown_stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, shown.code);
+    try testing.expect(contains(shown.stdout, "bind: 1:int:1\nbind: 2:text:'secret'\nbind: 3:null\nbind: 4:real:1.5e0\n"));
+}
+
+test "a duration keeps under 1000 of its unit after rounding" {
+    const cases = [_]struct { ns: u64, text: []const u8 }{
+        .{ .ns = 0, .text = "0 ns" },
+        .{ .ns = 999, .text = "999 ns" },
+        .{ .ns = 1000, .text = "1.00 us" },
+        .{ .ns = 26_521, .text = "26.52 us" },
+        .{ .ns = 999_994, .text = "999.99 us" },
+        .{ .ns = 999_999, .text = "1.00 ms" },
+        .{ .ns = 3_006_771, .text = "3.01 ms" },
+        .{ .ns = 999_999_999, .text = "1.00 s" },
+        .{ .ns = 61_500_000_000, .text = "61.50 s" },
+    };
+    for (cases) |case| {
+        var buffer: [32]u8 = undefined;
+        var writer = Io.Writer.fixed(&buffer);
+        try writeDuration(&writer, case.ns);
+        try testing.expectEqualStrings(case.text, writer.buffered());
+    }
 }

@@ -290,7 +290,8 @@ pub fn writeRow(writer: *Io.Writer, row: []const u8) Io.Writer.Error!void {
     try writer.writeByte(']');
 }
 
-fn writeText(writer: *Io.Writer, value: []const u8) Io.Writer.Error!void {
+/// Writes `value` as a quoted TEXT value, as `writeRow` does.
+pub fn writeText(writer: *Io.Writer, value: []const u8) Io.Writer.Error!void {
     var shown = value.len;
     if (shown > max_example_value_bytes) {
         shown = max_example_value_bytes;
