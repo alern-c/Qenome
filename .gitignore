@@ -22,3 +22,7 @@ zig-out/
 
 # 工程1のダミーDB生成物（testdata/README.md の手順で再生成する）
 testdata/generated/
+
+# Python のキャッシュ（scripts/ のスクリプトをテストツールが読み込むと生成される）
+__pycache__/
+*.pyc

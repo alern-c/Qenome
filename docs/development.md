@@ -14,20 +14,22 @@
 
 ## 環境と既存手順
 
-[build.zig.zon](../build.zig.zon)のminimum_zig_versionは0.17.0。[build.zig](../build.zig)にbuild、run、testの手順がある。[品質チェック設定](../.github/workflows/quality.yml)は版の一致、整形、build、testを検査する。CIの実測（2026-10-11にGitHub APIで再確認。runの開始から完了まで）は、PR #2が44秒、PR #1が143秒、PR #2のマージ後のmain pushが127秒で、いずれも10分枠（`timeout-minutes: 10`）に十分収まる。
+[build.zig.zon](../build.zig.zon)のminimum_zig_versionは0.17.0。[build.zig](../build.zig)にbuild、run、testの手順がある。[品質チェック設定](../.github/workflows/quality.yml)は版の一致、整形、build、test、境界チェック（アーキテクチャ）を検査する。工程別の責務・依存の向き・所有者のルールは [アーキテクチャ](architecture.md) を参照する。CIの実測（2026-10-11にGitHub APIで再確認。runの開始から完了まで）は、PR #2が44秒、PR #1が143秒、PR #2のマージ後のmain pushが127秒で、いずれも10分枠（`timeout-minutes: 10`）に十分収まる。
 
-既存の確認コマンドは `zig version`、`zig build --summary all`、`zig build run`、`zig build test --summary all`、`zig fmt --check .`。SQLite比較CLIは `--help` で使い方と終了コードを確認できる（終了コード0）。
+既存の確認コマンドは `zig version`、`zig build --summary all`、`zig build run`、`zig build test --summary all`、`zig fmt --check .`、`python3 scripts/test_check_architecture.py`、`python3 scripts/check_architecture.py`。SQLite比較CLIは `--help` で使い方と終了コードを確認できる（終了コード0）。
 
 ```sh
 zig build run -- --help
 zig build run -- --db <DB> --select <SELECTファイル> --index-sql <候補DDLファイル> --bind 1:int:1234
+python3 scripts/test_check_architecture.py   # 境界チェック自身の検証
+python3 scripts/check_architecture.py        # 実ツリーの境界検査（違反0で終了0）
 ```
 
 ### 同梱SQLite
 
 - 使う版は3.51.2。[src/sqlite.zig](../src/sqlite.zig)の `pinned_version` と一致することをテストで確認する。取得元のURL、公式公開SHA3-256、source id、同梱2ファイルのハッシュ、コンパイルフラグは [vendor/sqlite3/PROVENANCE.txt](../vendor/sqlite3/PROVENANCE.txt) に記録する
 - `vendor/sqlite3/sqlite3.c` / `sqlite3.h` は `build.zig` の `Qenome` モジュール1か所にだけ登録し、実行ファイルと2つのテストが同じ定義を共有する（二重定義を避ける。Cソースのコンパイルは各アーティファクトのビルドで行われる）。システムの `libsqlite3` や `sqlite3` CLIには依存しない
-- CIに追加パッケージは不要。`quality.yml` の手順は `mlugg/setup-zig`、Zigの版の一致確認、整形、build、testだけで、パッケージ導入のステップがない（同梱SQLiteのCソースはZigがコンパイルする）
+- CIに追加パッケージは不要。`quality.yml` の手順は `mlugg/setup-zig`、Zigの版の一致確認、整形、build、test、境界チェック（ランナー標準のpython3）だけで、パッケージ導入のステップがない（同梱SQLiteのCソースはZigがコンパイルする）
 
 ### 工程0の実行確認（2026-10-10、Zig 0.17.0）
 
