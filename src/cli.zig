@@ -4,20 +4,23 @@
 //! CREATE INDEX file, typed bind values, and an optional time limit. The
 //! database is opened read-only and copied as one snapshot (`baseline`) into a
 //! private temporary directory; the baseline is then copied byte for byte to
-//! `variant`. The candidate DDL is only validated, and the SELECT is executed
-//! on the baseline to count its rows. The summary also shows the SQLite
-//! release, the query plan, and the execution counters of the SELECT. The
-//! temporary directory is removed on every return path.
+//! `variant`. The candidate index is built on the variant only, and the SELECT
+//! runs on both copies. The summary shows, per copy, the row count, the query
+//! plan, and the execution counters, then whether the result rows are the
+//! same. The temporary directory is removed on every return path.
 //!
 //! Every outcome is a process exit code:
 //!
-//! * 0: the SELECT was accepted and executed
+//! * 0: the SELECT ran on both copies and the result rows match (as a
+//!   multiset)
 //! * 1: an input was rejected (file, database, snapshot, temporary directory,
-//!   SQL, DDL, bind, query plan, step)
+//!   SQL, DDL, bind, index build, query plan, step)
 //! * 2: the arguments cannot be used
+//! * 3: the SELECT ran on both copies and the result rows differ
+//! * 4: the SELECT ran on both copies, but the results cannot be compared
 //! * 5: a connection or the temporary directory could not be cleaned up after
-//!   an otherwise successful run
-//! * 124: the time limit interrupted the SELECT
+//!   a run that would have exited 0
+//! * 124: the time limit interrupted the index build or a SELECT
 //! * 129 / 130 / 143: SIGHUP / SIGINT / SIGTERM interrupted the run
 
 const std = @import("std");
@@ -25,6 +28,7 @@ const Io = std.Io;
 const builtin = @import("builtin");
 const db = @import("db.zig");
 const sqlite = @import("sqlite.zig");
+const result_rows = @import("result.zig");
 
 /// Upper bound for a SQL input file (1 MiB). A file of exactly this size is
 /// still accepted.
@@ -68,6 +72,10 @@ pub const ExitCode = enum(u8) {
     ok = 0,
     rejected = 1,
     usage = 2,
+    /// The result rows of the two copies differ (D-506).
+    mismatch = 3,
+    /// The result rows of the two copies cannot be compared (D-506).
+    incomparable = 4,
     cleanup = 5,
     timeout = 124,
     /// 128 + SIGHUP (1).
@@ -133,7 +141,8 @@ pub const Args = struct {
     select: ?[:0]const u8 = null,
     index_sql: ?[:0]const u8 = null,
     binds: []const db.BindArg = &.{},
-    /// Time limit for the SELECT execution; `0` disables it.
+    /// Time limit for the index build and for each SELECT run; `0` disables
+    /// it.
     timeout_ms: u64 = default_timeout_ms,
     help: bool = false,
 };
@@ -242,12 +251,13 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\usage: Qenome --db <PATH> --select <FILE> --index-sql <FILE> [options]
         \\
         \\Checks one read-only SELECT and one candidate CREATE INDEX against a
-        \\local SQLite database, then runs the SELECT and reports its row count,
-        \\the SQLite release, the query plan, and the execution counters.
-        \\The database is opened read-only and copied as one snapshot into a
-        \\private directory under $TMPDIR (default /tmp); the SELECT runs on
-        \\that copy, and the directory is removed before exit. The candidate
-        \\DDL is not applied.
+        \\local SQLite database. The database is opened read-only and copied
+        \\as one snapshot into a private directory under $TMPDIR (default
+        \\/tmp) as a baseline and a variant; the candidate index is built on
+        \\the variant only, and the database itself is never changed. The
+        \\SELECT runs on both copies; for each, the row count, the query plan,
+        \\and the execution counters are reported, followed by whether the
+        \\result rows match. The directory is removed before exit.
         \\Plan labels (kind, covering, automatic) are hints read from SQLite's
         \\wording; the detail text after them is what SQLite reported.
         \\
@@ -260,12 +270,14 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\                       TYPE is int, real, text or null (null takes no
         \\                       value); every number in 1..parameter count must
         \\                       be given exactly once
-        \\  --timeout-ms <MS>    statement time limit, 0 disables it (default 30000)
+        \\  --timeout-ms <MS>    time limit for the index build and for each SELECT
+        \\                       run, 0 disables it (default 30000)
         \\  --help, -h           print this message and exit with status 0
         \\
-        \\exit status: 0 accepted, 1 rejected, 2 usage error, 5 cleanup failure,
-        \\124 time limit reached, 129 / 130 / 143 interrupted by SIGHUP /
-        \\SIGINT / SIGTERM
+        \\exit status: 0 result rows match, 1 rejected, 2 usage error,
+        \\3 result rows differ, 4 results cannot be compared, 5 cleanup
+        \\failure, 124 time limit reached, 129 / 130 / 143 interrupted by
+        \\SIGHUP / SIGINT / SIGTERM
         \\
     );
 }
@@ -334,7 +346,8 @@ pub fn run(
 
         const inputs: Inputs = .{
             .database_path = database_path,
-            .measured_path = work.baseline_path,
+            .baseline_path = work.baseline_path,
+            .variant_path = work.variant_path,
             .select_path = select_path,
             .index_path = index_path,
             .select_sql = select_sql,
@@ -342,7 +355,7 @@ pub fn run(
             .binds = args.binds,
             .timeout_ms = args.timeout_ms,
         };
-        break :blk runChecked(io, arena, inputs, stdout, stderr, &cleanup_failed);
+        break :blk runChecked(io, arena, allocator, inputs, stdout, stderr, &cleanup_failed);
     };
     return finalExitCode(code, cleanup_failed);
 }
@@ -469,8 +482,10 @@ fn prepareCopies(
 const Inputs = struct {
     /// The database as given, for the summary.
     database_path: [:0]const u8,
-    /// The snapshot that the checks and the run use.
-    measured_path: [:0]const u8,
+    /// The snapshot without the candidate index.
+    baseline_path: [:0]const u8,
+    /// The copy of the snapshot that gets the candidate index.
+    variant_path: [:0]const u8,
     select_path: [:0]const u8,
     index_path: [:0]const u8,
     select_sql: [:0]const u8,
@@ -479,22 +494,73 @@ const Inputs = struct {
     timeout_ms: u64,
 };
 
-/// D-105=案1: after an otherwise successful run a cleanup failure is reported
-/// with exit code 5. A rejection, usage error, timeout, or interruption keeps
-/// its own code. The diagnostic itself is always written where the failure is
-/// found.
+/// D-105=案1: after a run that would have exited 0 a cleanup failure is
+/// reported with exit code 5. A rejection, usage error, mismatch,
+/// incomparable result, timeout, or interruption keeps its own code (D-506).
+/// The diagnostic itself is always written where the failure is found.
 pub fn finalExitCode(code: ExitCode, cleanup_failed: bool) ExitCode {
     if (cleanup_failed and code == .ok) return .cleanup;
     return code;
 }
 
+/// Which copy a SELECT ran on, for messages and the summary.
+const Side = enum { baseline, variant };
+
+/// What one SELECT run on one copy reported.
+const Measurement = struct {
+    rows: u64,
+    plan: db.Plan,
+    counters: db.Counters,
+    columns: c_int,
+};
+
+const Verdict = enum { match, mismatch, incomparable };
+
+/// The comparison result of the two runs (D-501, D-503, D-506).
+const Outcome = struct {
+    verdict: Verdict,
+    /// Null when the rows were not compared.
+    comparison: ?result_rows.Comparison = null,
+    /// Why the results cannot be compared, one line each, with what to try
+    /// next (D-513).
+    reasons: [max_reasons]Reason = undefined,
+    reason_count: usize = 0,
+
+    const max_reasons = 5;
+
+    const Reason = struct {
+        text: []const u8,
+        /// Null when there is nothing the user can change in the SELECT.
+        hint: ?[]const u8,
+    };
+
+    fn addReason(self: *Outcome, text: []const u8, hint: ?[]const u8) void {
+        if (self.reason_count == max_reasons) return;
+        self.reasons[self.reason_count] = .{ .text = text, .hint = hint };
+        self.reason_count += 1;
+    }
+
+    fn exitCode(self: Outcome) ExitCode {
+        return switch (self.verdict) {
+            .match => .ok,
+            .mismatch => .mismatch,
+            .incomparable => .incomparable,
+        };
+    }
+};
+
 /// Opens the baseline and walks the accepted order: check the SELECT, bind,
-/// check the candidate DDL, read the query plan, then run the SELECT.
-/// `cleanup_failed` is set when the connection cannot be closed. The plan
-/// lives in `arena`.
+/// and check the candidate DDL on the baseline; build the index on the
+/// variant; read the plan of the SELECT and run it on the baseline, then on
+/// the variant; compare the rows. The index is built first so that a failing
+/// build (a UNIQUE index over duplicates) shows before a long SELECT runs.
+/// `cleanup_failed` is set when a connection cannot be closed. The plans live
+/// in `arena`; the result rows live in `allocator`, so that a run that
+/// outgrows the budget gives them back at once.
 fn runChecked(
     io: Io,
     arena: std.mem.Allocator,
+    allocator: std.mem.Allocator,
     inputs: Inputs,
     stdout: *Io.Writer,
     stderr: *Io.Writer,
@@ -503,21 +569,21 @@ fn runChecked(
     // A signal that arrived before the SELECT started still stops the run.
     if (signalPending()) return reportInterrupted(stderr);
 
-    var database: db.Db = .{};
-    database.openReadOnly(inputs.measured_path) catch |err| {
-        stderr.print("error: cannot open the baseline '{s}' read-only: {s}\n", .{ inputs.measured_path, openErrorMessage(err) }) catch {};
+    var baseline: db.Db = .{};
+    baseline.openReadOnly(inputs.baseline_path) catch |err| {
+        stderr.print("error: cannot open the baseline '{s}' read-only: {s}\n", .{ inputs.baseline_path, openErrorMessage(err) }) catch {};
         return .rejected;
     };
-    defer database.close() catch {
+    defer baseline.close() catch {
         cleanup_failed.* = true;
-        stderr.print("error: the database connection could not be closed: {s}\n", .{database.message()}) catch {};
+        stderr.print("error: the database connection could not be closed: {s}\n", .{baseline.message()}) catch {};
     };
 
-    const statement = database.prepareSelect(inputs.select_sql) catch |err| {
-        reportCheckFailure(stderr, "--select", err, &database);
+    const statement = baseline.prepareSelect(inputs.select_sql) catch |err| {
+        reportSelectFailure(stderr, err, &baseline, inputs.index_sql);
         return .rejected;
     };
-    // Declared after the `database.close` defer, so `finalize` always runs
+    // Declared after the `baseline.close` defer, so `finalize` always runs
     // first, on every return path (D-105=案1).
     defer _ = sqlite.sqlite3_finalize(statement);
 
@@ -526,80 +592,308 @@ fn runChecked(
         return .rejected;
     };
 
-    database.checkCreateIndex(inputs.index_sql) catch |err| {
-        reportCheckFailure(stderr, "--index-sql", err, &database);
+    baseline.checkCreateIndex(inputs.index_sql) catch |err| {
+        reportCheckFailure(stderr, "--index-sql", err, &baseline);
         return .rejected;
     };
 
-    // The plan is read before the run, from a statement of its own (D-302).
-    // The same SQL and binds were accepted above, so a failure here is the
-    // plan read itself or memory. Like prepare and bind, it is outside the
-    // time limit.
-    const plan = database.explainPlan(arena, inputs.select_sql, inputs.binds) catch |err| {
-        const detail = if (err == error.ExplainFailed and database.errorCode() != sqlite.SQLITE_OK)
-            database.message()
-        else
-            @errorName(err);
-        stderr.print("error: --select: the query plan could not be read: {s}\n", .{detail}) catch {};
-        return .rejected;
-    };
+    if (signalPending()) return reportInterrupted(stderr);
 
-    // The time limit and the signal flag cover the SELECT execution only, so
-    // the control is built here and the deadline starts inside `stepAll`.
+    // The time limit and the signal flag cover the index build and each
+    // SELECT execution, each with the full limit (D-509); prepare, bind, and
+    // the plan reads stay outside it.
     var control = db.StepControl.init(io, inputs.timeout_ms, &signal_flag);
-    const rows = database.stepAll(statement, &control) catch |err| switch (err) {
+    var detail: db.SnapshotDetail = .{};
+    db.applyCreateIndex(inputs.variant_path, inputs.index_sql, &control, &detail) catch |err| switch (err) {
         error.Timeout => {
-            stderr.print("error: --select exceeded the time limit of {d} ms\n", .{inputs.timeout_ms}) catch {};
+            stderr.print("error: --index-sql exceeded the time limit of {d} ms\n", .{inputs.timeout_ms}) catch {};
             return .timeout;
         },
         error.Interrupted => return reportInterrupted(stderr),
-        error.StepFailed => {
-            stderr.print("error: --select failed while running: {s}\n", .{database.message()}) catch {};
+        else => {
+            const reason = if (detail.len != 0) detail.text() else @errorName(err);
+            stderr.print("error: --index-sql: the index could not be created on the variant: {s}\n", .{reason}) catch {};
             return .rejected;
         },
     };
+
+    var budget: result_rows.Budget = .{};
+    var baseline_rows = result_rows.RowCollector.init(allocator, &budget);
+    defer baseline_rows.deinit();
+    var variant_rows = result_rows.RowCollector.init(allocator, &budget);
+    defer variant_rows.deinit();
+
+    // A SELECT whose rows are never compared (D-502, D-507) still runs on
+    // both copies for its plan and counters, but its rows are not kept.
+    const keep_rows = !baseline.clues.alwaysIncomparable();
+    var failure: ExitCode = .rejected;
+    const before = measure(arena, &baseline, statement, inputs, &control, if (keep_rows) &baseline_rows else null, .baseline, stderr, &failure) orelse return failure;
+
+    if (signalPending()) return reportInterrupted(stderr);
+
+    var variant: db.Db = .{};
+    variant.openReadOnly(inputs.variant_path) catch |err| {
+        stderr.print("error: cannot open the variant '{s}' read-only: {s}\n", .{ inputs.variant_path, openErrorMessage(err) }) catch {};
+        return .rejected;
+    };
+    defer variant.close() catch {
+        cleanup_failed.* = true;
+        stderr.print("error: the database connection of the variant could not be closed: {s}\n", .{variant.message()}) catch {};
+    };
+    // The same SQL and binds were accepted on the baseline, so a failure here
+    // comes from the variant itself.
+    const variant_statement = variant.prepareSelect(inputs.select_sql) catch |err| {
+        reportCheckFailure(stderr, "--select on the variant", err, &variant);
+        return .rejected;
+    };
+    defer _ = sqlite.sqlite3_finalize(variant_statement);
+    db.bindAll(variant_statement, inputs.binds) catch |err| {
+        stderr.print("error: --bind on the variant: {s}\n", .{bindErrorMessage(err)}) catch {};
+        return .rejected;
+    };
+    // Rows the baseline could not keep cannot be compared, so the variant only
+    // runs for its plan and counters then.
+    const variant_out: ?*result_rows.RowCollector = if (keep_rows and baseline_rows.failure == null) &variant_rows else null;
+    const after = measure(arena, &variant, variant_statement, inputs, &control, variant_out, .variant, stderr, &failure) orelse return failure;
 
     // A signal that arrives after the last progress check but before the run
     // ends still wins over the summary.
     if (signalPending()) return reportInterrupted(stderr);
 
-    // The summary is the result of the run, so a failed write is a rejection.
-    // It is written only here, after a finished run, so a rejection, timeout,
-    // or interruption leaves stdout empty.
-    writeSummary(stdout, inputs, rows, plan, db.statementCounters(statement)) catch {
+    const outcome = decide(arena, before, after, &baseline_rows, &variant_rows, .{
+        .clues = db.Clues.merge(baseline.clues, variant.clues),
+        .limit_or_offset = db.mentionsLimitOrOffset(inputs.select_sql),
+    });
+
+    // The summary is the result of the run, so a failed write is a rejection,
+    // whatever the comparison said. It is written only here, after both runs,
+    // so a rejection, timeout, or interruption leaves stdout empty.
+    writeSummary(stdout, inputs, before, after, outcome) catch {
         stderr.print("error: the summary could not be written\n", .{}) catch {};
         return .rejected;
     };
-    return .ok;
+    return outcome.exitCode();
 }
 
-/// Writes the accepted summary as `key: value` lines. A plan line keeps its
-/// SQLite detail last because the detail contains spaces.
+/// Reads the plan of the SELECT on one copy and runs it there, keeping the
+/// rows in `rows_out`. Returns null after reporting a failure, with its exit
+/// code in `failure`.
+fn measure(
+    arena: std.mem.Allocator,
+    database: *db.Db,
+    statement: *sqlite.sqlite3_stmt,
+    inputs: Inputs,
+    control: *db.StepControl,
+    rows_out: ?*result_rows.RowCollector,
+    side: Side,
+    stderr: *Io.Writer,
+    failure: *ExitCode,
+) ?Measurement {
+    // The plan is read before the run, from a statement of its own (D-302).
+    // The same SQL and binds were accepted already, so a failure here is the
+    // plan read itself or memory.
+    const plan = database.explainPlan(arena, inputs.select_sql, inputs.binds) catch |err| {
+        const detail = if (err == error.ExplainFailed and database.errorCode() != sqlite.SQLITE_OK)
+            database.message()
+        else
+            @errorName(err);
+        stderr.print("error: --select: the query plan could not be read on the {t}: {s}\n", .{ side, detail }) catch {};
+        failure.* = .rejected;
+        return null;
+    };
+
+    const rows = database.stepAll(statement, control, rows_out) catch |err| {
+        failure.* = switch (err) {
+            error.Timeout => blk: {
+                stderr.print("error: --select exceeded the time limit of {d} ms on the {t}\n", .{ inputs.timeout_ms, side }) catch {};
+                break :blk .timeout;
+            },
+            error.Interrupted => reportInterrupted(stderr),
+            error.StepFailed => blk: {
+                stderr.print("error: --select failed while running on the {t}: {s}\n", .{ side, database.message() }) catch {};
+                break :blk .rejected;
+            },
+        };
+        return null;
+    };
+    return .{
+        .rows = rows,
+        .plan = plan,
+        .counters = db.statementCounters(statement),
+        .columns = sqlite.sqlite3_column_count(statement),
+    };
+}
+
+const over_budget_reason = std.fmt.comptimePrint(
+    "the result rows exceed the {d} MiB kept for the comparison",
+    .{result_rows.max_result_bytes / (1024 * 1024)},
+);
+
+/// What the SQL says about how its rows may legitimately differ.
+const Hints = struct {
+    clues: db.Clues,
+    /// The SELECT text holds LIMIT or OFFSET (D-504).
+    limit_or_offset: bool,
+};
+
+/// Turns two finished runs into the result (D-501, D-502, D-504, D-505,
+/// D-506, D-507, D-512), in this order:
 ///
-/// `measured-on` comes right before `rows` because every value after it was
-/// measured on the baseline snapshot of `db`: the candidate index is only
-/// checked, so a `SCAN` or a full scan count below is not the effect of that
-/// index (D-304).
+/// 1. A SELECT that changes between runs or reads the schema is never
+///    compared.
+/// 2. Rows that could not be kept are never reported as a match.
+/// 3. Equal rows are a match, whatever the SQL looks like: the match was
+///    observed.
+/// 4. Differing rows are incomparable when the SQL can read the clock or pick
+///    or compute rows by their order, and a mismatch otherwise. The
+///    one-sided rows are shown in both cases.
+///
+/// Every reason comes with a hint on what to try next (D-513), except where
+/// the SELECT cannot help. A changed SELECT is another SELECT: the LIMIT hint
+/// asks to check its plan again, and the docs say so for every hint. Texts
+/// that name a function or a table live in `arena`.
+fn decide(
+    arena: std.mem.Allocator,
+    before: Measurement,
+    after: Measurement,
+    baseline_rows: *result_rows.RowCollector,
+    variant_rows: *result_rows.RowCollector,
+    hints: Hints,
+) Outcome {
+    var outcome: Outcome = .{ .verdict = .incomparable };
+    if (hints.clues.nondeterministic_function) |name| outcome.addReason(
+        print(arena, "the SELECT calls {s}(), whose result changes between runs", name),
+        print(arena, "compare the SELECT without {s}()", name),
+    );
+    if (hints.clues.schema_table) |name| outcome.addReason(
+        print(arena, "the SELECT reads {s}, which describes the database itself", name),
+        "SELECTs that read the schema tables are not compared",
+    );
+    if (outcome.reason_count != 0) return outcome;
+
+    if (baseline_rows.failure orelse variant_rows.failure) |failure| {
+        switch (failure) {
+            .over_budget => outcome.addReason(over_budget_reason, "narrow the rows with WHERE (not LIMIT) and run again"),
+            .out_of_memory => outcome.addReason("out of memory while keeping the result rows", null),
+        }
+        return outcome;
+    }
+    if (before.columns != after.columns) {
+        outcome.addReason("the column count differs between the copies", null);
+        return outcome;
+    }
+
+    const comparison = result_rows.compare(baseline_rows, variant_rows);
+    outcome.comparison = comparison;
+    if (comparison.matched) {
+        outcome.verdict = .match;
+        return outcome;
+    }
+    if (hints.clues.time_function) |name| outcome.addReason(
+        print(arena, "the rows differ, and the SELECT calls {s}(), which can read the current time ('now' or no argument)", name),
+        "if the SELECT reads the current time, bind a fixed time instead and run again",
+    );
+    if (hints.clues.order_dependent_function) |name| outcome.addReason(
+        print(arena, "the rows differ, and the SELECT calls {s}(), whose result can depend on the order rows are read in", name),
+        orderHint(arena, name),
+    );
+    if (hints.limit_or_offset) outcome.addReason(
+        "the rows differ, and the SELECT has LIMIT or OFFSET, which can pick other rows when the order changes",
+        "to compare, end the ORDER BY next to the LIMIT with a unique NOT NULL column, or drop LIMIT and OFFSET; then check that the plan still uses the candidate index",
+    );
+    if (hints.clues.view_or_cte) outcome.addReason(
+        "the rows differ, and the SELECT reads through a view or a WITH clause, which may pick rows by their order",
+        "compare the SELECT inside the view or the WITH clause directly",
+    );
+    if (outcome.reason_count == 0) outcome.verdict = .mismatch;
+    return outcome;
+}
+
+/// What to try for an order-dependent function, by its kind (D-513).
+fn orderHint(arena: std.mem.Allocator, name: []const u8) []const u8 {
+    const sums = [_][]const u8{ "sum", "avg", "total" };
+    const windows = [_][]const u8{ "row_number", "ntile", "first_value", "last_value", "nth_value", "lag", "lead" };
+    for (sums) |entry| if (std.mem.eql(u8, name, entry))
+        return print(arena, "{s}() adds REAL values in the order they are read, so the results may differ only in the last digits; check the baseline-only-row and variant-only-row lines", name);
+    for (windows) |entry| if (std.mem.eql(u8, name, entry))
+        return print(arena, "end the ORDER BY in OVER (...) of {s}() with a unique column, so that every row has a fixed place", name);
+    return print(arena, "add ORDER BY inside {s}(...), so that the rows are joined in a fixed order", name);
+}
+
+/// Formats one reason or hint that names a function or a table. Running out
+/// of memory here prints the format itself, with `{s}` in place of the name;
+/// the line stays one `key: value` line.
+fn print(arena: std.mem.Allocator, comptime format: []const u8, name: []const u8) []const u8 {
+    return std.fmt.allocPrint(arena, format, .{name}) catch format;
+}
+
+/// Writes the summary as `key: value` lines (D-510): the inputs once, then one
+/// block per copy that starts with `measured-on`, then the comparison. A plan
+/// line keeps its SQLite detail last because the detail contains spaces.
+///
+/// The baseline block is unchanged from the single-copy summary, so its
+/// values are those of the snapshot without the candidate index (D-304); the
+/// variant block has the index. Keys repeat between the blocks, so read them
+/// in order.
 fn writeSummary(
     stdout: *Io.Writer,
     inputs: Inputs,
-    rows: u64,
-    plan: db.Plan,
-    counters: db.Counters,
+    before: Measurement,
+    after: Measurement,
+    outcome: Outcome,
 ) Io.Writer.Error!void {
     try stdout.print("db: {s}\nselect: {s}\nindex-sql: {s}\nmeasured-on: baseline (candidate index not applied)\nrows: {d}\n", .{
-        inputs.database_path, inputs.select_path, inputs.index_path, rows,
+        inputs.database_path, inputs.select_path, inputs.index_path, before.rows,
     });
     try stdout.print("sqlite: {s}\nsqlite-source-id: {s}\n", .{
         sqlite.sqlite3_libversion(), sqlite.sqlite3_sourceid(),
     });
-    for (plan.rows) |row| {
+    try writePlanAndCounters(stdout, before);
+    try stdout.print("measured-on: variant (candidate index applied)\nrows: {d}\n", .{after.rows});
+    try writePlanAndCounters(stdout, after);
+
+    switch (outcome.verdict) {
+        .match => try stdout.writeAll("result: match (row multiset)\n"),
+        // The cause is not judged: an index should not change the rows, but
+        // order-dependent SQL can (D-505).
+        .mismatch => try stdout.writeAll("result: mismatch (row multiset; the cause is not determined)\n"),
+        .incomparable => try stdout.writeAll("result: incomparable\n"),
+    }
+    for (outcome.reasons[0..outcome.reason_count]) |reason| {
+        try stdout.print("incomparable-reason: {s}\n", .{reason.text});
+        if (reason.hint) |hint| try stdout.print("incomparable-hint: {s}\n", .{hint});
+    }
+    if (outcome.comparison) |comparison| if (!comparison.matched) {
+        try stdout.print("baseline-only-rows: {d}\nvariant-only-rows: {d}\n", .{ comparison.baseline_only, comparison.variant_only });
+        for (comparison.baselineExamples()) |row| {
+            try stdout.writeAll("baseline-only-row: ");
+            try result_rows.writeRow(stdout, row);
+            try stdout.writeByte('\n');
+        }
+        for (comparison.variantExamples()) |row| {
+            try stdout.writeAll("variant-only-row: ");
+            try result_rows.writeRow(stdout, row);
+            try stdout.writeByte('\n');
+        }
+    };
+    // The order is only a reference and only for a match (D-503, D-510).
+    const order = if (outcome.verdict != .match)
+        "not applicable"
+    else if (outcome.comparison.?.same_order)
+        "same (reference only; not part of the result)"
+    else
+        "differs (reference only; rows may change order without ORDER BY or among equal ORDER BY keys, and ORDER BY itself is not checked)";
+    try stdout.print("row-order: {s}\n", .{order});
+}
+
+fn writePlanAndCounters(stdout: *Io.Writer, measurement: Measurement) Io.Writer.Error!void {
+    for (measurement.plan.rows) |row| {
         try stdout.print("plan: id={d} parent={d} kind={t} covering={} automatic={} detail={s}\n", .{
             row.id, row.parent, row.label.kind, row.label.covering, row.label.automatic, row.detail,
         });
     }
     try stdout.print("fullscan-steps: {d}\nvm-steps: {d}\nsort-ops: {d}\nautoindex-rows: {d}\n", .{
-        counters.fullscan_steps, counters.vm_steps, counters.sort_ops, counters.autoindex_rows,
+        measurement.counters.fullscan_steps, measurement.counters.vm_steps, measurement.counters.sort_ops, measurement.counters.autoindex_rows,
     });
 }
 
@@ -620,6 +914,34 @@ fn reportInterrupted(stderr: *Io.Writer) ExitCode {
         .{ .interrupted, "SIGINT" };
     stderr.print("error: interrupted by {s}\n", .{name}) catch {};
     return code;
+}
+
+/// D-508: a SELECT that names the candidate index in `INDEXED BY` cannot be
+/// prepared on the baseline, which lacks that index. SQLite reports it as
+/// `no such index: <name>` with the name unquoted; when that name is the one
+/// the candidate DDL would create, the rejection says so. Every other failure
+/// is reported as is.
+fn reportSelectFailure(stderr: *Io.Writer, err: db.CheckError, database: *db.Db, index_sql: [:0]const u8) void {
+    const prefix = "no such index: ";
+    if (err == error.StatementInvalid and database.errorCode() != sqlite.SQLITE_OK) {
+        const message = database.message();
+        var saved: [512]u8 = undefined;
+        if (std.mem.startsWith(u8, message, prefix) and message.len <= saved.len) {
+            // The DDL check below replaces the engine message, so keep a copy.
+            @memcpy(saved[0..message.len], message);
+            const missing = saved[prefix.len..message.len];
+            database.checkCreateIndex(index_sql) catch {};
+            if (database.candidateIndexName()) |name| {
+                if (std.ascii.eqlIgnoreCase(name, missing)) {
+                    stderr.print("error: --select: the SELECT (or a view it reads) names the candidate index '{s}' in INDEXED BY, but the baseline does not have that index\n", .{name}) catch {};
+                    return;
+                }
+            }
+            stderr.print("error: --select: {s}: {s}\n", .{ checkErrorMessage(err), saved[0..message.len] }) catch {};
+            return;
+        }
+    }
+    reportCheckFailure(stderr, "--select", err, database);
 }
 
 /// Prints a check failure. The engine message is appended only when SQLite
@@ -781,11 +1103,15 @@ const CliFixture = struct {
     work_parent: [:0]u8,
 
     fn init(select_sql: []const u8, index_sql: []const u8) !CliFixture {
+        return initWithSchema(select_sql, index_sql, fixture_schema);
+    }
+
+    fn initWithSchema(select_sql: []const u8, index_sql: []const u8, schema: [:0]const u8) !CliFixture {
         var dir = try Fixture.init();
         errdefer dir.deinit();
         const db_path = try dir.file("fixture.db", "");
         errdefer testing.allocator.free(db_path);
-        try db.createTestDatabase(db_path, fixture_schema);
+        try db.createTestDatabase(db_path, schema);
         const select_path = try dir.file("select.sql", select_sql);
         errdefer testing.allocator.free(select_path);
         const index_path = try dir.file("index.sql", index_sql);
@@ -807,6 +1133,16 @@ const CliFixture = struct {
         testing.allocator.free(self.index_path);
         testing.allocator.free(self.work_parent);
         self.dir.deinit();
+    }
+
+    /// Runs the CLI on this fixture with `extra` arguments after the required
+    /// ones.
+    fn run(self: *CliFixture, extra: []const [:0]const u8, stdout_buffer: []u8, stderr_buffer: []u8) RunResult {
+        var argv: [16][:0]const u8 = undefined;
+        const required = [_][:0]const u8{ "Qenome", "--db", self.db_path, "--select", self.select_path, "--index-sql", self.index_path };
+        @memcpy(argv[0..required.len], &required);
+        @memcpy(argv[required.len..][0..extra.len], extra);
+        return callRun(testing.allocator, argv[0 .. required.len + extra.len], self.work_parent, stdout_buffer, stderr_buffer);
     }
 
     /// Fails unless the run removed its temporary directory again.
@@ -832,6 +1168,22 @@ const RunResult = struct {
     stdout: []const u8,
     stderr: []const u8,
 };
+
+/// The part of a summary that one copy reported, from its `measured-on` line
+/// up to the next block, so that a check cannot match the other copy.
+fn summaryBlock(stdout: []const u8, side: Side) []const u8 {
+    const variant_at = std.mem.indexOf(u8, stdout, "measured-on: variant") orelse stdout.len;
+    if (side == .baseline) {
+        const start = std.mem.indexOf(u8, stdout, "measured-on: baseline") orelse return "";
+        return stdout[start..variant_at];
+    }
+    const end = std.mem.indexOf(u8, stdout, "result: ") orelse stdout.len;
+    return stdout[variant_at..end];
+}
+
+fn contains(haystack: []const u8, needle: []const u8) bool {
+    return std.mem.indexOf(u8, haystack, needle) != null;
+}
 
 /// Calls `run` with the given output buffers and reports what it wrote.
 /// `temp_parent` stands in for `TMPDIR`.
@@ -935,7 +1287,7 @@ test "accepted run prints summary on stdout and nothing on stderr (exit 0)" {
     var fixture = try CliFixture.init("SELECT a FROM t WHERE a = ?1", "CREATE INDEX idx_a ON t(a)");
     defer fixture.deinit();
 
-    var stdout_buffer: [1024]u8 = undefined;
+    var stdout_buffer: [4096]u8 = undefined;
     var stderr_buffer: [1024]u8 = undefined;
     const result = callRun(testing.allocator, &.{
         "Qenome",
@@ -961,7 +1313,7 @@ test "accepted run prints plan and counters" {
     var fixture = try CliFixture.init("SELECT a FROM t WHERE b = ?1", "CREATE INDEX idx_a ON t(a)");
     defer fixture.deinit();
 
-    var stdout_buffer: [2048]u8 = undefined;
+    var stdout_buffer: [4096]u8 = undefined;
     var stderr_buffer: [1024]u8 = undefined;
     const result = callRun(testing.allocator, &.{
         "Qenome",
@@ -1090,7 +1442,7 @@ test "a select whose plan depends on a bound parameter is accepted" {
     var fixture = try CliFixture.init("SELECT b FROM t WHERE b LIKE ?1", "CREATE INDEX idx_a ON t(a)");
     defer fixture.deinit();
 
-    var stdout_buffer: [1024]u8 = undefined;
+    var stdout_buffer: [4096]u8 = undefined;
     var stderr_buffer: [1024]u8 = undefined;
     const result = callRun(testing.allocator, &.{
         "Qenome",
@@ -1109,31 +1461,347 @@ test "a select whose plan depends on a bound parameter is accepted" {
     try testing.expect(std.mem.indexOf(u8, result.stdout, "rows: 1") != null);
 }
 
-test "the candidate ddl is validated but not applied" {
-    var fixture = try CliFixture.init("SELECT count(*) FROM t", "CREATE INDEX idx_new ON t(a)");
+test "accepted run applies the index to the variant only" {
+    var fixture = try CliFixture.init("SELECT a FROM t WHERE a = ?1", "CREATE INDEX idx_new ON t(a)");
     defer fixture.deinit();
+    const before = try Io.Dir.cwd().readFileAlloc(testing.io, fixture.db_path, testing.allocator, .unlimited);
+    defer testing.allocator.free(before);
 
-    const argv = [_][:0]const u8{
-        "Qenome",
-        "--db",
-        fixture.db_path,
-        "--select",
-        fixture.select_path,
-        "--index-sql",
-        fixture.index_path,
-    };
-    var first_stdout: [1024]u8 = undefined;
-    var first_stderr: [1024]u8 = undefined;
-    const first = callRun(testing.allocator, &argv, fixture.work_parent, &first_stdout, &first_stderr);
+    var stdout_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const first = fixture.run(&.{ "--bind", "1:int:1" }, &stdout_buffer, &stderr_buffer);
     try testing.expectEqual(ExitCode.ok, first.code);
+    try testing.expectEqualStrings("", first.stderr);
+    const baseline_block = summaryBlock(first.stdout, .baseline);
+    const variant_block = summaryBlock(first.stdout, .variant);
+    try testing.expect(contains(baseline_block, "rows: 1\n"));
+    try testing.expect(contains(baseline_block, "detail=SCAN t\n"));
+    try testing.expect(contains(variant_block, "measured-on: variant (candidate index applied)\nrows: 1\n"));
+    try testing.expect(contains(variant_block, "detail=SEARCH t USING COVERING INDEX idx_new (a=?)\n"));
+    try testing.expect(contains(variant_block, "fullscan-steps: 0\n"));
+    try testing.expect(contains(first.stdout, "result: match (row multiset)\nrow-order: same (reference only; not part of the result)\n"));
+    try fixture.expectNoLeftovers();
 
-    // A second run still succeeds: the index was never created, so
-    // "CREATE INDEX idx_new" is not rejected as an existing name.
-    var second_stdout: [1024]u8 = undefined;
+    // The database itself never got the index, so a second run can create
+    // it again.
+    const after = try Io.Dir.cwd().readFileAlloc(testing.io, fixture.db_path, testing.allocator, .unlimited);
+    defer testing.allocator.free(after);
+    try testing.expectEqualSlices(u8, before, after);
+    var second_stdout: [4096]u8 = undefined;
     var second_stderr: [1024]u8 = undefined;
-    const second = callRun(testing.allocator, &argv, fixture.work_parent, &second_stdout, &second_stderr);
+    const second = fixture.run(&.{ "--bind", "1:int:1" }, &second_stdout, &second_stderr);
     try testing.expectEqual(ExitCode.ok, second.code);
     try testing.expectEqualStrings("", second.stderr);
+}
+
+test "an order-only difference is still a match with exit 0" {
+    // The rows are stored as 3, 1, 2; the index hands them out as 1, 2, 3.
+    var fixture = try CliFixture.initWithSchema("SELECT a FROM t WHERE a > ?1", "CREATE INDEX idx_a ON t(a)",
+        \\CREATE TABLE t(a INTEGER, b TEXT);
+        \\INSERT INTO t VALUES (3, 'z'), (1, 'x'), (2, 'y');
+    );
+    defer fixture.deinit();
+
+    var stdout_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const run_result = fixture.run(&.{ "--bind", "1:int:0" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, run_result.code);
+    try testing.expect(contains(summaryBlock(run_result.stdout, .variant), "USING COVERING INDEX idx_a"));
+    try testing.expect(contains(run_result.stdout, "result: match (row multiset)\nrow-order: differs (reference only;"));
+}
+
+test "a bare-column group by that differs exits 3" {
+    // `b` is not grouped, so SQLite returns it from one row of the group,
+    // picked by the order it reads them in; the index reverses that order
+    // (D-505).
+    var fixture = try CliFixture.initWithSchema("SELECT a, b FROM t GROUP BY a", "CREATE INDEX idx_ab ON t(a, b DESC)",
+        \\CREATE TABLE t(a INTEGER, b TEXT);
+        \\INSERT INTO t VALUES (1, 'x'), (1, 'y');
+    );
+    defer fixture.deinit();
+
+    var stdout_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const run_result = fixture.run(&.{}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.mismatch, run_result.code);
+    try testing.expectEqualStrings("", run_result.stderr);
+    try testing.expect(contains(run_result.stdout, "result: mismatch (row multiset; the cause is not determined)\nbaseline-only-rows: 1\nvariant-only-rows: 1\n"));
+    try testing.expect(contains(run_result.stdout, "baseline-only-row: [1, 'x']\nvariant-only-row: [1, 'y']\nrow-order: not applicable\n"));
+    try fixture.expectNoLeftovers();
+}
+
+test "indexed by the candidate index is rejected with exit 1" {
+    const cases = [_]struct { select: []const u8, index: []const u8, expected: []const u8 }{
+        .{ .select = "SELECT a FROM t INDEXED BY IDX_NEW WHERE a = 1", .index = "CREATE INDEX idx_new ON t(a)", .expected = "names the candidate index 'idx_new' in INDEXED BY" },
+        .{ .select = "SELECT a FROM t INDEXED BY \"Idx New\" WHERE a = 1", .index = "CREATE INDEX \"Idx New\" ON t(a)", .expected = "names the candidate index 'Idx New' in INDEXED BY" },
+        // Another missing index keeps the engine message.
+        .{ .select = "SELECT a FROM t INDEXED BY nope WHERE a = 1", .index = "CREATE INDEX idx_new ON t(a)", .expected = "no such index: nope" },
+        // A CTE cannot use any index; SQLite quotes the name then, so it is
+        // not mistaken for the candidate.
+        .{ .select = "WITH c AS (SELECT a FROM t) SELECT a FROM c INDEXED BY idx_new", .index = "CREATE INDEX idx_new ON t(a)", .expected = "no such index: \"idx_new\"" },
+    };
+    for (cases) |case| {
+        var fixture = try CliFixture.init(case.select, case.index);
+        defer fixture.deinit();
+        var stdout_buffer: [1024]u8 = undefined;
+        var stderr_buffer: [1024]u8 = undefined;
+        const run_result = fixture.run(&.{}, &stdout_buffer, &stderr_buffer);
+        try testing.expectEqual(ExitCode.rejected, run_result.code);
+        try testing.expectEqualStrings("", run_result.stdout);
+        try testing.expect(std.mem.startsWith(u8, run_result.stderr, "error: --select: "));
+        try testing.expect(contains(run_result.stderr, case.expected));
+        try fixture.expectNoLeftovers();
+    }
+}
+
+test "a unique index over duplicate rows exits 1" {
+    var fixture = try CliFixture.init("SELECT a FROM t", "CREATE UNIQUE INDEX idx_b2 ON t(a)");
+    defer fixture.deinit();
+    // A second row with a = 1 lives in the database before the run.
+    const writer = try db.openTestWriter(fixture.db_path, "INSERT INTO t VALUES (1, 'z')");
+    _ = sqlite.sqlite3_close(writer);
+
+    var stdout_buffer: [1024]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const run_result = fixture.run(&.{}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, run_result.code);
+    try testing.expectEqualStrings("", run_result.stdout);
+    try testing.expect(contains(run_result.stderr, "error: --index-sql: the index could not be created on the variant: UNIQUE constraint failed"));
+    try fixture.expectNoLeftovers();
+}
+
+test "an index build over the time limit exits 124 and leaves no temporary directory" {
+    var fixture = try CliFixture.initWithSchema("SELECT a FROM t WHERE a = 1", "CREATE INDEX idx_b ON t(b)",
+        \\CREATE TABLE t(a INTEGER, b TEXT);
+        \\WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 300000)
+        \\INSERT INTO t SELECT x, 'v' || x FROM c;
+    );
+    defer fixture.deinit();
+
+    var stdout_buffer: [1024]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const run_result = fixture.run(&.{ "--timeout-ms", "1" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.timeout, run_result.code);
+    try testing.expectEqualStrings("", run_result.stdout);
+    try testing.expectEqualStrings("error: --index-sql exceeded the time limit of 1 ms\n", run_result.stderr);
+    try fixture.expectNoLeftovers();
+}
+
+test "a timeout on the variant names the variant and is not a comparison" {
+    // Only the variant run is measured here: a SELECT that is slow on the
+    // variant alone cannot be built portably, so the step is driven directly.
+    var fixture = try CliFixture.init(
+        "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 20000000) SELECT count(*) FROM c",
+        "CREATE INDEX idx_a ON t(a)",
+    );
+    defer fixture.deinit();
+    const sql = try readSqlFile(testing.io, testing.allocator, fixture.select_path);
+    defer testing.allocator.free(sql);
+
+    var database: db.Db = .{};
+    try database.openReadOnly(fixture.db_path);
+    defer database.close() catch unreachable;
+    const statement = try database.prepareSelect(sql);
+    defer _ = sqlite.sqlite3_finalize(statement);
+
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    var cancel = std.atomic.Value(bool).init(false);
+    var control = db.StepControl.init(testing.io, 1, &cancel);
+    var budget: result_rows.Budget = .{};
+    var rows = result_rows.RowCollector.init(testing.allocator, &budget);
+    defer rows.deinit();
+    var stderr_buffer: [256]u8 = undefined;
+    var stderr = Io.Writer.fixed(&stderr_buffer);
+    var failure: ExitCode = .ok;
+    const inputs: Inputs = .{
+        .database_path = fixture.db_path,
+        .baseline_path = fixture.db_path,
+        .variant_path = fixture.db_path,
+        .select_path = fixture.select_path,
+        .index_path = fixture.index_path,
+        .select_sql = sql,
+        .index_sql = "",
+        .binds = &.{},
+        .timeout_ms = 1,
+    };
+    try testing.expectEqual(@as(?Measurement, null), measure(arena_state.allocator(), &database, statement, inputs, &control, &rows, .variant, &stderr, &failure));
+    try testing.expectEqual(ExitCode.timeout, failure);
+    try testing.expectEqualStrings("error: --select exceeded the time limit of 1 ms on the variant\n", stderr.buffered());
+}
+
+test "result rows over the byte budget exit 4" {
+    // 70 rows of 1 MiB each do not fit into the 64 MiB budget.
+    var fixture = try CliFixture.init(
+        "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 70) SELECT zeroblob(1048576) FROM c",
+        "CREATE INDEX idx_a ON t(a)",
+    );
+    defer fixture.deinit();
+
+    var stdout_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const run_result = fixture.run(&.{}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.incomparable, run_result.code);
+    try testing.expectEqualStrings("", run_result.stderr);
+    try testing.expect(contains(summaryBlock(run_result.stdout, .baseline), "rows: 70\n"));
+    try testing.expect(contains(summaryBlock(run_result.stdout, .variant), "rows: 70\n"));
+    try testing.expect(contains(run_result.stdout, "result: incomparable\nincomparable-reason: the result rows exceed the 64 MiB kept for the comparison\nincomparable-hint: narrow the rows with WHERE (not LIMIT) and run again\nrow-order: not applicable\n"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a nondeterministic select exits 4 and still prints both plans" {
+    var fixture = try CliFixture.init("SELECT a, random() FROM t WHERE a = 1", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+
+    var stdout_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const run_result = fixture.run(&.{}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.incomparable, run_result.code);
+    try testing.expectEqualStrings("", run_result.stderr);
+    try testing.expect(contains(summaryBlock(run_result.stdout, .baseline), "detail=SCAN t\n"));
+    try testing.expect(contains(summaryBlock(run_result.stdout, .variant), "detail=SEARCH t USING COVERING INDEX idx_a (a=?)\n"));
+    // The rows were never compared, so no one-sided rows are shown.
+    try testing.expect(contains(run_result.stdout, "result: incomparable\nincomparable-reason: the SELECT calls random(), whose result changes between runs\nincomparable-hint: compare the SELECT without random()\nrow-order: not applicable\n"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a schema table select exits 4" {
+    var fixture = try CliFixture.init("SELECT count(*) FROM sqlite_master", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+
+    var stdout_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const run_result = fixture.run(&.{}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.incomparable, run_result.code);
+    try testing.expect(contains(run_result.stdout, "incomparable-reason: the SELECT reads sqlite_master, which describes the database itself\nincomparable-hint: SELECTs that read the schema tables are not compared\n"));
+}
+
+/// Rows stored with `a` as 3, 1, 2, 3, 1, 2, so an index on `a` hands them out
+/// in another order. Summing `r` in the order of an index on `r` puts -1e16
+/// and 1e16 at the ends, which changes the last digits of the sum even with
+/// SQLite's compensated summation.
+const reordered_schema: [:0]const u8 =
+    \\CREATE TABLE t(a INTEGER, b TEXT, r REAL);
+    \\INSERT INTO t VALUES (3, 'z', 0.1), (1, 'x', 0.2), (2, 'y', 0.3), (3, 'v', 1e16), (1, 'w', -1e16), (2, 'u', 0.7);
+;
+
+test "a limit select whose rows differ exits 4 and one that matches exits 0" {
+    {
+        var fixture = try CliFixture.initWithSchema("SELECT a FROM t WHERE a > 0 LIMIT 2", "CREATE INDEX idx_a ON t(a)", reordered_schema);
+        defer fixture.deinit();
+        var stdout_buffer: [4096]u8 = undefined;
+        var stderr_buffer: [1024]u8 = undefined;
+        const run_result = fixture.run(&.{}, &stdout_buffer, &stderr_buffer);
+        try testing.expectEqual(ExitCode.incomparable, run_result.code);
+        // The one-sided rows are still shown for a mismatch that the LIMIT
+        // explains.
+        try testing.expect(contains(run_result.stdout, "result: incomparable\nincomparable-reason: the rows differ, and the SELECT has LIMIT or OFFSET, which can pick other rows when the order changes\nincomparable-hint: to compare, end the ORDER BY next to the LIMIT with a unique NOT NULL column, or drop LIMIT and OFFSET; then check that the plan still uses the candidate index\nbaseline-only-rows: 1\nvariant-only-rows: 1\n"));
+        try testing.expect(contains(run_result.stdout, "row-order: not applicable\n"));
+    }
+    {
+        var fixture = try CliFixture.initWithSchema("SELECT a, b FROM t ORDER BY a, b LIMIT 2", "CREATE INDEX idx_a ON t(a)", reordered_schema);
+        defer fixture.deinit();
+        var stdout_buffer: [4096]u8 = undefined;
+        var stderr_buffer: [1024]u8 = undefined;
+        const run_result = fixture.run(&.{}, &stdout_buffer, &stderr_buffer);
+        try testing.expectEqual(ExitCode.ok, run_result.code);
+        try testing.expect(contains(run_result.stdout, "result: match (row multiset)\n"));
+    }
+}
+
+test "a cte select whose rows differ exits 4" {
+    var fixture = try CliFixture.initWithSchema("WITH c AS (SELECT a, b FROM t) SELECT a, b FROM c GROUP BY a", "CREATE INDEX idx_ab ON t(a, b DESC)",
+        \\CREATE TABLE t(a INTEGER, b TEXT);
+        \\INSERT INTO t VALUES (1, 'x'), (1, 'y');
+    );
+    defer fixture.deinit();
+
+    var stdout_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const run_result = fixture.run(&.{}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.incomparable, run_result.code);
+    try testing.expect(contains(run_result.stdout, "incomparable-reason: the rows differ, and the SELECT reads through a view or a WITH clause, which may pick rows by their order\nincomparable-hint: compare the SELECT inside the view or the WITH clause directly\n"));
+}
+
+test "an integer-only sum that matches exits 0 and a real sum that differs exits 4" {
+    {
+        var fixture = try CliFixture.initWithSchema("SELECT sum(a) FROM t", "CREATE INDEX idx_a ON t(a)", reordered_schema);
+        defer fixture.deinit();
+        var stdout_buffer: [4096]u8 = undefined;
+        var stderr_buffer: [1024]u8 = undefined;
+        const run_result = fixture.run(&.{}, &stdout_buffer, &stderr_buffer);
+        try testing.expectEqual(ExitCode.ok, run_result.code);
+        try testing.expect(contains(run_result.stdout, "result: match (row multiset)\n"));
+    }
+    {
+        var fixture = try CliFixture.initWithSchema("SELECT sum(r) FROM t", "CREATE INDEX idx_r ON t(r)", reordered_schema);
+        defer fixture.deinit();
+        var stdout_buffer: [4096]u8 = undefined;
+        var stderr_buffer: [1024]u8 = undefined;
+        const run_result = fixture.run(&.{}, &stdout_buffer, &stderr_buffer);
+        try testing.expectEqual(ExitCode.incomparable, run_result.code);
+        try testing.expect(contains(run_result.stdout, "incomparable-reason: the rows differ, and the SELECT calls sum(), whose result can depend on the order rows are read in\nincomparable-hint: sum() adds REAL values in the order they are read, so the results may differ only in the last digits; check the baseline-only-row and variant-only-row lines\nbaseline-only-rows: 1\nvariant-only-rows: 1\n"));
+    }
+}
+
+test "a date function is compared, and a difference with it exits 4 with a hint" {
+    {
+        // An expression index on date(...) can be tried: the rows match.
+        var fixture = try CliFixture.initWithSchema("SELECT a FROM t WHERE date(b) = ?1", "CREATE INDEX idx_db ON t(date(b))",
+            \\CREATE TABLE t(a INTEGER, b TEXT);
+            \\INSERT INTO t VALUES (1, '2026-03-15 10:00:00'), (2, '2026-03-16 09:00:00'), (3, '2026-03-15 23:59:59');
+        );
+        defer fixture.deinit();
+        var stdout_buffer: [4096]u8 = undefined;
+        var stderr_buffer: [1024]u8 = undefined;
+        const run_result = fixture.run(&.{ "--bind", "1:text:2026-03-15" }, &stdout_buffer, &stderr_buffer);
+        try testing.expectEqual(ExitCode.ok, run_result.code);
+        try testing.expect(contains(summaryBlock(run_result.stdout, .variant), "USING INDEX idx_db"));
+        try testing.expect(contains(run_result.stdout, "result: match (row multiset)\n"));
+    }
+    {
+        // The bare column `b` differs; the date function in the SELECT makes
+        // that incomparable instead of a mismatch (D-512).
+        var fixture = try CliFixture.initWithSchema("SELECT a, b, date('2026-01-01') FROM t GROUP BY a", "CREATE INDEX idx_ab ON t(a, b DESC)",
+            \\CREATE TABLE t(a INTEGER, b TEXT);
+            \\INSERT INTO t VALUES (1, 'x'), (1, 'y');
+        );
+        defer fixture.deinit();
+        var stdout_buffer: [4096]u8 = undefined;
+        var stderr_buffer: [1024]u8 = undefined;
+        const run_result = fixture.run(&.{}, &stdout_buffer, &stderr_buffer);
+        try testing.expectEqual(ExitCode.incomparable, run_result.code);
+        try testing.expect(contains(run_result.stdout, "result: incomparable\nincomparable-reason: the rows differ, and the SELECT calls date(), which can read the current time ('now' or no argument)\nincomparable-hint: if the SELECT reads the current time, bind a fixed time instead and run again\nbaseline-only-rows: 1\n"));
+    }
+}
+
+test "several reasons come in pairs with their hints" {
+    // The bare column `b` makes the rows differ; the SELECT also has an
+    // aggregate, a LIMIT, and a WITH clause, so all three reasons apply.
+    var fixture = try CliFixture.initWithSchema("WITH c AS (SELECT a, b FROM t) SELECT a, b, sum(a) FROM c GROUP BY a LIMIT 5", "CREATE INDEX idx_ab ON t(a, b DESC)",
+        \\CREATE TABLE t(a INTEGER, b TEXT);
+        \\INSERT INTO t VALUES (1, 'x'), (1, 'y');
+    );
+    defer fixture.deinit();
+    var stdout_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const run_result = fixture.run(&.{}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.incomparable, run_result.code);
+    // Each reason is followed by its own hint.
+    try testing.expectEqual(@as(usize, 3), std.mem.count(u8, run_result.stdout, "incomparable-reason: "));
+    try testing.expectEqual(@as(usize, 3), std.mem.count(u8, run_result.stdout, "incomparable-hint: "));
+    try testing.expect(contains(run_result.stdout, "sum(), whose result can depend on the order rows are read in\nincomparable-hint: sum() adds REAL values"));
+    try testing.expect(contains(run_result.stdout, "LIMIT or OFFSET, which can pick other rows when the order changes\nincomparable-hint: to compare"));
+    try testing.expect(contains(run_result.stdout, "WITH clause, which may pick rows by their order\nincomparable-hint: compare the SELECT inside"));
+}
+
+test "order-dependent hints follow the kind of function" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    try testing.expect(std.mem.startsWith(u8, orderHint(arena, "avg"), "avg() adds REAL values in the order they are read"));
+    try testing.expect(std.mem.startsWith(u8, orderHint(arena, "lag"), "end the ORDER BY in OVER (...) of lag() with a unique column"));
+    try testing.expect(std.mem.startsWith(u8, orderHint(arena, "json_group_array"), "add ORDER BY inside json_group_array(...)"));
 }
 
 test "signal handler sets the cancel flag and keeps the first signal" {
@@ -1151,7 +1819,7 @@ test "signal handler sets the cancel flag and keeps the first signal" {
     try testing.expectEqualStrings("error: interrupted by SIGTERM\n", stderr.buffered());
 }
 
-test "cleanup failure maps to exit 5 and does not override an earlier failure" {
+test "cleanup failure maps to exit 5 and keeps every other code" {
     try testing.expectEqual(ExitCode.cleanup, finalExitCode(.ok, true));
     try testing.expectEqual(ExitCode.ok, finalExitCode(.ok, false));
     try testing.expectEqual(ExitCode.rejected, finalExitCode(.rejected, true));
@@ -1160,6 +1828,10 @@ test "cleanup failure maps to exit 5 and does not override an earlier failure" {
     try testing.expectEqual(ExitCode.interrupted, finalExitCode(.interrupted, true));
     try testing.expectEqual(ExitCode.terminated, finalExitCode(.terminated, true));
     try testing.expectEqual(ExitCode.hangup, finalExitCode(.hangup, true));
+    // A mismatch or an incomparable result is not a success, so it keeps its
+    // code (D-506).
+    try testing.expectEqual(ExitCode.mismatch, finalExitCode(.mismatch, true));
+    try testing.expectEqual(ExitCode.incomparable, finalExitCode(.incomparable, true));
     // The other half of this path is the real close failure in the db test
     // "a failed close keeps the connection for the caller", which sets
     // `cleanup_failed` by returning `error.CloseFailed`.
@@ -1346,7 +2018,7 @@ test "a run on a wal database counts rows that are still in the wal" {
     );
     defer _ = sqlite.sqlite3_close(writer);
 
-    var stdout_buffer: [2048]u8 = undefined;
+    var stdout_buffer: [4096]u8 = undefined;
     var stderr_buffer: [1024]u8 = undefined;
     const result = callRun(testing.allocator, &.{
         "Qenome",
