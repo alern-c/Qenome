@@ -24,7 +24,9 @@ pub fn main(init: std.process.Init) !void {
     const code = Qenome.cli.run(io, init.gpa, argv, temp_parent, stdout, stderr);
 
     try stdout.flush();
-    try stderr.flush();
+    // Diagnostics that cannot be written do not change the outcome, which
+    // the exit code and stdout already carry.
+    stderr.flush() catch {};
     if (code != .ok) std.process.exit(@backingInt(code));
 }
 
