@@ -84,6 +84,7 @@ DBサイズは版によって変わりうるため検査には含めず、参考
 | `sum(id)` / `sum(customer_id)` | 10,023,300 / 123,400 | 同左 |
 | `sum(length(note))` | 1,045 | 1,045 |
 | `min(id)` / `max(id)` | 1,233 / 199,233 | 同左 |
+| 結果の比較（工程5） | — | 一致（`result: match (row multiset)`、終了コード 0、`row-order: same`） |
 
 ### 効果のない例
 
@@ -96,6 +97,7 @@ DBサイズは版によって変わりうるため検査には含めず、参考
 | `count(note)` | 53,333 | 53,333 |
 | `sum(length(note))` | 557,032 | 557,032 |
 | `min(note)` / `max(note)` | `note-100002` / `note-99999` | 同左 |
+| 結果の比較（工程5） | — | 一致（`result: match (row multiset)`、終了コード 0、`row-order: same`） |
 
 ### 判定条件
 
