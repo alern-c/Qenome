@@ -180,7 +180,7 @@ fn parseBind(raw: [:0]const u8) ParseError!db.BindArg {
 /// Writes the CLI contract to `writer`.
 pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
     try writer.writeAll(
-        \\usage: Qenome --db <PATH> --select <FILE> --index-sql <FILE> [options]
+        \\usage: qenome --db <PATH> --select <FILE> --index-sql <FILE> [options]
         \\
         \\Checks one read-only SELECT and one candidate CREATE INDEX against a
         \\local SQLite database. The database is opened read-only and copied

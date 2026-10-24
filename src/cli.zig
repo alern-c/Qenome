@@ -342,7 +342,7 @@ test "the compatibility re-exports keep the public names and signatures" {
     var buffer: [4096]u8 = undefined;
     var writer = Io.Writer.fixed(&buffer);
     try usage(&writer);
-    try testing.expect(std.mem.startsWith(u8, writer.buffered(), "usage: Qenome"));
+    try testing.expect(std.mem.startsWith(u8, writer.buffered(), "usage: qenome"));
     try testing.expectEqual(ExitCode.cleanup, finalExitCode(.ok, true));
 
     // The signatures themselves are part of the contract, so name their
