@@ -14,15 +14,17 @@
 
 ## 環境と既存手順
 
-[build.zig.zon](../build.zig.zon)のminimum_zig_versionは0.17.0。[build.zig](../build.zig)にbuild、run、testの手順がある。[品質チェック設定](../.github/workflows/quality.yml)は版の一致、整形、build、test、境界チェック（アーキテクチャ）を検査する。工程別の責務・依存の向き・所有者のルールは [アーキテクチャ](architecture.md) を参照する。CIの実測（2026-10-11にGitHub APIで再確認。runの開始から完了まで）は、PR #2が44秒、PR #1が143秒、PR #2のマージ後のmain pushが127秒で、いずれも10分枠（`timeout-minutes: 10`）に十分収まる。
+[build.zig.zon](../build.zig.zon)のminimum_zig_versionは0.17.0。[build.zig](../build.zig)にbuild、run、testの手順がある。[品質チェック設定](../.github/workflows/quality.yml)は版の一致、整形、build、test、境界チェック（アーキテクチャ）、コメント禁止の検査をする。工程別の責務・依存の向き・所有者のルールは [アーキテクチャ](architecture.md) を参照する。CIの実測（2026-10-11にGitHub APIで再確認。runの開始から完了まで）は、PR #2が44秒、PR #1が143秒、PR #2のマージ後のmain pushが127秒で、いずれも10分枠（`timeout-minutes: 10`）に十分収まる。
 
-既存の確認コマンドは `zig version`、`zig build --summary all`、`zig build run`、`zig build test --summary all`、`zig fmt --check .`、`python3 scripts/test_check_architecture.py`、`python3 scripts/check_architecture.py`。SQLite比較CLIは `--help` で使い方と終了コードを確認できる（終了コード0）。
+既存の確認コマンドは `zig version`、`zig build --summary all`、`zig build run`、`zig build test --summary all`、`zig fmt --check .`、`python3 scripts/test_check_architecture.py`、`python3 scripts/check_architecture.py`、`python3 scripts/test_check_comments.py`、`python3 scripts/check_comments.py`。SQLite比較CLIは `--help` で使い方と終了コードを確認できる（終了コード0）。
 
 ```sh
 zig build run -- --help
 zig build run -- --db <DB> --select <SELECTファイル> --index-sql <候補DDLファイル> --bind 1:int:1234
 python3 scripts/test_check_architecture.py   # 境界チェック自身の検証
 python3 scripts/check_architecture.py        # 実ツリーの境界検査（違反0で終了0）
+python3 scripts/test_check_comments.py       # コメント検査自身の検証
+python3 scripts/check_comments.py            # 実ツリーのコメント検査（違反0で終了0）
 ```
 
 `zig build` が生成する実行ファイルは `zig-out/bin/qenome`（小文字）。ビルド後は `./zig-out/bin/qenome --help` でも同じ使い方を確認できる。
@@ -31,7 +33,7 @@ python3 scripts/check_architecture.py        # 実ツリーの境界検査（違
 
 - 使う版は3.51.2。[src/sqlite.zig](../src/sqlite.zig)の `pinned_version` と一致することをテストで確認する。取得元のURL、公式公開SHA3-256、source id、同梱2ファイルのハッシュ、コンパイルフラグは [vendor/sqlite3/PROVENANCE.txt](../vendor/sqlite3/PROVENANCE.txt) に記録する
 - `vendor/sqlite3/sqlite3.c` / `sqlite3.h` は `build.zig` の `Qenome` モジュール1か所にだけ登録し、実行ファイルと2つのテストが同じ定義を共有する（二重定義を避ける。Cソースのコンパイルは各アーティファクトのビルドで行われる）。システムの `libsqlite3` や `sqlite3` CLIには依存しない
-- CIに追加パッケージは不要。`quality.yml` の手順は `mlugg/setup-zig`、Zigの版の一致確認、整形、build、test、境界チェック（ランナー標準のpython3）だけで、パッケージ導入のステップがない（同梱SQLiteのCソースはZigがコンパイルする）
+- CIに追加パッケージは不要。`quality.yml` の手順は `mlugg/setup-zig`、Zigの版の一致確認、整形、build、test、境界チェック、コメント検査（ランナー標準のpython3）だけで、パッケージ導入のステップがない（同梱SQLiteのCソースはZigがコンパイルする）
 
 ### 工程0の実行確認（2026-10-10、Zig 0.17.0）
 
@@ -43,7 +45,7 @@ python3 scripts/check_architecture.py        # 実ツリーの境界検査（違
 - `zig build run`：終了コード0。stdoutは「Run `zig build test` to run the tests.」、stderrは「All your codebase are belong to us.」と「info: arg: ./zig-out/bin/Qenome」。後者は `src/main.zig` の `std.log.info` による引数表示
 - `zig build test --summary all`：`Build Summary: 5/5 steps succeeded`
 
-1回目のbuild、run、testはビルドキャッシュが温まっていたため、`--cache-dir /tmp/qenome-cold-cache` で局所キャッシュを作り直して再確認した。`compile exe Qenome debug native success 1s`、`zig build test` は `5/5 steps succeeded; 3/3 tests passed` となり、初回ビルドでも成功する。`build.zig.zon` の依存はすべて例示のコメントで、ネットワーク取得は発生しない。
+1回目のbuild、run、testはビルドキャッシュが温まっていたため、`--cache-dir /tmp/qenome-cold-cache` で局所キャッシュを作り直して再確認した。`compile exe Qenome debug native success 1s`、`zig build test` は `5/5 steps succeeded; 3/3 tests passed` となり、初回ビルドでも成功する。`build.zig.zon` に依存はなく、ネットワーク取得は発生しない。
 
 未確認：Zigの版を固定するツールチェーン設定は無く、`zig version` が0.17.0であることは実行環境に依存する。0.17.0以外の版での挙動は未確認。
 
@@ -65,6 +67,8 @@ python3 scripts/check_architecture.py        # 実ツリーの境界検査（違
 | 同じ重いSELECT＋SIGINT（開始約1秒後に `kill -INT`） | 130 | stderrに `error: interrupted by SIGINT` |
 
 実行の前後で `testdata/generated/qenome-fixture.db` のSHA-256は `ddca8dd288e9a1fee22e441e51064362c19a9d2646bd990f940b700c7bf87d39` のまま変わらず、`testdata/generated` に `-journal` / `-wal` / `-shm` は残らなかった。
+
+コメント禁止の規則（「コメントを書かない規則」）で `testdata/*.sql` のコメントを消したため、SQLiteが `sqlite_master` に保存するCREATE文の原文も変わり、同じ手順で作り直したfixtureのSHA-256は `0901333bdc21cd178d44f900b92ec2bbbc338c30796a0a22d3435867ebcfbc53` になる（ページ数とサイズは1,242ページ・5,087,232 bytesのまま。`verify.sql` の17項目はすべて `ok`）。上の記録はコメント削除前のfixtureの値。
 
 未確認：時間上限はSELECTの実行中だけ効き、prepare段階は対象外（工程5から索引作成にも効く。「工程5の索引適用と結果比較」）。WAL構成のDBの読み取りは工程4で扱う。Windowsは未対応（シグナル処理がPOSIXのみ）。
 
@@ -340,6 +344,23 @@ Debug ビルドでは、改善する例の baseline 中央値が約58 ms で、R
 効果のない例を `--runs 200` で実行すると、約1秒ごとに `progress: timed round 43 of 200 done` などが実行中に出て、判定は `no-effect`（終了コード0）だった。stderr を閉じた実行（`2>&-`）でも終了コードは0だった。
 
 未確認：Linux（tmpfs）。OSのページキャッシュを空にした状態（cold）での測定。他のマシンで効果のない例が±20%に収まるか。
+
+## コメントを書かない規則
+
+このリポジトリのコードにはコメントを書かない。説明はこの `docs/` に書き、コードには残さない。ルールの機械向けの対応物は [scripts/check_comments.py](../scripts/check_comments.py) で、`scripts/test_check_comments.py` がその検証になっている。
+
+- 対象（`git ls-files` の追跡ファイル）: Zig（`.zig`・`.zon` の `//`・`///`・`//!`）、Python（`.py` の `#` と docstring）、SQL（`.sql` の `--` と `/* */`）、YAML（`.yml`・`.yaml` の `#`。引用・ブロックスカラーの中でも禁止）、`.gitignore`・`.gitattributes`（行頭 `#`）
+- 対象外: 生成物の `vendor/`（`sqlite3.c`・`sqlite3.h`・`PROVENANCE.txt`）と Markdown（`docs/*.md`、`testdata/README.md`）。除外は検査スクリプトの `EXCLUDED_FILES` にパスを明示して持つ
+- 文字列・引用名・複数行文字列の中の記号はコメントではない（例: Zig の usage の `--db`、SQL の `'--'`）。
+- YAML だけは別の規則にする。引用・ブロックスカラーを区別せず、`#` の文字が1文字でもあれば違反にする（行と位置を報告する）。手作りのレキサで引用を追う方式は、ブロックスカラーの範囲やプレーンスカラー内の記号を取り違えてコメントを見逃すことがあったため、見逃しを原理的に無くす単純な規則にした。弱点として、YAML の文字列の中で `#` を使えなくなる（誤検出になる）。`#` が必要になったときは、別の書き方（例: `hash` などの語）へ変えるか、この検査の規則を見直す。
+- 追跡ファイルが対象にも除外にも分類されない場合は検査が失敗する（例: 新しい `.json`、新しい `docs/*.md`）。使う前に検査スクリプトの表（`KINDS_BY_SUFFIX` / `KINDS_BY_NAME` / `EXCLUDED_FILES`）へ足す
+- 検査は読み取り専用で、`git ls-files` の追跡ファイルだけを見る。違反は `path:line: comment: <種類>` で全件出し、終了コード1（引数と git の失敗は2）
+- CIでは [quality.yml](../.github/workflows/quality.yml) の `verify` ジョブが自己テストと検査を実行する
+
+```sh
+python3 scripts/test_check_comments.py   # コメント検査自身の検証
+python3 scripts/check_comments.py        # 実ツリーのコメント検査（違反0で終了0）
+```
 
 ## 次の開発の進め方
 
