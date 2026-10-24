@@ -21,6 +21,8 @@ zig-out/bin/qenome --db app.db --select select.sql --index-sql index.sql
 - `--format <human|kv>`: 出力形式（既定 human）。`--show-binds` を付けるとバインド値も表示する
 - `--help`: 使い方を表示して終了する
 
+値を取るオプションは `--db=app.db` のように `=` でも書けます。
+
 ## 終了コード
 
 0 = 結果が一致、1 = 入力拒否、2 = 引数の誤り、3 = 結果不一致、4 = 比較不能、5 = 後片付け失敗、124 = 時間上限、129 / 130 / 143 = SIGHUP / SIGINT / SIGTERM による中断。

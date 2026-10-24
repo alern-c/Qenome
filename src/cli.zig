@@ -78,9 +78,15 @@ pub fn run(
         return .ok;
     }
 
-    const database_path = args.db orelse return missingArgument(stderr, "--db");
-    const select_path = args.select orelse return missingArgument(stderr, "--select");
-    const index_path = args.index_sql orelse return missingArgument(stderr, "--index-sql");
+    var missing_buffer: [cli_args.required_option_count][]const u8 = undefined;
+    const missing = cli_args.missingRequired(args, &missing_buffer);
+    if (missing.len != 0) {
+        return missingArguments(stderr, missing, missing.len == cli_args.required_option_count);
+    }
+
+    const database_path = args.db.?;
+    const select_path = args.select.?;
+    const index_path = args.index_sql.?;
 
     const select_sql = readSqlFile(io, arena, select_path) catch |err| {
         stderr.print("error: cannot read --select file '{s}': {s}\n", .{ select_path, fileErrorMessage(err) }) catch {};
@@ -244,15 +250,33 @@ fn reportParseError(stderr: *Io.Writer, err: ParseError, offending: ?[:0]const u
         error.UnknownOption, error.UnexpectedArgument => {
             try stderr.writeAll(if (err == error.UnknownOption) "error: unknown option " else "error: unexpected argument ");
             try result_rows.writeText(stderr, arg);
+            if (err == error.UnknownOption) {
+                if (cli_args.suggestOptionName(arg)) |suggestion| {
+                    try stderr.writeAll("; did you mean '");
+                    try stderr.writeAll(suggestion);
+                    try stderr.writeAll("'?");
+                }
+            }
             try stderr.writeAll(" (see --help)\n");
         },
         error.MissingValue => try stderr.print("error: {s} needs a value (see --help)\n", .{arg}),
+        error.UnexpectedValue => {
+            const end = std.mem.indexOfScalar(u8, arg, '=') orelse arg.len;
+            try stderr.print("error: {s} does not take a value (see --help)\n", .{arg[0..end]});
+        },
         else => try stderr.print("error: {s}\n", .{parseErrorMessage(err)}),
     }
 }
 
-fn missingArgument(stderr: *Io.Writer, option: []const u8) ExitCode {
-    stderr.print("error: {s} is required (see --help)\n", .{option}) catch {};
+fn missingArguments(stderr: *Io.Writer, missing: []const []const u8, show_usage: bool) ExitCode {
+    if (show_usage) stderr.writeAll(cli_args.usage_line ++ "\n") catch {};
+    const noun = if (missing.len == 1) "option" else "options";
+    stderr.print("error: missing required {s}: ", .{noun}) catch {};
+    for (missing, 0..) |name, position| {
+        if (position != 0) stderr.writeAll(", ") catch {};
+        stderr.writeAll(name) catch {};
+    }
+    stderr.writeAll(" (see --help)\n") catch {};
     return .usage;
 }
 

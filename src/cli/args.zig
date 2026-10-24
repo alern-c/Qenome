@@ -53,6 +53,7 @@ pub const Args = struct {
 
 pub const ParseError = error{
     MissingValue,
+    UnexpectedValue,
     UnknownOption,
     UnexpectedArgument,
     InvalidBindFormat,
@@ -76,28 +77,33 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
     while (index < argv.len) : (index += 1) {
         const arg = argv[index];
         offending.* = arg;
-        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+        const inline_value = splitInline(arg);
+        const name = if (inline_value) |inl| inl.name else arg;
+
+        if (std.mem.eql(u8, name, "--help") or std.mem.eql(u8, name, "-h")) {
+            if (inline_value != null) return error.UnexpectedValue;
             args.help = true;
-        } else if (std.mem.eql(u8, arg, "--db")) {
-            args.db = try nextValue(argv, &index);
-        } else if (std.mem.eql(u8, arg, "--select")) {
-            args.select = try nextValue(argv, &index);
-        } else if (std.mem.eql(u8, arg, "--index-sql")) {
-            args.index_sql = try nextValue(argv, &index);
-        } else if (std.mem.eql(u8, arg, "--bind")) {
-            const raw = try nextValue(argv, &index);
+        } else if (std.mem.eql(u8, name, "--db")) {
+            args.db = try optionValue(argv, &index, inline_value);
+        } else if (std.mem.eql(u8, name, "--select")) {
+            args.select = try optionValue(argv, &index, inline_value);
+        } else if (std.mem.eql(u8, name, "--index-sql")) {
+            args.index_sql = try optionValue(argv, &index, inline_value);
+        } else if (std.mem.eql(u8, name, "--bind")) {
+            const raw = try optionValue(argv, &index, inline_value);
             try binds.append(allocator, try parseBind(raw));
-        } else if (std.mem.eql(u8, arg, "--timeout-ms")) {
-            const raw = try nextValue(argv, &index);
+        } else if (std.mem.eql(u8, name, "--timeout-ms")) {
+            const raw = try optionValue(argv, &index, inline_value);
             args.timeout_ms = std.fmt.parseUnsigned(u64, raw, 10) catch return error.InvalidTimeout;
-        } else if (std.mem.eql(u8, arg, "--show-binds")) {
+        } else if (std.mem.eql(u8, name, "--show-binds")) {
+            if (inline_value != null) return error.UnexpectedValue;
             args.show_binds = true;
-        } else if (std.mem.eql(u8, arg, "--runs")) {
-            const raw = try nextValue(argv, &index);
+        } else if (std.mem.eql(u8, name, "--runs")) {
+            const raw = try optionValue(argv, &index, inline_value);
             args.runs = std.fmt.parseUnsigned(u32, raw, 10) catch return error.InvalidRuns;
             if (args.runs > max_runs) return error.InvalidRuns;
-        } else if (std.mem.eql(u8, arg, "--format")) {
-            const raw = try nextValue(argv, &index);
+        } else if (std.mem.eql(u8, name, "--format")) {
+            const raw = try optionValue(argv, &index, inline_value);
             args.format = std.meta.stringToEnum(Format, raw) orelse return error.InvalidFormat;
         } else if (arg.len != 0 and arg[0] == '-') {
             return error.UnknownOption;
@@ -114,6 +120,120 @@ fn nextValue(argv: []const [:0]const u8, index: *usize) ParseError![:0]const u8 
     index.* += 1;
     if (index.* == argv.len) return error.MissingValue;
     return argv[index.*];
+}
+
+const Inline = struct {
+    name: []const u8,
+    value: [:0]const u8,
+};
+
+fn splitInline(arg: [:0]const u8) ?Inline {
+    if (!std.mem.startsWith(u8, arg, "--")) return null;
+    const at = std.mem.indexOfScalar(u8, arg, '=') orelse return null;
+    return .{ .name = arg[0..at], .value = arg[at + 1 ..] };
+}
+
+fn optionValue(argv: []const [:0]const u8, index: *usize, inline_value: ?Inline) ParseError![:0]const u8 {
+    if (inline_value) |inl| return inl.value;
+    return nextValue(argv, index);
+}
+
+pub const required_option_count = 3;
+
+pub fn missingRequired(args: Args, buffer: *[required_option_count][]const u8) []const []const u8 {
+    var count: usize = 0;
+    if (args.db == null) {
+        buffer[count] = "--db";
+        count += 1;
+    }
+    if (args.select == null) {
+        buffer[count] = "--select";
+        count += 1;
+    }
+    if (args.index_sql == null) {
+        buffer[count] = "--index-sql";
+        count += 1;
+    }
+    return buffer[0..count];
+}
+
+const long_options = [_][]const u8{
+    "--help",
+    "--db",
+    "--select",
+    "--index-sql",
+    "--bind",
+    "--timeout-ms",
+    "--show-binds",
+    "--runs",
+    "--format",
+};
+
+const max_option_name = 32;
+
+pub fn suggestOptionName(arg: []const u8) ?[]const u8 {
+    const end = std.mem.indexOfScalar(u8, arg, '=') orelse arg.len;
+    const token = arg[0..end];
+    if (std.mem.startsWith(u8, token, "--")) return suggestLongOption(token[2..]);
+    if (token.len > 2 and token[0] == '-') {
+        for (long_options) |candidate| {
+            if (std.mem.eql(u8, candidate[2..], token[1..])) return candidate;
+        }
+    }
+    return null;
+}
+
+fn suggestLongOption(name: []const u8) ?[]const u8 {
+    if (name.len < 2) return null;
+    var best: ?[]const u8 = null;
+    var best_distance: usize = max_option_name + 1;
+    var best_prefix: usize = 0;
+    for (long_options) |candidate| {
+        const other = candidate[2..];
+        const prefix = commonPrefixLen(name, other);
+        if (name.len >= 3 and prefix == name.len) return candidate;
+        const distance = editDistance(name, other);
+        if (distance > suggestionLimit(other.len)) continue;
+        if (best == null or distance < best_distance or
+            (distance == best_distance and prefix > best_prefix))
+        {
+            best = candidate;
+            best_distance = distance;
+            best_prefix = prefix;
+        }
+    }
+    return best;
+}
+
+fn suggestionLimit(name_len: usize) usize {
+    if (name_len <= 2) return 1;
+    if (name_len <= 8) return 2;
+    return 3;
+}
+
+fn commonPrefixLen(a: []const u8, b: []const u8) usize {
+    const limit = @min(a.len, b.len);
+    var count: usize = 0;
+    while (count < limit and a[count] == b[count]) : (count += 1) {}
+    return count;
+}
+
+fn editDistance(a: []const u8, b: []const u8) usize {
+    if (a.len > max_option_name or b.len > max_option_name) return max_option_name + 1;
+    var previous: [max_option_name + 1]usize = undefined;
+    var current: [max_option_name + 1]usize = undefined;
+    for (0..b.len + 1) |position| previous[position] = position;
+    for (a, 0..) |a_byte, i| {
+        current[0] = i + 1;
+        for (b, 0..) |b_byte, j| {
+            const substitute = previous[j] + @as(usize, @intFromBool(a_byte != b_byte));
+            current[j + 1] = @min(@min(previous[j + 1] + 1, current[j] + 1), substitute);
+        }
+        const swap = previous;
+        previous = current;
+        current = swap;
+    }
+    return previous[b.len];
 }
 
 fn parseBind(raw: [:0]const u8) ParseError!db.BindArg {
@@ -150,10 +270,10 @@ fn parseBind(raw: [:0]const u8) ParseError!db.BindArg {
     return .{ .number = number, .value = value };
 }
 
+pub const usage_line = "usage: qenome --db <PATH> --select <FILE> --index-sql <FILE> [options]";
+
 pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
-    try writer.writeAll(
-        \\usage: qenome --db <PATH> --select <FILE> --index-sql <FILE> [options]
-        \\
+    try writer.writeAll(usage_line ++ "\n\n" ++
         \\Compares one read-only SELECT before and after one candidate CREATE INDEX
         \\on a local SQLite database, without changing the database.
         \\
@@ -180,7 +300,7 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\  automatic) are hints read from SQLite's wording; the detail text is
         \\  what SQLite reported.
         \\
-        \\options:
+        \\options (a value may also be written as --option=value):
         \\  --db <PATH>          SQLite database file (required)
         \\  --select <FILE>      file holding one read-only SELECT (required)
         \\  --index-sql <FILE>   file holding one candidate CREATE INDEX (required)
@@ -213,6 +333,7 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
 pub fn parseErrorMessage(err: ParseError) []const u8 {
     return switch (err) {
         error.MissingValue => "an option is missing its value (see --help)",
+        error.UnexpectedValue => "an option that takes no value was given one (see --help)",
         error.UnknownOption => "unknown option (see --help)",
         error.UnexpectedArgument => "unexpected argument (see --help)",
         error.InvalidBindFormat => "--bind expects <N>:<TYPE>[:<VALUE>] with TYPE int, real, text or null",
@@ -353,5 +474,85 @@ test "a parse error names the argument it is about" {
         var offending: ?[:0]const u8 = null;
         try testing.expectError(case.err, parseArgsReporting(testing.allocator, case.argv, &offending));
         try testing.expectEqualStrings(case.offending, offending.?);
+    }
+}
+
+test "a value option takes its value after an equals sign" {
+    const args = try parseArgs(testing.allocator, &.{
+        "Qenome",
+        "--db=db.sqlite",
+        "--select=select.sql",
+        "--index-sql=index.sql",
+        "--bind=1:text:a=b",
+        "--timeout-ms=0",
+        "--runs=3",
+        "--format=kv",
+    });
+    defer testing.allocator.free(args.binds);
+
+    try testing.expectEqualStrings("db.sqlite", args.db.?);
+    try testing.expectEqualStrings("select.sql", args.select.?);
+    try testing.expectEqualStrings("index.sql", args.index_sql.?);
+    try testing.expectEqual(@as(usize, 1), args.binds.len);
+    try testing.expectEqualStrings("a=b", args.binds[0].value.text);
+    try testing.expectEqual(@as(u64, 0), args.timeout_ms);
+    try testing.expectEqual(@as(u32, 3), args.runs);
+    try testing.expectEqual(Format.kv, args.format);
+}
+
+test "a flag rejects an inline value" {
+    for ([_][:0]const u8{ "--help=1", "--show-binds=true" }) |arg| {
+        var offending: ?[:0]const u8 = null;
+        try testing.expectError(
+            error.UnexpectedValue,
+            parseArgsReporting(testing.allocator, &.{ "Qenome", arg }, &offending),
+        );
+        try testing.expectEqualStrings(arg, offending.?);
+    }
+}
+
+test "missing required options keep the usage order" {
+    var buffer: [required_option_count][]const u8 = undefined;
+
+    const none = try parseArgs(testing.allocator, &.{"Qenome"});
+    defer testing.allocator.free(none.binds);
+    const all = missingRequired(none, &buffer);
+    try testing.expectEqual(@as(usize, 3), all.len);
+    try testing.expectEqualStrings("--db", all[0]);
+    try testing.expectEqualStrings("--select", all[1]);
+    try testing.expectEqualStrings("--index-sql", all[2]);
+
+    const partial = try parseArgs(testing.allocator, &.{ "Qenome", "--select", "s" });
+    defer testing.allocator.free(partial.binds);
+    const rest = missingRequired(partial, &buffer);
+    try testing.expectEqual(@as(usize, 2), rest.len);
+    try testing.expectEqualStrings("--db", rest[0]);
+    try testing.expectEqualStrings("--index-sql", rest[1]);
+}
+
+test "a misspelt option suggests the closest known name" {
+    const cases = [_]struct { given: []const u8, suggested: ?[]const u8 }{
+        .{ .given = "--run", .suggested = "--runs" },
+        .{ .given = "--run=3", .suggested = "--runs" },
+        .{ .given = "--indexsql", .suggested = "--index-sql" },
+        .{ .given = "--index", .suggested = "--index-sql" },
+        .{ .given = "--timout-ms", .suggested = "--timeout-ms" },
+        .{ .given = "--timeout", .suggested = "--timeout-ms" },
+        .{ .given = "--selec", .suggested = "--select" },
+        .{ .given = "--sel", .suggested = "--select" },
+        .{ .given = "--hepl", .suggested = "--help" },
+        .{ .given = "-db", .suggested = "--db" },
+        .{ .given = "--nope", .suggested = null },
+        .{ .given = "-d", .suggested = null },
+        .{ .given = "stray", .suggested = null },
+    };
+    for (cases) |case| {
+        const actual = suggestOptionName(case.given);
+        if (case.suggested) |expected| {
+            try testing.expect(actual != null);
+            try testing.expectEqualStrings(expected, actual.?);
+        } else {
+            try testing.expect(actual == null);
+        }
     }
 }

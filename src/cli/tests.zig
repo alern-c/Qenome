@@ -155,14 +155,39 @@ fn reportValue(stdout: []const u8, line_key: []const u8, key: []const u8) !u64 {
     return std.fmt.parseUnsigned(u64, rest[0..end], 10);
 }
 
-test "usage error for missing required arguments" {
+test "a bare invocation shows the synopsis and every missing option" {
     var stdout_buffer: [512]u8 = undefined;
-    var stderr_buffer: [512]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
     const result = callRun(testing.allocator, &.{"Qenome"}, null, &stdout_buffer, &stderr_buffer);
 
     try testing.expectEqual(ExitCode.usage, result.code);
     try testing.expectEqualStrings("", result.stdout);
-    try testing.expect(std.mem.indexOf(u8, result.stderr, "--db") != null);
+    try testing.expectEqualStrings(
+        "usage: qenome --db <PATH> --select <FILE> --index-sql <FILE> [options]\n" ++
+            "error: missing required options: --db, --select, --index-sql (see --help)\n",
+        result.stderr,
+    );
+}
+
+test "the remaining required options are listed together" {
+    const cases = [_]struct { argv: []const [:0]const u8, stderr: []const u8 }{
+        .{
+            .argv = &.{ "Qenome", "--db", "x" },
+            .stderr = "error: missing required options: --select, --index-sql (see --help)\n",
+        },
+        .{
+            .argv = &.{ "Qenome", "--db", "x", "--select", "y" },
+            .stderr = "error: missing required option: --index-sql (see --help)\n",
+        },
+    };
+    for (cases) |case| {
+        var stdout_buffer: [512]u8 = undefined;
+        var stderr_buffer: [512]u8 = undefined;
+        const result = callRun(testing.allocator, case.argv, null, &stdout_buffer, &stderr_buffer);
+        try testing.expectEqual(ExitCode.usage, result.code);
+        try testing.expectEqualStrings("", result.stdout);
+        try testing.expectEqualStrings(case.stderr, result.stderr);
+    }
 }
 
 test "unknown option" {
@@ -1128,6 +1153,72 @@ test "a usage error names the argument it is about" {
         try testing.expectEqualStrings("", result.stdout);
         try testing.expectEqualStrings(case.stderr, result.stderr);
     }
+}
+
+test "an unknown option suggests the closest known name" {
+    const cases = [_]struct { argv: []const [:0]const u8, stderr: []const u8 }{
+        .{
+            .argv = &.{ "Qenome", "--run", "3" },
+            .stderr = "error: unknown option '--run'; did you mean '--runs'? (see --help)\n",
+        },
+        .{
+            .argv = &.{ "Qenome", "--indexsql=x" },
+            .stderr = "error: unknown option '--indexsql=x'; did you mean '--index-sql'? (see --help)\n",
+        },
+        .{
+            .argv = &.{ "Qenome", "-db", "x" },
+            .stderr = "error: unknown option '-db'; did you mean '--db'? (see --help)\n",
+        },
+    };
+    for (cases) |case| {
+        var stdout_buffer: [512]u8 = undefined;
+        var stderr_buffer: [512]u8 = undefined;
+        const result = callRun(testing.allocator, case.argv, null, &stdout_buffer, &stderr_buffer);
+        try testing.expectEqual(ExitCode.usage, result.code);
+        try testing.expectEqualStrings("", result.stdout);
+        try testing.expectEqualStrings(case.stderr, result.stderr);
+    }
+}
+
+test "a flag does not take an inline value" {
+    const cases = [_]struct { arg: [:0]const u8, stderr: []const u8 }{
+        .{ .arg = "--show-binds=1", .stderr = "error: --show-binds does not take a value (see --help)\n" },
+        .{ .arg = "--help=1", .stderr = "error: --help does not take a value (see --help)\n" },
+    };
+    for (cases) |case| {
+        var stdout_buffer: [512]u8 = undefined;
+        var stderr_buffer: [512]u8 = undefined;
+        const result = callRun(testing.allocator, &.{ "Qenome", case.arg }, null, &stdout_buffer, &stderr_buffer);
+        try testing.expectEqual(ExitCode.usage, result.code);
+        try testing.expectEqualStrings("", result.stdout);
+        try testing.expectEqualStrings(case.stderr, result.stderr);
+    }
+}
+
+test "the equals form runs a comparison" {
+    var fixture = try CliFixture.init("SELECT a FROM t WHERE a = 1", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+
+    var db_buffer: [1024]u8 = undefined;
+    var select_buffer: [1024]u8 = undefined;
+    var index_buffer: [1024]u8 = undefined;
+    const db_arg = try std.mem.printSentinel(&db_buffer, "--db={s}", .{fixture.db_path}, 0);
+    const select_arg = try std.mem.printSentinel(&select_buffer, "--select={s}", .{fixture.select_path}, 0);
+    const index_arg = try std.mem.printSentinel(&index_buffer, "--index-sql={s}", .{fixture.index_path}, 0);
+
+    var stdout_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [512]u8 = undefined;
+    const result = callRun(
+        testing.allocator,
+        &.{ "Qenome", db_arg, select_arg, index_arg, "--runs=0", "--format=kv" },
+        fixture.work_parent,
+        &stdout_buffer,
+        &stderr_buffer,
+    );
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expect(contains(result.stdout, "result: match (row multiset)\n"));
+    try testing.expectEqualStrings("", result.stderr);
+    try fixture.expectNoLeftovers();
 }
 
 test "a bind error says how many parameters the SELECT has" {
