@@ -391,6 +391,12 @@ Baseline vs variant           baseline         variant          change
   ...
 ```
 
+#### エラー文
+
+- 不明なオプション・余分な引数は、その引数を示す（`error: unknown option '--nope' (see --help)`）。引数は利用者の文字列なので、例の値と同じエスケープで出す。値のないオプションは `error: --db needs a value (see --help)`。
+- `--bind` の誤りには、SELECTのパラメータ数と与えた `--bind` の数を添える（`(parameters in the SELECT: 1; --bind given: 0)`）。
+- 終了コードは変えていない。
+
 #### 実行確認
 
 [testdata/README.md](../testdata/README.md) の手順で作ったfixture（SHA-256 `ddca8dd2…`）と、`zig build -Doptimize=ReleaseFast` の実バイナリ（macOS・aarch64）で、変更前と変更後を同じ引数で実行した（`TMPDIR` は作業用の空フォルダ）。各実行の後、そのフォルダは空で、fixtureのSHA-256は変わらなかった。

@@ -73,9 +73,12 @@ pub const QuerySession = struct {
 
         db.bindAll(statement, binds) catch |err| {
             const detail = bindErrorMessage(err);
+            // The counts tell the user what to change without reading the
+            // SELECT again.
+            const counts: BindCounts = .{ .parameters = sqlite.sqlite3_bind_parameter_count(statement), .given = binds.len };
             switch (kind) {
-                .baseline => stderr.print("error: --bind: {s}\n", .{detail}) catch {},
-                .variant => stderr.print("error: --bind on the variant: {s}\n", .{detail}) catch {},
+                .baseline => stderr.print("error: --bind: {s} ({f})\n", .{ detail, counts }) catch {},
+                .variant => stderr.print("error: --bind on the variant: {s} ({f})\n", .{ detail, counts }) catch {},
             }
             failure.* = .rejected;
             return false;
@@ -249,6 +252,15 @@ pub fn reportStepFailure(
         },
     }
 }
+
+const BindCounts = struct {
+    parameters: c_int,
+    given: usize,
+
+    pub fn format(self: BindCounts, writer: *Io.Writer) Io.Writer.Error!void {
+        try writer.print("parameters in the SELECT: {d}; --bind given: {d}", .{ self.parameters, self.given });
+    }
+};
 
 fn openMessage(kind: Kind) []const u8 {
     return switch (kind) {

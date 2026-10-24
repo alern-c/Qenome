@@ -1169,13 +1169,36 @@ test "the default summary hides the bind values unless --show-binds is given" {
     try testing.expect(contains(shown.stdout, "  binds         1:int:1, 2:text:'secret', 3:null, 4:real:1.5e0\n  work dir"));
 }
 
-test "an unknown format is a usage error" {
-    var stdout_buffer: [512]u8 = undefined;
-    var stderr_buffer: [512]u8 = undefined;
-    const result = callRun(testing.allocator, &.{ "Qenome", "--format", "json" }, null, &stdout_buffer, &stderr_buffer);
-    try testing.expectEqual(ExitCode.usage, result.code);
+test "a usage error names the argument it is about" {
+    const cases = [_]struct { argv: []const [:0]const u8, stderr: []const u8 }{
+        .{ .argv = &.{ "Qenome", "--nope" }, .stderr = "error: unknown option '--nope' (see --help)\n" },
+        // The argument is the user's text, so it is escaped like a value.
+        .{ .argv = &.{ "Qenome", "--\x1b[2J" }, .stderr = "error: unknown option '--\\x1b[2J' (see --help)\n" },
+        .{ .argv = &.{ "Qenome", "stray.sql" }, .stderr = "error: unexpected argument 'stray.sql' (see --help)\n" },
+        .{ .argv = &.{ "Qenome", "--db" }, .stderr = "error: --db needs a value (see --help)\n" },
+        .{ .argv = &.{ "Qenome", "--format", "json" }, .stderr = "error: --format expects human or kv\n" },
+    };
+    for (cases) |case| {
+        var stdout_buffer: [512]u8 = undefined;
+        var stderr_buffer: [512]u8 = undefined;
+        const result = callRun(testing.allocator, case.argv, null, &stdout_buffer, &stderr_buffer);
+        try testing.expectEqual(ExitCode.usage, result.code);
+        try testing.expectEqualStrings("", result.stdout);
+        try testing.expectEqualStrings(case.stderr, result.stderr);
+    }
+}
+
+test "a bind error says how many parameters the SELECT has" {
+    var fixture = try CliFixture.init("SELECT a FROM t WHERE a = ?1", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+
+    var stdout_buffer: [1024]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const result = fixture.runFormat("human", &.{}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, result.code);
     try testing.expectEqualStrings("", result.stdout);
-    try testing.expectEqualStrings("error: --format expects human or kv\n", result.stderr);
+    try testing.expectEqualStrings("error: --bind: every number in 1..parameter count must be given exactly once (parameters in the SELECT: 1; --bind given: 0)\n", result.stderr);
+    try fixture.expectNoLeftovers();
 }
 
 test "help fits in 80 columns and names the formats" {

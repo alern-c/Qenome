@@ -104,6 +104,14 @@ pub const ParseError = error{
 /// A repeated option keeps its last value. `--help` and `-h` only set a flag;
 /// `run` decides what they do.
 pub fn parseArgs(allocator: std.mem.Allocator, argv: []const [:0]const u8) ParseError!Args {
+    var offending: ?[:0]const u8 = null;
+    return parseArgsReporting(allocator, argv, &offending);
+}
+
+/// `parseArgs`, and on an unknown option, an unexpected argument, or an
+/// option without its value, also the argument that caused it, so that the
+/// diagnostic can name it.
+pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const u8, offending: *?[:0]const u8) ParseError!Args {
     var args: Args = .{};
     var binds: std.ArrayList(db.BindArg) = .empty;
     errdefer binds.deinit(allocator);
@@ -111,6 +119,7 @@ pub fn parseArgs(allocator: std.mem.Allocator, argv: []const [:0]const u8) Parse
     var index: usize = 1;
     while (index < argv.len) : (index += 1) {
         const arg = argv[index];
+        offending.* = arg;
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             args.help = true;
         } else if (std.mem.eql(u8, arg, "--db")) {
@@ -140,6 +149,7 @@ pub fn parseArgs(allocator: std.mem.Allocator, argv: []const [:0]const u8) Parse
             return error.UnexpectedArgument;
         }
     }
+    offending.* = null;
     args.binds = try binds.toOwnedSlice(allocator);
     return args;
 }
@@ -382,5 +392,18 @@ test "format defaults to human and takes human or kv" {
     try testing.expectEqual(Format.human, human.format);
     for ([_][:0]const u8{ "json", "", "KV" }) |raw| {
         try testing.expectError(error.InvalidFormat, parseArgs(testing.allocator, &.{ "Qenome", "--format", raw }));
+    }
+}
+
+test "a parse error names the argument it is about" {
+    const cases = [_]struct { argv: []const [:0]const u8, err: ParseError, offending: []const u8 }{
+        .{ .argv = &.{ "Qenome", "--db", "d", "--nope" }, .err = error.UnknownOption, .offending = "--nope" },
+        .{ .argv = &.{ "Qenome", "stray" }, .err = error.UnexpectedArgument, .offending = "stray" },
+        .{ .argv = &.{ "Qenome", "--select" }, .err = error.MissingValue, .offending = "--select" },
+    };
+    for (cases) |case| {
+        var offending: ?[:0]const u8 = null;
+        try testing.expectError(case.err, parseArgsReporting(testing.allocator, case.argv, &offending));
+        try testing.expectEqualStrings(case.offending, offending.?);
     }
 }
