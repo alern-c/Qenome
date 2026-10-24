@@ -1,31 +1,16 @@
-//! Command line parsing and the input file contract.
-//!
-//! Nothing here touches a database; `readSqlFile` reads one SQL file.
-
 const std = @import("std");
 const Io = std.Io;
 const db = @import("../db.zig");
 
-/// The typed value of one `--bind` input, as the SQLite layer takes it.
 pub const BindArg = db.BindArg;
 
-/// Upper bound for a SQL input file (1 MiB). A file of exactly this size is
-/// still accepted.
 pub const max_sql_bytes = 1024 * 1024;
 
 pub const SqlFileError = error{
-    /// The file is larger than `max_sql_bytes`.
     SqlFileTooLarge,
-    /// The file contains a NUL byte. SQLite takes NUL-terminated strings, so a
-    /// NUL cannot be part of a statement.
     SqlFileContainsNul,
 };
 
-/// Reads a SQL file and returns it NUL-terminated for the SQLite C API.
-///
-/// `path` may be absolute or relative to the current directory. The size bound
-/// is enforced while reading; the reader reports `error.StreamTooLong` when the
-/// limit is reached, so one extra byte is allowed before rejecting.
 pub fn readSqlFile(io: Io, allocator: std.mem.Allocator, path: []const u8) (SqlFileError || Io.Dir.ReadFileAllocError)![:0]u8 {
     const data = Io.Dir.cwd().readFileAllocOptions(
         io,
@@ -43,74 +28,45 @@ pub fn readSqlFile(io: Io, allocator: std.mem.Allocator, path: []const u8) (SqlF
     return data;
 }
 
-/// Default value of `--timeout-ms`.
 pub const default_timeout_ms: u64 = 30_000;
 
-/// Timed rounds per run unless `--runs` says otherwise. One round times the
-/// SELECT once on each copy.
 pub const default_runs: u32 = 10;
 
-/// Most rounds `--runs` accepts, so that the samples and the wait stay
-/// bounded.
 pub const max_runs: u32 = 1000;
 
-/// How the summary is written on stdout.
 pub const Format = enum {
-    /// Sections for people, the conclusion first (the default).
     human,
-    /// One `key: value` per line, for scripts and logs (D-510).
     kv,
 };
 
-/// Parsed command line. `binds` is owned by the allocator passed to
-/// `parseArgs`.
 pub const Args = struct {
     db: ?[:0]const u8 = null,
     select: ?[:0]const u8 = null,
     index_sql: ?[:0]const u8 = null,
     binds: []const db.BindArg = &.{},
-    /// Time limit for the index build and for each SELECT run; `0` disables
-    /// it.
     timeout_ms: u64 = default_timeout_ms,
-    /// Timed rounds after the result comparison; `0` skips the timing.
     runs: u32 = default_runs,
-    /// Print the bind values in the summary instead of their types only.
     show_binds: bool = false,
     format: Format = .human,
     help: bool = false,
 };
 
 pub const ParseError = error{
-    /// An option that needs a value is the last argument.
     MissingValue,
-    /// An argument starts with `-` and is not an option of this CLI.
     UnknownOption,
-    /// A positional argument was given.
     UnexpectedArgument,
-    /// `--bind` does not follow `<N>:<TYPE>[:<VALUE>]`.
     InvalidBindFormat,
-    /// `--timeout-ms` is not a non-negative decimal integer.
     InvalidTimeout,
-    /// `--runs` is not a decimal integer in `0..max_runs`.
     InvalidRuns,
-    /// `--format` is not one of the `Format` names.
     InvalidFormat,
     OutOfMemory,
 };
 
-/// Parses `argv`, including the program name at `argv[0]`, without touching
-/// any file or database.
-///
-/// A repeated option keeps its last value. `--help` and `-h` only set a flag;
-/// `run` decides what they do.
 pub fn parseArgs(allocator: std.mem.Allocator, argv: []const [:0]const u8) ParseError!Args {
     var offending: ?[:0]const u8 = null;
     return parseArgsReporting(allocator, argv, &offending);
 }
 
-/// `parseArgs`, and on an unknown option, an unexpected argument, or an
-/// option without its value, also the argument that caused it, so that the
-/// diagnostic can name it.
 pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const u8, offending: *?[:0]const u8) ParseError!Args {
     var args: Args = .{};
     var binds: std.ArrayList(db.BindArg) = .empty;
@@ -160,11 +116,6 @@ fn nextValue(argv: []const [:0]const u8, index: *usize) ParseError![:0]const u8 
     return argv[index.*];
 }
 
-/// Parses one `--bind` value: `<N>:<TYPE>[:<VALUE>]`.
-///
-/// Only the first two colons separate the fields, so a text value may hold
-/// colons itself. `null` takes no value; `int`, `real` and `text` need one
-/// (an empty text value is allowed and means the empty string).
 fn parseBind(raw: [:0]const u8) ParseError!db.BindArg {
     const separator = std.mem.indexOfScalar(u8, raw, ':') orelse return error.InvalidBindFormat;
     const number_text = raw[0..separator];
@@ -184,8 +135,6 @@ fn parseBind(raw: [:0]const u8) ParseError!db.BindArg {
         if (std.mem.eql(u8, type_text, "real")) {
             const text = value_text orelse return error.InvalidBindFormat;
             const parsed = std.fmt.parseFloat(f64, text) catch return error.InvalidBindFormat;
-            // SQLite stores NaN as NULL, which would silently lose the
-            // declared type, so a NaN is not a usable `real` value.
             if (std.math.isNan(parsed)) return error.InvalidBindFormat;
             break :blk .{ .real = parsed };
         }
@@ -201,7 +150,6 @@ fn parseBind(raw: [:0]const u8) ParseError!db.BindArg {
     return .{ .number = number, .value = value };
 }
 
-/// Writes the CLI contract to `writer`.
 pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
     try writer.writeAll(
         \\usage: qenome --db <PATH> --select <FILE> --index-sql <FILE> [options]

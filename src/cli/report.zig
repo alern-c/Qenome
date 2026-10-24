@@ -1,7 +1,3 @@
-//! Writing the finished summary, either for people (the conclusion first,
-//! the two copies side by side) or as `key: value` lines for scripts. The
-//! display code never opens a database.
-
 const std = @import("std");
 const Io = std.Io;
 const builtin = @import("builtin");
@@ -12,8 +8,6 @@ const cli_timing = @import("timing.zig");
 const PlanRow = cli_comparison.PlanRow;
 const Plan = @FieldType(cli_comparison.Measurement, "plan");
 
-/// The run input paths, the version strings the database stage read, and the
-/// binds, ready to print.
 pub const Header = struct {
     database_path: []const u8,
     select_path: []const u8,
@@ -30,15 +24,12 @@ pub const Sizes = struct {
     variant: u64 = 0,
 };
 
-/// What the timing adds to the summary.
 pub const TimeReport = struct {
-    /// Null when the SELECT was not timed.
     timing: ?cli_timing.TimeSummary = null,
     sizes: Sizes = .{},
     judgement: cli_timing.Judgement,
 };
 
-/// Writes the summary in `format`. Both formats carry the same facts.
 pub fn writeReport(
     stdout: *Io.Writer,
     format: cli_args.Format,
@@ -54,14 +45,6 @@ pub fn writeReport(
     }
 }
 
-/// Writes the summary as `key: value` lines (D-510): the inputs once, then one
-/// block per copy that starts with `measured-on`, then the comparison. A plan
-/// line keeps its SQLite detail last because the detail contains spaces.
-///
-/// The baseline block is unchanged from the single-copy summary, so its
-/// values are those of the snapshot without the candidate index (D-304); the
-/// variant block has the index. Keys repeat between the blocks, so read them
-/// in order.
 pub fn writeSummary(
     stdout: *Io.Writer,
     header: Header,
@@ -82,8 +65,6 @@ pub fn writeSummary(
 
     switch (outcome.verdict) {
         .match => try stdout.writeAll("result: match (row multiset)\n"),
-        // The cause is not judged: an index should not change the rows, but
-        // order-dependent SQL can (D-505).
         .mismatch => try stdout.writeAll("result: mismatch (row multiset; the cause is not determined)\n"),
         .incomparable => try stdout.writeAll("result: incomparable\n"),
     }
@@ -104,7 +85,6 @@ pub fn writeSummary(
             try stdout.writeByte('\n');
         }
     };
-    // The order is only a reference and only for a match (D-503, D-510).
     const order = if (outcome.verdict != .match)
         "not applicable"
     else if (outcome.comparison.?.same_order)
@@ -115,9 +95,6 @@ pub fn writeSummary(
     try writeTimeReport(stdout, header, report);
 }
 
-/// Writes the measurement after the comparison (D-601, D-602): the binds and
-/// the conditions, the versions, the times, the sizes, then the verdict. The
-/// lines come after `row-order`, so the blocks above keep their shape.
 pub fn writeTimeReport(stdout: *Io.Writer, header: Header, report: TimeReport) Io.Writer.Error!void {
     if (header.binds.len == 0) try stdout.writeAll("bind: none\n");
     for (header.binds) |bind| {
@@ -162,15 +139,11 @@ pub fn writeTimeReport(stdout: *Io.Writer, header: Header, report: TimeReport) I
     }
 }
 
-// The measurement conditions, the same in both formats (D-601).
 const measure_warmup = "1 per copy (the run whose rows were compared, not timed)";
 const measure_order = "rounds alternate baseline-variant and variant-baseline (ABBA)";
 const measure_scope = "sqlite3_step from the reset statement to SQLITE_DONE with the interrupt checks; columns are not read; prepare, bind, and the plan read are not timed";
 const measure_cache = "warm; each copy reuses its connection and page cache, and its file was just written";
 
-/// Writes one bind as `N:type`, with the TEXT length, or as `N:type:value`
-/// when `show` is set. The values may be someone's data, and the summary may
-/// end up in a log, so only the shape is printed unless asked for (D-605).
 fn writeBind(writer: *Io.Writer, bind: cli_args.BindArg, show: bool) Io.Writer.Error!void {
     try writer.print("{d}:", .{bind.number});
     if (!show) {
@@ -197,9 +170,6 @@ pub fn writeStats(stdout: *Io.Writer, key: []const u8, stats: cli_timing.Stats) 
     try stdout.writeAll(")\n");
 }
 
-/// Writes `ns` in the largest of ns, us, ms and s that keeps it under 1000
-/// after rounding to two decimals, so 999999 ns is `1.00 ms`, not
-/// `1000.00 us` (D-603). The units are ASCII.
 pub fn writeDuration(writer: *Io.Writer, ns: u64) Io.Writer.Error!void {
     if (ns < 1000) return writer.print("{d} ns", .{ns});
     const units = [_]struct { name: []const u8, ns: f64 }{
@@ -225,18 +195,10 @@ pub fn writePlanAndCounters(stdout: *Io.Writer, measurement: cli_comparison.Meas
     });
 }
 
-/// The width the human summary keeps to. The tables always fit; texts that
-/// come from the user or from SQLite (paths, plan lines, example rows) are
-/// never broken, so only they can run past it.
 const line_width = 80;
 
-/// Where the value of a `label  value` line starts.
 const value_column = 16;
 
-/// Writes the summary for people: what the run concluded first, then the two
-/// copies side by side, then the details in the order a reader looks for
-/// them. Every fact of the `key: value` summary is here too, so nothing is
-/// lost by reading this one.
 pub fn writeHumanSummary(
     stdout: *Io.Writer,
     header: Header,
@@ -315,8 +277,6 @@ fn writeOverview(
     try writeField(stdout, "db size", text.buffered());
 }
 
-/// The numbers of both copies in columns, so that a reader compares them on
-/// one line instead of looking for the same key twice.
 fn writeSideBySide(
     stdout: *Io.Writer,
     before: cli_comparison.Measurement,
@@ -366,24 +326,18 @@ fn writeTimeRow(stdout: *Io.Writer, label: []const u8, baseline: u64, variant: u
     try writeTableRow(stdout, label, baseline_text.buffered(), variant_text.buffered(), change);
 }
 
-/// One table row; an empty last cell leaves no trailing spaces.
 fn writeTableRow(stdout: *Io.Writer, label: []const u8, baseline: []const u8, variant: []const u8, change: []const u8) Io.Writer.Error!void {
     try stdout.print("  {s:<20}{s:>16}{s:>16}", .{ label, baseline, variant });
     if (change.len != 0) try stdout.print("{s:>16}", .{change});
     try stdout.writeByte('\n');
 }
 
-/// The variant median as a fraction of the baseline median, as `0.009x`.
 fn writeRatio(writer: *Io.Writer, baseline: u64, variant: u64) Io.Writer.Error!void {
     if (baseline == 0) return writer.writeAll("n/a");
     const ratio = @as(f64, @floatFromInt(variant)) / @as(f64, @floatFromInt(baseline));
     try writer.print("{d:.3}x", .{ratio});
 }
 
-/// One plan line per row, nested under its parent as SQLite nests them. The
-/// detail is SQLite's own text and comes first, whole; the labels are hints
-/// read from it (D-303), and the ids are kept for the record. The labels move
-/// to the next line when they would push the line past the width.
 fn writePlan(stdout: *Io.Writer, plan: Plan) Io.Writer.Error!void {
     if (plan.rows.len == 0) return stdout.writeAll("    (no plan lines)\n");
     for (plan.rows) |row| {
@@ -407,8 +361,6 @@ fn writePlan(stdout: *Io.Writer, plan: Plan) Io.Writer.Error!void {
     }
 }
 
-/// How many lines `row` hangs under. The walk is bounded by the plan size,
-/// so a parent id that points back into its own subtree cannot loop.
 fn planDepth(plan: Plan, row: PlanRow) usize {
     var depth: usize = 0;
     var parent = row.parent;
@@ -424,8 +376,6 @@ fn writeRowsDetail(stdout: *Io.Writer, outcome: cli_comparison.Outcome) Io.Write
     try writeIndent(stdout, 2);
     try writeWrapped(stdout, switch (outcome.verdict) {
         .match => "match: the same rows on both copies, compared as a multiset (each distinct row the same number of times)",
-        // The cause is not judged: an index should not change the rows, but
-        // order-dependent SQL can (D-505).
         .mismatch => "MISMATCH: the rows differ, compared as a multiset; the cause is not determined",
         .incomparable => "INCOMPARABLE: the rows of the two copies cannot be compared",
     }, 2, 4);
@@ -447,9 +397,6 @@ fn writeRowsDetail(stdout: *Io.Writer, outcome: cli_comparison.Outcome) Io.Write
     try writeField(stdout, "row order", rowOrder(outcome));
 }
 
-/// The rows one copy has and the other does not, with the first of them
-/// written as `writeRow` writes them: the values come from the database, so
-/// they are escaped and never wrapped.
 fn writeExamples(stdout: *Io.Writer, label: []const u8, count: usize, examples: []const []const u8) Io.Writer.Error!void {
     var buffer: [64]u8 = undefined;
     var text = Io.Writer.fixed(&buffer);
@@ -464,7 +411,6 @@ fn writeExamples(stdout: *Io.Writer, label: []const u8, count: usize, examples: 
     }
 }
 
-/// The order is only a reference and only for a match (D-503, D-510).
 fn rowOrder(outcome: cli_comparison.Outcome) []const u8 {
     return if (outcome.verdict != .match)
         "not applicable"
@@ -491,8 +437,6 @@ fn writeTimingDetail(stdout: *Io.Writer, report: TimeReport) Io.Writer.Error!voi
     }
 }
 
-/// The samples in nanoseconds as they were measured, for a reader who needs
-/// more than the two decimals of the table.
 fn writeRawStats(stdout: *Io.Writer, label: []const u8, stats: cli_timing.Stats) Io.Writer.Error!void {
     var buffer: [160]u8 = undefined;
     var text = Io.Writer.fixed(&buffer);
@@ -501,8 +445,6 @@ fn writeRawStats(stdout: *Io.Writer, label: []const u8, stats: cli_timing.Stats)
 }
 
 fn writeRunDetail(stdout: *Io.Writer, header: Header) Io.Writer.Error!void {
-    // Paths are the user's own text: they are never wrapped or cut, only
-    // their control characters are escaped.
     try writeRawField(stdout, "db", header.database_path);
     try writeRawField(stdout, "select", header.select_path);
     try writeRawField(stdout, "index-sql", header.index_path);
@@ -525,22 +467,17 @@ fn writeRunDetail(stdout: *Io.Writer, header: Header) Io.Writer.Error!void {
     try writeField(stdout, "os-arch", @tagName(builtin.os.tag) ++ "-" ++ @tagName(builtin.cpu.arch));
 }
 
-/// `  label` padded to the value column.
 fn writeLabel(stdout: *Io.Writer, label: []const u8) Io.Writer.Error!void {
     try stdout.print("  {s}", .{label});
     try writeIndent(stdout, value_column -| (2 + label.len));
 }
 
-/// A `label  value` line whose value is wrapped at spaces under itself.
 fn writeField(stdout: *Io.Writer, label: []const u8, value: []const u8) Io.Writer.Error!void {
     try writeLabel(stdout, label);
     try writeWrapped(stdout, value, value_column, value_column);
     try stdout.writeByte('\n');
 }
 
-/// A `label  value` line whose value is written whole, on one line. An ASCII
-/// control character becomes `\xNN`, so that a path cannot split the line or
-/// steer the terminal.
 fn writeRawField(stdout: *Io.Writer, label: []const u8, value: []const u8) Io.Writer.Error!void {
     try writeLabel(stdout, label);
     for (value) |byte| switch (byte) {
@@ -554,9 +491,6 @@ fn writeIndent(writer: *Io.Writer, count: usize) Io.Writer.Error!void {
     try writer.splatByteAll(' ', count);
 }
 
-/// Writes `text` starting at `column`, breaking at spaces so that a line
-/// stays within `line_width`; a continued line starts at `indent`. A word
-/// longer than the room left is written whole.
 fn writeWrapped(writer: *Io.Writer, text: []const u8, column: usize, indent: usize) Io.Writer.Error!void {
     var at = column;
     var first = true;
@@ -578,7 +512,6 @@ fn writeWrapped(writer: *Io.Writer, text: []const u8, column: usize, indent: usi
     }
 }
 
-/// Writes `value` with a comma between each group of three digits.
 pub fn writeCount(writer: *Io.Writer, value: u128) Io.Writer.Error!void {
     var digits_buffer: [40]u8 = undefined;
     const digits = std.fmt.bufPrint(&digits_buffer, "{d}", .{value}) catch unreachable;
@@ -588,14 +521,12 @@ pub fn writeCount(writer: *Io.Writer, value: u128) Io.Writer.Error!void {
     }
 }
 
-/// Writes a difference with its sign, `+1,234` or `-1,234`, or `0`.
 pub fn writeSigned(writer: *Io.Writer, value: i128) Io.Writer.Error!void {
     if (value > 0) try writer.writeByte('+');
     if (value < 0) try writer.writeByte('-');
     try writeCount(writer, @abs(value));
 }
 
-/// Writes a byte difference in MiB with its sign and two decimals.
 fn writeMebibytes(writer: *Io.Writer, bytes: i128) Io.Writer.Error!void {
     const mib = @as(f64, @floatFromInt(@abs(bytes))) / (1024 * 1024);
     const sign: []const u8 = if (bytes > 0) "+" else if (bytes < 0) "-" else "";
@@ -627,9 +558,6 @@ test "a duration keeps under 1000 of its unit after rounding" {
 const scan_line = [_]cli_comparison.PlanRow{.{ .id = 2, .parent = 0, .label = .{ .kind = .scan }, .detail = "SCAN t" }};
 
 test "the summary keeps its block order without a database" {
-    // The summary is built from data that is already finished: the header
-    // carries the version strings and the paths, so the display code never
-    // opens anything.
     var buffer: [4096]u8 = undefined;
     var stdout = Io.Writer.fixed(&buffer);
     const binds = [_]cli_args.BindArg{.{ .number = 1, .value = .{ .int = 7 } }};
@@ -730,8 +658,6 @@ test "the human summary puts the conclusion first and the copies side by side" {
         .binds = &binds,
         .show_binds = false,
     };
-    // A child line under the search, to show the nesting, and a detail long
-    // enough to push its labels to the next line.
     const search_lines = [_]cli_comparison.PlanRow{
         .{ .id = 3, .parent = 0, .label = .{ .kind = .search, .covering = true }, .detail = "SEARCH t USING COVERING INDEX idx_a (a=?)" },
         .{ .id = 5, .parent = 3, .label = .{ .kind = .other }, .detail = "CORRELATED SCALAR SUBQUERY 1 WITH A VERY LONG DETAIL THAT FILLS THE LINE" },
@@ -824,7 +750,6 @@ test "the human summary puts the conclusion first and the copies side by side" {
         \\
     ;
     try testing.expectEqualStrings(expected, stdout.buffered()[0..@min(expected.len, stdout.buffered().len)]);
-    // The versions of this build end the summary.
     try testing.expect(std.mem.endsWith(u8, stdout.buffered(), "  zig           " ++ builtin.zig_version_string ++ "\n  build mode    " ++ @tagName(builtin.mode) ++ "\n  os-arch       " ++ @tagName(builtin.os.tag) ++ "-" ++ @tagName(builtin.cpu.arch) ++ "\n"));
     var lines = std.mem.splitScalar(u8, stdout.buffered(), '\n');
     while (lines.next()) |line| try testing.expect(line.len <= line_width);
@@ -904,10 +829,8 @@ test "a plan whose parents loop still ends" {
         .{ .id = 5, .parent = 99, .label = .{ .kind = .scan }, .detail = "SCAN d" },
     };
     const plan: Plan = .{ .rows = @constCast(&looped) };
-    // The walk stops after as many steps as the plan has lines.
     try testing.expectEqual(@as(usize, 4), planDepth(plan, looped[0]));
     try testing.expectEqual(@as(usize, 4), planDepth(plan, looped[2]));
-    // A parent that is not in the plan is the top level.
     try testing.expectEqual(@as(usize, 0), planDepth(plan, looped[3]));
 }
 
@@ -953,8 +876,6 @@ test "the kv summary keeps every line of the single-format summary" {
         .judgement = .{ .verdict = .improved },
     };
     try writeReport(&stdout, .kv, header, before, after, outcome, report);
-    // The lines and their order are those of the summary before `--format`
-    // existed, byte for byte; scripts read them.
     try testing.expectEqualStrings(
         \\db: db.sqlite
         \\select: select.sql

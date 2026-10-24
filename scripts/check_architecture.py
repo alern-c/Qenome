@@ -1,35 +1,7 @@
-#!/usr/bin/env python3
-"""Check the source boundaries of the CLI split (read-only).
-
-The rules here are the machine-readable half of `docs/architecture.md`; that
-document describes the same rules for people, including what this check cannot
-see. The check never writes anything.
-
-Every file it knows about is a file of the CLI split, and every `@import` in
-them must be one of the forms below and point at an approved file:
-
-  const name = @import("path");
-  pub const name = @import("path");
-  _ = @import("path");            # only as the test entry of src/cli.zig
-
-Anything that contains the word `@import` but is not one of the forms below
-is a failure, because the check cannot tell code from comments and strings
-without a full Zig parser. That keeps the check from silently skipping a
-variant such as `@import ("path")` or an `@import` whose argument starts on the
-next line. A comment that mentions `@import` therefore fails the check on
-purpose; keep such text out of the sources, or rewrite the check and its tests
-together.
-
-Exit codes: 0 clean, 1 at least one violation, 2 the arguments cannot be used.
-Usage: python3 scripts/check_architecture.py [--root DIR]
-"""
-
 import os
 import re
 import sys
 
-# The files of the CLI split. A missing file fails; a file under src/cli/ that
-# is not in this list fails too.
 APPROVED_FILES = [
     "src/cli.zig",
     "src/cli/args.zig",
@@ -42,12 +14,8 @@ APPROVED_FILES = [
     "src/cli/tests.zig",
 ]
 
-# The files that are part of a normal build. tests.zig is only reachable from
-# src/cli.zig's test entry, so it is not a node of the production graph.
 PRODUCTION_FILES = [path for path in APPROVED_FILES if path != "src/cli/tests.zig"]
 
-# Project files each production file may import. `std` and `builtin` are
-# allowed everywhere and are not listed.
 PRODUCTION_IMPORTS = {
     "src/cli.zig": [
         "src/db.zig",
@@ -90,8 +58,6 @@ PRODUCTION_IMPORTS = {
     ],
 }
 
-# The one file that may import the test file. Its imports are the test table:
-# the whole CLI and the layers the tests drive directly.
 TEST_ENTRY_IMPORTER = "src/cli.zig"
 TEST_ENTRY_TARGET = "src/cli/tests.zig"
 TEST_ENTRY_PATH_TEXT = "cli/tests.zig"
@@ -119,30 +85,22 @@ ENTRY_IMPORT = re.compile(r'^\s*_ = @import\("([^"\\]*)"\);\s*$')
 TEST_BLOCK_START = re.compile(r"^test \{\s*$")
 COMMENT_OR_BLANK = re.compile(r"^\s*(//.*)?$")
 
-
 class Source:
-    """One checked file: its lines, its imports, and its test blocks."""
 
     def __init__(self, path, lines):
         self.path = path
         self.lines = lines
-        self.imports = []  # (line number, path text, form)
-        self.test_blocks = []  # (first line number, last line number)
-
+        self.imports = []
+        self.test_blocks = []
 
 def read_source(root, rel_path):
-    """Read one file; returns (Source, None), or (None, error text) when it
-    cannot be read."""
     try:
         with open(os.path.join(root, rel_path), encoding="utf-8") as handle:
             return Source(rel_path, handle.read().split("\n")), None
     except (OSError, UnicodeDecodeError) as error:
         return None, str(error)
 
-
 def parse(source, violations):
-    """Find the supported imports and the test blocks, and flag anything else
-    that looks like an import."""
     for index, line in enumerate(source.lines):
         number = index + 1
         if not IMPORT_CANDIDATE.search(line):
@@ -171,11 +129,7 @@ def parse(source, violations):
             source.test_blocks.append((start + 1, index + 1))
             start = None
 
-
 def resolve(importer, path_text):
-    """The project path an import points at, or None when it leaves the
-    repository root. A path without a leading dot is relative to the importing
-    file's directory, as Zig resolves it."""
     resolved = os.path.normpath(
         os.path.join(os.path.dirname(importer), path_text.replace("/", os.sep))
     )
@@ -183,9 +137,7 @@ def resolve(importer, path_text):
         return None
     return resolved.replace(os.sep, "/")
 
-
 def check_files(root, sources, violations):
-    """Missing approved files, and unknown files under src/cli/."""
     for rel_path in APPROVED_FILES:
         if rel_path not in sources:
             violations.append((rel_path, 0, "missing-file", "the approved file is missing"))
@@ -206,7 +158,6 @@ def check_files(root, sources, violations):
             violations.append(
                 (rel_path, 0, "unknown-file", "a file under src/cli/ that the rules do not know")
             )
-
 
 def check_imports(sources, violations):
     for rel_path, source in sorted(sources.items()):
@@ -230,7 +181,7 @@ def check_imports(sources, violations):
                 )
                 continue
             if resolved == TEST_ENTRY_TARGET:
-                continue  # checked by check_test_entry
+                continue
             if resolved not in table:
                 violations.append(
                     (
@@ -241,10 +192,7 @@ def check_imports(sources, violations):
                     )
                 )
 
-
 def check_test_entry(sources, violations):
-    """The test file is imported exactly once, from the test entry of
-    src/cli.zig, and that entry holds nothing else."""
     importers = []
     for rel_path, source in sorted(sources.items()):
         for number, path_text, form in source.imports:
@@ -296,10 +244,7 @@ def check_test_entry(sources, violations):
             )
         )
 
-
 def check_cycles(sources, violations):
-    """Cycles among the production files. The edge to the test file is not part
-    of the graph (the test file is not a production file)."""
     graph = {}
     for rel_path in PRODUCTION_FILES:
         edges = []
@@ -314,7 +259,7 @@ def check_cycles(sources, violations):
                 edges.append(resolved)
         graph[rel_path] = edges
 
-    state = {}  # 0 unseen, 1 on the stack, 2 done
+    state = {}
     stack = []
 
     def walk(node):
@@ -337,13 +282,12 @@ def check_cycles(sources, violations):
         if state.get(node, 0) == 0 and walk(node):
             return
 
-
 def run(root):
     violations = []
     sources = {}
     for rel_path in APPROVED_FILES:
         if not os.path.isfile(os.path.join(root, rel_path)):
-            continue  # reported as missing-file
+            continue
         source, error = read_source(root, rel_path)
         if error is not None:
             violations.append(
@@ -358,7 +302,6 @@ def run(root):
     check_test_entry(sources, violations)
     check_cycles(sources, violations)
     return violations
-
 
 def main(argv):
     root = None
@@ -384,7 +327,6 @@ def main(argv):
         return 1
     print(f"architecture: ok ({len(APPROVED_FILES)} files checked, root={root})")
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv))

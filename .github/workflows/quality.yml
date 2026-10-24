@@ -1,20 +1,3 @@
-# Qenome の品質チェック（整形・ビルド・テスト・境界）
-#
-# 最小手順（Zig 0.17.0 で確認済み。Zig の版は build.zig.zon の minimum_zig_version が唯一の宣言）
-#   zig version        # 0.17.0 を期待
-#   zig build          # ビルド（Build Summary: 3/3 steps succeeded）
-#   zig build run      # 実行（"All your codebase are belong to us." などを出力）
-#   zig build test     # テスト（成功時は無出力。--summary all を付けると判定が見える）
-#   zig fmt --check .  # 整形チェック（.zig を再帰、build.zig.zon も対象）
-#   python3 scripts/test_check_architecture.py  # 境界チェック自身の検証
-#   python3 scripts/check_architecture.py       # 境界の検査（docs/architecture.md）
-#
-# 補足:
-# - setup-zig の version は指定しない。build.zig.zon の minimum_zig_version から解決させるため。
-#   解決に失敗すると latest に落ちるので、直後のステップで実 version の一致を検証する。
-# - runs-on は ubuntu-latest のみ（macOS ランナーは分数消費が大きいため）。zig build run は実行しない。
-# - 境界チェックはランナーの標準の python3（3.9以上）と標準ライブラリだけで動き、追加のパッケージを要さない。
-
 name: quality
 
 on:
@@ -62,3 +45,9 @@ jobs:
 
       - name: Check the architecture boundaries
         run: python3 scripts/check_architecture.py
+
+      - name: Test the comment checker
+        run: python3 scripts/test_check_comments.py
+
+      - name: Check for comments
+        run: python3 scripts/check_comments.py
