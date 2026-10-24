@@ -798,7 +798,9 @@ test "a missing temporary directory parent exits 1" {
 
     try testing.expectEqual(ExitCode.rejected, result.code);
     try testing.expectEqualStrings("", result.stdout);
-    try testing.expect(std.mem.indexOf(u8, result.stderr, "temporary directory") != null);
+    try testing.expect(contains(result.stderr, "temporary directory"));
+    try testing.expect(contains(result.stderr, ": no such file\n"));
+    try testing.expect(!contains(result.stderr, "FileNotFound"));
 }
 
 test "a missing database exits 1 and leaves no temporary directory" {
@@ -1309,6 +1311,137 @@ test "the equals form runs a comparison" {
     try fixture.expectNoLeftovers();
 }
 
+test "sql text in place of a file path gets a hint" {
+    var stdout_buffer: [1024]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const result = callRun(
+        testing.allocator,
+        &.{ "Qenome", "--db", "d", "--select", "SELECT 1", "--index-sql", "i" },
+        null,
+        &stdout_buffer,
+        &stderr_buffer,
+    );
+    try testing.expectEqual(ExitCode.rejected, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try testing.expectEqualStrings(
+        "error: cannot read --select file 'SELECT 1': no such file; --select takes a path to a file holding the SQL, not the SQL text\n",
+        result.stderr,
+    );
+}
+
+test "sql text in place of the index file gets a hint" {
+    var fixture = try CliFixture.init("SELECT a FROM t WHERE a = 1", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+
+    var stdout_buffer: [1024]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const result = callRun(
+        testing.allocator,
+        &.{ "Qenome", "--db", fixture.db_path, "--select", fixture.select_path, "--index-sql", "CREATE INDEX idx_a ON t(a)" },
+        fixture.work_parent,
+        &stdout_buffer,
+        &stderr_buffer,
+    );
+    try testing.expectEqual(ExitCode.rejected, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try testing.expectEqualStrings(
+        "error: cannot read --index-sql file 'CREATE INDEX idx_a ON t(a)': no such file; --index-sql takes a path to a file holding the SQL, not the SQL text\n",
+        result.stderr,
+    );
+}
+
+test "a directory in place of a file says it is a directory" {
+    var fixture = try CliFixture.init("SELECT a FROM t WHERE a = 1", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+
+    var stdout_buffer: [1024]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const result = callRun(
+        testing.allocator,
+        &.{ "Qenome", "--db", fixture.db_path, "--select", fixture.work_parent, "--index-sql", fixture.index_path },
+        null,
+        &stdout_buffer,
+        &stderr_buffer,
+    );
+    try testing.expectEqual(ExitCode.rejected, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try testing.expect(contains(result.stderr, ": is a directory\n"));
+    try testing.expect(!contains(result.stderr, "IsDir"));
+}
+
+test "bind count errors name the problem and the next step" {
+    const cases = [_]struct {
+        select_sql: [:0]const u8,
+        index_sql: [:0]const u8,
+        extra: []const [:0]const u8,
+        stderr: []const u8,
+    }{
+        .{
+            .select_sql = "SELECT a FROM t WHERE a = ?1 AND b = ?2",
+            .index_sql = "CREATE INDEX idx_a ON t(a)",
+            .extra = &.{ "--bind", "2:int:1" },
+            .stderr = "error: --bind: the SELECT has 2 parameters but --bind is missing parameter 1; add one per parameter, e.g. --bind 1:int:1234 (parameters in the SELECT: 2; --bind given: 1)\n",
+        },
+        .{
+            .select_sql = "SELECT a FROM t WHERE a = ?1 AND b = ?2",
+            .index_sql = "CREATE INDEX idx_a ON t(a)",
+            .extra = &.{ "--bind", "1:int:1", "--bind", "1:text:x" },
+            .stderr = "error: --bind: bind number 1 is given more than once; give each parameter once, e.g. --bind 1:int:1234 (parameters in the SELECT: 2; --bind given: 2)\n",
+        },
+        .{
+            .select_sql = "SELECT a FROM t WHERE a = ?1 AND b = ?2",
+            .index_sql = "CREATE INDEX idx_a ON t(a)",
+            .extra = &.{ "--bind", "3:int:1" },
+            .stderr = "error: --bind: bind number 3 is outside 1..2; use the parameter numbers 1 to 2, e.g. --bind 2:int:1234 (parameters in the SELECT: 2; --bind given: 1)\n",
+        },
+        .{
+            .select_sql = "SELECT a FROM t WHERE a = ?1",
+            .index_sql = "CREATE INDEX idx_a ON t(a)",
+            .extra = &.{ "--bind", "1:int:1", "--bind", "1:int:2" },
+            .stderr = "error: --bind: the SELECT has 1 parameter but 2 --bind values were given; bind number 1 is repeated (give exactly one per parameter); e.g. --bind 1:int:1234 (parameters in the SELECT: 1; --bind given: 2)\n",
+        },
+        .{
+            .select_sql = "SELECT 1",
+            .index_sql = "CREATE INDEX idx_a ON t(a)",
+            .extra = &.{ "--bind", "1:int:1" },
+            .stderr = "error: --bind: the SELECT has no parameters but --bind was given; remove the --bind values (parameters in the SELECT: 0; --bind given: 1)\n",
+        },
+    };
+    for (cases) |case| {
+        var fixture = try CliFixture.init(case.select_sql, case.index_sql);
+        defer fixture.deinit();
+        var stdout_buffer: [1024]u8 = undefined;
+        var stderr_buffer: [2048]u8 = undefined;
+        const result = fixture.run(case.extra, &stdout_buffer, &stderr_buffer);
+        try testing.expectEqual(ExitCode.rejected, result.code);
+        try testing.expectEqualStrings("", result.stdout);
+        try testing.expectEqualStrings(case.stderr, result.stderr);
+        try fixture.expectNoLeftovers();
+    }
+}
+
+test "named and numbered parameters use SQLite's parameter numbers" {
+    var mixed = try CliFixture.init("SELECT a FROM t WHERE a = ?2 OR a = :cid", "CREATE INDEX idx_a ON t(a)");
+    defer mixed.deinit();
+    var mixed_stdout: [4096]u8 = undefined;
+    var mixed_stderr: [512]u8 = undefined;
+    const mixed_result = mixed.run(&.{ "--bind", "1:null", "--bind", "2:int:1", "--bind", "3:int:2", "--runs", "0" }, &mixed_stdout, &mixed_stderr);
+    try testing.expectEqual(ExitCode.ok, mixed_result.code);
+    try testing.expectEqual(@as(usize, 2), std.mem.count(u8, mixed_result.stdout, "rows: 2\n"));
+    try testing.expectEqualStrings("", mixed_result.stderr);
+    try mixed.expectNoLeftovers();
+
+    var repeated = try CliFixture.init("SELECT a FROM t WHERE a = :cid OR a = :cid", "CREATE INDEX idx_a ON t(a)");
+    defer repeated.deinit();
+    var repeated_stdout: [4096]u8 = undefined;
+    var repeated_stderr: [512]u8 = undefined;
+    const repeated_result = repeated.run(&.{ "--bind", "1:int:1", "--runs", "0" }, &repeated_stdout, &repeated_stderr);
+    try testing.expectEqual(ExitCode.ok, repeated_result.code);
+    try testing.expectEqual(@as(usize, 2), std.mem.count(u8, repeated_result.stdout, "rows: 1\n"));
+    try testing.expectEqualStrings("", repeated_result.stderr);
+    try repeated.expectNoLeftovers();
+}
+
 test "a bind error says how many parameters the SELECT has" {
     var fixture = try CliFixture.init("SELECT a FROM t WHERE a = ?1", "CREATE INDEX idx_a ON t(a)");
     defer fixture.deinit();
@@ -1318,7 +1451,7 @@ test "a bind error says how many parameters the SELECT has" {
     const result = fixture.runFormat("human", &.{}, &stdout_buffer, &stderr_buffer);
     try testing.expectEqual(ExitCode.rejected, result.code);
     try testing.expectEqualStrings("", result.stdout);
-    try testing.expectEqualStrings("error: --bind: every number in 1..parameter count must be given exactly once (parameters in the SELECT: 1; --bind given: 0)\n", result.stderr);
+    try testing.expectEqualStrings("error: --bind: the SELECT has 1 parameter but no --bind was given; add one per parameter, e.g. --bind 1:int:1234 (parameters in the SELECT: 1; --bind given: 0)\n", result.stderr);
     try fixture.expectNoLeftovers();
 }
 
@@ -1328,6 +1461,26 @@ test "help fits in 80 columns and names the formats" {
     const result = callRun(testing.allocator, &.{ "Qenome", "--help" }, null, &stdout_buffer, &stderr_buffer);
     try testing.expectEqual(ExitCode.ok, result.code);
     try testing.expect(contains(result.stdout, "  --format <FORMAT>    human (default) or kv\n"));
-    try testing.expect(std.mem.endsWith(u8, result.stdout, "SIGHUP / SIGINT / SIGTERM\n"));
+    try testing.expect(contains(result.stdout, "exit status:"));
+    try expectNarrow(result.stdout, &.{});
+}
+
+test "help puts the usage, options, examples and exit status before the details" {
+    var stdout_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [512]u8 = undefined;
+    const result = callRun(testing.allocator, &.{ "Qenome", "--help" }, null, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+
+    var last: usize = 0;
+    for ([_][]const u8{ "usage: qenome", "options", "examples:", "exit status:", "output (stdout" }) |needle| {
+        const at = std.mem.indexOf(u8, result.stdout, needle) orelse return error.MissingText;
+        try testing.expect(at >= last);
+        last = at;
+    }
+    try testing.expect(contains(result.stdout, "  qenome --db app.db --select select.sql --index-sql index.sql\n"));
+    try testing.expect(contains(result.stdout, "--bind 1:int:1234"));
+    try testing.expect(contains(result.stdout, "--format kv"));
+    try testing.expect(contains(result.stdout, "named parameters"));
+    try testing.expect(contains(result.stdout, "share the number of their first appearance"));
     try expectNarrow(result.stdout, &.{});
 }

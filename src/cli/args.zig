@@ -307,6 +307,40 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\Compares one read-only SELECT before and after one candidate CREATE INDEX
         \\on a local SQLite database, without changing the database.
         \\
+        \\options (a value may also be written as --option=value):
+        \\  --db <PATH>          SQLite database file (required, once)
+        \\  --select <FILE>      file holding one read-only SELECT (required, once)
+        \\  --index-sql <FILE>   file holding one candidate CREATE INDEX (required, once)
+        \\  --bind <N>:<TYPE>[:<VALUE>]
+        \\                       typed value bound to parameter N, repeatable;
+        \\                       N is SQLite's parameter number; named parameters
+        \\                       share the number of their first appearance and
+        \\                       ?NNN uses NNN; TYPE is int, real, text or null
+        \\                       (null takes no value); every number in 1..parameter
+        \\                       count must be given exactly once
+        \\  --timeout-ms <MS>    time limit for the index build and for each SELECT
+        \\                       run, 0 disables it (default 30000); a run can
+        \\                       wait up to the copy plus (3 + 2 x runs) limits
+        \\  --runs <N>           timed rounds after a match, each timing the SELECT
+        \\                       once per copy; 0 skips the timing (default 10,
+        \\                       at most 1000); a timing that takes longer
+        \\                       than a second reports its progress on stderr
+        \\  --format <FORMAT>    human (default) or kv
+        \\  --show-binds         print the bind values in the summary; by default
+        \\                       only their numbers, types and text lengths are
+        \\                       printed, so that the values stay out of logs
+        \\  --help, -h           print this message and exit with status 0
+        \\
+        \\examples:
+        \\  qenome --db app.db --select select.sql --index-sql index.sql
+        \\  qenome --db app.db --select select.sql --index-sql index.sql --bind 1:int:1234
+        \\  qenome --db app.db --select select.sql --index-sql index.sql --format kv
+        \\
+        \\exit status: 0 result rows match, 1 rejected, 2 usage error,
+        \\3 result rows differ, 4 results cannot be compared, 5 cleanup
+        \\failure, 124 time limit reached, 129 / 130 / 143 interrupted by
+        \\SIGHUP / SIGINT / SIGTERM
+        \\
         \\The database is opened read-only and copied as one snapshot into a
         \\private directory under $TMPDIR (default /tmp) as a baseline and a
         \\variant; the candidate index is built on the variant only. The SELECT
@@ -330,33 +364,6 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\  automatic) are hints read from SQLite's wording; the detail text is
         \\  what SQLite reported.
         \\
-        \\options (a value may also be written as --option=value):
-        \\  --db <PATH>          SQLite database file (required, once)
-        \\  --select <FILE>      file holding one read-only SELECT (required, once)
-        \\  --index-sql <FILE>   file holding one candidate CREATE INDEX (required, once)
-        \\  --bind <N>:<TYPE>[:<VALUE>]
-        \\                       typed value bound to parameter N, repeatable;
-        \\                       TYPE is int, real, text or null (null takes no
-        \\                       value); every number in 1..parameter count must
-        \\                       be given exactly once
-        \\  --timeout-ms <MS>    time limit for the index build and for each SELECT
-        \\                       run, 0 disables it (default 30000); a run can
-        \\                       wait up to the copy plus (3 + 2 x runs) limits
-        \\  --runs <N>           timed rounds after a match, each timing the SELECT
-        \\                       once per copy; 0 skips the timing (default 10,
-        \\                       at most 1000); a timing that takes longer
-        \\                       than a second reports its progress on stderr
-        \\  --format <FORMAT>    human (default) or kv
-        \\  --show-binds         print the bind values in the summary; by default
-        \\                       only their numbers, types and text lengths are
-        \\                       printed, so that the values stay out of logs
-        \\  --help, -h           print this message and exit with status 0
-        \\
-        \\exit status: 0 result rows match, 1 rejected, 2 usage error,
-        \\3 result rows differ, 4 results cannot be compared, 5 cleanup
-        \\failure, 124 time limit reached, 129 / 130 / 143 interrupted by
-        \\SIGHUP / SIGINT / SIGTERM
-        \\
     );
 }
 
@@ -367,7 +374,7 @@ pub fn parseErrorMessage(err: ParseError) []const u8 {
         error.UnexpectedValue => "an option that takes no value was given one (see --help)",
         error.UnknownOption => "unknown option (see --help)",
         error.UnexpectedArgument => "unexpected argument (see --help)",
-        error.InvalidBindFormat => "--bind expects <N>:<TYPE>[:<VALUE>] with TYPE int, real, text or null",
+        error.InvalidBindFormat => "--bind expects <N>:<TYPE>[:<VALUE>], where N is the parameter number and TYPE is int, real, text or null; e.g. --bind 1:int:1234, --bind 2:text:ok, --bind 3:null",
         error.InvalidTimeout => "--timeout-ms expects a non-negative integer",
         error.InvalidRuns => std.fmt.comptimePrint("--runs expects an integer from 0 to {d}", .{max_runs}),
         error.InvalidFormat => "--format expects human or kv",
@@ -379,8 +386,25 @@ pub fn fileErrorMessage(err: anyerror) []const u8 {
     return switch (err) {
         error.SqlFileTooLarge => "the file is larger than 1 MiB",
         error.SqlFileContainsNul => "the file contains a NUL byte",
+        error.FileNotFound => "no such file",
+        error.IsDir => "is a directory",
+        error.AccessDenied => "permission denied",
         else => @errorName(err),
     };
+}
+
+pub fn looksLikeSql(value: []const u8) bool {
+    if (std.mem.findAny(u8, value, " \t\r\n") == null) return false;
+    const trimmed = std.mem.trimStart(u8, value, " \t\r\n");
+    const keywords = [_][]const u8{ "SELECT", "WITH", "CREATE", "INSERT", "UPDATE", "DELETE", "PRAGMA", "EXPLAIN" };
+    for (keywords) |keyword| {
+        if (trimmed.len < keyword.len) continue;
+        if (!std.ascii.eqlIgnoreCase(trimmed[0..keyword.len], keyword)) continue;
+        if (trimmed.len == keyword.len) return true;
+        const next = trimmed[keyword.len];
+        if (next == ' ' or next == '\t' or next == '\r' or next == '\n' or next == '(') return true;
+    }
+    return false;
 }
 
 const testing = std.testing;
@@ -706,6 +730,37 @@ test "an inline value keeps an option-like value" {
     try testing.expectEqualStrings("--select", args.db.?);
     try testing.expectEqualStrings("--index-sql", args.select.?);
     try testing.expectEqualStrings("--runs", args.index_sql.?);
+}
+
+test "common file errors are shown in plain English" {
+    try testing.expectEqualStrings("no such file", fileErrorMessage(error.FileNotFound));
+    try testing.expectEqualStrings("is a directory", fileErrorMessage(error.IsDir));
+    try testing.expectEqualStrings("permission denied", fileErrorMessage(error.AccessDenied));
+    try testing.expectEqualStrings("Unexpected", fileErrorMessage(error.Unexpected));
+}
+
+test "sql text passed as a path is recognized" {
+    const cases = [_]struct { value: []const u8, expected: bool }{
+        .{ .value = "SELECT 1", .expected = true },
+        .{ .value = "select\n1", .expected = true },
+        .{ .value = "  WITH x AS (SELECT 1)", .expected = true },
+        .{ .value = "CREATE INDEX i ON t(a)", .expected = true },
+        .{ .value = "INSERT INTO t VALUES (1)", .expected = true },
+        .{ .value = "SELECT", .expected = false },
+        .{ .value = "SELECTED 1", .expected = false },
+        .{ .value = "missing.sql", .expected = false },
+        .{ .value = "data sets/backup", .expected = false },
+        .{ .value = "-select.sql", .expected = false },
+    };
+    for (cases) |case| try testing.expectEqual(case.expected, looksLikeSql(case.value));
+}
+
+test "a bind format error shows parameter numbers and examples" {
+    const message = parseErrorMessage(error.InvalidBindFormat);
+    try testing.expect(std.mem.indexOf(u8, message, "parameter number") != null);
+    try testing.expect(std.mem.indexOf(u8, message, "--bind 1:int:1234") != null);
+    try testing.expect(std.mem.indexOf(u8, message, "--bind 2:text:ok") != null);
+    try testing.expect(std.mem.indexOf(u8, message, "--bind 3:null") != null);
 }
 
 test "the usage option list and the known option names agree" {

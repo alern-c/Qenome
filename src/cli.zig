@@ -89,11 +89,11 @@ pub fn run(
     const index_path = args.index_sql.?;
 
     const select_sql = readSqlFile(io, arena, select_path) catch |err| {
-        stderr.print("error: cannot read --select file '{s}': {s}\n", .{ select_path, fileErrorMessage(err) }) catch {};
+        reportSqlFileError(stderr, "--select", select_path, err) catch {};
         return .rejected;
     };
     const index_sql = readSqlFile(io, arena, index_path) catch |err| {
-        stderr.print("error: cannot read --index-sql file '{s}': {s}\n", .{ index_path, fileErrorMessage(err) }) catch {};
+        reportSqlFileError(stderr, "--index-sql", index_path, err) catch {};
         return .rejected;
     };
 
@@ -101,7 +101,7 @@ pub fn run(
 
     const parent_path = tempParentPath(temp_parent);
     var work = WorkDir.create(io, arena, parent_path) catch |err| {
-        stderr.print("error: cannot create a temporary directory under '{s}': {s}\n", .{ parent_path, @errorName(err) }) catch {};
+        stderr.print("error: cannot create a temporary directory under '{s}': {s}\n", .{ parent_path, fileErrorMessage(err) }) catch {};
         return .rejected;
     };
 
@@ -242,6 +242,14 @@ fn runChecked(
         return .rejected;
     };
     return resultExitCode(outcome);
+}
+
+fn reportSqlFileError(stderr: *Io.Writer, option: []const u8, path: []const u8, err: anyerror) Io.Writer.Error!void {
+    try stderr.print("error: cannot read {s} file '{s}': {s}", .{ option, path, fileErrorMessage(err) });
+    if (cli_args.looksLikeSql(path)) {
+        try stderr.print("; {s} takes a path to a file holding the SQL, not the SQL text", .{option});
+    }
+    try stderr.writeAll("\n");
 }
 
 fn reportParseError(stderr: *Io.Writer, err: ParseError, offending: ?[:0]const u8) Io.Writer.Error!void {
