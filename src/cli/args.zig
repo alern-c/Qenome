@@ -54,6 +54,14 @@ pub const default_runs: u32 = 10;
 /// bounded.
 pub const max_runs: u32 = 1000;
 
+/// How the summary is written on stdout.
+pub const Format = enum {
+    /// Sections for people, the conclusion first (the default).
+    human,
+    /// One `key: value` per line, for scripts and logs (D-510).
+    kv,
+};
+
 /// Parsed command line. `binds` is owned by the allocator passed to
 /// `parseArgs`.
 pub const Args = struct {
@@ -68,6 +76,7 @@ pub const Args = struct {
     runs: u32 = default_runs,
     /// Print the bind values in the summary instead of their types only.
     show_binds: bool = false,
+    format: Format = .human,
     help: bool = false,
 };
 
@@ -84,6 +93,8 @@ pub const ParseError = error{
     InvalidTimeout,
     /// `--runs` is not a decimal integer in `0..max_runs`.
     InvalidRuns,
+    /// `--format` is not one of the `Format` names.
+    InvalidFormat,
     OutOfMemory,
 };
 
@@ -120,6 +131,9 @@ pub fn parseArgs(allocator: std.mem.Allocator, argv: []const [:0]const u8) Parse
             const raw = try nextValue(argv, &index);
             args.runs = std.fmt.parseUnsigned(u32, raw, 10) catch return error.InvalidRuns;
             if (args.runs > max_runs) return error.InvalidRuns;
+        } else if (std.mem.eql(u8, arg, "--format")) {
+            const raw = try nextValue(argv, &index);
+            args.format = std.meta.stringToEnum(Format, raw) orelse return error.InvalidFormat;
         } else if (arg.len != 0 and arg[0] == '-') {
             return error.UnknownOption;
         } else {
@@ -182,25 +196,36 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
     try writer.writeAll(
         \\usage: qenome --db <PATH> --select <FILE> --index-sql <FILE> [options]
         \\
-        \\Checks one read-only SELECT and one candidate CREATE INDEX against a
-        \\local SQLite database. The database is opened read-only and copied
-        \\as one snapshot into a private directory under $TMPDIR (default
-        \\/tmp) as a baseline and a variant; the candidate index is built on
-        \\the variant only, and the database itself is never changed. The
-        \\SELECT runs on both copies; for each, the row count, the query plan,
-        \\and the execution counters are reported, followed by whether the
-        \\result rows match. When they match, the SELECT is timed again on
-        \\both copies in alternating rounds, and the times, the database
-        \\sizes, and a verdict (improved, no-effect, needs-check) are
-        \\reported; the verdict never changes the exit status. The directory
-        \\is removed before exit.
-        \\Plan labels (kind, covering, automatic) are hints read from SQLite's
-        \\wording; the detail text after them is what SQLite reported.
+        \\Compares one read-only SELECT before and after one candidate CREATE INDEX
+        \\on a local SQLite database, without changing the database.
+        \\
+        \\The database is opened read-only and copied as one snapshot into a
+        \\private directory under $TMPDIR (default /tmp) as a baseline and a
+        \\variant; the candidate index is built on the variant only. The SELECT
+        \\runs on both copies and their result rows are compared. When they
+        \\match, the SELECT is timed again on both copies in alternating rounds.
+        \\The directory is removed before exit.
+        \\
+        \\output (stdout, written once after every run; empty when an input is
+        \\rejected, the time limit is reached, or the run is interrupted):
+        \\  The default (--format human) starts with a summary: whether the result
+        \\  rows match, the time verdict, whether the plan changed, the times, and
+        \\  the size increase. Then come the counters and times of both copies
+        \\  side by side, the query plans, the row comparison, the timing
+        \\  conditions, and the inputs and versions. --format kv prints the same
+        \\  facts as one `key: value` per line, for scripts and logs.
+        \\  Time verdict: improved (less work, a median more than 20% lower, and
+        \\  faster in every round), no-effect (the same plan and counters, and
+        \\  medians within 20%), needs-check (anything else, with the reasons), or
+        \\  not-judged (the rows differ or cannot be compared, or --runs 0). The
+        \\  verdict never changes the exit status. Plan labels (kind, covering,
+        \\  automatic) are hints read from SQLite's wording; the detail text is
+        \\  what SQLite reported.
         \\
         \\options:
         \\  --db <PATH>          SQLite database file (required)
-        \\  --select <FILE>      file holding one read-only SELECT statement (required)
-        \\  --index-sql <FILE>   file holding one candidate CREATE INDEX statement (required)
+        \\  --select <FILE>      file holding one read-only SELECT (required)
+        \\  --index-sql <FILE>   file holding one candidate CREATE INDEX (required)
         \\  --bind <N>:<TYPE>[:<VALUE>]
         \\                       typed value bound to parameter N, repeatable;
         \\                       TYPE is int, real, text or null (null takes no
@@ -213,6 +238,7 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\                       once per copy; 0 skips the timing (default 10,
         \\                       at most 1000); a timing that takes longer
         \\                       than a second reports its progress on stderr
+        \\  --format <FORMAT>    human (default) or kv
         \\  --show-binds         print the bind values in the summary; by default
         \\                       only their numbers, types and text lengths are
         \\                       printed, so that the values stay out of logs
@@ -234,6 +260,7 @@ pub fn parseErrorMessage(err: ParseError) []const u8 {
         error.InvalidBindFormat => "--bind expects <N>:<TYPE>[:<VALUE>] with TYPE int, real, text or null",
         error.InvalidTimeout => "--timeout-ms expects a non-negative integer",
         error.InvalidRuns => std.fmt.comptimePrint("--runs expects an integer from 0 to {d}", .{max_runs}),
+        error.InvalidFormat => "--format expects human or kv",
         error.OutOfMemory => "out of memory",
     };
 }
@@ -341,4 +368,19 @@ test "timeout defaults to 30000" {
     const args = try parseArgs(testing.allocator, &.{"Qenome"});
     defer testing.allocator.free(args.binds);
     try testing.expectEqual(default_timeout_ms, args.timeout_ms);
+}
+
+test "format defaults to human and takes human or kv" {
+    const default = try parseArgs(testing.allocator, &.{"Qenome"});
+    defer testing.allocator.free(default.binds);
+    try testing.expectEqual(Format.human, default.format);
+    const kv = try parseArgs(testing.allocator, &.{ "Qenome", "--format", "kv" });
+    defer testing.allocator.free(kv.binds);
+    try testing.expectEqual(Format.kv, kv.format);
+    const human = try parseArgs(testing.allocator, &.{ "Qenome", "--format", "kv", "--format", "human" });
+    defer testing.allocator.free(human.binds);
+    try testing.expectEqual(Format.human, human.format);
+    for ([_][:0]const u8{ "json", "", "KV" }) |raw| {
+        try testing.expectError(error.InvalidFormat, parseArgs(testing.allocator, &.{ "Qenome", "--format", raw }));
+    }
 }

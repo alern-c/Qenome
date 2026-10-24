@@ -67,7 +67,7 @@ const timeRuns = cli_timing.timeRuns;
 const judgeTime = cli_timing.judgeTime;
 const TimeReport = cli_report.TimeReport;
 const Header = cli_report.Header;
-const writeSummary = cli_report.writeSummary;
+const writeReport = cli_report.writeReport;
 const installSignalHandlers = cli_control.installSignalHandlers;
 const clearSignals = cli_control.clearSignals;
 const signalPending = cli_control.signalPending;
@@ -157,6 +157,7 @@ pub fn run(
             .runs = args.runs,
             .work_parent = parent_path,
             .show_binds = args.show_binds,
+            .format = args.format,
         };
         break :blk runChecked(io, arena, allocator, inputs, stdout, stderr, &cleanup_failed, &work);
     };
@@ -182,6 +183,7 @@ const Inputs = struct {
     /// conditions.
     work_parent: []const u8,
     show_binds: bool = false,
+    format: cli_args.Format = .human,
     /// Least time between two progress lines of the timing (D-603). Tests
     /// set it to 0 to see every line.
     progress_interval_ns: u64 = std.time.ns_per_s,
@@ -304,7 +306,7 @@ fn runChecked(
         .binds = inputs.binds,
         .show_binds = inputs.show_binds,
     };
-    writeSummary(stdout, header, before, after, outcome, report) catch {
+    writeReport(stdout, inputs.format, header, before, after, outcome, report) catch {
         stderr.print("error: the summary could not be written\n", .{}) catch {};
         return .rejected;
     };

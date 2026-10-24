@@ -21,6 +21,7 @@
 ```sh
 zig build run -- --help
 zig build run -- --db <DB> --select <SELECTファイル> --index-sql <候補DDLファイル> --bind 1:int:1234
+zig build run -- --db <DB> --select <SELECTファイル> --index-sql <候補DDLファイル> --bind 1:int:1234 --format kv   # 従来の key: value 形式
 python3 scripts/test_check_architecture.py   # 境界チェック自身の検証
 python3 scripts/check_architecture.py        # 実ツリーの境界検査（違反0で終了0）
 ```
@@ -229,6 +230,8 @@ WALのDBは、fixtureのコピーをWALにして確認した（Python の sqlite
 
 #### stdoutの形式
 
+2026-10-24から、この節と「stdoutの形式（工程6で足した行）」の `key: value` 形式は `--format kv` のときだけ出る（行の位置と文言は変えていない）。既定の表示は「人間向けの表示と `--format`」を参照する。
+
 入力（`db:`・`select:`・`index-sql:`）を1回出し、baseline の段落（`measured-on: baseline (candidate index not applied)` から。工程3・4と同じ文字列）と variant の段落（`measured-on: variant (candidate index applied)`、`rows:`・`plan:`・カウンタ）を順に出す。キーが段落ごとに繰り返されるので、行の順番で読む。最後に比較結果を出す。
 
 | キー | 内容 |
@@ -300,6 +303,8 @@ WALのDBは、fixtureのコピーをWALにして確認した（Python の sqlite
 
 #### stdoutの形式（工程6で足した行）
 
+2026-10-24から `--format kv` のときだけ出る（「人間向けの表示と `--format`」）。
+
 工程5の `row-order:` の後に続ける。工程5までの行の位置と文言は変えない。
 
 | キー | 内容 |
@@ -340,6 +345,68 @@ Debug ビルドでは、改善する例の baseline 中央値が約58 ms で、R
 効果のない例を `--runs 200` で実行すると、約1秒ごとに `progress: timed round 43 of 200 done` などが実行中に出て、判定は `no-effect`（終了コード0）だった。stderr を閉じた実行（`2>&-`）でも終了コードは0だった。
 
 未確認：Linux（tmpfs）。OSのページキャッシュを空にした状態（cold）での測定。他のマシンで効果のない例が±20%に収まるか。
+
+### 人間向けの表示と `--format`（2026-10-24、Zig 0.17.0・同梱SQLite 3.51.2）
+
+それまでの stdout は約40行の `key: value` が平らに並び、結論（`time-verdict:`）が最後、baseline と variant が縦に別の段落で、数値に桁区切りがなく、測定条件の長文や版が結論と同じ重みで混ざっていた。そこで既定の表示を人間向けに変え、従来の形式は `--format kv` で残した。
+
+- `--format human`（既定）: 結論を先に、2つのコピーを横に並べ、詳細を後ろに置く。
+- `--format kv`: 工程5・6の `key: value` 形式。行の位置と文言は変えていない。ログ・CI・スクリプトで1行ずつ読む使い方はこちらを指定する。後続の JSON 出力は `--format json` として足せる。
+
+どちらの形式も同じ事実を出す。終了コード、失敗時に stdout が空であること、バインド値を既定で隠すこと（D-605）、進み具合を stderr に出すこと（D-603）、判定が終了コードを変えないことは変えていない。
+
+#### 既定の表示の構成
+
+| 見出し | 内容 |
+| --- | --- |
+| `Summary` | 結果の一致（`match` / `MISMATCH` / `INCOMPARABLE`）、時間の判定と理由、計画が変わったか（`samePlan` と同じ比べ方）、中央値の前後と比・variant が速かったラウンド数、DBファイルの増分（バイトとMiB） |
+| `Baseline vs variant` | 行数・4つのカウンタ・時間（中央値・p25・p75・最小・最大）・DBファイルのバイト数を baseline / variant / change の列で並べる。数値は3桁ごとにコンマ、差は符号付き、同じなら `same`、時間の change は比（`0.009x`） |
+| `Query plan` | 各コピーの計画。親子は字下げで示し、SQLiteの文言の後に `[種類, covering, automatic; id N, parent M]`（covering・automatic は真のときだけ） |
+| `Result rows` | 一致・不一致・比較不能の説明、比較不能の理由と `try:` のヒント、片側だけの行の件数と例、行の順番（参考） |
+| `Timing` | ラウンド数、ウォームアップ、順番、測った範囲、キャッシュ条件、計時したときはナノ秒の生値（`median= p25= p75= min= max=`） |
+| `Run` | `--db`・`--select`・`--index-sql` のパス、バインド（既定は形だけで、値を隠したことを添える）、一時フォルダの親、SQLiteの版とsource id、Zigの版、最適化の種類、OSとCPU |
+
+幅は80桁に収める。表は固定幅で、説明の文は空白で折り返して字下げする。計画の文言が長いときは、ラベルを次の行に回す。利用者のデータであるパス・計画の文言・例の行・`--show-binds` のバインド値は途中で切らないので、それだけは80桁を超えることがある。`Run` のパスは、ASCIIの制御文字だけを `\xNN` にして出す（行を分けたり端末を操作したりしないように。`--format kv` は従来どおりそのまま出す）。色は使わない（TTYでもパイプでも同じ出力）。終了コードは要約に書かない（要約は後片付けの前に書くため、後片付けの失敗で5になると食い違う）。
+
+改善する例の既定の表示（先頭の2つの見出し）:
+
+```text
+Summary
+  result rows   match (the same rows on both copies)
+  time verdict  improved: less work, a median more than 20% lower, and faster in
+                every round
+  query plan    changed on the variant
+  time          median 4.55 ms -> 38.71 us (0.009x); the variant was faster in
+                10 of 10 rounds
+  db size       +2,170,880 bytes (+2.07 MiB; the whole database file, not the
+                index alone)
+
+Baseline vs variant           baseline         variant          change
+  rows                             100             100            same
+  fullscan-steps               199,999               0        -199,999
+  vm-steps                     600,407             710        -599,697
+  sort-ops                           0               0            same
+  autoindex-rows                     0               0            same
+  time median                  4.55 ms        38.71 us          0.009x
+  ...
+```
+
+#### 実行確認
+
+[testdata/README.md](../testdata/README.md) の手順で作ったfixture（SHA-256 `ddca8dd2…`）と、`zig build -Doptimize=ReleaseFast` の実バイナリ（macOS・aarch64）で、変更前と変更後を同じ引数で実行した（`TMPDIR` は作業用の空フォルダ）。各実行の後、そのフォルダは空で、fixtureのSHA-256は変わらなかった。
+
+| 実行 | 終了コード（前 / 後） | 変更後の stdout |
+| --- | --- | --- |
+| 改善する例（`--bind 1:int:1234`） | 0 / 0 | `improved`、計画 `changed on the variant` |
+| 効果のない例（`--bind 1:text:ok`） | 0 / 0 | `no-effect`、計画 `the same on both copies` |
+| `random()`・`sqlite_schema`・LIMIT（工程5の例） | 4 / 4 | `INCOMPARABLE` と理由・ヒント |
+| GROUP BY の対象外の列（`GROUP BY customer_id` と `ON events(customer_id, status DESC)`） | 3 / 3 | `MISMATCH` と片側だけの行の例 |
+| `--runs 0` | 0 / 0 | `not-judged`、`--runs 0 skips the timing` |
+| `--timeout-ms 1`・書込SQL・バインド不足・不明オプション・`--db` なし | 124 / 124、1 / 1、1 / 1、2 / 2、2 / 2 | 0バイト |
+| `--runs 150` | 0 / 0 | stderr に `progress:` 行（変更なし） |
+| `--runs 1000` の計時中に SIGINT | — / 130 | 0バイト |
+
+`--format kv` の出力は、時間の値（`time-*`・`variant-faster-rounds`）を除いて変更前と1バイトも違わなかった。既定の表示で80桁を超えた行は、パスを含む行だけだった。
 
 ## 次の開発の進め方
 
