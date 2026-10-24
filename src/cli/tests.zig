@@ -245,7 +245,7 @@ test "help exits 0" {
         const result = callRun(testing.allocator, &.{ "Qenome", option }, null, &stdout_buffer, &stderr_buffer);
         try testing.expectEqual(ExitCode.ok, result.code);
         try testing.expectEqualStrings("", result.stderr);
-        try testing.expect(std.mem.indexOf(u8, result.stdout, "usage: Qenome") != null);
+        try testing.expect(std.mem.indexOf(u8, result.stdout, "usage: qenome") != null);
     }
 }
 

@@ -25,6 +25,8 @@ python3 scripts/test_check_architecture.py   # 境界チェック自身の検証
 python3 scripts/check_architecture.py        # 実ツリーの境界検査（違反0で終了0）
 ```
 
+`zig build` が生成する実行ファイルは `zig-out/bin/qenome`（小文字）。ビルド後は `./zig-out/bin/qenome --help` でも同じ使い方を確認できる。
+
 ### 同梱SQLite
 
 - 使う版は3.51.2。[src/sqlite.zig](../src/sqlite.zig)の `pinned_version` と一致することをテストで確認する。取得元のURL、公式公開SHA3-256、source id、同梱2ファイルのハッシュ、コンパイルフラグは [vendor/sqlite3/PROVENANCE.txt](../vendor/sqlite3/PROVENANCE.txt) に記録する
