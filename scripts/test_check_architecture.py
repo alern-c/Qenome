@@ -1,14 +1,3 @@
-#!/usr/bin/env python3
-"""Tests for scripts/check_architecture.py.
-
-Every case builds a small tree in a temporary directory, changes it the way the
-case describes, and runs the checker with `--root` on that copy. Nothing under
-the repository is written to.
-
-Usage: python3 scripts/test_check_architecture.py
-Exit code: 0 when every case passes, 1 otherwise.
-"""
-
 import os
 import shutil
 import subprocess
@@ -20,12 +9,7 @@ CHECKER = os.path.join(HERE, "check_architecture.py")
 
 FAILURES = []
 
-# The smallest tree the rules accept: the nine approved files, the three files
-# they import, and nothing else. Each file holds exactly the imports its row of
-# the rule table allows.
 CANONICAL_FILES = {
-    # Files outside the checked scope: the rules deliberately ignore them, so
-    # their imports and comments must not matter.
     "build.zig": '// the module is built as @import("Qenome")\n',
     "src/main.zig": 'const Qenome = @import("Qenome");\n',
     "src/db.zig": "// the database layer\n",
@@ -102,18 +86,15 @@ CANONICAL_FILES = {
     ),
 }
 
-
 def write_file(root, rel_path, text):
     path = os.path.join(root, rel_path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as handle:
         handle.write(text)
 
-
 def write_canonical_tree(root):
     for rel_path, text in CANONICAL_FILES.items():
         write_file(root, rel_path, text)
-
 
 def run_checker(root, cwd=None, with_root=True, script=None):
     args = [sys.executable, script or CHECKER]
@@ -122,9 +103,7 @@ def run_checker(root, cwd=None, with_root=True, script=None):
     done = subprocess.run(args, capture_output=True, text=True, cwd=cwd)
     return done.returncode, done.stdout + done.stderr
 
-
 def case(mutate, extra_check=None, cwd=None, with_root=True):
-    """Build the canonical tree, let `mutate` change it, and run the checker."""
     root = tempfile.mkdtemp(prefix="qenome-arch-")
     try:
         write_canonical_tree(root)
@@ -137,7 +116,6 @@ def case(mutate, extra_check=None, cwd=None, with_root=True):
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
-
 def expect(name, condition, detail):
     if condition:
         print("ok: " + name)
@@ -145,10 +123,8 @@ def expect(name, condition, detail):
     FAILURES.append(name)
     print("FAIL: " + name + ": " + str(detail))
 
-
 def expect_clean(name, code, output):
     expect(name, code == 0, "exit " + str(code) + ", output: " + output.strip())
-
 
 def expect_rejected(name, code, output, rule, mention=None):
     expect(name, code == 1, "exit " + str(code) + ", output: " + output.strip())
@@ -156,14 +132,10 @@ def expect_rejected(name, code, output, rule, mention=None):
     if mention is not None:
         expect(name + " names the place", mention in output, output.strip())
 
-
 def main():
-    # The canonical tree itself: the test entry cycle (cli -> tests -> cli) is
-    # allowed, so this must be clean.
     code, output = case(None)
     expect_clean("the smallest approved tree passes", code, output)
 
-    # Missing and unknown files are failures, never a skip.
     code, output = case(lambda root: os.remove(os.path.join(root, "src/cli/tests.zig")))
     expect_rejected("a missing test file fails", code, output, "missing-file", "src/cli/tests.zig")
 
@@ -176,7 +148,6 @@ def main():
     code, output = case(lambda root: shutil.rmtree(os.path.join(root, "src/cli")))
     expect_rejected("a missing src/cli directory fails", code, output, "missing-file", "src/cli/args.zig")
 
-    # Imports outside the table.
     code, output = case(
         lambda root: write_file(
             root, "src/cli/args.zig", 'const std = @import("std");\nconst sqlite = @import("../sqlite.zig");\n'
@@ -199,7 +170,6 @@ def main():
     )
     expect_rejected("an unknown module fails", code, output, "unapproved-import", "some_module")
 
-    # Import forms the check cannot read are failures, not skips.
     code, output = case(
         lambda root: write_file(root, "src/cli/args.zig", "const db = @import(name);\n")
     )
@@ -239,8 +209,6 @@ def main():
     )
     expect_rejected("an import inside a comment fails conservatively", code, output, "import-form", "args.zig:1")
 
-    # Cycles among the production files. The test file is not a node of that
-    # graph, so its back-imports do not count.
     code, output = case(
         lambda root: (
             write_file(root, "src/cli/args.zig", 'const cli_comparison = @import("comparison.zig");\n'),
@@ -249,7 +217,6 @@ def main():
     )
     expect_rejected("a production cycle fails", code, output, "cycle")
 
-    # The test file has one entry, in one form.
     code, output = case(
         lambda root: write_file(
             root,
@@ -300,7 +267,6 @@ def main():
     )
     expect_rejected("two test entries fail", code, output, "test-entry", "found 2")
 
-    # Paths are normalized before they are compared.
     def normalize(root):
         write_file(
             root,
@@ -316,7 +282,6 @@ def main():
     code, output = case(normalize)
     expect_clean("normalized paths pass", code, output)
 
-    # Every violation is reported, not just the first.
     def two_violations(root):
         os.remove(os.path.join(root, "src/cli/report.zig"))
         write_file(root, "src/cli/args.zig", 'const sqlite = @import("../sqlite.zig");\n')
@@ -329,7 +294,6 @@ def main():
         output.strip(),
     )
 
-    # The root comes from the script location, not from the working directory.
     def copy_checker(root):
         os.makedirs(os.path.join(root, "scripts"), exist_ok=True)
         shutil.copyfile(CHECKER, os.path.join(root, "scripts", "check_architecture.py"))
@@ -347,7 +311,6 @@ def main():
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
-    # Bad arguments are usage errors, not crashes.
     done = subprocess.run(
         [sys.executable, CHECKER, "--root"], capture_output=True, text=True
     )
@@ -365,7 +328,6 @@ def main():
         return 1
     print("all cases passed")
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())

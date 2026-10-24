@@ -1,20 +1,11 @@
-//! Comparing the two runs: whether the result rows match, differ, or cannot
-//! be compared, and what to try next when they do not.
-//!
-//! Nothing here opens a connection or writes to a stream: the stage receives
-//! finished measurements and row collectors.
-
 const std = @import("std");
 const db = @import("../db.zig");
 const result = @import("../result.zig");
 
-/// One line of a query plan, as the measurement carries it.
 pub const PlanRow = db.PlanRow;
 
-/// Which copy a SELECT ran on, for messages and the summary.
 pub const Side = enum { baseline, variant };
 
-/// What one SELECT run on one copy reported.
 pub const Measurement = struct {
     rows: u64,
     plan: db.Plan,
@@ -24,13 +15,9 @@ pub const Measurement = struct {
 
 pub const Verdict = enum { match, mismatch, incomparable };
 
-/// The comparison result of the two runs (D-501, D-503, D-506).
 pub const Outcome = struct {
     verdict: Verdict,
-    /// Null when the rows were not compared.
     comparison: ?result.Comparison = null,
-    /// Why the results cannot be compared, one line each, with what to try
-    /// next (D-513).
     reasons: [max_reasons]Reason = undefined,
     reason_count: usize = 0,
 
@@ -38,7 +25,6 @@ pub const Outcome = struct {
 
     const Reason = struct {
         text: []const u8,
-        /// Null when there is nothing the user can change in the SELECT.
         hint: ?[]const u8,
     };
 
@@ -54,29 +40,11 @@ const over_budget_reason = std.fmt.comptimePrint(
     .{result.max_result_bytes / (1024 * 1024)},
 );
 
-/// What the SQL says about how its rows may legitimately differ.
 pub const Hints = struct {
     clues: db.Clues,
-    /// The SELECT text holds LIMIT or OFFSET (D-504).
     limit_or_offset: bool,
 };
 
-/// Turns two finished runs into the result (D-501, D-502, D-504, D-505,
-/// D-506, D-507, D-512), in this order:
-///
-/// 1. A SELECT that changes between runs or reads the schema is never
-///    compared.
-/// 2. Rows that could not be kept are never reported as a match.
-/// 3. Equal rows are a match, whatever the SQL looks like: the match was
-///    observed.
-/// 4. Differing rows are incomparable when the SQL can read the clock or pick
-///    or compute rows by their order, and a mismatch otherwise. The
-///    one-sided rows are shown in both cases.
-///
-/// Every reason comes with a hint on what to try next (D-513), except where
-/// the SELECT cannot help. A changed SELECT is another SELECT: the LIMIT hint
-/// asks to check its plan again, and the docs say so for every hint. Texts
-/// that name a function or a table live in `arena`.
 pub fn decide(
     arena: std.mem.Allocator,
     before: Measurement,
@@ -134,7 +102,6 @@ pub fn decide(
     return outcome;
 }
 
-/// What to try for an order-dependent function, by its kind (D-513).
 fn orderHint(arena: std.mem.Allocator, name: []const u8) []const u8 {
     const sums = [_][]const u8{ "sum", "avg", "total" };
     const windows = [_][]const u8{ "row_number", "ntile", "first_value", "last_value", "nth_value", "lag", "lead" };
@@ -145,9 +112,6 @@ fn orderHint(arena: std.mem.Allocator, name: []const u8) []const u8 {
     return print(arena, "add ORDER BY inside {s}(...), so that the rows are joined in a fixed order", name);
 }
 
-/// Formats one reason or hint that names a function or a table. Running out
-/// of memory here prints the format itself, with `{s}` in place of the name;
-/// the line stays one `key: value` line.
 fn print(arena: std.mem.Allocator, comptime format: []const u8, name: []const u8) []const u8 {
     return std.fmt.allocPrint(arena, format, .{name}) catch format;
 }

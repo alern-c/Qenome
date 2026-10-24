@@ -1,9 +1,3 @@
-//! The tests that drive the whole CLI: arguments in, summary and exit code
-//! out, on a real database, with the temporary directory of each run watched.
-//!
-//! This file is imported from `cli.zig`'s test block only, so a normal build
-//! never compiles it.
-
 const std = @import("std");
 const Io = std.Io;
 const builtin = @import("builtin");
@@ -27,7 +21,6 @@ const Side = cli_comparison.Side;
 
 const testing = std.testing;
 
-/// A temporary directory that hands out absolute paths for fixture files.
 const Fixture = struct {
     tmp: testing.TmpDir,
 
@@ -39,21 +32,17 @@ const Fixture = struct {
         self.tmp.cleanup();
     }
 
-    /// Writes `data` and returns the absolute path, owned by the tester.
     fn file(self: *Fixture, sub_path: []const u8, data: []const u8) ![:0]u8 {
         try self.tmp.dir.writeFile(testing.io, .{ .sub_path = sub_path, .data = data });
         return self.tmp.dir.realPathFileAlloc(testing.io, sub_path, testing.allocator);
     }
 };
 
-/// A database, a SELECT file, a candidate DDL file, and an empty parent for
-/// the temporary directory of one CLI run.
 const CliFixture = struct {
     dir: Fixture,
     db_path: [:0]u8,
     select_path: [:0]u8,
     index_path: [:0]u8,
-    /// Passed as `TMPDIR`, so a test can see what a run leaves behind.
     work_parent: [:0]u8,
 
     fn init(select_sql: []const u8, index_sql: []const u8) !CliFixture {
@@ -89,8 +78,6 @@ const CliFixture = struct {
         self.dir.deinit();
     }
 
-    /// Runs the CLI on this fixture with `extra` arguments after the required
-    /// ones.
     fn run(self: *CliFixture, extra: []const [:0]const u8, stdout_buffer: []u8, stderr_buffer: []u8) RunResult {
         var argv: [24][:0]const u8 = undefined;
         const required = [_][:0]const u8{ "Qenome", "--db", self.db_path, "--select", self.select_path, "--index-sql", self.index_path };
@@ -99,7 +86,6 @@ const CliFixture = struct {
         return callRun(testing.allocator, argv[0 .. required.len + extra.len], self.work_parent, stdout_buffer, stderr_buffer);
     }
 
-    /// Fails unless the run removed its temporary directory again.
     fn expectNoLeftovers(self: *CliFixture) !void {
         var parent = try self.dir.tmp.dir.openDir(testing.io, "work", .{ .iterate = true });
         defer parent.close(testing.io);
@@ -123,8 +109,6 @@ const RunResult = struct {
     stderr: []const u8,
 };
 
-/// The part of a summary that one copy reported, from its `measured-on` line
-/// up to the next block, so that a check cannot match the other copy.
 fn summaryBlock(stdout: []const u8, side: Side) []const u8 {
     const variant_at = std.mem.indexOf(u8, stdout, "measured-on: variant") orelse stdout.len;
     if (side == .baseline) {
@@ -139,8 +123,6 @@ fn contains(haystack: []const u8, needle: []const u8) bool {
     return std.mem.indexOf(u8, haystack, needle) != null;
 }
 
-/// Calls `run` with the given output buffers and reports what it wrote.
-/// `temp_parent` stands in for `TMPDIR`.
 fn callRun(
     allocator: std.mem.Allocator,
     argv: []const [:0]const u8,
@@ -154,16 +136,11 @@ fn callRun(
     return .{ .code = code, .stdout = stdout.buffered(), .stderr = stderr.buffered() };
 }
 
-/// Rows stored with `a` as 3, 1, 2, 3, 1, 2, so an index on `a` hands them out
-/// in another order. Summing `r` in the order of an index on `r` puts -1e16
-/// and 1e16 at the ends, which changes the last digits of the sum even with
-/// SQLite's compensated summation.
 const reordered_schema: [:0]const u8 =
     \\CREATE TABLE t(a INTEGER, b TEXT, r REAL);
     \\INSERT INTO t VALUES (3, 'z', 0.1), (1, 'x', 0.2), (2, 'y', 0.3), (3, 'v', 1e16), (1, 'w', -1e16), (2, 'u', 0.7);
 ;
 
-/// The value after `key=` on the first line that starts with `line_key: `.
 fn reportValue(stdout: []const u8, line_key: []const u8, key: []const u8) !u64 {
     const line_start = std.mem.indexOf(u8, stdout, line_key) orelse return error.MissingLine;
     const line_end = std.mem.indexOfScalarPos(u8, stdout, line_start, '\n') orelse stdout.len;
@@ -295,8 +272,6 @@ test "accepted run prints plan and counters" {
 
     try testing.expectEqual(ExitCode.ok, result.code);
     try testing.expectEqualStrings("", result.stderr);
-    // Every value after `measured-on` comes from the baseline snapshot, so
-    // the line sits between the inputs and `rows` (D-304).
     const expected_head = try std.fmt.allocPrint(
         testing.allocator,
         "index-sql: {s}\nmeasured-on: baseline (candidate index not applied)\nrows: 1\n",
@@ -306,7 +281,6 @@ test "accepted run prints plan and counters" {
     try testing.expect(std.mem.indexOf(u8, result.stdout, expected_head) != null);
     try testing.expect(std.mem.indexOf(u8, result.stdout, "sqlite: " ++ sqlite.pinned_version ++ "\n") != null);
     try testing.expect(std.mem.indexOf(u8, result.stdout, "sqlite-source-id: " ++ sqlite.pinned_source_id ++ "\n") != null);
-    // The labels come before the raw detail, which ends the line.
     try testing.expect(std.mem.indexOf(u8, result.stdout, "kind=search covering=false automatic=false detail=SEARCH t USING INDEX idx_b") != null);
     try testing.expect(std.mem.indexOf(u8, result.stdout, "fullscan-steps: 0\n") != null);
     try testing.expect(std.mem.indexOf(u8, result.stdout, "vm-steps: ") != null);
@@ -354,8 +328,6 @@ test "engine details appear only when SQLite reported an error" {
 
     try testing.expectEqual(ExitCode.rejected, result.code);
     try testing.expect(std.mem.indexOf(u8, result.stderr, "holds no statement") != null);
-    // The empty statement never reached the engine, so its placeholder message
-    // must not be printed.
     try testing.expect(std.mem.indexOf(u8, result.stderr, "not an error") == null);
 }
 
@@ -403,8 +375,6 @@ test "bind mismatch is a rejection, not a usage error" {
 }
 
 test "a select whose plan depends on a bound parameter is accepted" {
-    // SQLite re-prepares this statement on the first step because the bound
-    // LIKE value decides the plan; the authorizer must allow it again.
     var fixture = try CliFixture.init("SELECT b FROM t WHERE b LIKE ?1", "CREATE INDEX idx_a ON t(a)");
     defer fixture.deinit();
 
@@ -448,8 +418,6 @@ test "accepted run applies the index to the variant only" {
     try testing.expect(contains(first.stdout, "result: match (row multiset)\nrow-order: same (reference only; not part of the result)\n"));
     try fixture.expectNoLeftovers();
 
-    // The database itself never got the index, so a second run can create
-    // it again.
     const after = try Io.Dir.cwd().readFileAlloc(testing.io, fixture.db_path, testing.allocator, .unlimited);
     defer testing.allocator.free(after);
     try testing.expectEqualSlices(u8, before, after);
@@ -461,7 +429,6 @@ test "accepted run applies the index to the variant only" {
 }
 
 test "an order-only difference is still a match with exit 0" {
-    // The rows are stored as 3, 1, 2; the index hands them out as 1, 2, 3.
     var fixture = try CliFixture.initWithSchema("SELECT a FROM t WHERE a > ?1", "CREATE INDEX idx_a ON t(a)",
         \\CREATE TABLE t(a INTEGER, b TEXT);
         \\INSERT INTO t VALUES (3, 'z'), (1, 'x'), (2, 'y');
@@ -477,9 +444,6 @@ test "an order-only difference is still a match with exit 0" {
 }
 
 test "a bare-column group by that differs exits 3" {
-    // `b` is not grouped, so SQLite returns it from one row of the group,
-    // picked by the order it reads them in; the index reverses that order
-    // (D-505).
     var fixture = try CliFixture.initWithSchema("SELECT a, b FROM t GROUP BY a", "CREATE INDEX idx_ab ON t(a, b DESC)",
         \\CREATE TABLE t(a INTEGER, b TEXT);
         \\INSERT INTO t VALUES (1, 'x'), (1, 'y');
@@ -500,10 +464,7 @@ test "indexed by the candidate index is rejected with exit 1" {
     const cases = [_]struct { select: []const u8, index: []const u8, expected: []const u8 }{
         .{ .select = "SELECT a FROM t INDEXED BY IDX_NEW WHERE a = 1", .index = "CREATE INDEX idx_new ON t(a)", .expected = "names the candidate index 'idx_new' in INDEXED BY" },
         .{ .select = "SELECT a FROM t INDEXED BY \"Idx New\" WHERE a = 1", .index = "CREATE INDEX \"Idx New\" ON t(a)", .expected = "names the candidate index 'Idx New' in INDEXED BY" },
-        // Another missing index keeps the engine message.
         .{ .select = "SELECT a FROM t INDEXED BY nope WHERE a = 1", .index = "CREATE INDEX idx_new ON t(a)", .expected = "no such index: nope" },
-        // A CTE cannot use any index; SQLite quotes the name then, so it is
-        // not mistaken for the candidate.
         .{ .select = "WITH c AS (SELECT a FROM t) SELECT a FROM c INDEXED BY idx_new", .index = "CREATE INDEX idx_new ON t(a)", .expected = "no such index: \"idx_new\"" },
     };
     for (cases) |case| {
@@ -523,7 +484,6 @@ test "indexed by the candidate index is rejected with exit 1" {
 test "a unique index over duplicate rows exits 1" {
     var fixture = try CliFixture.init("SELECT a FROM t", "CREATE UNIQUE INDEX idx_b2 ON t(a)");
     defer fixture.deinit();
-    // A second row with a = 1 lives in the database before the run.
     const writer = try db.openTestWriter(fixture.db_path, "INSERT INTO t VALUES (1, 'z')");
     _ = sqlite.sqlite3_close(writer);
 
@@ -554,7 +514,6 @@ test "an index build over the time limit exits 124 and leaves no temporary direc
 }
 
 test "result rows over the byte budget exit 4" {
-    // 70 rows of 1 MiB each do not fit into the 64 MiB budget.
     var fixture = try CliFixture.init(
         "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 70) SELECT zeroblob(1048576) FROM c",
         "CREATE INDEX idx_a ON t(a)",
@@ -583,7 +542,6 @@ test "a nondeterministic select exits 4 and still prints both plans" {
     try testing.expectEqualStrings("", run_result.stderr);
     try testing.expect(contains(summaryBlock(run_result.stdout, .baseline), "detail=SCAN t\n"));
     try testing.expect(contains(summaryBlock(run_result.stdout, .variant), "detail=SEARCH t USING COVERING INDEX idx_a (a=?)\n"));
-    // The rows were never compared, so no one-sided rows are shown.
     try testing.expect(contains(run_result.stdout, "result: incomparable\nincomparable-reason: the SELECT calls random(), whose result changes between runs\nincomparable-hint: compare the SELECT without random()\nrow-order: not applicable\n"));
     try fixture.expectNoLeftovers();
 }
@@ -607,8 +565,6 @@ test "a limit select whose rows differ exits 4 and one that matches exits 0" {
         var stderr_buffer: [1024]u8 = undefined;
         const run_result = fixture.run(&.{}, &stdout_buffer, &stderr_buffer);
         try testing.expectEqual(ExitCode.incomparable, run_result.code);
-        // The one-sided rows are still shown for a mismatch that the LIMIT
-        // explains.
         try testing.expect(contains(run_result.stdout, "result: incomparable\nincomparable-reason: the rows differ, and the SELECT has LIMIT or OFFSET, which can pick other rows when the order changes\nincomparable-hint: to compare, end the ORDER BY next to the LIMIT with a unique NOT NULL column, or drop LIMIT and OFFSET; then check that the plan still uses the candidate index\nbaseline-only-rows: 1\nvariant-only-rows: 1\n"));
         try testing.expect(contains(run_result.stdout, "row-order: not applicable\n"));
     }
@@ -660,7 +616,6 @@ test "an integer-only sum that matches exits 0 and a real sum that differs exits
 
 test "a date function is compared, and a difference with it exits 4 with a hint" {
     {
-        // An expression index on date(...) can be tried: the rows match.
         var fixture = try CliFixture.initWithSchema("SELECT a FROM t WHERE date(b) = ?1", "CREATE INDEX idx_db ON t(date(b))",
             \\CREATE TABLE t(a INTEGER, b TEXT);
             \\INSERT INTO t VALUES (1, '2026-03-15 10:00:00'), (2, '2026-03-16 09:00:00'), (3, '2026-03-15 23:59:59');
@@ -674,8 +629,6 @@ test "a date function is compared, and a difference with it exits 4 with a hint"
         try testing.expect(contains(run_result.stdout, "result: match (row multiset)\n"));
     }
     {
-        // The bare column `b` differs; the date function in the SELECT makes
-        // that incomparable instead of a mismatch (D-512).
         var fixture = try CliFixture.initWithSchema("SELECT a, b, date('2026-01-01') FROM t GROUP BY a", "CREATE INDEX idx_ab ON t(a, b DESC)",
             \\CREATE TABLE t(a INTEGER, b TEXT);
             \\INSERT INTO t VALUES (1, 'x'), (1, 'y');
@@ -690,8 +643,6 @@ test "a date function is compared, and a difference with it exits 4 with a hint"
 }
 
 test "several reasons come in pairs with their hints" {
-    // The bare column `b` makes the rows differ; the SELECT also has an
-    // aggregate, a LIMIT, and a WITH clause, so all three reasons apply.
     var fixture = try CliFixture.initWithSchema("WITH c AS (SELECT a, b FROM t) SELECT a, b, sum(a) FROM c GROUP BY a LIMIT 5", "CREATE INDEX idx_ab ON t(a, b DESC)",
         \\CREATE TABLE t(a INTEGER, b TEXT);
         \\INSERT INTO t VALUES (1, 'x'), (1, 'y');
@@ -701,7 +652,6 @@ test "several reasons come in pairs with their hints" {
     var stderr_buffer: [1024]u8 = undefined;
     const run_result = fixture.run(&.{}, &stdout_buffer, &stderr_buffer);
     try testing.expectEqual(ExitCode.incomparable, run_result.code);
-    // Each reason is followed by its own hint.
     try testing.expectEqual(@as(usize, 3), std.mem.count(u8, run_result.stdout, "incomparable-reason: "));
     try testing.expectEqual(@as(usize, 3), std.mem.count(u8, run_result.stdout, "incomparable-hint: "));
     try testing.expect(contains(run_result.stdout, "sum(), whose result can depend on the order rows are read in\nincomparable-hint: sum() adds REAL values"));
@@ -840,8 +790,6 @@ test "a missing database exits 1 and leaves no temporary directory" {
 }
 
 test "a run on a wal database counts rows that are still in the wal" {
-    // The table exists only as WAL frames, so every row must come through
-    // the snapshot.
     var fixture = try CliFixture.init("SELECT a FROM w", "CREATE INDEX idx_w ON w(a)");
     defer fixture.deinit();
     const wal_path = try std.fmt.allocPrintSentinel(testing.allocator, "{s}/../wal.db", .{fixture.work_parent}, 0);
@@ -969,7 +917,6 @@ test "the size increase is the variant size minus the snapshot size" {
     const baseline = try reportValue(result.stdout, "db-bytes-baseline: ", "db-bytes-baseline: ");
     const variant = try reportValue(result.stdout, "db-bytes-variant: ", "db-bytes-variant: ");
     const increase = try reportValue(result.stdout, "db-bytes-increase: ", "db-bytes-increase: ");
-    // The snapshot holds the same pages as the database.
     const stat = try Io.Dir.cwd().statFile(testing.io, fixture.db_path, .{});
     try testing.expectEqual(stat.size, baseline);
     try testing.expect(variant > baseline);

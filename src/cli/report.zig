@@ -1,6 +1,3 @@
-//! Writing the finished summary: the inputs once, one block per copy, the
-//! comparison, and the timing. The display code never opens a database.
-
 const std = @import("std");
 const Io = std.Io;
 const builtin = @import("builtin");
@@ -9,8 +6,6 @@ const cli_args = @import("args.zig");
 const cli_comparison = @import("comparison.zig");
 const cli_timing = @import("timing.zig");
 
-/// The run input paths, the version strings the database stage read, and the
-/// binds, ready to print.
 pub const Header = struct {
     database_path: []const u8,
     select_path: []const u8,
@@ -27,22 +22,12 @@ pub const Sizes = struct {
     variant: u64 = 0,
 };
 
-/// What the timing adds to the summary.
 pub const TimeReport = struct {
-    /// Null when the SELECT was not timed.
     timing: ?cli_timing.TimeSummary = null,
     sizes: Sizes = .{},
     judgement: cli_timing.Judgement,
 };
 
-/// Writes the summary as `key: value` lines (D-510): the inputs once, then one
-/// block per copy that starts with `measured-on`, then the comparison. A plan
-/// line keeps its SQLite detail last because the detail contains spaces.
-///
-/// The baseline block is unchanged from the single-copy summary, so its
-/// values are those of the snapshot without the candidate index (D-304); the
-/// variant block has the index. Keys repeat between the blocks, so read them
-/// in order.
 pub fn writeSummary(
     stdout: *Io.Writer,
     header: Header,
@@ -63,8 +48,6 @@ pub fn writeSummary(
 
     switch (outcome.verdict) {
         .match => try stdout.writeAll("result: match (row multiset)\n"),
-        // The cause is not judged: an index should not change the rows, but
-        // order-dependent SQL can (D-505).
         .mismatch => try stdout.writeAll("result: mismatch (row multiset; the cause is not determined)\n"),
         .incomparable => try stdout.writeAll("result: incomparable\n"),
     }
@@ -85,7 +68,6 @@ pub fn writeSummary(
             try stdout.writeByte('\n');
         }
     };
-    // The order is only a reference and only for a match (D-503, D-510).
     const order = if (outcome.verdict != .match)
         "not applicable"
     else if (outcome.comparison.?.same_order)
@@ -96,15 +78,10 @@ pub fn writeSummary(
     try writeTimeReport(stdout, header, report);
 }
 
-/// Writes the measurement after the comparison (D-601, D-602): the binds and
-/// the conditions, the versions, the times, the sizes, then the verdict. The
-/// lines come after `row-order`, so the blocks above keep their shape.
 pub fn writeTimeReport(stdout: *Io.Writer, header: Header, report: TimeReport) Io.Writer.Error!void {
     if (header.binds.len == 0) try stdout.writeAll("bind: none\n");
     for (header.binds) |bind| {
         try stdout.print("bind: {d}:", .{bind.number});
-        // The values may be someone's data, and the summary may end up in a
-        // log, so only the shape is printed unless asked for (D-605).
         if (!header.show_binds) {
             switch (bind.value) {
                 .text => |value| try stdout.print("text ({d} bytes)\n", .{value.len}),
@@ -166,9 +143,6 @@ pub fn writeStats(stdout: *Io.Writer, key: []const u8, stats: cli_timing.Stats) 
     try stdout.writeAll(")\n");
 }
 
-/// Writes `ns` in the largest of ns, us, ms and s that keeps it under 1000
-/// after rounding to two decimals, so 999999 ns is `1.00 ms`, not
-/// `1000.00 us` (D-603). The units are ASCII.
 pub fn writeDuration(writer: *Io.Writer, ns: u64) Io.Writer.Error!void {
     if (ns < 1000) return writer.print("{d} ns", .{ns});
     const units = [_]struct { name: []const u8, ns: f64 }{
@@ -219,9 +193,6 @@ test "a duration keeps under 1000 of its unit after rounding" {
 const scan_line = [_]cli_comparison.PlanRow{.{ .id = 2, .parent = 0, .label = .{ .kind = .scan }, .detail = "SCAN t" }};
 
 test "the summary keeps its block order without a database" {
-    // The summary is built from data that is already finished: the header
-    // carries the version strings and the paths, so the display code never
-    // opens anything.
     var buffer: [4096]u8 = undefined;
     var stdout = Io.Writer.fixed(&buffer);
     const binds = [_]cli_args.BindArg{.{ .number = 1, .value = .{ .int = 7 } }};

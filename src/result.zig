@@ -1,53 +1,30 @@
-//! Result rows of one SELECT, normalized so that two runs can be compared.
-//!
-//! Every value keeps its storage class: a row is stored as `tag value` pairs,
-//! where INTEGER is an `i64`, REAL the bits of an `f64`, TEXT and BLOB a `u32`
-//! length followed by the bytes, and NULL the tag alone. Two rows are equal
-//! only when every value has the same class and the same bytes, so `1`, `1.0`
-//! and `'1'` stay apart, NULL differs from an empty text or blob, and REAL
-//! values compare bit for bit (D-501).
-//!
-//! Both runs share one byte budget. A run that would exceed it, or that runs
-//! out of memory, drops what it collected and is reported as incomparable
-//! instead of failing the run.
-
 const std = @import("std");
 const Io = std.Io;
 const sqlite = @import("sqlite.zig");
 
-/// Bytes that the rows of both runs may hold together (D-510). Each row is
-/// charged its normalized size plus its bookkeeping entry.
 pub const max_result_bytes: usize = 64 * 1024 * 1024;
 
-/// One-sided rows shown per side in a mismatch report.
 pub const max_examples = 5;
 
-/// TEXT and BLOB bytes shown per value in an example; the rest is cut and the
-/// full length is printed instead.
 pub const max_example_value_bytes = 200;
 
 const Tag = enum(u8) { integer = 1, real = 2, text = 3, blob = 4, null = 5 };
 
-/// The byte budget that both collectors of one run draw from.
 pub const Budget = struct {
     limit: usize = max_result_bytes,
     used: usize = 0,
 };
 
-/// Why a collector stopped keeping rows.
 pub const CollectFailure = enum { over_budget, out_of_memory };
 
 const Span = struct { start: usize, len: usize };
 
-/// Keeps the normalized rows of one SELECT run.
 pub const RowCollector = struct {
     allocator: std.mem.Allocator,
     budget: *Budget,
     data: std.ArrayList(u8) = .empty,
     rows: std.ArrayList(Span) = .empty,
-    /// Bytes this collector has taken from the budget.
     charged: usize = 0,
-    /// Set once collecting stopped; the rows are gone then.
     failure: ?CollectFailure = null,
 
     pub fn init(allocator: std.mem.Allocator, budget: *Budget) RowCollector {
@@ -63,16 +40,10 @@ pub const RowCollector = struct {
         return self.rows.items.len;
     }
 
-    /// Normalizes the current row of `statement` and keeps it. A row that does
-    /// not fit stops collecting for good; the statement itself keeps running.
     pub fn add(self: *RowCollector, statement: *sqlite.sqlite3_stmt) void {
         if (self.failure != null) return;
         const columns: usize = @intCast(sqlite.sqlite3_column_count(statement));
 
-        // Size the row first so that the budget is checked before anything is
-        // allocated. Only TEXT values are read as text and only BLOB values as
-        // blobs, so no value is converted and the second pass sees the same
-        // storage classes.
         var size: usize = 0;
         for (0..columns) |column| {
             size += valueSize(statement, @intCast(column)) orelse return self.fail(.out_of_memory);
@@ -103,8 +74,6 @@ pub const RowCollector = struct {
     }
 };
 
-/// Normalized size of one value, or null when SQLite could not hand out the
-/// text or blob (out of memory).
 fn valueSize(statement: *sqlite.sqlite3_stmt, column: c_int) ?usize {
     return switch (sqlite.sqlite3_column_type(statement, column)) {
         sqlite.SQLITE_INTEGER, sqlite.SQLITE_FLOAT => 1 + 8,
@@ -115,9 +84,6 @@ fn valueSize(statement: *sqlite.sqlite3_stmt, column: c_int) ?usize {
         sqlite.SQLITE_BLOB => blk: {
             const blob = sqlite.sqlite3_column_blob(statement, column);
             const bytes = sqlite.sqlite3_column_bytes(statement, column);
-            // An empty blob comes back as a null pointer with 0 bytes. A
-            // `zeroblob(N)` is expanded by this call, and when that runs out
-            // of memory SQLite turns the value into NULL instead.
             if (blob == null and (bytes != 0 or sqlite.sqlite3_column_type(statement, column) != sqlite.SQLITE_BLOB)) return null;
             break :blk 1 + 4 + @as(usize, @intCast(bytes));
         },
@@ -125,7 +91,6 @@ fn valueSize(statement: *sqlite.sqlite3_stmt, column: c_int) ?usize {
     };
 }
 
-/// Appends one value; `valueSize` has reserved the room.
 fn appendValue(data: *std.ArrayList(u8), statement: *sqlite.sqlite3_stmt, column: c_int) void {
     switch (sqlite.sqlite3_column_type(statement, column)) {
         sqlite.SQLITE_INTEGER => {
@@ -160,13 +125,8 @@ fn appendInt(data: *std.ArrayList(u8), comptime T: type, value: T) void {
     data.appendSliceAssumeCapacity(&bytes);
 }
 
-/// Outcome of comparing two complete runs.
 pub const Comparison = struct {
-    /// The two runs hold the same rows the same number of times.
     matched: bool,
-    /// Same row count and the same row at every position, in the order the
-    /// runs returned them. Only a reference: the order is not part of the
-    /// result (D-503).
     same_order: bool,
     baseline_only: usize = 0,
     variant_only: usize = 0,
@@ -184,9 +144,6 @@ pub const Comparison = struct {
     }
 };
 
-/// Compares the rows of two finished runs as multisets. Both collectors must
-/// still hold their rows. Their rows are sorted in place, and the examples
-/// point into them, so the collectors must outlive the result.
 pub fn compare(baseline: *RowCollector, variant: *RowCollector) Comparison {
     std.debug.assert(baseline.failure == null and variant.failure == null);
     var comparison: Comparison = .{
@@ -250,16 +207,6 @@ fn sortRows(collector: *RowCollector) void {
     }.lessThan);
 }
 
-/// Writes one normalized row as `[v1, v2, ...]` on a single line: INTEGER in
-/// decimal, REAL in the shortest exponent form that reads back to the same
-/// value (`1e0`, `-0e0`), TEXT in single quotes with `\\`, `\'`, `\n`, `\r`,
-/// `\t` escapes, `\xNN` for other ASCII controls and bytes that are not valid
-/// UTF-8, and `\uXXXX` for C1 controls, line and paragraph separators, and
-/// bidirectional overrides; BLOB as `x'..'`, and NULL as `NULL`. TEXT and BLOB
-/// values longer than `max_example_value_bytes` are cut and followed by
-/// `...(N bytes)`. The values come from the database, which may be someone
-/// else's, so no control character reaches the terminal as is: a value can
-/// never start a new output line or steer the terminal.
 pub fn writeRow(writer: *Io.Writer, row: []const u8) Io.Writer.Error!void {
     try writer.writeByte('[');
     var rest = row;
@@ -290,12 +237,10 @@ pub fn writeRow(writer: *Io.Writer, row: []const u8) Io.Writer.Error!void {
     try writer.writeByte(']');
 }
 
-/// Writes `value` as a quoted TEXT value, as `writeRow` does.
 pub fn writeText(writer: *Io.Writer, value: []const u8) Io.Writer.Error!void {
     var shown = value.len;
     if (shown > max_example_value_bytes) {
         shown = max_example_value_bytes;
-        // Do not cut a UTF-8 sequence in half.
         while (shown > 0 and value[shown] & 0xc0 == 0x80) shown -= 1;
     }
     try writer.writeByte('\'');
@@ -315,7 +260,6 @@ pub fn writeText(writer: *Io.Writer, value: []const u8) Io.Writer.Error!void {
             rest = rest[1..];
             continue;
         }
-        // Bytes that are not valid UTF-8 are escaped one by one.
         const len = std.unicode.utf8ByteSequenceLength(byte) catch 0;
         const code_point = if (len != 0 and len <= rest.len) std.unicode.utf8Decode(rest[0..len]) catch null else null;
         const point = code_point orelse {
@@ -324,9 +268,6 @@ pub fn writeText(writer: *Io.Writer, value: []const u8) Io.Writer.Error!void {
             continue;
         };
         switch (point) {
-            // C1 controls (NEL, CSI, OSC, ...), the line and paragraph
-            // separators, and the bidirectional overrides can move the cursor,
-            // break a line, or reorder what the reader sees.
             0x80...0x9f, 0x2028, 0x2029, 0x202a...0x202e, 0x2066...0x2069 => try writer.print("\\u{x:0>4}", .{point}),
             else => try writer.writeAll(rest[0..len]),
         }
@@ -344,7 +285,6 @@ fn writeBlob(writer: *Io.Writer, value: []const u8) Io.Writer.Error!void {
 
 const testing = std.testing;
 
-/// Test-only: collects every row of `sql` from an in-memory database.
 fn collect(collector: *RowCollector, sql: [:0]const u8) !void {
     var handle: ?*sqlite.sqlite3 = null;
     defer _ = sqlite.sqlite3_close(handle);
@@ -361,7 +301,6 @@ fn collect(collector: *RowCollector, sql: [:0]const u8) !void {
     };
 }
 
-/// Test-only: compares the rows of two queries.
 fn compareQueries(baseline_sql: [:0]const u8, variant_sql: [:0]const u8) !Comparison {
     var budget: Budget = .{};
     var baseline = RowCollector.init(testing.allocator, &budget);
@@ -370,8 +309,6 @@ fn compareQueries(baseline_sql: [:0]const u8, variant_sql: [:0]const u8) !Compar
     defer variant.deinit();
     try collect(&baseline, baseline_sql);
     try collect(&variant, variant_sql);
-    // The examples point into the collectors, so only the counts and flags
-    // survive this helper.
     var comparison = compare(&baseline, &variant);
     comparison.baseline_example_count = 0;
     comparison.variant_example_count = 0;
@@ -380,10 +317,8 @@ fn compareQueries(baseline_sql: [:0]const u8, variant_sql: [:0]const u8) !Compar
 
 test "normalized rows keep type, null, and duplicates" {
     try testing.expect((try compareQueries("VALUES (1), ('1'), (NULL)", "VALUES (1), ('1'), (NULL)")).matched);
-    // INTEGER, REAL and TEXT with the same digits are different values.
     try testing.expect(!(try compareQueries("VALUES (1)", "VALUES (1.0)")).matched);
     try testing.expect(!(try compareQueries("VALUES (1)", "VALUES ('1')")).matched);
-    // The number of duplicates counts.
     const duplicates = try compareQueries("VALUES (1), (1), (NULL)", "VALUES (1), (NULL), (NULL)");
     try testing.expect(!duplicates.matched);
     try testing.expectEqual(@as(usize, 1), duplicates.baseline_only);
@@ -427,7 +362,6 @@ test "mismatch lists one-sided rows with counts and capped examples" {
 }
 
 test "collector over the byte budget is incomparable and frees its rows" {
-    // Room for the first collector's two rows only.
     var budget: Budget = .{ .limit = 2 * (9 + @sizeOf(Span)) };
     var first = RowCollector.init(testing.allocator, &budget);
     defer first.deinit();
@@ -441,7 +375,6 @@ test "collector over the byte budget is incomparable and frees its rows" {
     try testing.expectEqual(@as(?CollectFailure, .over_budget), second.failure);
     try testing.expectEqual(@as(usize, 0), second.rowCount());
 
-    // A collector that fails gives its share back.
     first.fail(.over_budget);
     try testing.expectEqual(@as(usize, 0), budget.used);
     try testing.expectEqual(@as(usize, 0), first.data.capacity);
@@ -457,7 +390,6 @@ test "real values compare by bits" {
     var buffer: [64]u8 = undefined;
     var writer = Io.Writer.fixed(&buffer);
     try writeRow(&writer, collector.row(collector.rows.items[0]));
-    // A REAL always carries an exponent, so it never reads like an INTEGER.
     try testing.expectEqualStrings("[-0e0, 1e0, 1e-1, 1]", writer.buffered());
 }
 
@@ -497,7 +429,6 @@ test "text examples escape c1 controls, invalid utf-8, and bidi overrides" {
     var buffer: [256]u8 = undefined;
     var writer = Io.Writer.fixed(&buffer);
     try writeRow(&writer, collector.row(collector.rows.items[0]));
-    // Printable non-ASCII text stays readable.
     try testing.expectEqualStrings("['a\\u0085\\u009bb', '\\xffA', '\\u2028\\u202eé']", writer.buffered());
 }
 

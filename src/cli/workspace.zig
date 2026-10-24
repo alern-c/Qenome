@@ -1,7 +1,3 @@
-//! The private temporary directory, the snapshot, and the candidate index on
-//! the variant. The source database is only read; only the variant this run
-//! created is ever written to.
-
 const std = @import("std");
 const Io = std.Io;
 const db = @import("../db.zig");
@@ -14,33 +10,20 @@ const reportInterrupted = cli_control.reportInterrupted;
 const Side = cli_comparison.Side;
 const ExitCode = cli_control.ExitCode;
 
-/// Parent of the temporary directory: `TMPDIR`, or `/tmp` when it is unset or
-/// empty. A relative value is resolved against the current directory.
 pub fn tempParentPath(temp_parent: ?[]const u8) []const u8 {
     const value = temp_parent orelse return "/tmp";
     return if (value.len == 0) "/tmp" else value;
 }
 
-/// Prefix of every temporary directory, so that one left behind by `kill -9`
-/// is easy to find and remove by hand.
 pub const work_dir_prefix = "qenome-";
 
-/// Random bytes in the directory name; the name holds them as hex.
 const work_dir_random_bytes = 12;
 
-/// Attempts before giving up on a free name. A clash needs the same 96 random
-/// bits, so a second attempt is already a sign of something else.
 const work_dir_attempts = 4;
 
-/// A private directory that holds `baseline.db` and `variant.db`.
-///
-/// `create` makes the directory with mode 0700 in one `mkdir`, and only a
-/// directory this run created is ever removed: a name that already exists is
-/// skipped, never reused.
 pub const WorkDir = struct {
     parent: Io.Dir,
     name: [work_dir_prefix.len + 2 * work_dir_random_bytes]u8,
-    /// Absolute path of the directory, for messages.
     path: [:0]const u8,
     baseline_path: [:0]const u8,
     variant_path: [:0]const u8,
@@ -68,7 +51,6 @@ pub const WorkDir = struct {
             };
             break;
         }
-        // From here on the directory is ours, so a failure removes it.
         errdefer parent.deleteTree(io, &work.name) catch {};
 
         work.path = try parent.realPathFileAlloc(io, &work.name, arena);
@@ -77,9 +59,6 @@ pub const WorkDir = struct {
         return work;
     }
 
-    /// Builds the candidate index on this run's own variant copy. The path
-    /// comes from this directory, never from the caller, so an index can only
-    /// land in the copy the run made.
     pub fn applyCandidate(
         self: *const WorkDir,
         index_sql: [:0]const u8,
@@ -89,9 +68,6 @@ pub const WorkDir = struct {
         return db.applyCreateIndex(self.variant_path, index_sql, control, detail);
     }
 
-    /// Removes the directory and everything in it. A failure is a cleanup
-    /// failure (exit 5 after an otherwise successful run) and names the path
-    /// that is left behind.
     pub fn remove(self: *WorkDir, io: Io, stderr: *Io.Writer, cleanup_failed: *bool) void {
         defer self.parent.close(io);
         self.parent.deleteTree(io, &self.name) catch |err| {
@@ -101,9 +77,6 @@ pub const WorkDir = struct {
     }
 };
 
-/// Copies `database_path` into `work` as one snapshot, then copies the closed
-/// baseline to the variant. Returns the exit code of a failure, or null when
-/// both copies exist.
 pub fn prepareCopies(
     io: Io,
     database_path: [:0]const u8,
@@ -132,11 +105,8 @@ pub fn prepareCopies(
         };
     }
 
-    // The copy itself cannot be interrupted, so a signal that arrived while
-    // it ran is honoured here.
     if (signalPending()) return reportInterrupted(stderr);
 
-    // The baseline is closed and private, so a plain file copy is consistent.
     Io.Dir.cwd().copyFile(work.baseline_path, Io.Dir.cwd(), work.variant_path, io, .{}) catch |err| {
         stderr.print("error: cannot copy the baseline to the variant: {s}\n", .{@errorName(err)}) catch {};
         return .rejected;
@@ -144,8 +114,6 @@ pub fn prepareCopies(
     return null;
 }
 
-/// The size of a closed-to-writes copy, or null after reporting why it could
-/// not be read.
 pub fn fileSize(io: Io, path: [:0]const u8, side: Side, stderr: *Io.Writer) ?u64 {
     const stat = Io.Dir.cwd().statFile(io, path, .{}) catch |err| {
         stderr.print("error: cannot read the size of the {t} '{s}': {s}\n", .{ side, path, @errorName(err) }) catch {};
@@ -156,15 +124,12 @@ pub fn fileSize(io: Io, path: [:0]const u8, side: Side, stderr: *Io.Writer) ?u64
 
 const testing = std.testing;
 
-/// The schema of the fixture database these tests copy and index.
 const fixture_schema: [:0]const u8 =
     \\CREATE TABLE t(a INTEGER, b TEXT);
     \\INSERT INTO t VALUES (1, 'x'), (2, 'y');
     \\CREATE INDEX idx_b ON t(b);
 ;
 
-/// A temporary directory with one database in it, for the tests that need a
-/// real file to copy.
 const Fixture = struct {
     tmp: testing.TmpDir,
     db_path: [:0]u8,
@@ -184,7 +149,6 @@ const Fixture = struct {
         self.tmp.cleanup();
     }
 
-    /// An empty directory that can hold the work directory, as `TMPDIR` does.
     fn workParent(self: *Fixture) ![:0]u8 {
         try self.tmp.dir.createDir(testing.io, "work", .default_dir);
         return self.tmp.dir.realPathFileAlloc(testing.io, "work", testing.allocator);
@@ -224,7 +188,6 @@ test "the work directory is private and the variant is a byte copy of the baseli
         try testing.expect(baseline.len > 0);
         try testing.expectEqualSlices(u8, baseline, variant);
     }
-    // Nothing is left behind after `remove`.
     var parent = try fixture.tmp.dir.openDir(testing.io, "work", .{ .iterate = true });
     defer parent.close(testing.io);
     var entries = parent.iterate();
@@ -259,7 +222,6 @@ test "applyCandidate writes the index into the variant copy only" {
         var detail: db.SnapshotDetail = .{};
         try work.applyCandidate("CREATE INDEX idx_new ON t(a)", &control, &detail);
 
-        // The index is in the variant this directory owns ...
         var failure: ExitCode = .ok;
         const find_index = "SELECT count(*) FROM sqlite_master WHERE name = 'idx_new'";
         var variant_session: cli_query.QuerySession = .{};
@@ -268,7 +230,6 @@ test "applyCandidate writes the index into the variant copy only" {
         if (!variant_session.open(work.variant_path, find_index, &.{}, .variant, "", &stderr, &failure)) return error.OpenFailed;
         try testing.expectEqual(@as(i64, 1), (try variant_session.firstRowInt64()).?);
 
-        // ... and the baseline keeps its bytes and has no such index.
         var baseline_session: cli_query.QuerySession = .{};
         defer baseline_session.close(.baseline, &stderr, &cleanup_failed);
         defer baseline_session.finalize();
