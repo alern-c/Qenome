@@ -1,22 +1,9 @@
-//! Read-only database access and the SQL input contract.
-//!
-//! A connection is opened with `SQLITE_OPEN_READONLY` only, and every user
-//! statement is checked behind a deny-by-default authorizer. The allowlists
-//! below are measured from the engine itself; the test "authorizer logs only
-//! allowlisted actions for select and ddl" pins the actions that the vendored
-//! release reports, so a new action cannot pass unnoticed.
-
 const std = @import("std");
 const Io = std.Io;
 const builtin = @import("builtin");
 const sqlite = @import("sqlite.zig");
 const result = @import("result.zig");
 
-/// Which actions the authorizer accepts.
-///
-/// * `internal`: only the fixed statements this module runs itself.
-/// * `user_select`: the read-only actions a SELECT needs.
-/// * `user_ddl`: `CREATE INDEX` and the actions preparing it reports.
 pub const Mode = enum { internal, user_select, user_ddl };
 
 pub const OpenError = error{
@@ -28,17 +15,10 @@ pub const OpenError = error{
 pub const CloseError = error{CloseFailed};
 
 pub const SnapshotError = error{
-    /// Another connection holds a lock that the copy needs (`SQLITE_BUSY`),
-    /// for example a writer inside `BEGIN EXCLUSIVE`. There is no busy
-    /// handler, so the copy fails at once instead of waiting (D-003).
     SourceBusy,
-    /// The destination could not be created, filled, switched to the rollback
-    /// journal, or closed. `SnapshotDetail` holds the engine message.
     SnapshotFailed,
 };
 
-/// Engine message of a failed `copySnapshotTo` or `applyCreateIndex`, copied
-/// before the connection is closed. Longer messages are cut.
 pub const SnapshotDetail = struct {
     buffer: [256]u8 = undefined,
     len: usize = 0,
@@ -56,60 +36,35 @@ pub const SnapshotDetail = struct {
 
 pub const StepError = error{
     StepFailed,
-    /// The time limit expired while the statement was running.
     Timeout,
-    /// The cancel flag was set (SIGINT) while the statement was running.
     Interrupted,
 };
 
 pub const ApplyError = CheckError || error{
-    /// The variant could not be opened read-write.
     OpenFailed,
-    /// The guards (double-quoted strings off, authorizer) could not be set.
     GuardSetupFailed,
-    /// The time limit expired while the index was being built.
     Timeout,
-    /// The cancel flag was set (a signal) while the index was being built.
     Interrupted,
-    /// SQLite could not build the index (for example a UNIQUE index over
-    /// duplicate rows, or a full disk) or could not close the variant.
     ApplyFailed,
 };
 
 pub const ExplainError = error{
-    /// The query plan of an accepted SELECT could not be read.
     ExplainFailed,
 };
 
-/// Why the progress handler stopped a statement before it finished.
 pub const InterruptReason = enum { timeout, signal };
 
-/// Interruption state for `stepAll`.
-///
-/// `stepAll` installs a progress handler that reads this value, so the control
-/// must stay alive until the call returns. The callback runs on the stepping
-/// thread and never calls a SQLite API; the SIGINT handler only writes the
-/// atomic `cancel` flag, which is the one field it may touch.
 pub const StepControl = struct {
     io: Io,
-    /// Time limit in milliseconds. `0` disables the limit, as `--timeout-ms 0`
-    /// does.
     timeout_ms: u64,
-    /// Set by the CLI's SIGINT handler, or by a test.
     cancel: *const std.atomic.Value(bool),
-    /// Why the last `stepAll` was interrupted, or null when it was not.
     reason: ?InterruptReason = null,
-    /// Absolute deadline on the `awake` clock. `stepAll` fills this in from
-    /// `timeout_ms` when it starts, because the limit covers the execution and
-    /// not the prepare or bind phases.
     deadline_ns: ?i96 = null,
 
     pub fn init(io: Io, timeout_ms: u64, cancel: *const std.atomic.Value(bool)) StepControl {
         return .{ .io = io, .timeout_ms = timeout_ms, .cancel = cancel };
     }
 
-    /// Starts the time limit for one statement. Each statement gets the full
-    /// `timeout_ms` of its own (D-509).
     fn start(self: *StepControl) void {
         self.reason = null;
         const now = Io.Clock.now(.awake, self.io).nanoseconds;
@@ -117,7 +72,6 @@ pub const StepControl = struct {
     }
 
     fn shouldStop(self: *StepControl) bool {
-        // A signal is the user's own request, so it wins over the deadline.
         if (self.cancel.load(.monotonic)) {
             self.reason = .signal;
             return true;
@@ -132,49 +86,24 @@ pub const StepControl = struct {
     }
 };
 
-/// Approximate VM instructions between progress callbacks. Small enough that a
-/// heavy SELECT notices a deadline or a signal within a few milliseconds.
 const progress_opcodes: c_int = 1000;
 
 pub const CheckError = error{
-    /// The input holds no statement (empty, whitespace, or comments only).
     EmptyStatement,
-    /// More than one statement was found.
     MultipleStatements,
-    /// The authorizer denied an action that the mode does not allow.
     StatementRejected,
-    /// SQLite could not prepare the statement (syntax, unknown table or column,
-    /// an index name that already exists).
     StatementInvalid,
-    /// A read-only SELECT was expected but `sqlite3_stmt_readonly` disagreed.
     StatementNotReadOnly,
-    /// A CREATE INDEX was expected but the authorizer never reported one, or
-    /// `sqlite3_stmt_readonly` disagreed.
     StatementNotCreateIndex,
 };
 
-/// Hints, gathered while a SELECT is prepared, that its rows may differ
-/// between the baseline and the variant for reasons other than a broken
-/// index. The authorizer only records them; it never denies because of them.
 pub const Clues = struct {
-    /// A function whose result can change between two runs (D-502). Rows of
-    /// such a SELECT are never compared.
     nondeterministic_function: ?[]const u8 = null,
-    /// A table that describes the database itself (D-507). The candidate
-    /// index changes the schema, so rows of such a SELECT are never compared.
     schema_table: ?[]const u8 = null,
-    /// An aggregate or window function whose result can depend on the order
-    /// rows are read in (D-505). Only a mismatch becomes incomparable.
     order_dependent_function: ?[]const u8 = null,
-    /// A date or time function, which may read the current time (D-512).
-    /// Only a mismatch becomes incomparable.
     time_function: ?[]const u8 = null,
-    /// The SELECT reads through a view or a WITH clause, which may hold a
-    /// LIMIT of its own (D-504). Only a mismatch becomes incomparable.
     view_or_cte: bool = false,
 
-    /// The clues of both copies together. The SQL is the same on both, so
-    /// they agree unless the engine re-prepared one of them differently.
     pub fn merge(a: Clues, b: Clues) Clues {
         return .{
             .nondeterministic_function = a.nondeterministic_function orelse b.nondeterministic_function,
@@ -185,31 +114,20 @@ pub const Clues = struct {
         };
     }
 
-    /// True when the rows must not be compared at all.
     pub fn alwaysIncomparable(self: Clues) bool {
         return self.nondeterministic_function != null or self.schema_table != null;
     }
 };
 
-/// Functions of the vendored build whose result changes between two runs of
-/// the same SELECT (D-502). The test "function lists match the vendored
-/// function list" ties these lists to the engine.
 const nondeterministic_functions = [_][]const u8{
     "random", "randomblob", "changes", "last_insert_rowid", "total_changes",
 };
 
-/// Date and time functions (D-512). They read the current time when given
-/// `'now'` or no argument, which `'now'` hides in an argument, so they are
-/// listed as a whole. A match is still observed, so only a mismatch becomes
-/// incomparable.
 const time_functions = [_][]const u8{
     "julianday", "unixepoch", "date",         "time",         "datetime",
     "strftime",  "timediff",  "current_time", "current_date", "current_timestamp",
 };
 
-/// Aggregate and window functions whose result can depend on the order rows
-/// are read in (D-505): the sum of REAL values, concatenations, and the
-/// window functions that number or pick rows.
 const order_dependent_functions = [_][]const u8{
     "sum",              "avg",               "total",             "group_concat",       "string_agg",
     "json_group_array", "json_group_object", "jsonb_group_array", "jsonb_group_object", "row_number",
@@ -217,8 +135,6 @@ const order_dependent_functions = [_][]const u8{
     "lead",
 };
 
-/// Tables that describe the database itself (D-507). `sqlite_stat` names are
-/// matched by prefix.
 const schema_tables = [_][]const u8{ "sqlite_schema", "sqlite_master", "sqlite_temp_schema", "sqlite_temp_master" };
 const stat_table_prefix = "sqlite_stat";
 
@@ -229,32 +145,18 @@ fn findName(list: []const []const u8, name: []const u8) ?[]const u8 {
     return null;
 }
 
-/// Actions recorded per check. The list only feeds diagnostics: tests read it
-/// to pin the allowlists, and it never affects the accept/deny decision.
 const max_observed_actions = 64;
 
-/// A read-only connection.
-///
-/// `openReadOnly` hands SQLite a pointer to this value for the authorizer, so
-/// the instance must not move while the connection is open. Declare it in the
-/// caller and pass `&db` (`var db: Db = .{}; try db.openReadOnly(path);`).
 pub const Db = struct {
     handle: ?*sqlite.sqlite3 = null,
     mode: Mode = .internal,
     seen_create_index: bool = false,
-    /// Name of the index that the last CREATE INDEX check reported, so that a
-    /// SELECT naming it in `INDEXED BY` can be explained (D-508). Empty when
-    /// the name did not fit.
     candidate_index: [256]u8 = undefined,
     candidate_index_len: usize = 0,
-    /// What the authorizer learnt about the last SELECT. `prepareSelect`
-    /// resets it; a re-prepare during `stepAll` only adds to it.
     clues: Clues = .{},
     observed: [max_observed_actions]c_int = @splat(0),
     observed_count: usize = 0,
 
-    /// Opens `path` read-only and arms the guards. See the note on `Db` about
-    /// the address of the instance.
     pub fn openReadOnly(self: *Db, path: [:0]const u8) OpenError!void {
         var handle: ?*sqlite.sqlite3 = null;
         const rc = sqlite.sqlite3_open_v2(path, &handle, sqlite.SQLITE_OPEN_READONLY, null);
@@ -269,50 +171,27 @@ pub const Db = struct {
             self.* = .{};
         }
 
-        // Fail closed: a connection that can write is not usable here.
         if (sqlite.sqlite3_db_readonly(conn, "main") != 1) return error.NotReadOnlyConnection;
 
         if (!disableDoubleQuotedStrings(conn)) return error.GuardSetupFailed;
-        // The `-wal` file is opened read-write even on a read-only connection,
-        // so only the missing exclusive lock on the main file keeps the last
-        // close of a WAL database from checkpointing into it. Make that a
-        // setting instead of a side effect.
         if (sqlite.sqlite3_db_config(conn, sqlite.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, @as(c_int, 1), @as(?*c_int, null)) != sqlite.SQLITE_OK) {
             return error.GuardSetupFailed;
         }
 
-        // The authorizer keeps the connection in `internal` mode between
-        // checks. Its third argument is the address of this instance.
         if (sqlite.sqlite3_set_authorizer(conn, authorizer, self) != sqlite.SQLITE_OK) {
             return error.GuardSetupFailed;
         }
-        // A second barrier behind the read-only open. It does not replace the
-        // authorizer: a prepared CREATE INDEX stays writable until it is
-        // rejected at prepare time.
         if (sqlite.sqlite3_exec(conn, "PRAGMA query_only=1", null, null, null) != sqlite.SQLITE_OK) {
             return error.GuardSetupFailed;
         }
     }
 
-    /// Closes the connection. On failure the handle stays open so that the
-    /// caller can report it; statements must be finalized first.
     pub fn close(self: *Db) CloseError!void {
         const conn = self.handle orelse return;
         if (sqlite.sqlite3_close(conn) != sqlite.SQLITE_OK) return error.CloseFailed;
         self.* = .{};
     }
 
-    /// Copies the database into a new file at `dest_path` as one snapshot.
-    ///
-    /// One `sqlite3_backup_step(-1)` copies every page inside a single read
-    /// transaction on this connection, so the copy holds the committed WAL
-    /// frames as of that moment, and a writer elsewhere cannot tear it. The
-    /// source is only read. Page 1 is copied as is, so a WAL source would leave
-    /// the copy in WAL mode; the copy is switched back to the rollback journal
-    /// before it is closed, so that later writes to it stay in the file.
-    ///
-    /// The destination is the only connection this module opens read-write.
-    /// `dest_path` must not exist yet and should sit in a private directory.
     pub fn copySnapshotTo(self: *Db, dest_path: [:0]const u8, detail: *SnapshotDetail) SnapshotError!void {
         detail.len = 0;
         var handle: ?*sqlite.sqlite3 = null;
@@ -333,8 +212,6 @@ pub const Db = struct {
             return error.SnapshotFailed;
         };
         const step_rc = sqlite.sqlite3_backup_step(backup, -1);
-        // `finish` is required after every outcome, `SQLITE_BUSY` included,
-        // and it leaves the backup's error on the destination connection.
         const finish_rc = sqlite.sqlite3_backup_finish(backup);
         if (step_rc != sqlite.SQLITE_DONE or finish_rc != sqlite.SQLITE_OK) {
             detail.capture(dest);
@@ -349,17 +226,12 @@ pub const Db = struct {
 
         closed = true;
         if (sqlite.sqlite3_close(dest) != sqlite.SQLITE_OK) {
-            // No statement is left on `dest`, so this only happens when the
-            // last write cannot be completed; the copy is not trusted then.
             detail.capture(dest);
             _ = sqlite.sqlite3_close(dest);
             return error.SnapshotFailed;
         }
     }
 
-    /// Accepts exactly one read-only SELECT and returns the prepared statement
-    /// so that the caller can bind and step it. The caller owns the statement
-    /// and must finalize it.
     pub fn prepareSelect(self: *Db, sql: [:0]const u8) CheckError!*sqlite.sqlite3_stmt {
         self.clues = .{};
         const previous = self.enterMode(.user_select);
@@ -372,14 +244,11 @@ pub const Db = struct {
         return statement;
     }
 
-    /// Accepts exactly one read-only SELECT and discards the statement.
     pub fn checkSelect(self: *Db, sql: [:0]const u8) CheckError!void {
         const statement = try self.prepareSelect(sql);
         _ = sqlite.sqlite3_finalize(statement);
     }
 
-    /// Accepts exactly one CREATE INDEX that SQLite can prepare. The statement
-    /// is never stepped, so the index is not created.
     pub fn checkCreateIndex(self: *Db, sql: [:0]const u8) CheckError!void {
         const previous = self.enterMode(.user_ddl);
         defer self.mode = previous;
@@ -388,35 +257,15 @@ pub const Db = struct {
         defer _ = sqlite.sqlite3_finalize(statement);
 
         if (!self.seen_create_index) return error.StatementNotCreateIndex;
-        // Double check for a statement that is writable although the authorizer
-        // saw a CREATE INDEX. The pinned release reports 0 for every CREATE
-        // INDEX that reaches this point, so this is a guard for engine changes.
         if (sqlite.sqlite3_stmt_readonly(statement) != 0) return error.StatementNotCreateIndex;
     }
 
-    /// Steps `statement` to completion and returns the number of rows.
-    ///
-    /// The select allowlist stays active for the whole loop: with bound values
-    /// in place SQLite can re-prepare the statement on its first step (a `LIKE`
-    /// on an indexed column decides its plan from the bound value, for
-    /// example), and that re-prepare runs the authorizer again.
-    ///
-    /// A progress handler checks `control` every `progress_opcodes`
-    /// instructions: the time limit starts here, and the cancel flag arrives
-    /// from the CLI's SIGINT handler. The handler itself never calls a SQLite
-    /// API.
-    ///
-    /// When `collector` is given, every row is also normalized into it for the
-    /// result comparison; a collector that runs out of room stops keeping rows
-    /// but never stops the statement.
     pub fn stepAll(self: *Db, statement: *sqlite.sqlite3_stmt, control: *StepControl, collector: ?*result.RowCollector) StepError!u64 {
         const previous = self.enterMode(.user_select);
         defer self.mode = previous;
 
         control.start();
 
-        // The callback reads `control`, so the handler must be gone again
-        // before the control goes out of scope.
         sqlite.sqlite3_progress_handler(self.connection(), progress_opcodes, progressHandler, control);
         defer sqlite.sqlite3_progress_handler(self.connection(), 0, null, null);
 
@@ -429,8 +278,6 @@ pub const Db = struct {
                 },
                 sqlite.SQLITE_DONE => return rows,
                 else => |rc| {
-                    // Only an interruption becomes a timeout or signal report;
-                    // every other failure keeps its engine message.
                     if (rc == sqlite.SQLITE_INTERRUPT) {
                         if (control.reason) |reason| return switch (reason) {
                             .timeout => error.Timeout,
@@ -443,17 +290,6 @@ pub const Db = struct {
         }
     }
 
-    /// Reads the query plan of `sql` with `binds` bound, as
-    /// `EXPLAIN QUERY PLAN` would print it. The rows and their `detail` text
-    /// are owned by `allocator`.
-    ///
-    /// The plan comes from a statement of its own (D-302): switching a
-    /// statement to `EXPLAIN QUERY PLAN` re-prepares it with plan opcodes that
-    /// stay in its program, so the statement that runs the SELECT would count
-    /// more VM steps. Same connection, SQL and binds give the same plan.
-    ///
-    /// The switch re-prepares under the select allowlist, so the authorizer
-    /// stays as strict as for `prepareSelect`.
     pub fn explainPlan(
         self: *Db,
         allocator: std.mem.Allocator,
@@ -464,13 +300,10 @@ pub const Db = struct {
         defer _ = sqlite.sqlite3_finalize(statement);
         try bindAll(statement, binds);
 
-        // Entered after `prepareSelect`, which resets the observed actions,
-        // so the list shows what the re-prepare reported.
         const previous = self.enterMode(.user_select);
         defer self.mode = previous;
 
         if (sqlite.sqlite3_stmt_explain(statement, 2) != sqlite.SQLITE_OK) return error.ExplainFailed;
-        // `EXPLAIN QUERY PLAN` rows are (id, parent, notused, detail).
         if (sqlite.sqlite3_column_count(statement) != 4) return error.ExplainFailed;
 
         var rows: std.ArrayList(PlanRow) = .empty;
@@ -481,8 +314,6 @@ pub const Db = struct {
         while (true) {
             switch (sqlite.sqlite3_step(statement)) {
                 sqlite.SQLITE_ROW => {
-                    // The text is only valid until the next step, so it is
-                    // copied before the row is kept.
                     const text = sqlite.sqlite3_column_text(statement, 3) orelse return error.ExplainFailed;
                     const detail = try allocator.dupe(u8, std.mem.span(text));
                     errdefer allocator.free(detail);
@@ -500,26 +331,19 @@ pub const Db = struct {
         return .{ .rows = try rows.toOwnedSlice(allocator) };
     }
 
-    /// Message SQLite reported for the connection.
     pub fn message(self: *const Db) []const u8 {
         return std.mem.span(sqlite.sqlite3_errmsg(self.connection()));
     }
 
-    /// Result code of the last failed call, or `SQLITE_OK` when the engine has
-    /// not reported an error (for example after a rejection that our own final
-    /// checks decided, such as an empty statement).
     pub fn errorCode(self: *const Db) c_int {
         return sqlite.sqlite3_errcode(self.connection());
     }
 
-    /// Name of the index that the last `checkCreateIndex` would create, or
-    /// null when no name was reported or it was too long to keep.
     pub fn candidateIndexName(self: *const Db) ?[]const u8 {
         if (self.candidate_index_len == 0) return null;
         return self.candidate_index[0..self.candidate_index_len];
     }
 
-    /// Action codes the authorizer saw during the current check, in order.
     pub fn observedActions(self: *const Db) []const c_int {
         return self.observed[0..self.observed_count];
     }
@@ -528,8 +352,6 @@ pub const Db = struct {
         return self.handle orelse unreachable;
     }
 
-    /// Prepares exactly one statement under the current mode. Returns null when
-    /// the input holds no statement at all.
     fn prepareSingle(self: *Db, sql: [:0]const u8) CheckError!?*sqlite.sqlite3_stmt {
         var statement: ?*sqlite.sqlite3_stmt = null;
         var tail: ?[*:0]const u8 = null;
@@ -540,12 +362,8 @@ pub const Db = struct {
         const first = statement orelse return null;
         errdefer _ = sqlite.sqlite3_finalize(first);
 
-        // EXPLAIN and EXPLAIN QUERY PLAN describe a statement instead of
-        // running it, and neither input contract accepts them.
         if (sqlite.sqlite3_stmt_isexplain(first) != 0) return error.StatementRejected;
 
-        // Prepare the tail so that comments, whitespace, and trailing
-        // semicolons stay acceptable while a real second statement does not.
         if (tail) |rest| {
             var extra: ?*sqlite.sqlite3_stmt = null;
             var extra_tail: ?[*:0]const u8 = null;
@@ -554,8 +372,6 @@ pub const Db = struct {
                 _ = sqlite.sqlite3_finalize(second);
                 return error.MultipleStatements;
             }
-            // The tail can also fail to prepare, for example on a syntax error
-            // in the second statement; either way there is more than one.
             if (extra_rc != sqlite.SQLITE_OK) return error.MultipleStatements;
         }
         return first;
@@ -576,11 +392,7 @@ pub const Db = struct {
         self.observed_count += 1;
     }
 
-    /// Records what an allowed SELECT action says about the result. Names
-    /// are compared ASCII case-insensitively and kept as the list entries, so
-    /// nothing points into SQLite's buffers.
     fn noteClues(self: *Db, action_code: c_int, arg1: ?[*:0]const u8, arg2: ?[*:0]const u8, arg4: ?[*:0]const u8) void {
-        // The innermost view or WITH clause that the action belongs to.
         if (arg4 != null) self.clues.view_or_cte = true;
         switch (action_code) {
             sqlite.SQLITE_FUNCTION => {
@@ -596,8 +408,6 @@ pub const Db = struct {
                 }
             },
             sqlite.SQLITE_READ => {
-                // A table read without any column (`count(*)`) still names
-                // the table, as the user spelled it.
                 const name = std.mem.span(arg1 orelse return);
                 if (self.clues.schema_table != null) return;
                 if (findName(&schema_tables, name)) |entry| {
@@ -622,9 +432,6 @@ pub const Db = struct {
                 else => false,
             },
             .user_ddl => switch (action_code) {
-                // Preparing "CREATE INDEX" also reports the schema write and a
-                // REINDEX of the new index. They are accepted only once the
-                // engine has confirmed the CREATE INDEX itself.
                 sqlite.SQLITE_CREATE_INDEX => {
                     self.seen_create_index = true;
                     const name = std.mem.span(arg1 orelse "");
@@ -641,47 +448,30 @@ pub const Db = struct {
     }
 };
 
-/// A typed value for one positional parameter.
 pub const BindValue = union(enum) {
     int: i64,
     real: f64,
-    /// Borrowed for the call only; SQLite receives a copy because the bind uses
-    /// `SQLITE_TRANSIENT`.
     text: []const u8,
     null,
 };
 
-/// One `--bind` entry: a 1-based parameter number and the value for it.
 pub const BindArg = struct {
     number: u64,
     value: BindValue,
 };
 
 pub const BindError = error{
-    /// More values were given than the statement has parameters, including any
-    /// value for a statement without parameters.
     ParameterCountMismatch,
-    /// A number is 0 or larger than the parameter count.
     BindNumberOutOfRange,
-    /// The same number was given more than once.
     DuplicateBindNumber,
-    /// A number between 1 and the parameter count has no value.
     MissingBindNumber,
-    /// SQLite refused one of the bind calls.
     BindFailed,
 };
 
-/// Binds every value to its parameter.
-///
-/// All numbers `1..parameter_count` must be given exactly once, so a statement
-/// that only uses `?3` still needs values for 1, 2 and 3 (D-104=案1). Numbers
-/// that the SQL never uses are bound as well; they are simply unreachable.
 pub fn bindAll(statement: *sqlite.sqlite3_stmt, binds: []const BindArg) BindError!void {
     const count: u32 = @intCast(sqlite.sqlite3_bind_parameter_count(statement));
     std.debug.assert(count <= sqlite.max_parameter_number);
 
-    // More values than parameters cannot happen while every number is valid,
-    // so this is the only "parameter count" complaint needed.
     if (binds.len > count) return error.ParameterCountMismatch;
 
     var seen: std.StaticBitSet(sqlite.max_parameter_number) = .empty;
@@ -705,39 +495,26 @@ pub fn bindAll(statement: *sqlite.sqlite3_stmt, binds: []const BindArg) BindErro
     }
 }
 
-/// Main shape of one query plan line.
 pub const PlanKind = enum {
-    /// `SCAN ...`: reads a table, an index, a subquery, or constant rows from
-    /// start to end.
     scan,
-    /// `SEARCH ...`: looks rows up through a key or an index.
     search,
-    /// `USE TEMP B-TREE ...`: sorts or deduplicates into a temporary tree.
     temp_btree,
-    /// Any other line, including wording this release does not produce.
     other,
 };
 
-/// A rough label for one plan line (D-303). SQLite does not promise a stable
-/// wording, so the label is a hint; the raw `detail` stays the source of
-/// truth and the counters carry the judgement.
 pub const PlanLabel = struct {
     kind: PlanKind,
-    /// The index holds every column the line needs (`COVERING INDEX`).
     covering: bool = false,
-    /// SQLite builds the index while the statement runs (`AUTOMATIC`).
     automatic: bool = false,
 };
 
 pub const PlanRow = struct {
     id: i64,
-    /// `id` of the enclosing line, or 0 at the top level.
     parent: i64,
     label: PlanLabel,
     detail: []const u8,
 };
 
-/// Query plan lines in the order SQLite reports them.
 pub const Plan = struct {
     rows: []PlanRow,
 
@@ -747,12 +524,6 @@ pub const Plan = struct {
     }
 };
 
-/// Labels one `EXPLAIN QUERY PLAN` detail line.
-///
-/// The main kind comes from the first word only. The attributes come from the
-/// text after the first `" USING "` of a scan or search line. Names are
-/// printed unquoted, so a table or alias that contains `" USING "` can still
-/// mislead the attributes; D-303 accepts that for a hint.
 pub fn classifyDetail(detail: []const u8) PlanLabel {
     const kind: PlanKind = if (std.mem.startsWith(u8, detail, "SCAN "))
         .scan
@@ -779,20 +550,13 @@ pub fn classifyDetail(detail: []const u8) PlanLabel {
     };
 }
 
-/// Per-statement counters from `sqlite3_stmt_status`, read after the run.
 pub const Counters = struct {
-    /// Steps forward through a table or index read from start to end.
     fullscan_steps: u32,
-    /// Virtual machine instructions executed.
     vm_steps: u32,
-    /// Sort operations.
     sort_ops: u32,
-    /// Rows inserted into automatic indexes.
     autoindex_rows: u32,
 };
 
-/// Reads the counters of `statement` without resetting them. The counters
-/// survive a re-prepare, so they cover the whole run.
 pub fn statementCounters(statement: *sqlite.sqlite3_stmt) Counters {
     return .{
         .fullscan_steps = readCounter(statement, sqlite.SQLITE_STMTSTATUS_FULLSCAN_STEP),
@@ -802,24 +566,13 @@ pub fn statementCounters(statement: *sqlite.sqlite3_stmt) Counters {
     };
 }
 
-/// The engine keeps each counter as `u32` and returns it as `int`, so the
-/// bits are reinterpreted instead of range-checked.
 fn readCounter(statement: *sqlite.sqlite3_stmt, op: c_int) u32 {
     return @bitCast(sqlite.sqlite3_stmt_status(statement, op, 0));
 }
 
-/// Builds the candidate index in the database at `path`, which must be the
-/// private variant copy: it is the only database this module ever changes.
-///
-/// The statement goes through the same DDL allowlist as `checkCreateIndex`,
-/// and it stays under that allowlist while it runs. The time limit and the
-/// cancel flag in `control` cover the build (D-509); an interrupted build is
-/// rolled back by SQLite. On failure `detail` holds the engine message, when
-/// SQLite reported one.
 pub fn applyCreateIndex(path: [:0]const u8, sql: [:0]const u8, control: *StepControl, detail: *SnapshotDetail) ApplyError!void {
     detail.len = 0;
     var handle: ?*sqlite.sqlite3 = null;
-    // No `SQLITE_OPEN_CREATE`: a missing variant is an error, not a new file.
     const open_rc = sqlite.sqlite3_open_v2(path, &handle, sqlite.SQLITE_OPEN_READWRITE | sqlite.SQLITE_OPEN_NOFOLLOW, null);
     const conn = handle orelse return error.OpenFailed;
     var closed = false;
@@ -831,8 +584,6 @@ pub fn applyCreateIndex(path: [:0]const u8, sql: [:0]const u8, control: *StepCon
         return error.OpenFailed;
     }
 
-    // The authorizer reads this value, so it lives until the connection is
-    // closed below.
     var target: Db = .{ .handle = conn };
     if (!disableDoubleQuotedStrings(conn)) return error.GuardSetupFailed;
     if (sqlite.sqlite3_set_authorizer(conn, authorizer, &target) != sqlite.SQLITE_OK) return error.GuardSetupFailed;
@@ -872,12 +623,6 @@ pub fn applyCreateIndex(path: [:0]const u8, sql: [:0]const u8, control: *StepCon
     }
 }
 
-/// True when `sql` holds the keyword LIMIT or OFFSET outside string literals,
-/// quoted identifiers, comments, and bind names (D-504). The authorizer does
-/// not report LIMIT, so the text is scanned. LIMIT cannot be an unquoted
-/// name, but OFFSET can, so a column called `offset` also counts; that only
-/// turns a mismatch into an incomparable result. A LIMIT inside a view is not
-/// in this text; `Clues.view_or_cte` covers it.
 pub fn mentionsLimitOrOffset(sql: []const u8) bool {
     var i: usize = 0;
     while (i < sql.len) {
@@ -894,10 +639,6 @@ pub fn mentionsLimitOrOffset(sql: []const u8) bool {
             else
                 i + 1,
             else => {
-                // A bind name (`:limit`, `@limit`, `$limit`) or a number is
-                // read as one word together with its prefix. `:` and `@` only
-                // start a word: in `LIMIT:n` they end the keyword, as SQLite
-                // reads it.
                 if (!isWordByte(c) and c != ':' and c != '@') {
                     i += 1;
                     continue;
@@ -913,14 +654,10 @@ pub fn mentionsLimitOrOffset(sql: []const u8) bool {
     return false;
 }
 
-/// Bytes that continue a keyword, a name, a number, or a bind name. `$` is
-/// part of a name in SQLite; `:` and `@` are not.
 fn isWordByte(c: u8) bool {
     return std.ascii.isAlphanumeric(c) or c == '_' or c == '$' or c >= 0x80;
 }
 
-/// Index after the closing quote of the literal or name that starts at
-/// `start`. A doubled quote stays inside; an unclosed one runs to the end.
 fn skipQuoted(sql: []const u8, start: usize, quote: u8) usize {
     var i = start + 1;
     while (std.mem.indexOfScalarPos(u8, sql, i, quote)) |end| {
@@ -933,10 +670,6 @@ fn skipQuoted(sql: []const u8, start: usize, quote: u8) usize {
     return sql.len;
 }
 
-/// SQLite accepts double-quoted string literals by default, so a mistyped
-/// identifier such as `CREATE INDEX i ON t("nope")` would prepare as a
-/// constant expression instead of failing. Turns that off for DDL and DML;
-/// false means a setting could not be applied, which callers treat as fatal.
 fn disableDoubleQuotedStrings(conn: *sqlite.sqlite3) bool {
     return sqlite.sqlite3_db_config(conn, sqlite.SQLITE_DBCONFIG_DQS_DDL, @as(c_int, 0), @as(?*c_int, null)) == sqlite.SQLITE_OK and
         sqlite.sqlite3_db_config(conn, sqlite.SQLITE_DBCONFIG_DQS_DML, @as(c_int, 0), @as(?*c_int, null)) == sqlite.SQLITE_OK;
@@ -961,14 +694,10 @@ fn authorizer(
     const self: *Db = @ptrCast(@alignCast(user_data orelse return sqlite.SQLITE_DENY));
     self.record(action_code);
     if (!self.allows(action_code, arg1, arg3)) return sqlite.SQLITE_DENY;
-    // Never `SQLITE_IGNORE`: it would turn a function into NULL and change
-    // the result instead of reporting it.
     if (self.mode == .user_select) self.noteClues(action_code, arg1, arg2, arg4);
     return sqlite.SQLITE_OK;
 }
 
-/// Progress callback installed around `sqlite3_step`. A non-zero return makes
-/// the step fail with `SQLITE_INTERRUPT`.
 fn progressHandler(user_data: ?*anyopaque) callconv(.c) c_int {
     const control: *StepControl = @ptrCast(@alignCast(user_data orelse return 1));
     return if (control.shouldStop()) 1 else 0;
@@ -976,15 +705,12 @@ fn progressHandler(user_data: ?*anyopaque) callconv(.c) c_int {
 
 const testing = std.testing;
 
-/// Schema used by the checks below. `existing_idx` makes the "index name
-/// already exists" case reachable.
 const fixture_schema: [:0]const u8 =
     \\CREATE TABLE t(a INTEGER, b TEXT);
     \\INSERT INTO t VALUES (1, 'x'), (2, 'y'), (3, 'z');
     \\CREATE INDEX existing_idx ON t(a);
 ;
 
-/// A temporary directory holding one SQLite database file.
 const Fixture = struct {
     tmp: testing.TmpDir,
     path: [:0]u8,
@@ -997,7 +723,6 @@ const Fixture = struct {
     fn initWithSchema(allocator: std.mem.Allocator, schema: [:0]const u8) !Fixture {
         var tmp = testing.tmpDir(.{});
         errdefer tmp.cleanup();
-        // Create the file first so that its path can be resolved for the C API.
         try tmp.dir.writeFile(testing.io, .{ .sub_path = "fixture.db", .data = "" });
         const path = try tmp.dir.realPathFileAlloc(testing.io, "fixture.db", allocator);
         errdefer allocator.free(path);
@@ -1011,11 +736,6 @@ const Fixture = struct {
     }
 };
 
-/// Test-only helper that creates a database file at `path` and runs `schema`.
-/// Production code opens user databases with `SQLITE_OPEN_READONLY` only; the
-/// one production read-write open is the snapshot destination in
-/// `copySnapshotTo`. This function exists so that tests can build fixture
-/// databases without the `sqlite3` CLI.
 pub fn createTestDatabase(path: [:0]const u8, schema: [:0]const u8) !void {
     comptime std.debug.assert(builtin.is_test);
     var handle: ?*sqlite.sqlite3 = null;
@@ -1029,9 +749,6 @@ pub fn createTestDatabase(path: [:0]const u8, schema: [:0]const u8) !void {
     }
 }
 
-/// Test-only helper: opens `path` read-write and runs `sql`, keeping the
-/// connection open so that a test can hold a lock or keep WAL frames from
-/// being checkpointed. Close it with `sqlite3_close`.
 pub fn openTestWriter(path: [:0]const u8, sql: [:0]const u8) !*sqlite.sqlite3 {
     comptime std.debug.assert(builtin.is_test);
     var handle: ?*sqlite.sqlite3 = null;
@@ -1043,7 +760,6 @@ pub fn openTestWriter(path: [:0]const u8, sql: [:0]const u8) !*sqlite.sqlite3 {
     return connection;
 }
 
-/// Test-only helper: runs one scalar query through the select allowlist.
 fn queryInt(db: *Db, sql: [:0]const u8) !i64 {
     const previous = db.enterMode(.user_select);
     defer db.mode = previous;
@@ -1081,7 +797,6 @@ test "single statement select is accepted" {
     try db.checkSelect("SELECT 1;;");
     try db.checkSelect("SELECT \"a\" FROM t");
 
-    // A check must leave the connection guarded again.
     try testing.expectEqual(Mode.internal, db.mode);
 }
 
@@ -1169,7 +884,6 @@ test "candidate create index is validated without being applied" {
         @as(i64, 0),
         try queryInt(&db, "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_new'"),
     );
-    // Repeating the check only succeeds while the index is still absent.
     try db.checkCreateIndex("CREATE INDEX idx_new ON t(a)");
     try db.checkCreateIndex("CREATE UNIQUE INDEX idx_unique ON t(abs(a)) WHERE b IS NOT NULL");
     try testing.expectEqual(
@@ -1188,8 +902,6 @@ test "candidate create index with an existing name is rejected" {
 
     try testing.expectError(error.StatementInvalid, db.checkCreateIndex("CREATE INDEX existing_idx ON t(a)"));
     try testing.expectError(error.StatementInvalid, db.checkCreateIndex("CREATE UNIQUE INDEX existing_idx ON t(b)"));
-    // "IF NOT EXISTS" with an existing name prepares without reporting
-    // SQLITE_CREATE_INDEX, so the authorizer evidence is what rejects it.
     try testing.expectError(
         error.StatementNotCreateIndex,
         db.checkCreateIndex("CREATE INDEX IF NOT EXISTS existing_idx ON t(b)"),
@@ -1203,10 +915,8 @@ test "double quoted unknown columns are rejected" {
     try db.openReadOnly(fixture.path);
     defer db.close() catch unreachable;
 
-    // SQLite's double-quoted string literals would turn these into constants.
     try testing.expectError(error.StatementInvalid, db.checkSelect("SELECT \"nope\" FROM t"));
     try testing.expectError(error.StatementInvalid, db.checkCreateIndex("CREATE INDEX idx_dqs ON t(\"nope\")"));
-    // Real columns and single-quoted literals keep working.
     try db.checkSelect("SELECT \"a\" FROM t");
     try db.checkSelect("SELECT 'nope' FROM t");
 }
@@ -1218,7 +928,6 @@ test "explain statements are rejected" {
     try db.openReadOnly(fixture.path);
     defer db.close() catch unreachable;
 
-    // EXPLAIN only describes a statement; the contract wants the statement.
     try testing.expectError(error.StatementRejected, db.checkSelect("EXPLAIN SELECT 1"));
     try testing.expectError(error.StatementRejected, db.checkSelect("EXPLAIN QUERY PLAN SELECT * FROM t"));
     try testing.expectError(error.StatementRejected, db.checkCreateIndex("EXPLAIN CREATE INDEX idx_explain ON t(a)"));
@@ -1239,8 +948,6 @@ test "final authorizer checks reject statements without the expected evidence" {
     try db.openReadOnly(fixture.path);
     defer db.close() catch unreachable;
 
-    // VACUUM prepares without reporting an authorizer action and is not
-    // read-only, so only the double checks can reject it.
     try testing.expectError(error.StatementNotReadOnly, db.checkSelect("VACUUM"));
     try testing.expectError(error.StatementNotCreateIndex, db.checkCreateIndex("VACUUM"));
 }
@@ -1264,8 +971,6 @@ test "a failed close keeps the connection for the caller" {
     var db: Db = .{};
     try db.openReadOnly(fixture.path);
 
-    // `sqlite3_close` reports SQLITE_BUSY while a statement is unfinalized, and
-    // the handle has to stay usable so that the caller can report it.
     const statement = (try db.prepareSingle("PRAGMA query_only")) orelse return error.TestFixtureFailed;
     try testing.expectError(error.CloseFailed, db.close());
     try testing.expect(db.handle != null);
@@ -1300,8 +1005,6 @@ test "candidate ddl that is not create index is rejected" {
     };
     for (statements) |sql| try testing.expectError(error.StatementRejected, db.checkCreateIndex(sql));
 
-    // The only write action the DDL mode allows is SQLite's own schema write,
-    // and SQLite refuses that statement before the final check can run.
     try testing.expectError(
         error.StatementInvalid,
         db.checkCreateIndex("INSERT INTO sqlite_master VALUES (1, 2, 3, 4, 5)"),
@@ -1359,8 +1062,6 @@ test "authorizer logs only allowlisted actions for select and ddl" {
     }
     try testing.expect(saw_create_index);
 
-    // A denial is visible as an action outside the select allowlist, and every
-    // check starts a fresh list.
     try testing.expectError(error.StatementRejected, db.checkSelect("INSERT INTO t VALUES (4, 'w')"));
     try testing.expectEqualSlices(c_int, &.{sqlite.SQLITE_INSERT}, db.observedActions());
     try db.checkSelect("SELECT 1");
@@ -1389,7 +1090,6 @@ test "stepping a candidate create index fails with SQLITE_READONLY" {
     );
 }
 
-/// Test-only helper: prepares a checked SELECT and binds `binds` to it.
 fn prepareBoundSelect(db: *Db, sql: [:0]const u8, binds: []const BindArg) !*sqlite.sqlite3_stmt {
     const statement = try db.prepareSelect(sql);
     errdefer _ = sqlite.sqlite3_finalize(statement);
@@ -1397,7 +1097,6 @@ fn prepareBoundSelect(db: *Db, sql: [:0]const u8, binds: []const BindArg) !*sqli
     return statement;
 }
 
-/// Test-only helper: text of a column of the current row.
 fn columnText(statement: *sqlite.sqlite3_stmt, column: c_int) []const u8 {
     return std.mem.span(sqlite.sqlite3_column_text(statement, column) orelse return "");
 }
@@ -1478,7 +1177,6 @@ test "bind numbers must cover 1..parameter_count" {
         }),
     );
 
-    // D-104=案1: the numbers 1 and 2 are unused by the SQL but still required.
     try bindAll(statement, &.{
         .{ .number = 1, .value = .{ .int = 10 } },
         .{ .number = 2, .value = .{ .int = 20 } },
@@ -1521,7 +1219,6 @@ test "the vendored parameter limit matches the pinned bound" {
     try db.openReadOnly(fixture.path);
     defer db.close() catch unreachable;
 
-    // `bindAll` asserts this bound, so the constant and the engine must agree.
     try testing.expectEqual(
         @as(c_int, @intCast(sqlite.max_parameter_number)),
         sqlite.sqlite3_limit(db.handle, sqlite.SQLITE_LIMIT_VARIABLE_NUMBER, -1),
@@ -1529,9 +1226,6 @@ test "the vendored parameter limit matches the pinned bound" {
 }
 
 test "stepping a select that SQLite re-prepares keeps working" {
-    // `LIKE` on an indexed column makes SQLite re-prepare the statement on the
-    // first step, once the bound parameter is known. The re-prepare runs the
-    // authorizer again, so the select allowlist must still be active then.
     var fixture = try Fixture.initWithSchema(testing.allocator,
         \\CREATE TABLE t(a INTEGER, b TEXT);
         \\INSERT INTO t VALUES (1, 'x'), (2, 'y'), (3, 'z');
@@ -1553,13 +1247,9 @@ test "stepping a select that SQLite re-prepares keeps working" {
     try testing.expectEqual(Mode.internal, db.mode);
 }
 
-/// A statement that needs far longer than any test time limit, so the progress
-/// handler is what ends it.
 const heavy_select: [:0]const u8 =
     "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 20000000) SELECT count(*) FROM c";
 
-/// A bounded statement that still crosses many progress intervals, but finishes
-/// in milliseconds.
 const bounded_select: [:0]const u8 =
     "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 200000) SELECT count(*) FROM c";
 
@@ -1578,10 +1268,6 @@ test "time limit interrupts a heavy select (timeout)" {
     try testing.expectError(error.Timeout, db.stepAll(statement, &control, null));
     try testing.expectEqual(InterruptReason.timeout, control.reason.?);
 
-    // The progress handler must be uninstalled when `stepAll` returns, because
-    // `control` lives on this stack frame. With the cancel flag set, a direct
-    // step of a fresh statement only runs to completion when no handler is
-    // left to read the stale control.
     cancel.store(true, .monotonic);
     const probe = try prepareBoundSelect(&db, bounded_select, &.{});
     defer _ = sqlite.sqlite3_finalize(probe);
@@ -1589,9 +1275,6 @@ test "time limit interrupts a heavy select (timeout)" {
 }
 
 test "a heavy select inside the time limit finishes (positive control)" {
-    // The deadline comparison is load-bearing in both directions: with an
-    // inverted test the first progress callback would interrupt every
-    // statement that has a time limit at all. This pins the direction.
     var fixture = try Fixture.init(testing.allocator);
     defer fixture.deinit();
     var db: Db = .{};
@@ -1640,8 +1323,6 @@ test "source db bytes are unchanged and no journal files appear" {
     var cancel = std.atomic.Value(bool).init(false);
     var control = StepControl.init(testing.io, 0, &cancel);
     try testing.expectEqual(@as(u64, 1), try db.stepAll(statement, &control, null));
-    // `sqlite3_close` refuses to close while a statement is open, so the
-    // finalize-before-close order is part of the D-105 contract.
     _ = sqlite.sqlite3_finalize(statement);
     const plan = try db.explainPlan(testing.allocator, "SELECT count(*) FROM t WHERE a = ?1", &.{
         .{ .number = 1, .value = .{ .int = 1 } },
@@ -1658,8 +1339,6 @@ test "source db bytes are unchanged and no journal files appear" {
     try testing.expectError(error.FileNotFound, fixture.tmp.dir.openFile(testing.io, "fixture.db-shm", .{}));
 }
 
-/// Plan tests need enough rows for a full scan to differ from a search, a
-/// table with one index (`idx_b`), and a second table for joins.
 const plan_schema: [:0]const u8 =
     \\CREATE TABLE t(a INTEGER, b TEXT);
     \\WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 1000)
@@ -1669,7 +1348,6 @@ const plan_schema: [:0]const u8 =
     \\INSERT INTO u SELECT a, b FROM t;
 ;
 
-/// Test-only helper: the first plan row whose detail starts with `prefix`.
 fn findRow(plan: Plan, prefix: []const u8) ?PlanRow {
     for (plan.rows) |row| {
         if (std.mem.startsWith(u8, row.detail, prefix)) return row;
@@ -1677,7 +1355,6 @@ fn findRow(plan: Plan, prefix: []const u8) ?PlanRow {
     return null;
 }
 
-/// Test-only helper: runs a checked SELECT to the end and reads its counters.
 fn runCounters(db: *Db, sql: [:0]const u8, binds: []const BindArg) !Counters {
     const statement = try prepareBoundSelect(db, sql, binds);
     defer _ = sqlite.sqlite3_finalize(statement);
@@ -1688,8 +1365,6 @@ fn runCounters(db: *Db, sql: [:0]const u8, binds: []const BindArg) !Counters {
 }
 
 test "classify detail splits main kind and attributes" {
-    // Wording reported by the vendored 3.51.2 release. A new release may
-    // change it; then this table is re-checked, not the raw detail.
     const cases = [_]struct { detail: []const u8, label: PlanLabel }{
         .{ .detail = "SCAN t", .label = .{ .kind = .scan } },
         .{ .detail = "SCAN t USING INDEX idx_a", .label = .{ .kind = .scan } },
@@ -1700,13 +1375,11 @@ test "classify detail splits main kind and attributes" {
         .{ .detail = "SEARCH u USING AUTOMATIC COVERING INDEX (x=?)", .label = .{ .kind = .search, .covering = true, .automatic = true } },
         .{ .detail = "SEARCH u USING AUTOMATIC PARTIAL COVERING INDEX (x=?)", .label = .{ .kind = .search, .covering = true, .automatic = true } },
         .{ .detail = "USE TEMP B-TREE FOR ORDER BY", .label = .{ .kind = .temp_btree } },
-        // Constant rows are labelled scan; their full scan counter stays 0.
         .{ .detail = "SCAN CONSTANT ROW", .label = .{ .kind = .scan } },
         .{ .detail = "BLOOM FILTER ON u (x=?)", .label = .{ .kind = .other } },
         .{ .detail = "MULTI-INDEX OR", .label = .{ .kind = .other } },
         .{ .detail = "CO-ROUTINE c", .label = .{ .kind = .other } },
         .{ .detail = "LIST SUBQUERY 1", .label = .{ .kind = .other } },
-        // Only the first word decides the kind, so a later "SEARCH" does not.
         .{ .detail = "CORRELATED SCALAR SUBQUERY 1 SEARCH", .label = .{ .kind = .other } },
         .{ .detail = "", .label = .{ .kind = .other } },
     };
@@ -1742,8 +1415,6 @@ test "explain plan reports scan without an index and search with one" {
 }
 
 test "explain plan reflects bound values" {
-    // `GLOB` with a fixed prefix can use the index on `b`; a leading wildcard
-    // cannot. Both use the same SQL, so only the bound value differs.
     var fixture = try Fixture.initWithSchema(testing.allocator, plan_schema);
     defer fixture.deinit();
     var db: Db = .{};
@@ -1772,8 +1443,6 @@ test "explain plan keeps raw detail and parent links" {
     const temp = findRow(sorted, "USE TEMP B-TREE") orelse return error.TestUnexpectedResult;
     try testing.expectEqual(PlanKind.temp_btree, temp.label.kind);
 
-    // Each branch of an OR over two indexes is a child of the MULTI-INDEX
-    // line, and the searches below are children of those branches.
     const multi = try db.explainPlan(testing.allocator, "SELECT a FROM t WHERE b = 'v1' OR rowid = 3", &.{});
     defer multi.deinit(testing.allocator);
     const root = findRow(multi, "MULTI-INDEX OR") orelse return error.TestUnexpectedResult;
@@ -1796,7 +1465,6 @@ test "explain plan reports only allowlisted actions" {
     });
     defer plan.deinit(testing.allocator);
 
-    // The list holds what the switch to EXPLAIN QUERY PLAN re-prepared.
     const actions = db.observedActions();
     try testing.expect(actions.len > 0);
     for (actions) |action_code| {
@@ -1809,7 +1477,6 @@ test "explain plan reports only allowlisted actions" {
     }
     try testing.expectEqual(Mode.internal, db.mode);
 
-    // The plan reuses the SELECT contract, so a rejected input stays rejected.
     try testing.expectError(error.StatementRejected, db.explainPlan(testing.allocator, "DELETE FROM t", &.{}));
     try testing.expectError(error.MissingBindNumber, db.explainPlan(testing.allocator, "SELECT ?1", &.{}));
     try testing.expectEqual(Mode.internal, db.mode);
@@ -1826,7 +1493,6 @@ test "explain plan labels an automatic index without creating it" {
     const before = try queryInt(&db, count_indexes);
     const plan = try db.explainPlan(testing.allocator, "SELECT a FROM t JOIN u ON u.x = t.a", &.{});
     defer plan.deinit(testing.allocator);
-    // The automatic index of this join exists only while a statement runs.
     const automatic = findRow(plan, "SEARCH u USING AUTOMATIC") orelse return error.TestUnexpectedResult;
     try testing.expect(automatic.label.automatic);
     try testing.expectEqual(before, try queryInt(&db, count_indexes));
@@ -1842,7 +1508,6 @@ test "counters show full scan steps only without an index" {
     const scan = try runCounters(&db, "SELECT a, b FROM t WHERE a = ?1", &.{.{ .number = 1, .value = .{ .int = 7 } }});
     const search = try runCounters(&db, "SELECT a, b FROM t WHERE b = ?1", &.{.{ .number = 1, .value = .{ .text = "v7" } }});
 
-    // A full scan steps once per row after the first.
     try testing.expectEqual(@as(u32, 999), scan.fullscan_steps);
     try testing.expectEqual(@as(u32, 0), search.fullscan_steps);
     try testing.expect(search.vm_steps < scan.vm_steps);
@@ -1851,16 +1516,11 @@ test "counters show full scan steps only without an index" {
 
     const joined = try runCounters(&db, "SELECT a FROM t JOIN u ON u.x = t.a", &.{});
     try testing.expect(joined.autoindex_rows > 0);
-    // `a` has no index, so the order needs a sort (USE TEMP B-TREE).
     const sorted = try runCounters(&db, "SELECT a FROM t ORDER BY a", &.{});
     try testing.expect(sorted.sort_ops > 0);
 }
 
 test "explaining does not change the execution counters" {
-    // D-302: the plan is read from a statement of its own, so the statement
-    // that runs the SELECT counts the same work with or without it. The
-    // control below shows why: switching the running statement itself to
-    // EXPLAIN QUERY PLAN and back leaves plan opcodes in its program.
     var fixture = try Fixture.initWithSchema(testing.allocator, plan_schema);
     defer fixture.deinit();
     var db: Db = .{};
@@ -1871,7 +1531,6 @@ test "explaining does not change the execution counters" {
     const binds: []const BindArg = &.{.{ .number = 1, .value = .{ .int = 100 } }};
     const plain = try runCounters(&db, sql, binds);
 
-    // Control: reuse one statement for the plan and the run.
     {
         const reused = try prepareBoundSelect(&db, sql, binds);
         defer _ = sqlite.sqlite3_finalize(reused);
@@ -1903,7 +1562,6 @@ test "explaining does not change the execution counters" {
     try testing.expectEqual(plain, statementCounters(statement));
 }
 
-/// A directory holding a source database and the paths a snapshot test needs.
 const SnapshotFixture = struct {
     tmp: testing.TmpDir,
     source: [:0]u8,
@@ -1936,7 +1594,6 @@ const SnapshotFixture = struct {
         return true;
     }
 
-    /// Copies the source into `dest` through a read-only connection.
     fn snapshot(self: *SnapshotFixture) !void {
         var source: Db = .{};
         try source.openReadOnly(self.source);
@@ -1953,9 +1610,6 @@ const SnapshotFixture = struct {
     }
 };
 
-/// WAL source whose rows exist only as frames in `-wal`: the automatic
-/// checkpoint is off and the writer stays open, so nothing reaches the main
-/// file.
 const wal_writer_sql: [:0]const u8 =
     \\PRAGMA journal_mode=WAL;
     \\PRAGMA wal_autocheckpoint=0;
@@ -1972,8 +1626,6 @@ test "snapshot of a wal database includes frames not yet checkpointed" {
     try fixture.snapshot();
     try testing.expectEqual(@as(i64, 1000), try SnapshotFixture.countRows(fixture.dest));
 
-    // A copy of the main file alone misses the table, which is why the plain
-    // file copy is not used.
     const main_only = try fixture.read("source.db");
     defer testing.allocator.free(main_only);
     try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = "main-only.db", .data = main_only });
@@ -1990,8 +1642,6 @@ test "baseline uses the rollback journal" {
 
     try fixture.snapshot();
 
-    // Header bytes 18 and 19 are the write and read format versions: 1 means
-    // rollback journal, 2 means WAL.
     const bytes = try fixture.read("baseline.db");
     defer testing.allocator.free(bytes);
     try testing.expectEqual(@as(u8, 1), bytes[18]);
@@ -2025,8 +1675,6 @@ test "source db and wal bytes are unchanged by the snapshot" {
 test "snapshot of a quiescent wal database" {
     var fixture = try SnapshotFixture.init();
     defer fixture.deinit();
-    // Closing the only writer checkpoints and removes `-wal` and `-shm`, so
-    // the source is a WAL database with no side files.
     const writer = try openTestWriter(fixture.source, wal_writer_sql);
     try testing.expectEqual(sqlite.SQLITE_OK, sqlite.sqlite3_close(writer));
     try testing.expect(!fixture.exists("source.db-wal"));
@@ -2037,8 +1685,6 @@ test "snapshot of a quiescent wal database" {
     try fixture.snapshot();
 
     try testing.expectEqual(@as(i64, 1000), try SnapshotFixture.countRows(fixture.dest));
-    // D-001: the read-only connection may leave `-wal` and `-shm` next to the
-    // source; only the main file must keep its bytes.
     const main_after = try fixture.read("source.db");
     defer testing.allocator.free(main_after);
     try testing.expectEqualSlices(u8, main_before, main_after);
@@ -2053,15 +1699,12 @@ test "busy source is reported" {
     try source.openReadOnly(fixture.source);
     defer source.close() catch unreachable;
 
-    // A rollback-journal writer inside an exclusive transaction blocks every
-    // reader, and without a busy handler the copy gives up at once.
     const writer = try openTestWriter(fixture.source, "BEGIN EXCLUSIVE; INSERT INTO t VALUES (9, 'w');");
     defer _ = sqlite.sqlite3_close(writer);
 
     var detail: SnapshotDetail = .{};
     try testing.expectError(error.SourceBusy, source.copySnapshotTo(fixture.dest, &detail));
     try testing.expect(detail.text().len > 0);
-    // The destination connection was closed, so the file can be removed.
     try fixture.tmp.dir.deleteFile(testing.io, "baseline.db");
 }
 
@@ -2094,10 +1737,7 @@ test "applyCreateIndex keeps the ddl allowlist" {
     var detail: SnapshotDetail = .{};
     try testing.expectError(error.StatementRejected, applyCreateIndex(fixture.path, "DROP TABLE t", &control, &detail));
     try testing.expectError(error.MultipleStatements, applyCreateIndex(fixture.path, "CREATE INDEX i1 ON t(b); DROP TABLE t", &control, &detail));
-    // SQLite refuses a temp index on a main table, and a single statement
-    // cannot create a temp table first, so the temp schema is out of reach.
     try testing.expectError(error.StatementInvalid, applyCreateIndex(fixture.path, "CREATE INDEX temp.i2 ON t(b)", &control, &detail));
-    // An existing name with IF NOT EXISTS never reports a CREATE INDEX.
     try testing.expectError(error.StatementNotCreateIndex, applyCreateIndex(fixture.path, "CREATE INDEX IF NOT EXISTS existing_idx ON t(b)", &control, &detail));
 
     var db: Db = .{};
@@ -2119,7 +1759,6 @@ test "applyCreateIndex rejects a unique index on duplicate rows" {
     try testing.expectError(error.ApplyFailed, applyCreateIndex(fixture.path, "CREATE UNIQUE INDEX u_a ON t(a)", &control, &detail));
     try testing.expect(std.mem.indexOf(u8, detail.text(), "UNIQUE constraint failed") != null);
 
-    // The failed build left nothing behind.
     var db: Db = .{};
     try db.openReadOnly(fixture.path);
     defer db.close() catch unreachable;
@@ -2145,7 +1784,6 @@ test "applyCreateIndex is interrupted by the cancel flag and by the time limit" 
     try testing.expectError(error.Timeout, applyCreateIndex(fixture.path, "CREATE INDEX idx_b ON t(b)", &limited, &detail));
     try testing.expectEqual(InterruptReason.timeout, limited.reason.?);
 
-    // Both builds were rolled back, so the same index can still be created.
     var unlimited = StepControl.init(testing.io, 0, &cancel);
     try applyCreateIndex(fixture.path, "CREATE INDEX idx_b ON t(b)", &unlimited, &detail);
 }
@@ -2162,8 +1800,6 @@ test "the candidate index name is kept for the INDEXED BY message" {
     try testing.expectError(error.StatementInvalid, db.checkCreateIndex("CREATE INDEX existing_idx ON t(b)"));
 }
 
-/// Schema for the clue tests: a table, views that call functions or read the
-/// schema, and a view without any table.
 const clue_schema: [:0]const u8 =
     \\CREATE TABLE t(a INTEGER, b TEXT);
     \\INSERT INTO t VALUES (1, 'x'), (2, 'y');
@@ -2176,7 +1812,6 @@ const clue_schema: [:0]const u8 =
     \\ANALYZE;
 ;
 
-/// Test-only helper: the clues of one accepted SELECT.
 fn cluesOf(db: *Db, sql: [:0]const u8) !Clues {
     const statement = try db.prepareSelect(sql);
     _ = sqlite.sqlite3_finalize(statement);
@@ -2197,7 +1832,6 @@ test "authorizer records nondeterministic functions without denying" {
         .{ .sql = "SELECT (SELECT changes()) FROM t", .name = "changes" },
         .{ .sql = "WITH c AS (SELECT total_changes() AS n) SELECT n FROM c", .name = "total_changes" },
         .{ .sql = "SELECT a FROM v2", .name = "random" },
-        // The view column with the function is not even read.
         .{ .sql = "SELECT count(*) FROM v", .name = "random" },
     };
     for (cases) |case| {
@@ -2215,11 +1849,9 @@ test "date and time functions are recorded as mismatch-only" {
     defer db.close() catch unreachable;
 
     const cases = [_]struct { sql: [:0]const u8, name: []const u8 }{
-        // The keyword form and the call without an argument read the clock.
         .{ .sql = "SELECT current_timestamp", .name = "current_timestamp" },
         .{ .sql = "SELECT DATE()", .name = "date" },
         .{ .sql = "WITH c AS (SELECT datetime('now') AS d) SELECT d FROM c", .name = "datetime" },
-        // A date of a column does not, but the name alone cannot tell.
         .{ .sql = "SELECT a FROM t WHERE date(b) IS NULL", .name = "date" },
         .{ .sql = "SELECT strftime('%Y', b) FROM t GROUP BY 1", .name = "strftime" },
     };
@@ -2282,9 +1914,7 @@ test "reading schema tables is recorded" {
 
     const cases = [_]struct { sql: [:0]const u8, name: []const u8 }{
         .{ .sql = "SELECT count(*) FROM sqlite_master", .name = "sqlite_master" },
-        // Without a column read the name comes as the user spelled it.
         .{ .sql = "SELECT 1 FROM SQLITE_Schema", .name = "sqlite_schema" },
-        // A column read reports the canonical name.
         .{ .sql = "SELECT name FROM main.sqlite_schema", .name = "sqlite_master" },
         .{ .sql = "SELECT name FROM temp.sqlite_schema", .name = "sqlite_temp_master" },
         .{ .sql = "SELECT name FROM vs", .name = "sqlite_master" },
@@ -2319,7 +1949,6 @@ test "view and cte reads are recorded" {
 }
 
 test "the clues survive a re-prepare during step" {
-    // `LIKE` with a bound value makes SQLite re-prepare on the first step.
     var fixture = try Fixture.initWithSchema(testing.allocator,
         \\CREATE TABLE t(a INTEGER, b TEXT);
         \\INSERT INTO t VALUES (1, 'x'), (2, 'y');
@@ -2341,12 +1970,7 @@ test "the clues survive a re-prepare during step" {
 }
 
 test "function lists match the vendored function list" {
-    // Every built-in function without the deterministic flag must be known
-    // to change between runs or known to be safe, and every aggregate or
-    // window function must be order-dependent or known not to be. A new
-    // release that adds a function fails here until it is classified.
     const deterministic_flag = 0x800;
-    // The same binary answers the same on both copies.
     const known_safe_scalars = [_][]const u8{ "sqlite_version", "sqlite_source_id", "sqlite_compileoption_used", "sqlite_compileoption_get" };
     const known_safe_aggregates = [_][]const u8{
         "count", "min", "max", "rank", "dense_rank", "percent_rank", "cume_dist",
@@ -2370,7 +1994,6 @@ test "function lists match the vendored function list" {
         for (lists) |list| {
             if (findName(list, name) != null) hits += 1;
         }
-        // A name belongs to one list only.
         try testing.expect(hits <= 1);
         const listed = hits == 1;
         if (listed) seen_listed += 1;
@@ -2384,7 +2007,6 @@ test "function lists match the vendored function list" {
         }
     }
     try testing.expectEqual(@as(usize, 0), unclassified);
-    // Every listed name exists in the build (no typo in the lists).
     try testing.expectEqual(nondeterministic_functions.len + order_dependent_functions.len + time_functions.len, seen_listed);
 }
 

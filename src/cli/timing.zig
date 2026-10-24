@@ -1,6 +1,3 @@
-//! The timed rounds of one comparison, the statistics of the samples, and the
-//! verdict that reads the times together with the plans and counters.
-
 const std = @import("std");
 const Io = std.Io;
 const db = @import("../db.zig");
@@ -10,13 +7,10 @@ const Side = cli_comparison.Side;
 const Measurement = cli_comparison.Measurement;
 const cli_query = @import("query.zig");
 
-/// The timed runs of both copies in nanoseconds, by round.
 pub const Timing = struct {
     baseline: []u64,
     variant: []u64,
 
-    /// Counts the rounds the variant won, then sorts the samples for the
-    /// quantiles, so the round order is gone afterwards.
     pub fn summary(self: Timing) TimeSummary {
         var faster: usize = 0;
         for (self.baseline, self.variant) |baseline, variant| {
@@ -31,32 +25,12 @@ pub const Timing = struct {
     }
 };
 
-/// What one timed run needs besides the two sessions.
 pub const Options = struct {
     runs: u32,
     timeout_ms: u64,
-    /// Least time between two progress lines of the timing (D-603). Tests
-    /// set it to 0 to see every line.
     progress_interval_ns: u64 = std.time.ns_per_s,
 };
 
-/// Times the SELECT `options.runs` times on each session (D-601). A round
-/// runs each session once; even rounds start with the baseline and odd rounds
-/// with the variant (ABBA), so a steady drift of the machine falls on both
-/// copies.
-///
-/// A run is `step` from the reset statement to SQLITE_DONE without reading
-/// the columns, so it includes the progress checks of `stepAll` but not
-/// prepare, bind, or the plan read. The binds survive the reset. The
-/// statement counters are cumulative, so the ones of the first run stay the
-/// reported ones. Each run gets the full time limit, and a signal is checked
-/// between runs too, because a short run never reaches a progress check.
-///
-/// A round that ends at least `options.progress_interval_ns` after the last
-/// progress line writes the next one to stderr and flushes it, outside the
-/// timed part (D-603). A stderr that cannot take it gets no further progress
-/// lines. Returns null after reporting a failure, with its exit code in
-/// `failure`.
 pub fn timeRuns(
     io: Io,
     arena: std.mem.Allocator,
@@ -81,8 +55,6 @@ pub fn timeRuns(
                 return null;
             }
             const session = if (side == .baseline) baseline else variant;
-            // The result of the reset is the one of the previous run, which
-            // was already checked.
             session.reset();
             const start = Io.Clock.now(.awake, io).nanoseconds;
             _ = session.step(control) catch |err| {
@@ -112,7 +84,6 @@ fn outOfMemory(stderr: *Io.Writer, failure: *cli_control.ExitCode) ?Timing {
     return null;
 }
 
-/// Representative value and spread of one copy's timed runs, in nanoseconds.
 pub const Stats = struct {
     median: u64,
     p25: u64,
@@ -121,9 +92,6 @@ pub const Stats = struct {
     max: u64,
 };
 
-/// Sorts `samples` in place and reads the quantiles by linear interpolation
-/// between the closest ranks (position q x (n - 1), Hyndman-Fan type 7), so an
-/// even count gets the mean of its two middle samples as the median.
 pub fn summarize(samples: []u64) Stats {
     std.debug.assert(samples.len != 0);
     std.mem.sort(u64, samples, {}, std.sort.asc(u64));
@@ -152,8 +120,6 @@ pub const TimeSummary = struct {
     variant_faster_rounds: usize,
 };
 
-/// How far apart two medians may be and still count as the same time:
-/// testdata/README.md's measurement noise band (D-602).
 const noise_band_percent = 20;
 
 pub const TimeVerdict = enum {
@@ -186,15 +152,6 @@ pub const Judgement = struct {
     }
 };
 
-/// Judges the times together with the plans and counters (D-602), so that
-/// time alone never makes a success:
-///
-/// * improved: no counter grew, the VM steps went down, the variant median is
-///   below the noise band under the baseline median, and the variant won
-///   every round.
-/// * no-effect: the plans and all counters are the same, and the medians
-///   are within the noise band of the baseline median.
-/// * needs-check: anything else, with the reasons.
 pub fn judgeTime(before: Measurement, after: Measurement, times: TimeSummary) Judgement {
     var judgement: Judgement = .{ .verdict = .needs_check };
     const baseline = times.baseline.median;
@@ -233,9 +190,6 @@ pub fn judgeTime(before: Measurement, after: Measurement, times: TimeSummary) Ju
     return judgement;
 }
 
-/// Two plans are the same when their lines say the same and hang under the
-/// same lines. The ids themselves are positions in the VM program, which can
-/// move without the plan changing, so a parent is compared by its line.
 pub fn samePlan(before: db.Plan, after: db.Plan) bool {
     if (before.rows.len != after.rows.len) return false;
     for (before.rows, after.rows) |b, a| {
@@ -245,8 +199,6 @@ pub fn samePlan(before: db.Plan, after: db.Plan) bool {
     return true;
 }
 
-/// The line number of the plan line with id `parent`, or null at the top
-/// level.
 pub fn parentLine(plan: db.Plan, parent: i64) ?usize {
     for (plan.rows, 0..) |row, line| {
         if (row.id == parent) return line;
@@ -257,7 +209,6 @@ pub fn parentLine(plan: db.Plan, parent: i64) ?usize {
 const scan_line = [_]db.PlanRow{.{ .id = 2, .parent = 0, .label = .{ .kind = .scan }, .detail = "SCAN t" }};
 const search_line = [_]db.PlanRow{.{ .id = 3, .parent = 0, .label = .{ .kind = .search }, .detail = "SEARCH t USING INDEX idx_a (a=?)" }};
 
-/// A first run with the given plan lines and counters.
 fn testMeasurement(plan: []const db.PlanRow, fullscan_steps: u32, vm_steps: u32) Measurement {
     return .{
         .rows = 1,
@@ -267,8 +218,6 @@ fn testMeasurement(plan: []const db.PlanRow, fullscan_steps: u32, vm_steps: u32)
     };
 }
 
-/// Times whose medians are `baseline` and `variant`, with the variant faster
-/// in `faster` of 10 rounds.
 fn testTimes(baseline: u64, variant: u64, faster: usize) TimeSummary {
     return .{
         .baseline = .{ .median = baseline, .p25 = baseline, .p75 = baseline, .min = baseline, .max = baseline },
@@ -291,7 +240,6 @@ fn expectJudgement(expected: TimeVerdict, reason: ?[]const u8, judgement: Judgem
 test "summarize gives the median and quartiles for odd and even counts" {
     var odd = [_]u64{ 50, 10, 40, 20, 30 };
     try testing.expectEqual(Stats{ .median = 30, .p25 = 20, .p75 = 40, .min = 10, .max = 50 }, summarize(&odd));
-    // Positions 0.75, 1.5 and 2.25 fall between ranks.
     var even = [_]u64{ 40, 10, 30, 20 };
     try testing.expectEqual(Stats{ .median = 25, .p25 = 18, .p75 = 33, .min = 10, .max = 40 }, summarize(&even));
 }
@@ -321,7 +269,6 @@ test "judgeTime an improvement inside the noise band is needs-check" {
 
 test "judgeTime the same work within 20 percent is no-effect" {
     const before = testMeasurement(&scan_line, 1000, 5000);
-    // The plan id is a VM address, so it may move without the plan changing.
     const moved = [_]db.PlanRow{.{ .id = 7, .parent = 0, .label = .{ .kind = .scan }, .detail = "SCAN t" }};
     const after = testMeasurement(&moved, 1000, 5000);
     try expectJudgement(.no_effect, null, judgeTime(before, after, testTimes(1000, 1200, 0)));
@@ -350,14 +297,12 @@ test "judgeTime a zero baseline median is needs-check" {
 }
 const testing = std.testing;
 
-/// The schema of the fixture database the timed rounds run against.
 const fixture_schema: [:0]const u8 =
     \\CREATE TABLE t(a INTEGER, b TEXT);
     \\INSERT INTO t VALUES (1, 'x'), (2, 'y');
     \\CREATE INDEX idx_b ON t(b);
 ;
 
-/// A temporary directory with one database in it.
 const Fixture = struct {
     tmp: testing.TmpDir,
     db_path: [:0]u8,
@@ -378,11 +323,6 @@ const Fixture = struct {
     }
 };
 
-/// Opens the fixture database twice, as a stand-in for the two copies, and
-/// times its SELECT.
-/// Returns false after a failure, as `timeRuns` reported it. After the timed
-/// runs, each session steps once more, and its first column must be
-/// `expected_first` when that is given.
 fn timeFixture(fixture: *Fixture, select_sql: [:0]const u8, timeout_ms: u64, binds: []const db.BindArg, expected_first: ?i64, stderr: *Io.Writer, failure: *cli_control.ExitCode) !bool {
     var cleanup_failed = false;
     var baseline: cli_query.QuerySession = .{};
@@ -402,7 +342,6 @@ fn timeFixture(fixture: *Fixture, select_sql: [:0]const u8, timeout_ms: u64, bin
         .timeout_ms = timeout_ms,
         .progress_interval_ns = 0,
     }, &control, stderr, failure) orelse return false;
-    // Every run reached SQLITE_DONE, so each took some time.
     for (timing.baseline, timing.variant) |b, v| try testing.expect(b > 0 and v > 0);
     if (expected_first) |expected| for ([_]*cli_query.QuerySession{ &baseline, &variant }) |session| {
         try testing.expectEqual(expected, (try session.firstRowInt64()).?);
@@ -411,7 +350,6 @@ fn timeFixture(fixture: *Fixture, select_sql: [:0]const u8, timeout_ms: u64, bin
 }
 
 test "timed runs keep the binds across the resets" {
-    // Without the bind, `a = NULL` would count 0 rows.
     var fixture = try Fixture.init();
     defer fixture.deinit();
     var stderr_buffer: [256]u8 = undefined;
@@ -419,13 +357,10 @@ test "timed runs keep the binds across the resets" {
     var failure: cli_control.ExitCode = .ok;
     const binds = [_]db.BindArg{.{ .number = 1, .value = .{ .int = 2 } }};
     try testing.expect(try timeFixture(&fixture, "SELECT count(*) FROM t WHERE a = ?1", 0, &binds, 1, &stderr, &failure));
-    // With no interval, every round reports its progress.
     try testing.expectEqualStrings("progress: timed round 1 of 2 done\nprogress: timed round 2 of 2 done\n", stderr.buffered());
 }
 
 test "a signal before a short timed run stops the timing" {
-    // A short SELECT never reaches a progress check, so the flag is only seen
-    // between runs.
     var fixture = try Fixture.init();
     defer fixture.deinit();
     cli_control.cancelFlag().store(true, .release);

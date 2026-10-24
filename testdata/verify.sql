@@ -1,6 +1,3 @@
--- ダミーDBの不変条件を検査する（行数・値分布・NULL件数・ユーザー定義索引0件）。
--- sqlite3 CLI 専用。.read で読み込んで実行する。
--- すべて ok なら exit 0。FAIL があれば CHECK 制約の失敗で exit 1 になる。
 .bail on
 
 CREATE TEMP TABLE checks(name TEXT, expected TEXT, actual TEXT);
@@ -27,6 +24,5 @@ INSERT INTO checks VALUES
 
 SELECT name, expected, actual, CASE WHEN expected = actual THEN 'ok' ELSE 'FAIL' END AS status FROM checks;
 
--- FAIL が1件でもあれば、ここで CHECK 制約に違反して異常終了する（.bail on によりそこで停止する）。
 CREATE TEMP TABLE _must_pass(ok INTEGER NOT NULL CHECK (ok = 1));
 INSERT INTO _must_pass(ok) SELECT 0 FROM checks WHERE expected <> actual LIMIT 1;
