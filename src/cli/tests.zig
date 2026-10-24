@@ -230,7 +230,7 @@ test "runs parsing accepts 0 to 1000 and rejects the rest" {
         defer testing.allocator.free(args.binds);
         try testing.expectEqual(try std.fmt.parseUnsigned(u32, raw, 10), args.runs);
     }
-    for ([_][:0]const u8{ "1001", "-1", "x", "", "4294967296" }) |raw| {
+    for ([_][:0]const u8{ "1001", "-1", "x", "4294967296" }) |raw| {
         var stdout_buffer: [512]u8 = undefined;
         var stderr_buffer: [512]u8 = undefined;
         const result = callRun(testing.allocator, &.{ "Qenome", "--runs", raw }, null, &stdout_buffer, &stderr_buffer);
@@ -1192,6 +1192,94 @@ test "a flag does not take an inline value" {
         try testing.expectEqual(ExitCode.usage, result.code);
         try testing.expectEqualStrings("", result.stdout);
         try testing.expectEqualStrings(case.stderr, result.stderr);
+    }
+}
+
+test "an empty value is a usage error" {
+    const cases = [_]struct { argv: []const [:0]const u8, stderr: []const u8 }{
+        .{
+            .argv = &.{ "Qenome", "--db=", "--select", "s", "--index-sql", "i" },
+            .stderr = "error: --db needs a value (see --help)\n",
+        },
+        .{
+            .argv = &.{ "Qenome", "--db", "", "--select", "s", "--index-sql", "i" },
+            .stderr = "error: --db needs a value (see --help)\n",
+        },
+        .{
+            .argv = &.{ "Qenome", "--format=", "--db", "d", "--select", "s", "--index-sql", "i" },
+            .stderr = "error: --format needs a value (see --help)\n",
+        },
+    };
+    for (cases) |case| {
+        var stdout_buffer: [512]u8 = undefined;
+        var stderr_buffer: [512]u8 = undefined;
+        const result = callRun(testing.allocator, case.argv, null, &stdout_buffer, &stderr_buffer);
+        try testing.expectEqual(ExitCode.usage, result.code);
+        try testing.expectEqualStrings("", result.stdout);
+        try testing.expectEqualStrings(case.stderr, result.stderr);
+    }
+}
+
+test "a missing value is not taken from the next option" {
+    const cases = [_]struct { argv: []const [:0]const u8, stderr: []const u8 }{
+        .{
+            .argv = &.{ "Qenome", "--db", "--select", "s.sql", "--index-sql", "i.sql" },
+            .stderr = "error: --db needs a value (see --help)\n",
+        },
+        .{
+            .argv = &.{ "Qenome", "--db", "d.db", "--select", "--index-sql", "i.sql" },
+            .stderr = "error: --select needs a value (see --help)\n",
+        },
+    };
+    for (cases) |case| {
+        var stdout_buffer: [512]u8 = undefined;
+        var stderr_buffer: [512]u8 = undefined;
+        const result = callRun(testing.allocator, case.argv, null, &stdout_buffer, &stderr_buffer);
+        try testing.expectEqual(ExitCode.usage, result.code);
+        try testing.expectEqualStrings("", result.stdout);
+        try testing.expectEqualStrings(case.stderr, result.stderr);
+    }
+}
+
+test "a repeated single-value option is a usage error" {
+    const cases = [_]struct { argv: []const [:0]const u8, stderr: []const u8 }{
+        .{
+            .argv = &.{ "Qenome", "--db", "a", "--db", "b" },
+            .stderr = "error: --db was given more than once (see --help)\n",
+        },
+        .{
+            .argv = &.{ "Qenome", "--select=a", "--select=b" },
+            .stderr = "error: --select was given more than once (see --help)\n",
+        },
+        .{
+            .argv = &.{ "Qenome", "--index-sql", "a", "--index-sql=b" },
+            .stderr = "error: --index-sql was given more than once (see --help)\n",
+        },
+    };
+    for (cases) |case| {
+        var stdout_buffer: [512]u8 = undefined;
+        var stderr_buffer: [512]u8 = undefined;
+        const result = callRun(testing.allocator, case.argv, null, &stdout_buffer, &stderr_buffer);
+        try testing.expectEqual(ExitCode.usage, result.code);
+        try testing.expectEqualStrings("", result.stdout);
+        try testing.expectEqualStrings(case.stderr, result.stderr);
+    }
+}
+
+test "help wins over other argument errors" {
+    const cases = [_][]const [:0]const u8{
+        &.{ "Qenome", "-h", "--db" },
+        &.{ "Qenome", "--help", "--nope" },
+        &.{ "Qenome", "--db=", "--help" },
+        &.{ "Qenome", "--db", "a", "--db", "b", "-h" },
+    };
+    for (cases) |argv| {
+        var stdout_buffer: [4096]u8 = undefined;
+        var stderr_buffer: [512]u8 = undefined;
+        const result = callRun(testing.allocator, argv, null, &stdout_buffer, &stderr_buffer);
+        try testing.expectEqual(ExitCode.ok, result.code);
+        try testing.expect(std.mem.startsWith(u8, result.stdout, "usage: qenome"));
+        try testing.expectEqualStrings("", result.stderr);
     }
 }
 

@@ -53,6 +53,7 @@ pub const Args = struct {
 
 pub const ParseError = error{
     MissingValue,
+    DuplicateOption,
     UnexpectedValue,
     UnknownOption,
     UnexpectedArgument,
@@ -70,6 +71,15 @@ pub fn parseArgs(allocator: std.mem.Allocator, argv: []const [:0]const u8) Parse
 
 pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const u8, offending: *?[:0]const u8) ParseError!Args {
     var args: Args = .{};
+    const rest = if (argv.len > 1) argv[1..] else argv[0..0];
+    for (rest) |arg| {
+        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            args.help = true;
+            offending.* = null;
+            return args;
+        }
+    }
+
     var binds: std.ArrayList(db.BindArg) = .empty;
     errdefer binds.deinit(allocator);
 
@@ -84,10 +94,13 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
             if (inline_value != null) return error.UnexpectedValue;
             args.help = true;
         } else if (std.mem.eql(u8, name, "--db")) {
+            if (args.db != null) return error.DuplicateOption;
             args.db = try optionValue(argv, &index, inline_value);
         } else if (std.mem.eql(u8, name, "--select")) {
+            if (args.select != null) return error.DuplicateOption;
             args.select = try optionValue(argv, &index, inline_value);
         } else if (std.mem.eql(u8, name, "--index-sql")) {
+            if (args.index_sql != null) return error.DuplicateOption;
             args.index_sql = try optionValue(argv, &index, inline_value);
         } else if (std.mem.eql(u8, name, "--bind")) {
             const raw = try optionValue(argv, &index, inline_value);
@@ -134,8 +147,18 @@ fn splitInline(arg: [:0]const u8) ?Inline {
 }
 
 fn optionValue(argv: []const [:0]const u8, index: *usize, inline_value: ?Inline) ParseError![:0]const u8 {
-    if (inline_value) |inl| return inl.value;
-    return nextValue(argv, index);
+    if (inline_value) |inl| {
+        if (inl.value.len == 0) return error.MissingValue;
+        return inl.value;
+    }
+    const value = try nextValue(argv, index);
+    if (value.len == 0 or isOptionName(value)) return error.MissingValue;
+    return value;
+}
+
+fn isOptionName(token: []const u8) bool {
+    const end = std.mem.indexOfScalar(u8, token, '=') orelse token.len;
+    return isKnownLongOption(token[0..end]) or std.mem.eql(u8, token[0..end], "-h");
 }
 
 pub const required_option_count = 3;
@@ -170,6 +193,13 @@ const long_options = [_][]const u8{
 };
 
 const max_option_name = 32;
+
+fn isKnownLongOption(name: []const u8) bool {
+    for (long_options) |option| {
+        if (std.mem.eql(u8, option, name)) return true;
+    }
+    return false;
+}
 
 pub fn suggestOptionName(arg: []const u8) ?[]const u8 {
     const end = std.mem.indexOfScalar(u8, arg, '=') orelse arg.len;
@@ -301,9 +331,9 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\  what SQLite reported.
         \\
         \\options (a value may also be written as --option=value):
-        \\  --db <PATH>          SQLite database file (required)
-        \\  --select <FILE>      file holding one read-only SELECT (required)
-        \\  --index-sql <FILE>   file holding one candidate CREATE INDEX (required)
+        \\  --db <PATH>          SQLite database file (required, once)
+        \\  --select <FILE>      file holding one read-only SELECT (required, once)
+        \\  --index-sql <FILE>   file holding one candidate CREATE INDEX (required, once)
         \\  --bind <N>:<TYPE>[:<VALUE>]
         \\                       typed value bound to parameter N, repeatable;
         \\                       TYPE is int, real, text or null (null takes no
@@ -333,6 +363,7 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
 pub fn parseErrorMessage(err: ParseError) []const u8 {
     return switch (err) {
         error.MissingValue => "an option is missing its value (see --help)",
+        error.DuplicateOption => "an option was given more than once (see --help)",
         error.UnexpectedValue => "an option that takes no value was given one (see --help)",
         error.UnknownOption => "unknown option (see --help)",
         error.UnexpectedArgument => "unexpected argument (see --help)",
@@ -459,7 +490,7 @@ test "format defaults to human and takes human or kv" {
     const human = try parseArgs(testing.allocator, &.{ "Qenome", "--format", "kv", "--format", "human" });
     defer testing.allocator.free(human.binds);
     try testing.expectEqual(Format.human, human.format);
-    for ([_][:0]const u8{ "json", "", "KV" }) |raw| {
+    for ([_][:0]const u8{ "json", "KV" }) |raw| {
         try testing.expectError(error.InvalidFormat, parseArgs(testing.allocator, &.{ "Qenome", "--format", raw }));
     }
 }
@@ -555,4 +586,141 @@ test "a misspelt option suggests the closest known name" {
             try testing.expect(actual == null);
         }
     }
+}
+
+test "a value option rejects an empty value" {
+    const options = [_][:0]const u8{
+        "--db",
+        "--select",
+        "--index-sql",
+        "--bind",
+        "--timeout-ms",
+        "--runs",
+        "--format",
+    };
+    const empty: [:0]const u8 = "";
+    for (options) |option| {
+        var offending: ?[:0]const u8 = null;
+        try testing.expectError(
+            error.MissingValue,
+            parseArgsReporting(testing.allocator, &.{ "Qenome", option, empty }, &offending),
+        );
+        try testing.expectEqualStrings(option, offending.?);
+
+        var buffer: [64]u8 = undefined;
+        const inline_arg = try std.mem.printSentinel(&buffer, "{s}=", .{option}, 0);
+        offending = null;
+        try testing.expectError(
+            error.MissingValue,
+            parseArgsReporting(testing.allocator, &.{ "Qenome", inline_arg }, &offending),
+        );
+        try testing.expectEqualStrings(inline_arg, offending.?);
+    }
+}
+
+test "a missing value is not taken from the next option" {
+    const cases = [_]struct { argv: []const [:0]const u8, option: []const u8 }{
+        .{ .argv = &.{ "Qenome", "--db", "--select", "s.sql" }, .option = "--db" },
+        .{ .argv = &.{ "Qenome", "--db", "d.db", "--select", "--index-sql" }, .option = "--select" },
+        .{ .argv = &.{ "Qenome", "--db", "--runs=3" }, .option = "--db" },
+        .{ .argv = &.{ "Qenome", "--db", "--show-binds" }, .option = "--db" },
+        .{ .argv = &.{ "Qenome", "--bind", "--runs", "3" }, .option = "--bind" },
+    };
+    for (cases) |case| {
+        var offending: ?[:0]const u8 = null;
+        try testing.expectError(
+            error.MissingValue,
+            parseArgsReporting(testing.allocator, case.argv, &offending),
+        );
+        try testing.expectEqualStrings(case.option, offending.?);
+    }
+}
+
+test "a single-value option may be given only once" {
+    const options = [_][:0]const u8{ "--db", "--select", "--index-sql" };
+    for (options) |option| {
+        var offending: ?[:0]const u8 = null;
+        try testing.expectError(
+            error.DuplicateOption,
+            parseArgsReporting(testing.allocator, &.{ "Qenome", option, "a", option, "b" }, &offending),
+        );
+        try testing.expectEqualStrings(option, offending.?);
+
+        var buffer: [64]u8 = undefined;
+        const second = try std.mem.printSentinel(&buffer, "{s}=b", .{option}, 0);
+        offending = null;
+        try testing.expectError(
+            error.DuplicateOption,
+            parseArgsReporting(testing.allocator, &.{ "Qenome", option, "a", second }, &offending),
+        );
+        try testing.expectEqualStrings(second, offending.?);
+    }
+}
+
+test "help wins over every other argument error" {
+    const cases = [_][]const [:0]const u8{
+        &.{ "Qenome", "-h", "--db" },
+        &.{ "Qenome", "--help", "--nope" },
+        &.{ "Qenome", "--db=", "--help" },
+        &.{ "Qenome", "--db", "a", "--db", "b", "-h" },
+    };
+    for (cases) |argv| {
+        const args = try parseArgs(testing.allocator, argv);
+        try testing.expect(args.help);
+        testing.allocator.free(args.binds);
+    }
+}
+
+test "every known long option is accepted by the parser" {
+    const cases = [_]struct { option: [:0]const u8, value: ?[:0]const u8 }{
+        .{ .option = "--help", .value = null },
+        .{ .option = "--db", .value = "d" },
+        .{ .option = "--select", .value = "s" },
+        .{ .option = "--index-sql", .value = "i" },
+        .{ .option = "--bind", .value = "1:null" },
+        .{ .option = "--timeout-ms", .value = "1" },
+        .{ .option = "--show-binds", .value = null },
+        .{ .option = "--runs", .value = "1" },
+        .{ .option = "--format", .value = "kv" },
+    };
+    try testing.expectEqual(long_options.len, cases.len);
+    for (cases) |case| {
+        const args = if (case.value) |value|
+            try parseArgs(testing.allocator, &.{ "Qenome", case.option, value })
+        else
+            try parseArgs(testing.allocator, &.{ "Qenome", case.option });
+        testing.allocator.free(args.binds);
+    }
+}
+
+test "an inline value keeps an option-like value" {
+    const args = try parseArgs(testing.allocator, &.{
+        "Qenome",
+        "--db=--select",
+        "--select=--index-sql",
+        "--index-sql=--runs",
+    });
+    defer testing.allocator.free(args.binds);
+
+    try testing.expect(!args.help);
+    try testing.expectEqualStrings("--select", args.db.?);
+    try testing.expectEqualStrings("--index-sql", args.select.?);
+    try testing.expectEqualStrings("--runs", args.index_sql.?);
+}
+
+test "the usage option list and the known option names agree" {
+    var buffer: [8192]u8 = undefined;
+    var writer = Io.Writer.fixed(&buffer);
+    try usage(&writer);
+
+    var count: usize = 0;
+    var lines = std.mem.splitScalar(u8, writer.buffered(), '\n');
+    while (lines.next()) |line| {
+        if (!std.mem.startsWith(u8, line, "  --")) continue;
+        const rest = line[2..];
+        const end = std.mem.findAny(u8, rest, " ,") orelse rest.len;
+        try testing.expect(isKnownLongOption(rest[0..end]));
+        count += 1;
+    }
+    try testing.expectEqual(long_options.len, count);
 }

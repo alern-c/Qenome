@@ -259,7 +259,14 @@ fn reportParseError(stderr: *Io.Writer, err: ParseError, offending: ?[:0]const u
             }
             try stderr.writeAll(" (see --help)\n");
         },
-        error.MissingValue => try stderr.print("error: {s} needs a value (see --help)\n", .{arg}),
+        error.MissingValue => {
+            const end = std.mem.indexOfScalar(u8, arg, '=') orelse arg.len;
+            try stderr.print("error: {s} needs a value (see --help)\n", .{arg[0..end]});
+        },
+        error.DuplicateOption => {
+            const end = std.mem.indexOfScalar(u8, arg, '=') orelse arg.len;
+            try stderr.print("error: {s} was given more than once (see --help)\n", .{arg[0..end]});
+        },
         error.UnexpectedValue => {
             const end = std.mem.indexOfScalar(u8, arg, '=') orelse arg.len;
             try stderr.print("error: {s} does not take a value (see --help)\n", .{arg[0..end]});
