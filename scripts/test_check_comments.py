@@ -39,11 +39,7 @@ CANONICAL_FILES = {
         "    },\n"
         "}\n"
     ),
-    "docs/architecture.md": "# a heading\n\ntext with # inside\n",
-    "docs/design.md": "# excluded\n",
-    "docs/development.md": "# excluded\n",
-    "docs/mvp.md": "# excluded\n",
-    "docs/overview.md": "# excluded\n",
+    "README.md": "# excluded\n",
     "scripts/tool.py": (
         "import os\n"
         "\n"
@@ -184,7 +180,7 @@ def main():
     expect_clean("the canonical tree passes", code, output)
     expect("the canonical tree reports its root", "root=" in output, output.strip())
     expect("the canonical tree counts the checked files", "8 files checked" in output, output.strip())
-    expect("the canonical tree counts the excluded files", "9 excluded" in output, output.strip())
+    expect("the canonical tree counts the excluded files", "5 excluded" in output, output.strip())
 
     code, output = case(append("src/main.zig", "// note\n"))
     expect_rejected(
@@ -408,7 +404,7 @@ def main():
         "a .gitattributes comment fails", code, output, ".gitattributes:", "a comment line"
     )
 
-    code, output = case(append("docs/architecture.md", "# note\n"))
+    code, output = case(append("README.md", "# note\n"))
     expect_clean("an excluded document passes", code, output)
 
     code, output = case(append("testdata/README.md", "# note\n"))
@@ -423,9 +419,9 @@ def main():
     code, output = case(create("data.json", "{}\n"))
     expect_rejected("an unclassified file fails", code, output, "unclassified-file", "data.json")
 
-    code, output = case(create("docs/new.md", "# note\n"))
+    code, output = case(create("notes.md", "# note\n"))
     expect_rejected(
-        "an unclassified document fails", code, output, "unclassified-file", "docs/new.md"
+        "an unclassified document fails", code, output, "unclassified-file", "notes.md"
     )
 
     code, output = case(append("src/main.zig", "// one\n// two\n"))

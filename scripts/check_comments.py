@@ -6,11 +6,7 @@ import sys
 import tokenize
 
 EXCLUDED_FILES = [
-    "docs/architecture.md",
-    "docs/design.md",
-    "docs/development.md",
-    "docs/mvp.md",
-    "docs/overview.md",
+    "README.md",
     "testdata/README.md",
     "vendor/sqlite3/PROVENANCE.txt",
     "vendor/sqlite3/sqlite3.c",
