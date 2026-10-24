@@ -163,8 +163,8 @@ test "a bare invocation shows the synopsis and every missing option" {
     try testing.expectEqual(ExitCode.usage, result.code);
     try testing.expectEqualStrings("", result.stdout);
     try testing.expectEqualStrings(
-        "usage: qenome --db <PATH> --select <FILE> --index-sql <FILE> [options]\n" ++
-            "error: missing required options: --db, --select, --index-sql (see --help)\n",
+        "usage: qenome <DB> <SELECT_FILE> <INDEX_FILE> [options]\n" ++
+            "error: missing: the database (a path or --db), the SELECT file (a path or --select), the CREATE INDEX file (a path or --index-sql) (see --help)\n",
         result.stderr,
     );
 }
@@ -173,11 +173,11 @@ test "the remaining required options are listed together" {
     const cases = [_]struct { argv: []const [:0]const u8, stderr: []const u8 }{
         .{
             .argv = &.{ "Qenome", "--db", "x" },
-            .stderr = "error: missing required options: --select, --index-sql (see --help)\n",
+            .stderr = "error: missing: the SELECT file (a path or --select), the CREATE INDEX file (a path or --index-sql) (see --help)\n",
         },
         .{
             .argv = &.{ "Qenome", "--db", "x", "--select", "y" },
-            .stderr = "error: missing required option: --index-sql (see --help)\n",
+            .stderr = "error: missing: the CREATE INDEX file (a path or --index-sql) (see --help)\n",
         },
     };
     for (cases) |case| {
@@ -1143,7 +1143,8 @@ test "a usage error names the argument it is about" {
     const cases = [_]struct { argv: []const [:0]const u8, stderr: []const u8 }{
         .{ .argv = &.{ "Qenome", "--nope" }, .stderr = "error: unknown option '--nope' (see --help)\n" },
         .{ .argv = &.{ "Qenome", "--\x1b[2J" }, .stderr = "error: unknown option '--\\x1b[2J' (see --help)\n" },
-        .{ .argv = &.{ "Qenome", "stray.sql" }, .stderr = "error: unexpected argument 'stray.sql' (see --help)\n" },
+        .{ .argv = &.{ "Qenome", "d", "s", "i", "extra" }, .stderr = "error: unexpected argument 'extra'; paths are the database, the SELECT file and the CREATE INDEX file, at most 3 (see --help)\n" },
+        .{ .argv = &.{ "Qenome", "", "s", "i" }, .stderr = "error: a path cannot be empty (see --help)\n" },
         .{ .argv = &.{ "Qenome", "--db" }, .stderr = "error: --db needs a value (see --help)\n" },
         .{ .argv = &.{ "Qenome", "--format", "json" }, .stderr = "error: --format expects human or kv\n" },
     };
@@ -1420,6 +1421,135 @@ test "bind count errors name the problem and the next step" {
     }
 }
 
+test "positional paths run a comparison" {
+    var fixture = try CliFixture.init("SELECT a FROM t WHERE a = 1", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+
+    var stdout_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [512]u8 = undefined;
+    const result = callRun(
+        testing.allocator,
+        &.{ "Qenome", fixture.db_path, fixture.select_path, fixture.index_path, "--runs=0", "--format=kv" },
+        fixture.work_parent,
+        &stdout_buffer,
+        &stderr_buffer,
+    );
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expect(contains(result.stdout, "result: match (row multiset)\n"));
+    try testing.expectEqualStrings("", result.stderr);
+    try fixture.expectNoLeftovers();
+}
+
+test "positional and named paths can be mixed" {
+    var fixture = try CliFixture.init("SELECT a FROM t WHERE a = 1", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+
+    var first_stdout: [4096]u8 = undefined;
+    var first_stderr: [512]u8 = undefined;
+    const first = callRun(
+        testing.allocator,
+        &.{ "Qenome", fixture.db_path, "--select", fixture.select_path, "--index-sql", fixture.index_path, "--runs=0", "--format=kv" },
+        fixture.work_parent,
+        &first_stdout,
+        &first_stderr,
+    );
+    try testing.expectEqual(ExitCode.ok, first.code);
+    try testing.expect(contains(first.stdout, "result: match (row multiset)\n"));
+    try testing.expectEqualStrings("", first.stderr);
+    try fixture.expectNoLeftovers();
+
+    var second_stdout: [4096]u8 = undefined;
+    var second_stderr: [512]u8 = undefined;
+    const second = callRun(
+        testing.allocator,
+        &.{ "Qenome", "--db", fixture.db_path, fixture.select_path, fixture.index_path, "--runs=0", "--format=kv" },
+        fixture.work_parent,
+        &second_stdout,
+        &second_stderr,
+    );
+    try testing.expectEqual(ExitCode.ok, second.code);
+    try testing.expect(contains(second.stdout, "result: match (row multiset)\n"));
+    try testing.expectEqualStrings("", second.stderr);
+    try fixture.expectNoLeftovers();
+}
+
+test "a duplicate path and named option is a usage error" {
+    var fixture = try CliFixture.init("SELECT a FROM t WHERE a = 1", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+
+    var stdout_buffer: [512]u8 = undefined;
+    var stderr_buffer: [512]u8 = undefined;
+    const result = callRun(
+        testing.allocator,
+        &.{ "Qenome", fixture.db_path, "--db", "other.db", "--select", fixture.select_path, "--index-sql", fixture.index_path },
+        null,
+        &stdout_buffer,
+        &stderr_buffer,
+    );
+    try testing.expectEqual(ExitCode.usage, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try testing.expectEqualStrings("error: --db was given more than once (see --help)\n", result.stderr);
+}
+
+test "a fourth path is a usage error" {
+    var fixture = try CliFixture.init("SELECT a FROM t WHERE a = 1", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+
+    var stdout_buffer: [512]u8 = undefined;
+    var stderr_buffer: [512]u8 = undefined;
+    const result = callRun(
+        testing.allocator,
+        &.{ "Qenome", fixture.db_path, fixture.select_path, fixture.index_path, "extra" },
+        null,
+        &stdout_buffer,
+        &stderr_buffer,
+    );
+    try testing.expectEqual(ExitCode.usage, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try testing.expectEqualStrings("error: unexpected argument 'extra'; paths are the database, the SELECT file and the CREATE INDEX file, at most 3 (see --help)\n", result.stderr);
+}
+
+test "swapped SELECT and CREATE INDEX files get a hint" {
+    var forward = try CliFixture.init("CREATE INDEX idx_a ON t(a)", "SELECT a FROM t");
+    defer forward.deinit();
+
+    var forward_stdout: [512]u8 = undefined;
+    var forward_stderr: [1024]u8 = undefined;
+    const forward_result = forward.run(&.{}, &forward_stdout, &forward_stderr);
+    try testing.expectEqual(ExitCode.rejected, forward_result.code);
+    try testing.expectEqualStrings("", forward_result.stdout);
+    try testing.expectEqualStrings(
+        "error: --select: the statement is not allowed here: not authorized\nhint: the SELECT and CREATE INDEX files may be swapped\n",
+        forward_result.stderr,
+    );
+    try forward.expectNoLeftovers();
+
+    var backward = try CliFixture.init("SELECT a FROM t", "SELECT a FROM t");
+    defer backward.deinit();
+
+    var backward_stdout: [512]u8 = undefined;
+    var backward_stderr: [1024]u8 = undefined;
+    const backward_result = backward.run(&.{}, &backward_stdout, &backward_stderr);
+    try testing.expectEqual(ExitCode.rejected, backward_result.code);
+    try testing.expectEqualStrings("", backward_result.stdout);
+    try testing.expectEqualStrings(
+        "error: --index-sql: the statement is not allowed here: not authorized\nhint: the SELECT and CREATE INDEX files may be swapped\n",
+        backward_result.stderr,
+    );
+    try backward.expectNoLeftovers();
+
+    var insert = try CliFixture.init("INSERT INTO t VALUES (1)", "CREATE INDEX idx_a ON t(a)");
+    defer insert.deinit();
+
+    var insert_stdout: [512]u8 = undefined;
+    var insert_stderr: [1024]u8 = undefined;
+    const insert_result = insert.run(&.{}, &insert_stdout, &insert_stderr);
+    try testing.expectEqual(ExitCode.rejected, insert_result.code);
+    try testing.expectEqualStrings("", insert_result.stdout);
+    try testing.expectEqualStrings("error: --select: the statement is not allowed here: not authorized\n", insert_result.stderr);
+    try insert.expectNoLeftovers();
+}
+
 test "named and numbered parameters use SQLite's parameter numbers" {
     var mixed = try CliFixture.init("SELECT a FROM t WHERE a = ?2 OR a = :cid", "CREATE INDEX idx_a ON t(a)");
     defer mixed.deinit();
@@ -1477,9 +1607,10 @@ test "help puts the usage, options, examples and exit status before the details"
         try testing.expect(at >= last);
         last = at;
     }
-    try testing.expect(contains(result.stdout, "  qenome --db app.db --select select.sql --index-sql index.sql\n"));
+    try testing.expect(contains(result.stdout, "  qenome app.db select.sql index.sql\n"));
     try testing.expect(contains(result.stdout, "--bind 1:int:1234"));
     try testing.expect(contains(result.stdout, "--format kv"));
+    try testing.expect(contains(result.stdout, "The same paths can be given as --db, --select and --index-sql."));
     try testing.expect(contains(result.stdout, "named parameters"));
     try testing.expect(contains(result.stdout, "share the number of their first appearance"));
     try expectNarrow(result.stdout, &.{});

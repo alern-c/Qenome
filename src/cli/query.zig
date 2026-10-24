@@ -9,6 +9,8 @@ const Side = cli_comparison.Side;
 
 pub const Kind = enum { baseline, variant };
 
+const swapped_hint = "hint: the SELECT and CREATE INDEX files may be swapped\n";
+
 pub fn sqliteVersion() [*:0]const u8 {
     return sqlite.sqlite3_libversion();
 }
@@ -45,7 +47,14 @@ pub const QuerySession = struct {
 
         const statement = self.database.prepareSelect(sql) catch |err| {
             switch (kind) {
-                .baseline => reportSelectFailure(stderr, err, &self.database, index_sql),
+                .baseline => {
+                    reportSelectFailure(stderr, err, &self.database, index_sql);
+                    self.database.checkCreateIndex(sql) catch {
+                        failure.* = .rejected;
+                        return false;
+                    };
+                    stderr.writeAll(swapped_hint) catch {};
+                },
                 .variant => reportCheckFailure(stderr, "--select on the variant", err, &self.database),
             }
             failure.* = .rejected;
@@ -97,6 +106,8 @@ pub const QuerySession = struct {
     pub fn checkCreateIndex(self: *QuerySession, sql: [:0]const u8, stderr: *Io.Writer) bool {
         self.database.checkCreateIndex(sql) catch |err| {
             reportCheckFailure(stderr, "--index-sql", err, &self.database);
+            self.database.checkSelect(sql) catch return false;
+            stderr.writeAll(swapped_hint) catch {};
             return false;
         };
         return true;

@@ -56,7 +56,8 @@ pub const ParseError = error{
     DuplicateOption,
     UnexpectedValue,
     UnknownOption,
-    UnexpectedArgument,
+    TooManyPaths,
+    EmptyPath,
     InvalidBindFormat,
     InvalidTimeout,
     InvalidRuns,
@@ -73,6 +74,7 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
     var args: Args = .{};
     const rest = if (argv.len > 1) argv[1..] else argv[0..0];
     for (rest) |arg| {
+        if (std.mem.eql(u8, arg, "--")) break;
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             args.help = true;
             offending.* = null;
@@ -83,10 +85,19 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
     var binds: std.ArrayList(db.BindArg) = .empty;
     errdefer binds.deinit(allocator);
 
+    var positional_only = false;
     var index: usize = 1;
     while (index < argv.len) : (index += 1) {
         const arg = argv[index];
         offending.* = arg;
+        if (!positional_only and std.mem.eql(u8, arg, "--")) {
+            positional_only = true;
+            continue;
+        }
+        if (positional_only) {
+            try assignPositional(&args, arg);
+            continue;
+        }
         const inline_value = splitInline(arg);
         const name = if (inline_value) |inl| inl.name else arg;
 
@@ -121,7 +132,7 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
         } else if (arg.len != 0 and arg[0] == '-') {
             return error.UnknownOption;
         } else {
-            return error.UnexpectedArgument;
+            try assignPositional(&args, arg);
         }
     }
     offending.* = null;
@@ -146,6 +157,23 @@ fn splitInline(arg: [:0]const u8) ?Inline {
     return .{ .name = arg[0..at], .value = arg[at + 1 ..] };
 }
 
+fn assignPositional(args: *Args, value: [:0]const u8) ParseError!void {
+    if (value.len == 0) return error.EmptyPath;
+    if (args.db == null) {
+        args.db = value;
+        return;
+    }
+    if (args.select == null) {
+        args.select = value;
+        return;
+    }
+    if (args.index_sql == null) {
+        args.index_sql = value;
+        return;
+    }
+    return error.TooManyPaths;
+}
+
 fn optionValue(argv: []const [:0]const u8, index: *usize, inline_value: ?Inline) ParseError![:0]const u8 {
     if (inline_value) |inl| {
         if (inl.value.len == 0) return error.MissingValue;
@@ -157,6 +185,7 @@ fn optionValue(argv: []const [:0]const u8, index: *usize, inline_value: ?Inline)
 }
 
 fn isOptionName(token: []const u8) bool {
+    if (std.mem.eql(u8, token, "--")) return true;
     const end = std.mem.indexOfScalar(u8, token, '=') orelse token.len;
     return isKnownLongOption(token[0..end]) or std.mem.eql(u8, token[0..end], "-h");
 }
@@ -166,15 +195,15 @@ pub const required_option_count = 3;
 pub fn missingRequired(args: Args, buffer: *[required_option_count][]const u8) []const []const u8 {
     var count: usize = 0;
     if (args.db == null) {
-        buffer[count] = "--db";
+        buffer[count] = "the database (a path or --db)";
         count += 1;
     }
     if (args.select == null) {
-        buffer[count] = "--select";
+        buffer[count] = "the SELECT file (a path or --select)";
         count += 1;
     }
     if (args.index_sql == null) {
-        buffer[count] = "--index-sql";
+        buffer[count] = "the CREATE INDEX file (a path or --index-sql)";
         count += 1;
     }
     return buffer[0..count];
@@ -300,7 +329,7 @@ fn parseBind(raw: [:0]const u8) ParseError!db.BindArg {
     return .{ .number = number, .value = value };
 }
 
-pub const usage_line = "usage: qenome --db <PATH> --select <FILE> --index-sql <FILE> [options]";
+pub const usage_line = "usage: qenome <DB> <SELECT_FILE> <INDEX_FILE> [options]";
 
 pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
     try writer.writeAll(usage_line ++ "\n\n" ++
@@ -331,10 +360,16 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\                       printed, so that the values stay out of logs
         \\  --help, -h           print this message and exit with status 0
         \\
+        \\The three paths may also be given by position: database, SELECT file,
+        \\CREATE INDEX file. They fill the first role not yet given. Use -- before
+        \\a path that starts with '-'.
+        \\
         \\examples:
-        \\  qenome --db app.db --select select.sql --index-sql index.sql
-        \\  qenome --db app.db --select select.sql --index-sql index.sql --bind 1:int:1234
+        \\  qenome app.db select.sql index.sql
+        \\  qenome app.db select.sql index.sql --bind 1:int:1234
         \\  qenome --db app.db --select select.sql --index-sql index.sql --format kv
+        \\
+        \\The same paths can be given as --db, --select and --index-sql.
         \\
         \\exit status: 0 result rows match, 1 rejected, 2 usage error,
         \\3 result rows differ, 4 results cannot be compared, 5 cleanup
@@ -373,7 +408,8 @@ pub fn parseErrorMessage(err: ParseError) []const u8 {
         error.DuplicateOption => "an option was given more than once (see --help)",
         error.UnexpectedValue => "an option that takes no value was given one (see --help)",
         error.UnknownOption => "unknown option (see --help)",
-        error.UnexpectedArgument => "unexpected argument (see --help)",
+        error.TooManyPaths => "too many paths (see --help)",
+        error.EmptyPath => "a path cannot be empty (see --help)",
         error.InvalidBindFormat => "--bind expects <N>:<TYPE>[:<VALUE>], where N is the parameter number and TYPE is int, real, text or null; e.g. --bind 1:int:1234, --bind 2:text:ok, --bind 3:null",
         error.InvalidTimeout => "--timeout-ms expects a non-negative integer",
         error.InvalidRuns => std.fmt.comptimePrint("--runs expects an integer from 0 to {d}", .{max_runs}),
@@ -522,14 +558,74 @@ test "format defaults to human and takes human or kv" {
 test "a parse error names the argument it is about" {
     const cases = [_]struct { argv: []const [:0]const u8, err: ParseError, offending: []const u8 }{
         .{ .argv = &.{ "Qenome", "--db", "d", "--nope" }, .err = error.UnknownOption, .offending = "--nope" },
-        .{ .argv = &.{ "Qenome", "stray" }, .err = error.UnexpectedArgument, .offending = "stray" },
         .{ .argv = &.{ "Qenome", "--select" }, .err = error.MissingValue, .offending = "--select" },
+        .{ .argv = &.{ "Qenome", "d", "s", "i", "extra" }, .err = error.TooManyPaths, .offending = "extra" },
+        .{ .argv = &.{ "Qenome", "", "s", "i" }, .err = error.EmptyPath, .offending = "" },
     };
     for (cases) |case| {
         var offending: ?[:0]const u8 = null;
         try testing.expectError(case.err, parseArgsReporting(testing.allocator, case.argv, &offending));
         try testing.expectEqualStrings(case.offending, offending.?);
     }
+}
+
+test "positional paths fill the first empty role" {
+    const args = try parseArgs(testing.allocator, &.{ "Qenome", "d.db", "s.sql", "i.sql" });
+    defer testing.allocator.free(args.binds);
+
+    try testing.expectEqualStrings("d.db", args.db.?);
+    try testing.expectEqualStrings("s.sql", args.select.?);
+    try testing.expectEqualStrings("i.sql", args.index_sql.?);
+}
+
+test "positional paths mix with named options" {
+    const cases = [_][]const [:0]const u8{
+        &.{ "Qenome", "d.db", "--select", "s.sql", "--index-sql", "i.sql" },
+        &.{ "Qenome", "--db", "d.db", "s.sql", "i.sql" },
+        &.{ "Qenome", "--select", "s.sql", "d.db", "i.sql" },
+        &.{ "Qenome", "--index-sql", "i.sql", "d.db", "s.sql" },
+    };
+    for (cases) |argv| {
+        const args = try parseArgs(testing.allocator, argv);
+        defer testing.allocator.free(args.binds);
+        try testing.expectEqualStrings("d.db", args.db.?);
+        try testing.expectEqualStrings("s.sql", args.select.?);
+        try testing.expectEqualStrings("i.sql", args.index_sql.?);
+    }
+}
+
+test "a path and a named option for the same role are a duplicate" {
+    var offending: ?[:0]const u8 = null;
+    try testing.expectError(
+        error.DuplicateOption,
+        parseArgsReporting(testing.allocator, &.{ "Qenome", "d.db", "--db", "other.db", "s.sql", "i.sql" }, &offending),
+    );
+    try testing.expectEqualStrings("--db", offending.?);
+}
+
+test "double dash makes the rest positional" {
+    const args = try parseArgs(testing.allocator, &.{ "Qenome", "--", "--db", "--select", "--index-sql" });
+    defer testing.allocator.free(args.binds);
+    try testing.expect(!args.help);
+    try testing.expectEqualStrings("--db", args.db.?);
+    try testing.expectEqualStrings("--select", args.select.?);
+    try testing.expectEqualStrings("--index-sql", args.index_sql.?);
+
+    const help_after = try parseArgs(testing.allocator, &.{ "Qenome", "--", "--help", "s.sql", "i.sql" });
+    defer testing.allocator.free(help_after.binds);
+    try testing.expect(!help_after.help);
+    try testing.expectEqualStrings("--help", help_after.db.?);
+
+    const literal = try parseArgs(testing.allocator, &.{ "Qenome", "--db=--", "--select", "s", "--index-sql", "i" });
+    defer testing.allocator.free(literal.binds);
+    try testing.expectEqualStrings("--", literal.db.?);
+
+    var offending: ?[:0]const u8 = null;
+    try testing.expectError(
+        error.MissingValue,
+        parseArgsReporting(testing.allocator, &.{ "Qenome", "--db", "--" }, &offending),
+    );
+    try testing.expectEqualStrings("--db", offending.?);
 }
 
 test "a value option takes its value after an equals sign" {
@@ -573,16 +669,16 @@ test "missing required options keep the usage order" {
     defer testing.allocator.free(none.binds);
     const all = missingRequired(none, &buffer);
     try testing.expectEqual(@as(usize, 3), all.len);
-    try testing.expectEqualStrings("--db", all[0]);
-    try testing.expectEqualStrings("--select", all[1]);
-    try testing.expectEqualStrings("--index-sql", all[2]);
+    try testing.expectEqualStrings("the database (a path or --db)", all[0]);
+    try testing.expectEqualStrings("the SELECT file (a path or --select)", all[1]);
+    try testing.expectEqualStrings("the CREATE INDEX file (a path or --index-sql)", all[2]);
 
     const partial = try parseArgs(testing.allocator, &.{ "Qenome", "--select", "s" });
     defer testing.allocator.free(partial.binds);
     const rest = missingRequired(partial, &buffer);
     try testing.expectEqual(@as(usize, 2), rest.len);
-    try testing.expectEqualStrings("--db", rest[0]);
-    try testing.expectEqualStrings("--index-sql", rest[1]);
+    try testing.expectEqualStrings("the database (a path or --db)", rest[0]);
+    try testing.expectEqualStrings("the CREATE INDEX file (a path or --index-sql)", rest[1]);
 }
 
 test "a misspelt option suggests the closest known name" {

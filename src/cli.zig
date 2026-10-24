@@ -255,15 +255,13 @@ fn reportSqlFileError(stderr: *Io.Writer, option: []const u8, path: []const u8, 
 fn reportParseError(stderr: *Io.Writer, err: ParseError, offending: ?[:0]const u8) Io.Writer.Error!void {
     const arg = offending orelse return stderr.print("error: {s}\n", .{parseErrorMessage(err)});
     switch (err) {
-        error.UnknownOption, error.UnexpectedArgument => {
-            try stderr.writeAll(if (err == error.UnknownOption) "error: unknown option " else "error: unexpected argument ");
+        error.UnknownOption => {
+            try stderr.writeAll("error: unknown option ");
             try result_rows.writeText(stderr, arg);
-            if (err == error.UnknownOption) {
-                if (cli_args.suggestOptionName(arg)) |suggestion| {
-                    try stderr.writeAll("; did you mean '");
-                    try stderr.writeAll(suggestion);
-                    try stderr.writeAll("'?");
-                }
+            if (cli_args.suggestOptionName(arg)) |suggestion| {
+                try stderr.writeAll("; did you mean '");
+                try stderr.writeAll(suggestion);
+                try stderr.writeAll("'?");
             }
             try stderr.writeAll(" (see --help)\n");
         },
@@ -275,6 +273,12 @@ fn reportParseError(stderr: *Io.Writer, err: ParseError, offending: ?[:0]const u
             const end = std.mem.indexOfScalar(u8, arg, '=') orelse arg.len;
             try stderr.print("error: {s} was given more than once (see --help)\n", .{arg[0..end]});
         },
+        error.TooManyPaths => {
+            try stderr.writeAll("error: unexpected argument ");
+            try result_rows.writeText(stderr, arg);
+            try stderr.writeAll("; paths are the database, the SELECT file and the CREATE INDEX file, at most 3 (see --help)\n");
+        },
+        error.EmptyPath => try stderr.writeAll("error: a path cannot be empty (see --help)\n"),
         error.UnexpectedValue => {
             const end = std.mem.indexOfScalar(u8, arg, '=') orelse arg.len;
             try stderr.print("error: {s} does not take a value (see --help)\n", .{arg[0..end]});
@@ -285,8 +289,7 @@ fn reportParseError(stderr: *Io.Writer, err: ParseError, offending: ?[:0]const u
 
 fn missingArguments(stderr: *Io.Writer, missing: []const []const u8, show_usage: bool) ExitCode {
     if (show_usage) stderr.writeAll(cli_args.usage_line ++ "\n") catch {};
-    const noun = if (missing.len == 1) "option" else "options";
-    stderr.print("error: missing required {s}: ", .{noun}) catch {};
+    stderr.writeAll("error: missing: ") catch {};
     for (missing, 0..) |name, position| {
         if (position != 0) stderr.writeAll(", ") catch {};
         stderr.writeAll(name) catch {};
