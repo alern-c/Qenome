@@ -79,8 +79,12 @@ const CliFixture = struct {
     }
 
     fn run(self: *CliFixture, extra: []const [:0]const u8, stdout_buffer: []u8, stderr_buffer: []u8) RunResult {
-        var argv: [24][:0]const u8 = undefined;
-        const required = [_][:0]const u8{ "Qenome", "--db", self.db_path, "--select", self.select_path, "--index-sql", self.index_path };
+        return self.runFormat("kv", extra, stdout_buffer, stderr_buffer);
+    }
+
+    fn runFormat(self: *CliFixture, format: [:0]const u8, extra: []const [:0]const u8, stdout_buffer: []u8, stderr_buffer: []u8) RunResult {
+        var argv: [26][:0]const u8 = undefined;
+        const required = [_][:0]const u8{ "Qenome", "--db", self.db_path, "--select", self.select_path, "--index-sql", self.index_path, "--format", format };
         @memcpy(argv[0..required.len], &required);
         @memcpy(argv[required.len..][0..extra.len], extra);
         return callRun(testing.allocator, argv[0 .. required.len + extra.len], self.work_parent, stdout_buffer, stderr_buffer);
@@ -242,6 +246,8 @@ test "accepted run prints summary on stdout and nothing on stderr (exit 0)" {
         fixture.index_path,
         "--bind",
         "1:int:1",
+        "--format",
+        "kv",
     }, fixture.work_parent, &stdout_buffer, &stderr_buffer);
 
     try testing.expectEqual(ExitCode.ok, result.code);
@@ -268,6 +274,8 @@ test "accepted run prints plan and counters" {
         fixture.index_path,
         "--bind",
         "1:text:x",
+        "--format",
+        "kv",
     }, fixture.work_parent, &stdout_buffer, &stderr_buffer);
 
     try testing.expectEqual(ExitCode.ok, result.code);
@@ -390,6 +398,8 @@ test "a select whose plan depends on a bound parameter is accepted" {
         fixture.index_path,
         "--bind",
         "1:text:x%",
+        "--format",
+        "kv",
     }, fixture.work_parent, &stdout_buffer, &stderr_buffer);
 
     try testing.expectEqual(ExitCode.ok, result.code);
@@ -812,6 +822,8 @@ test "a run on a wal database counts rows that are still in the wal" {
         fixture.select_path,
         "--index-sql",
         fixture.index_path,
+        "--format",
+        "kv",
     }, fixture.work_parent, &stdout_buffer, &stderr_buffer);
 
     try testing.expectEqual(ExitCode.ok, result.code);
@@ -954,4 +966,189 @@ test "binds show only their shape unless --show-binds is given" {
     const shown = fixture.run(&(binds ++ [_][:0]const u8{"--show-binds"}), &shown_stdout_buffer, &shown_stderr_buffer);
     try testing.expectEqual(ExitCode.ok, shown.code);
     try testing.expect(contains(shown.stdout, "bind: 1:int:1\nbind: 2:text:'secret'\nbind: 3:null\nbind: 4:real:1.5e0\n"));
+}
+
+fn expectNarrow(text: []const u8, raw: []const []const u8) !void {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    next: while (lines.next()) |line| {
+        if (line.len <= 80) continue;
+        for (raw) |allowed| if (contains(line, allowed)) continue :next;
+        std.debug.print("wider than 80 columns: {s}\n", .{line});
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "the default summary puts the conclusion first and the copies side by side" {
+    var fixture = try CliFixture.init("SELECT a FROM t WHERE a = ?1", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+
+    var stdout_buffer: [8192]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const result = callRun(testing.allocator, &.{
+        "Qenome",
+        "--db",
+        fixture.db_path,
+        "--select",
+        fixture.select_path,
+        "--index-sql",
+        fixture.index_path,
+        "--bind",
+        "1:int:1",
+        "--runs",
+        "2",
+    }, fixture.work_parent, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+    try testing.expect(std.mem.startsWith(u8, result.stdout, "Summary\n  result rows   match (the same rows on both copies)\n  time verdict  "));
+
+    const in_order = [_][]const u8{
+        "  query plan    changed on the variant\n",
+        "  time          median ",
+        "  db size       +",
+        "\nBaseline vs variant           baseline         variant          change\n",
+        "  rows                               1               1            same\n",
+        "  fullscan-steps                     1               0              -1\n",
+        "  time median ",
+        "  db file bytes ",
+        "\nQuery plan\n  baseline (candidate index not applied)\n    SCAN t  [scan; id ",
+        "  variant (candidate index applied)\n    SEARCH t USING COVERING INDEX idx_a (a=?)\n      [search, covering; id ",
+        "\nResult rows\n  match: ",
+        "  row order     same (reference only; not part of the result)\n",
+        "\nTiming\n  rounds        2 per copy\n",
+        "  baseline ns   median=",
+        "\nRun\n  db            ",
+        "  binds         1:int\n                (values hidden; --show-binds prints them)\n",
+        "  sqlite        " ++ sqlite.pinned_version ++ "\n",
+        "  source id     ",
+        "  zig           " ++ builtin.zig_version_string ++ "\n",
+    };
+    var from: usize = 0;
+    for (in_order) |part| {
+        const at = std.mem.indexOfPos(u8, result.stdout, from, part) orelse {
+            std.debug.print("missing or out of order: {s}\n", .{part});
+            return error.TestUnexpectedResult;
+        };
+        from = at + part.len;
+    }
+    try testing.expect(contains(result.stdout, fixture.db_path));
+    try testing.expect(contains(result.stdout, fixture.index_path));
+    try expectNarrow(result.stdout, &.{ fixture.db_path, fixture.select_path, fixture.index_path, fixture.work_parent });
+    try fixture.expectNoLeftovers();
+}
+
+test "the default summary of a mismatch shows the one-sided rows and no times" {
+    var fixture = try CliFixture.initWithSchema("SELECT a, b FROM t GROUP BY a", "CREATE INDEX idx_ab ON t(a, b DESC)",
+        \\CREATE TABLE t(a INTEGER, b TEXT);
+        \\INSERT INTO t VALUES (1, 'x'), (1, 'y');
+    );
+    defer fixture.deinit();
+
+    var stdout_buffer: [8192]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const result = fixture.runFormat("human", &.{}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.mismatch, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+    try testing.expect(std.mem.startsWith(u8, result.stdout,
+        \\Summary
+        \\  result rows   MISMATCH (the rows differ; the cause is not determined)
+        \\  time verdict  not-judged:
+        \\                - the result rows do not match, so the SELECT is not timed
+        \\
+    ));
+    try testing.expect(contains(result.stdout, "  time          not measured\n"));
+    try testing.expect(contains(result.stdout,
+        \\  MISMATCH: the rows differ, compared as a multiset; the cause is not determined
+        \\  baseline only 1 row, the first 1 below
+        \\                [1, 'x']
+        \\  variant only  1 row, the first 1 below
+        \\                [1, 'y']
+        \\  row order     not applicable
+        \\
+    ));
+    try testing.expect(!contains(result.stdout, "time median"));
+    try expectNarrow(result.stdout, &.{ fixture.db_path, fixture.select_path, fixture.index_path, fixture.work_parent });
+    try fixture.expectNoLeftovers();
+}
+
+test "the default summary of an incomparable select pairs each reason with its hint" {
+    var fixture = try CliFixture.initWithSchema("SELECT a FROM t WHERE a > 0 LIMIT 2", "CREATE INDEX idx_a ON t(a)", reordered_schema);
+    defer fixture.deinit();
+
+    var stdout_buffer: [8192]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const result = fixture.runFormat("human", &.{}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.incomparable, result.code);
+    try testing.expect(std.mem.startsWith(u8, result.stdout, "Summary\n  result rows   INCOMPARABLE (the rows cannot be compared; see Result rows)\n"));
+    try testing.expect(contains(result.stdout,
+        \\  INCOMPARABLE: the rows of the two copies cannot be compared
+        \\  - the rows differ, and the SELECT has LIMIT or OFFSET, which can pick other
+        \\    rows when the order changes
+        \\    try: to compare, end the ORDER BY next to the LIMIT with a unique NOT NULL
+        \\         column, or drop LIMIT and OFFSET; then check that the plan still uses
+        \\         the candidate index
+        \\  baseline only 1 row, the first 1 below
+        \\
+    ));
+    try expectNarrow(result.stdout, &.{ fixture.db_path, fixture.select_path, fixture.index_path, fixture.work_parent });
+}
+
+test "the default summary hides the bind values unless --show-binds is given" {
+    var fixture = try CliFixture.init("SELECT a FROM t WHERE a = ?1 AND b <> ?2 AND ?3 IS NULL AND ?4 < 9", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+    const binds = [_][:0]const u8{ "--bind", "1:int:1", "--bind", "2:text:secret", "--bind", "3:null", "--bind", "4:real:1.5", "--runs", "0" };
+
+    var stdout_buffer: [8192]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const hidden = fixture.runFormat("human", &binds, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, hidden.code);
+    try testing.expect(contains(hidden.stdout, "  binds         1:int, 2:text (6 bytes), 3:null, 4:real\n                (values hidden; --show-binds prints them)\n"));
+    try testing.expect(!contains(hidden.stdout, "secret"));
+    try testing.expect(!contains(hidden.stdout, "1.5"));
+
+    var shown_stdout_buffer: [8192]u8 = undefined;
+    var shown_stderr_buffer: [1024]u8 = undefined;
+    const shown = fixture.runFormat("human", &(binds ++ [_][:0]const u8{"--show-binds"}), &shown_stdout_buffer, &shown_stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, shown.code);
+    try testing.expect(contains(shown.stdout, "  binds         1:int:1, 2:text:'secret', 3:null, 4:real:1.5e0\n  work dir"));
+}
+
+test "a usage error names the argument it is about" {
+    const cases = [_]struct { argv: []const [:0]const u8, stderr: []const u8 }{
+        .{ .argv = &.{ "Qenome", "--nope" }, .stderr = "error: unknown option '--nope' (see --help)\n" },
+        .{ .argv = &.{ "Qenome", "--\x1b[2J" }, .stderr = "error: unknown option '--\\x1b[2J' (see --help)\n" },
+        .{ .argv = &.{ "Qenome", "stray.sql" }, .stderr = "error: unexpected argument 'stray.sql' (see --help)\n" },
+        .{ .argv = &.{ "Qenome", "--db" }, .stderr = "error: --db needs a value (see --help)\n" },
+        .{ .argv = &.{ "Qenome", "--format", "json" }, .stderr = "error: --format expects human or kv\n" },
+    };
+    for (cases) |case| {
+        var stdout_buffer: [512]u8 = undefined;
+        var stderr_buffer: [512]u8 = undefined;
+        const result = callRun(testing.allocator, case.argv, null, &stdout_buffer, &stderr_buffer);
+        try testing.expectEqual(ExitCode.usage, result.code);
+        try testing.expectEqualStrings("", result.stdout);
+        try testing.expectEqualStrings(case.stderr, result.stderr);
+    }
+}
+
+test "a bind error says how many parameters the SELECT has" {
+    var fixture = try CliFixture.init("SELECT a FROM t WHERE a = ?1", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+
+    var stdout_buffer: [1024]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const result = fixture.runFormat("human", &.{}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try testing.expectEqualStrings("error: --bind: every number in 1..parameter count must be given exactly once (parameters in the SELECT: 1; --bind given: 0)\n", result.stderr);
+    try fixture.expectNoLeftovers();
+}
+
+test "help fits in 80 columns and names the formats" {
+    var stdout_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [512]u8 = undefined;
+    const result = callRun(testing.allocator, &.{ "Qenome", "--help" }, null, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expect(contains(result.stdout, "  --format <FORMAT>    human (default) or kv\n"));
+    try testing.expect(std.mem.endsWith(u8, result.stdout, "SIGHUP / SIGINT / SIGTERM\n"));
+    try expectNarrow(result.stdout, &.{});
 }
