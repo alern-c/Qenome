@@ -38,6 +38,7 @@ pub const max_runs: u32 = 1000;
 pub const Format = enum {
     human,
     kv,
+    json,
 };
 
 pub const Args = struct {
@@ -373,12 +374,13 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\                       once per copy; 0 skips the timing (default 10,
         \\                       at most 1000); a timing that takes longer
         \\                       than a second reports its progress on stderr
-        \\  --format <FORMAT>    human (default) or kv
+        \\  --format <FORMAT>    human (default), kv or json
         \\  --show-binds         print the bind values: human lists them in the
-        \\                       summary, and kv adds them after the number and
-        \\                       type; without it, human leaves the binds out and
-        \\                       kv prints only their numbers, types and text
-        \\                       lengths, so that the values stay out of logs
+        \\                       summary, and kv and json add them after the
+        \\                       number and type; without it, human leaves the
+        \\                       binds out and kv and json print only their
+        \\                       numbers, types and text lengths, so that the
+        \\                       values stay out of logs
         \\  --version            print the version and exit with status 0
         \\  --help, -h           print this message and exit with status 0
         \\
@@ -390,6 +392,7 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\  qenome app.db select.sql index.sql
         \\  qenome app.db select.sql index.sql --bind 1:int:1234
         \\  qenome --db app.db --select select.sql --index-sql index.sql --format kv
+        \\  qenome app.db select.sql index.sql --format json
         \\
         \\The same paths can be given as --db, --select and --index-sql.
         \\
@@ -420,6 +423,11 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\  versions, the build mode, the OS and architecture, the work
         \\  directory, and the timing conditions below, which the human
         \\  output leaves out.
+        \\  The json format prints one JSON object and a trailing newline:
+        \\  schema_version, the time verdict and its reasons, the result
+        \\  comparison with its reasons, counts and example rows, both plans
+        \\  and counters, the times and sizes, the inputs, versions, timing
+        \\  conditions, and the binds with the same secrecy as kv.
         \\  Timing conditions: each copy gets one warm-up run whose rows were
         \\  compared and that is not timed; the timed rounds alternate
         \\  baseline-variant and variant-baseline (ABBA); a round times
@@ -454,7 +462,7 @@ pub fn parseErrorMessage(err: ParseError) []const u8 {
         error.InvalidBindFormat => "--bind expects <N>:<TYPE>[:<VALUE>], where N is the parameter number and TYPE is int, real, text or null; e.g. --bind 1:int:1234, --bind 2:text:ok, --bind 3:null",
         error.InvalidTimeout => "--timeout-ms expects a non-negative integer",
         error.InvalidRuns => std.fmt.comptimePrint("--runs expects an integer from 0 to {d}", .{max_runs}),
-        error.InvalidFormat => "--format expects human or kv",
+        error.InvalidFormat => "--format expects human, kv or json",
         error.OutOfMemory => "out of memory",
     };
 }
@@ -581,17 +589,20 @@ test "timeout defaults to 30000" {
     try testing.expectEqual(default_timeout_ms, args.timeout_ms);
 }
 
-test "format defaults to human and takes human or kv" {
+test "format defaults to human and takes human, kv or json" {
     const default = try parseArgs(testing.allocator, &.{"Qenome"});
     defer testing.allocator.free(default.binds);
     try testing.expectEqual(Format.human, default.format);
     const kv = try parseArgs(testing.allocator, &.{ "Qenome", "--format", "kv" });
     defer testing.allocator.free(kv.binds);
     try testing.expectEqual(Format.kv, kv.format);
+    const json = try parseArgs(testing.allocator, &.{ "Qenome", "--format=json" });
+    defer testing.allocator.free(json.binds);
+    try testing.expectEqual(Format.json, json.format);
     const human = try parseArgs(testing.allocator, &.{ "Qenome", "--format", "kv", "--format", "human" });
     defer testing.allocator.free(human.binds);
     try testing.expectEqual(Format.human, human.format);
-    for ([_][:0]const u8{ "json", "KV" }) |raw| {
+    for ([_][:0]const u8{ "JSON", "KV", "human " }) |raw| {
         try testing.expectError(error.InvalidFormat, parseArgs(testing.allocator, &.{ "Qenome", "--format", raw }));
     }
 }
@@ -934,6 +945,10 @@ test "sql text passed as a path is recognized" {
         .{ .value = "-select.sql", .expected = false },
     };
     for (cases) |case| try testing.expectEqual(case.expected, looksLikeSql(case.value));
+}
+
+test "a format error names all three formats" {
+    try testing.expectEqualStrings("--format expects human, kv or json", parseErrorMessage(error.InvalidFormat));
 }
 
 test "a bind format error shows parameter numbers and examples" {
