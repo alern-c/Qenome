@@ -1,4 +1,5 @@
 const std = @import("std");
+const zon = @import("build.zig.zon");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -9,6 +10,10 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .link_libc = true,
     });
+
+    const build_options = b.addOptions();
+    build_options.addOption([]const u8, "version", zon.version);
+    mod.addOptions("build_options", build_options);
 
     mod.addCSourceFiles(.{
         .files = &.{"vendor/sqlite3/sqlite3.c"},

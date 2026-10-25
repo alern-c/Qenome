@@ -96,6 +96,7 @@ BUILTIN_IMPORTS = ["std", "builtin"]
 
 MODULE_IMPORTS = {
     "src/main.zig": ["Qenome"],
+    "src/cli/args.zig": ["build_options"],
 }
 
 IMPORT_CANDIDATE = re.compile(r"@import\b")
