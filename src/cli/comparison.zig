@@ -106,7 +106,7 @@ fn orderHint(arena: std.mem.Allocator, name: []const u8) []const u8 {
     const sums = [_][]const u8{ "sum", "avg", "total" };
     const windows = [_][]const u8{ "row_number", "ntile", "first_value", "last_value", "nth_value", "lag", "lead" };
     for (sums) |entry| if (std.mem.eql(u8, name, entry))
-        return print(arena, "{s}() adds REAL values in the order they are read, so the results may differ only in the last digits; check the baseline-only-row and variant-only-row lines", name);
+        return print(arena, "{s}() adds REAL values in the order they are read, so the results may differ only in the last digits; rerun with --show-rows to see the rows", name);
     for (windows) |entry| if (std.mem.eql(u8, name, entry))
         return print(arena, "end the ORDER BY in OVER (...) of {s}() with a unique column, so that every row has a fixed place", name);
     return print(arena, "add ORDER BY inside {s}(...), so that the rows are joined in a fixed order", name);
@@ -122,7 +122,10 @@ test "order-dependent hints follow the kind of function" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    try testing.expect(std.mem.startsWith(u8, orderHint(arena, "avg"), "avg() adds REAL values in the order they are read"));
+    const avg = orderHint(arena, "avg");
+    try testing.expect(std.mem.startsWith(u8, avg, "avg() adds REAL values in the order they are read"));
+    try testing.expect(std.mem.indexOf(u8, avg, "--show-rows") != null);
+    try testing.expect(std.mem.indexOf(u8, avg, "baseline-only-row") == null);
     try testing.expect(std.mem.startsWith(u8, orderHint(arena, "lag"), "end the ORDER BY in OVER (...) of lag() with a unique column"));
     try testing.expect(std.mem.startsWith(u8, orderHint(arena, "json_group_array"), "add ORDER BY inside json_group_array(...)"));
 }
