@@ -82,7 +82,7 @@ fi
 | `measurement` | 計時条件（`runs_per_copy` / `warmup` / `order` / `scope` / `cache`） |
 | `binds` | `number` / `type`。text は `text_bytes` も持つ。`--show-binds` を付けたときだけ値が `value` に入る |
 
-- 文字列は JSON としてエスケープします。`--show-rows` で出す例の行では、非 UTF-8 のバイトは `\xNN` の表記（例: `'\xff'`）、BLOB は `x'00ff'` の表記です。
+- 文字列値では、バックスラッシュを `\\`、非 UTF-8 のバイトを `\xNN`（バイト 0xFF なら `\xff`）と書いてから JSON としてエスケープします。4文字の `\xff` は `\\xff` になり、バイト 0xFF とは別の文字列です。元のバイト列に戻すときは、`\\` をバックスラッシュ1個、`\xNN` をそのバイト、それ以外の文字をそのまま読みます。入力パス、計画の detail、理由、bind の text がこの規則です。`--show-rows` で出す例の行の TEXT も同じ規則（前後に `'`。例: `'\xff'`）で、BLOB は `x'00ff'` です。
 - `binds` は kv と同じ秘匿方針です。`--show-binds` が無いときは値を出さず、番号・型・テキストの長さだけを出します。real の非有限値（inf）は JSON 数値にできないため、`"inf"` / `"-inf"` の文字列で出します。
 - `row_differences` の件数（`baseline_only` / `variant_only`）は常に出します。例の配列キーも残しますが、既定では空です。行の値を入れるのは `--show-rows` を付けたときだけです。human と kv も同じフラグで、既定では件数だけを出します。human は例を隠しているとき、`examples` に `--show-rows` で見られると書きます。
 - `row_order` は参考情報で、結果の一致判定には含めません。

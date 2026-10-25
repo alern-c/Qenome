@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Mismatched result rows are counts unless `--show-rows` is set, in every format. Human omits the example rows and says to rerun with `--show-rows`. kv omits `baseline-only-row` and `variant-only-row`. json leaves `baseline_only_examples` and `variant_only_examples` empty. The counts stay, and `schema_version` stays 1. The hint for `sum()`, `avg()` and `total()` says to rerun with `--show-rows` instead of pointing at those lines.
 
+### Fixed
+
+- `--format json` writes a backslash as `\\` and an invalid UTF-8 byte as `\xNN` in string values, so the four characters `\xff` and the byte 0xFF stay distinct. Paths, plan detail, reasons, and bind text use this encoding. `schema_version` stays 1, because JSON output has not been in a release.
+
 ## [0.1.0] - 2026-10-25
 
 ### Added

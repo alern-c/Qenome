@@ -1889,7 +1889,12 @@ test "json format on a mismatch keeps the counts and hides example rows unless -
     try testing.expectEqualStrings("not-applicable", try jsonText(root, "row_order"));
     try testing.expectEqualStrings("not-judged", try jsonText(root, "verdict"));
     try testing.expect(try jsonGet(root, "timing") == .null);
-    try testing.expectEqualStrings(weird_path, try jsonText(try jsonGet(root, "inputs"), "select"));
+    const select_text = try jsonText(try jsonGet(root, "inputs"), "select");
+    const expected_select = try testing.allocator.alloc(u8, weird_path.len + std.mem.count(u8, weird_path, "\\"));
+    defer testing.allocator.free(expected_select);
+    _ = std.mem.replace(u8, weird_path, "\\", "\\\\", expected_select);
+    try testing.expectEqualStrings(expected_select, select_text);
+    try testing.expect(std.mem.indexOfScalar(u8, weird_path, '\\') != null);
 
     const differences = try jsonGet(root, "row_differences");
     try testing.expectEqual(@as(i64, 1), try jsonInt(differences, "baseline_only"));
