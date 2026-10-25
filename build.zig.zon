@@ -1,6 +1,6 @@
 .{
     .name = .Qenome,
-    .version = "0.0.0",
+    .version = "0.1.0",
     .fingerprint = 0x523b0edc3a69374a,
     .minimum_zig_version = "0.17.0",
     .dependencies = .{},
