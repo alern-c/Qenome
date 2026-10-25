@@ -81,6 +81,14 @@ def main():
             command([sys.executable, "scripts/test_check_comments.py"]),
         ),
         ("Check for comments", command([sys.executable, "scripts/check_comments.py"])),
+        (
+            "Test the Quick start checker",
+            command([sys.executable, "scripts/test_check_quick_start.py"]),
+        ),
+        (
+            "Run the README Quick start",
+            command([sys.executable, "scripts/check_quick_start.py"]),
+        ),
     ]
     for name, action in stages:
         code = run_stage(name, action)

@@ -13,6 +13,7 @@
 | `verify.sql` | 不変条件の検査（`sqlite3` CLI 専用） |
 | `cases/improved.sql` / `cases/improved.index.sql` | 改善する例の SELECT と候補DDL |
 | `cases/no-effect.sql` / `cases/no-effect.index.sql` | 効果のない例の SELECT と候補DDL |
+| `cases/incomparable.sql` / `cases/incomparable.index.sql` | 結果を比較できない例の SELECT と候補DDL |
 | `generated/` | 生成したDBの置き場（`.gitignore` 対象。追跡しない） |
 
 ## 再生成手順
@@ -59,7 +60,7 @@ sqlite3 3.51.2 2026-01-09 17:27:48 b270f8339eb13b504d0b2ba154ebca966b7dde08e40c3
 
 DBサイズは版によって変わりうるため検査には含めず、参考値として記録する。ファイルのバイト一致も保証しない（判定は `verify.sql` の不変条件で行う）。
 
-## 2組のクエリと候補DDL
+## 3組のクエリと候補DDL
 
 | | 改善する例 | 効果のない例 |
 |---|---|---|
@@ -67,6 +68,18 @@ DBサイズは版によって変わりうるため検査には含めず、参考
 | 代表バインド | 型 INTEGER・値 `1234` | 型 TEXT・値 `'ok'` |
 | 候補DDL | `CREATE INDEX ix_events_customer_id ON events(customer_id);` | `CREATE INDEX ix_events_status ON events(status);` |
 | 索引が効かない理由 | — | 条件の列を `lower()` で包むため、`status` の索引を使えない |
+
+### 比較できない例
+
+| 項目 | 値 |
+|---|---|
+| SELECT | `SELECT id, note FROM events ORDER BY random() LIMIT 10;` |
+| 代表バインド | なし |
+| 候補DDL | `CREATE INDEX ix_events_customer_id ON events(customer_id);` |
+| 比較できない理由 | `random()` が実行のたびに別の行を選ぶ（`src/db.zig` の `alwaysIncomparable`） |
+| 結果 | `result: incomparable`、終了コード 4、`verdict: not-judged`。SELECT は計測しない |
+
+この組は `README.md` / `README.ja.md` のクイックスタートで使う。候補DDL は比較の対象としては使われないため、改善する例と同じものを使っている。
 
 ## 期待値表
 
@@ -160,3 +173,4 @@ sqlite3 "$d/baseline.db" "SELECT count(*), count(note), sum(length(note)), min(n
 - **カウンタの取得**: `.stats stmt` の出力に結果行が混ざる。`Fullscan Steps` / `Virtual Machine Steps` の最後の値を採用する
 - **版依存**: 期待値は基準版で導出した値。版が変わったら再導出する
 - **バイト一致は保証しない**: DBファイルの内容のバイト一致は判定に使わない。`verify.sql` の不変条件で判定する
+- **`LIMIT` だけでは比較不能にならない**: `LIMIT` / `OFFSET` を含む SELECT も、行が一致すれば `match` のまま比較と計測を続ける（`LIMIT` / `OFFSET` は行が不一致だったときの理由にだけ現れる）。比較不能になるのは `random()` などの非決定的な関数や schema テーブルを読む SELECT（`src/db.zig` の `alwaysIncomparable`）
