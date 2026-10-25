@@ -80,15 +80,17 @@ pub fn writeSummary(
     }
     if (outcome.comparison) |comparison| if (!comparison.matched) {
         try stdout.print("baseline-only-rows: {d}\nvariant-only-rows: {d}\n", .{ comparison.baseline_only, comparison.variant_only });
-        for (comparison.baselineExamples()) |row| {
-            try stdout.writeAll("baseline-only-row: ");
-            try result.writeRow(stdout, row);
-            try stdout.writeByte('\n');
-        }
-        for (comparison.variantExamples()) |row| {
-            try stdout.writeAll("variant-only-row: ");
-            try result.writeRow(stdout, row);
-            try stdout.writeByte('\n');
+        if (header.show_rows) {
+            for (comparison.baselineExamples()) |row| {
+                try stdout.writeAll("baseline-only-row: ");
+                try result.writeRow(stdout, row);
+                try stdout.writeByte('\n');
+            }
+            for (comparison.variantExamples()) |row| {
+                try stdout.writeAll("variant-only-row: ");
+                try result.writeRow(stdout, row);
+                try stdout.writeByte('\n');
+            }
         }
     };
     const order = if (outcome.verdict != .match)
@@ -563,7 +565,7 @@ pub fn writeHumanSummary(
     try writePlan(stdout, after.plan);
     if (outcome.verdict != .match or !outcome.comparison.?.same_order) {
         try stdout.writeAll("\nResult rows\n");
-        try writeRowsDetail(stdout, outcome);
+        try writeRowsDetail(stdout, outcome, header.show_rows);
     }
 }
 
@@ -732,7 +734,7 @@ fn planDepth(plan: Plan, row: PlanRow) usize {
     return depth;
 }
 
-fn writeRowsDetail(stdout: *Io.Writer, outcome: cli_comparison.Outcome) Io.Writer.Error!void {
+fn writeRowsDetail(stdout: *Io.Writer, outcome: cli_comparison.Outcome, show_rows: bool) Io.Writer.Error!void {
     if (outcome.verdict == .match) return writeField(stdout, "row order", row_order_differs);
     try writeIndent(stdout, 2);
     try writeWrapped(stdout, switch (outcome.verdict) {
@@ -752,18 +754,22 @@ fn writeRowsDetail(stdout: *Io.Writer, outcome: cli_comparison.Outcome) Io.Write
         }
     }
     if (outcome.comparison) |comparison| if (!comparison.matched) {
-        try writeExamples(stdout, "baseline only", comparison.baseline_only, comparison.baselineExamples());
-        try writeExamples(stdout, "variant only", comparison.variant_only, comparison.variantExamples());
+        try writeExamples(stdout, "baseline only", comparison.baseline_only, comparison.baselineExamples(), show_rows);
+        try writeExamples(stdout, "variant only", comparison.variant_only, comparison.variantExamples(), show_rows);
+        if (!show_rows and (comparison.baselineExamples().len != 0 or comparison.variantExamples().len != 0)) {
+            try writeField(stdout, "examples", "rerun with --show-rows to see them");
+        }
     };
 }
 
-fn writeExamples(stdout: *Io.Writer, label: []const u8, count: usize, examples: []const []const u8) Io.Writer.Error!void {
+fn writeExamples(stdout: *Io.Writer, label: []const u8, count: usize, examples: []const []const u8, show_rows: bool) Io.Writer.Error!void {
     var buffer: [64]u8 = undefined;
     var text = Io.Writer.fixed(&buffer);
     try writeCount(&text, count);
     try text.writeAll(if (count == 1) " row" else " rows");
-    if (examples.len != 0) try text.print(", the first {d} below", .{examples.len});
+    if (show_rows and examples.len != 0) try text.print(", the first {d} below", .{examples.len});
     try writeField(stdout, label, text.buffered());
+    if (!show_rows) return;
     for (examples) |row| {
         try writeIndent(stdout, value_column);
         try result.writeRow(stdout, row);

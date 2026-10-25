@@ -386,10 +386,10 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\                       binds out and kv and json print only their
         \\                       numbers, types and text lengths, so that the
         \\                       values stay out of logs
-        \\  --show-rows          json prints the example rows that only one copy
-        \\                       returned. Without it, json keeps the counts and
-        \\                       leaves those arrays empty, so the row values stay
-        \\                       out of logs. Human and kv always print them
+        \\  --show-rows          print the example rows that only one copy
+        \\                       returned, in human, kv and json. Without it,
+        \\                       only the counts are printed, so row values stay
+        \\                       out of logs. Human says to rerun with this flag
         \\  --version            print the version and exit with status 0
         \\  --help, -h           print this message and exit with status 0
         \\
@@ -424,14 +424,15 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\  the times and rounds, and the size increase), the counters and
         \\  times of both copies side by side, and the query plans. A
         \\  difference, a comparison that is not possible, or rows in another
-        \\  order adds the explanation and example rows; --show-binds adds the
-        \\  bind values; a build without optimization adds a note that its
-        \\  times are slower.
+        \\  order adds the explanation and the one-sided counts. The example
+        \\  rows are printed only with --show-rows; otherwise human says to
+        \\  rerun with that flag. --show-binds adds the bind values; a build
+        \\  without optimization adds a note that its times are slower.
         \\  The kv format prints every fact as one `key: value` per line, for
         \\  scripts and logs: it keeps the inputs, the SQLite and Zig
         \\  versions, the build mode, the OS and architecture, the work
         \\  directory, and the timing conditions below, which the human
-        \\  output leaves out.
+        \\  output leaves out. Example row values appear only with --show-rows.
         \\  The json format prints one JSON object and a trailing newline:
         \\  schema_version, the time verdict and its reasons, the result
         \\  comparison with its reasons, the counts, and example rows only

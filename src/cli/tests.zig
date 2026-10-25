@@ -593,8 +593,17 @@ test "a bare-column group by that differs exits 3" {
     const run_result = fixture.run(&.{}, &stdout_buffer, &stderr_buffer);
     try testing.expectEqual(ExitCode.mismatch, run_result.code);
     try testing.expectEqualStrings("", run_result.stderr);
-    try testing.expect(contains(run_result.stdout, "result: mismatch (row multiset; the cause is not determined)\nbaseline-only-rows: 1\nvariant-only-rows: 1\n"));
-    try testing.expect(contains(run_result.stdout, "baseline-only-row: [1, 'x']\nvariant-only-row: [1, 'y']\nrow-order: not applicable\n"));
+    try testing.expect(contains(run_result.stdout, "result: mismatch (row multiset; the cause is not determined)\nbaseline-only-rows: 1\nvariant-only-rows: 1\nrow-order: not applicable\n"));
+    try testing.expect(!contains(run_result.stdout, "baseline-only-row:"));
+    try testing.expect(!contains(run_result.stdout, "variant-only-row:"));
+    try testing.expect(!contains(run_result.stdout, "[1, 'x']"));
+    try testing.expect(!contains(run_result.stdout, "[1, 'y']"));
+
+    var shown_stdout: [4096]u8 = undefined;
+    var shown_stderr: [1024]u8 = undefined;
+    const shown = fixture.run(&.{"--show-rows"}, &shown_stdout, &shown_stderr);
+    try testing.expectEqual(ExitCode.mismatch, shown.code);
+    try testing.expect(contains(shown.stdout, "baseline-only-rows: 1\nvariant-only-rows: 1\nbaseline-only-row: [1, 'x']\nvariant-only-row: [1, 'y']\nrow-order: not applicable\n"));
     try fixture.expectNoLeftovers();
 }
 
@@ -748,7 +757,8 @@ test "an integer-only sum that matches exits 0 and a real sum that differs exits
         var stderr_buffer: [1024]u8 = undefined;
         const run_result = fixture.run(&.{}, &stdout_buffer, &stderr_buffer);
         try testing.expectEqual(ExitCode.incomparable, run_result.code);
-        try testing.expect(contains(run_result.stdout, "incomparable-reason: the rows differ, and the SELECT calls sum(), whose result can depend on the order rows are read in\nincomparable-hint: sum() adds REAL values in the order they are read, so the results may differ only in the last digits; check the baseline-only-row and variant-only-row lines\nbaseline-only-rows: 1\nvariant-only-rows: 1\n"));
+        try testing.expect(contains(run_result.stdout, "incomparable-reason: the rows differ, and the SELECT calls sum(), whose result can depend on the order rows are read in\nincomparable-hint: sum() adds REAL values in the order they are read, so the results may differ only in the last digits; rerun with --show-rows to see the rows\nbaseline-only-rows: 1\nvariant-only-rows: 1\n"));
+        try testing.expect(!contains(run_result.stdout, "baseline-only-row:"));
     }
 }
 
@@ -1159,7 +1169,7 @@ test "the default summary puts the conclusion first and the copies side by side"
     try fixture.expectNoLeftovers();
 }
 
-test "the default summary of a mismatch shows the one-sided rows and no times" {
+test "the default summary of a mismatch hides the one-sided rows unless --show-rows is given" {
     var fixture = try CliFixture.initWithSchema("SELECT a, b FROM t GROUP BY a", "CREATE INDEX idx_ab ON t(a, b DESC)",
         \\CREATE TABLE t(a INTEGER, b TEXT);
         \\INSERT INTO t VALUES (1, 'x'), (1, 'y');
@@ -1181,15 +1191,31 @@ test "the default summary of a mismatch shows the one-sided rows and no times" {
     try testing.expect(contains(result.stdout, "  time          not measured (0 rounds)\n"));
     try testing.expect(contains(result.stdout, "\nResult rows\n" ++
         \\  MISMATCH: the rows differ, compared as a multiset; the cause is not determined
+        \\  baseline only 1 row
+        \\  variant only  1 row
+        \\  examples      rerun with --show-rows to see them
+        \\
+    ));
+    try testing.expect(!contains(result.stdout, "[1, 'x']"));
+    try testing.expect(!contains(result.stdout, "[1, 'y']"));
+    try testing.expect(!contains(result.stdout, "time median"));
+    try testing.expect(!contains(result.stdout, "row order"));
+    try expectNarrow(result.stdout, &.{});
+
+    var shown_stdout: [8192]u8 = undefined;
+    var shown_stderr: [1024]u8 = undefined;
+    const shown = fixture.runFormat("human", &.{"--show-rows"}, &shown_stdout, &shown_stderr);
+    try testing.expectEqual(ExitCode.mismatch, shown.code);
+    try testing.expect(contains(shown.stdout, "\nResult rows\n" ++
+        \\  MISMATCH: the rows differ, compared as a multiset; the cause is not determined
         \\  baseline only 1 row, the first 1 below
         \\                [1, 'x']
         \\  variant only  1 row, the first 1 below
         \\                [1, 'y']
         \\
     ));
-    try testing.expect(!contains(result.stdout, "time median"));
-    try testing.expect(!contains(result.stdout, "row order"));
-    try expectNarrow(result.stdout, &.{});
+    try testing.expect(!contains(shown.stdout, "rerun with --show-rows"));
+    try expectNarrow(shown.stdout, &.{});
     try fixture.expectNoLeftovers();
 }
 
@@ -1209,9 +1235,12 @@ test "the default summary of an incomparable select pairs each reason with its h
         \\    try: to compare, end the ORDER BY next to the LIMIT with a unique NOT NULL
         \\         column, or drop LIMIT and OFFSET; then check that the plan still uses
         \\         the candidate index
-        \\  baseline only 1 row, the first 1 below
+        \\  baseline only 1 row
+        \\  variant only  1 row
+        \\  examples      rerun with --show-rows to see them
         \\
     ));
+    try testing.expect(!contains(result.stdout, "the first "));
     try testing.expect(!contains(result.stdout, "row order"));
     try expectNarrow(result.stdout, &.{});
 }
@@ -1707,7 +1736,7 @@ test "help fits in 80 columns and names the formats" {
     const result = callRun(testing.allocator, &.{ "Qenome", "--help" }, null, &stdout_buffer, &stderr_buffer);
     try testing.expectEqual(ExitCode.ok, result.code);
     try testing.expect(contains(result.stdout, "  --format <FORMAT>    human (default), kv or json\n"));
-    try testing.expect(contains(result.stdout, "  --show-rows          json prints the example rows"));
+    try testing.expect(contains(result.stdout, "  --show-rows          print the example rows that only one copy"));
     try testing.expect(contains(result.stdout, "exit status:"));
     try expectNarrow(result.stdout, &.{});
 }
