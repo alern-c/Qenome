@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- 配布バイナリからデバッグ情報を除いた。Linux 版は約11MBから約2MBになり、panic 時のスタックトレースは関数名・行ではなくアドレスで表示される。
+- Release binaries no longer carry debug information. The Linux binaries shrink from about 11 MB to about 2 MB, and a panic stack trace shows addresses instead of function names and lines.
 
 ## [0.3.0] - 2026-10-26
 
