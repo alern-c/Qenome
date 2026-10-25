@@ -7,6 +7,7 @@ import tokenize
 
 EXCLUDED_FILES = [
     "CHANGELOG.md",
+    "LICENSE",
     "README.md",
     "testdata/README.md",
     "vendor/sqlite3/PROVENANCE.txt",
