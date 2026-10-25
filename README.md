@@ -91,9 +91,11 @@ The three paths fill the roles in this order: database, SELECT file, CREATE INDE
 
 Options that take a value can also be written as `--db=app.db`.
 
-Qenome opens the database read-only and copies it, through SQLite's backup API, into a private directory under `$TMPDIR` (default `/tmp`). The copy is the baseline; a second copy becomes the variant, and the candidate index is built only on the variant. The `SELECT` runs on both copies, and the result rows are compared as a multiset: each distinct row must appear the same number of times. Row order is reported as a reference and is not part of the match.
+Qenome opens the database read-only and copies it, through SQLite's backup API, into a private directory under `$TMPDIR` (default `/tmp`) on Linux and macOS, or under the first of `%TMP%`, `%TEMP%`, and `%USERPROFILE%` that is set on Windows. The copy is the baseline; a second copy becomes the variant, and the candidate index is built only on the variant. The `SELECT` runs on both copies, and the result rows are compared as a multiset: each distinct row must appear the same number of times. Row order is reported as a reference and is not part of the match.
 
 When the rows match and `--runs` is not `0`, the `SELECT` is timed again on both copies. Each copy gets one warm-up run whose rows were compared and that is not timed. The timed rounds alternate baseline-variant and variant-baseline (ABBA). A round times `sqlite3_step` from the reset statement to `SQLITE_DONE`, including the interrupt checks; it does not read columns and does not time prepare, bind, or the plan read. The cache is warm, since each copy reuses its connection and page cache after its file was just written. The private directory is removed before exit, whatever the result.
+
+On Linux and macOS the directory is created so that only its owner can access it (`0700`). Windows has no equivalent setting, so the directory inherits the access control of the temporary folder, and its protection depends on that folder being private to the user. Qenome removes the directory when it receives Ctrl+C or Ctrl+Break on Windows, and SIGINT, SIGTERM, or SIGHUP on Linux and macOS. A forced termination, such as closing the console window or killing the process, can leave the copies behind.
 
 The time verdict never changes the exit status.
 

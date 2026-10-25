@@ -26,6 +26,7 @@ pub const ExitCode = cli_control.ExitCode;
 pub const finalExitCode = cli_control.finalExitCode;
 
 const tempParentPath = cli_workspace.tempParentPath;
+pub const tempParent = cli_workspace.tempParent;
 const WorkDir = cli_workspace.WorkDir;
 const prepareCopies = cli_workspace.prepareCopies;
 const fileSize = cli_workspace.fileSize;

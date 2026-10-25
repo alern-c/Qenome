@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - The project is licensed under the Apache License 2.0. The license text is the unmodified official text and is in `LICENSE`.
+- Windows 向けのビルドと実行に対応した。
 
 ### Changed
 
