@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-26
+
 ### Added
 
 - The project is licensed under the Apache License 2.0. The license text is the unmodified official text and is in `LICENSE`.
