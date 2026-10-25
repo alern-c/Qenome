@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- 配布バイナリからデバッグ情報を除いた。Linux 版は約11MBから約2MBになり、panic 時のスタックトレースは関数名・行ではなくアドレスで表示される。
+
 ## [0.3.0] - 2026-10-26
 
 ### Added

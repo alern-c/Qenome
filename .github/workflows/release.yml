@@ -60,7 +60,7 @@ jobs:
             target="$1"
             name="$2"
             suffix="$3"
-            zig build -Doptimize=ReleaseSafe \
+            zig build -Doptimize=ReleaseSafe -Dstrip=true \
               -Dtarget="$target" --summary all
             cp "zig-out/bin/qenome${suffix}" \
               "dist/qenome-${VERSION}-${name}${suffix}"
@@ -71,6 +71,26 @@ jobs:
           build aarch64-macos aarch64-macos ""
           build x86_64-windows x86_64-windows ".exe"
           ls -l dist
+
+      - name: Check that the Linux binaries are stripped
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          for asset in x86_64-linux aarch64-linux; do
+            binary="dist/qenome-${VERSION}-${asset}"
+            description="$(file -b "$binary")"
+            echo "${binary}: ${description}"
+            if ! grep -q 'stripped' <<< "$description"; then
+              echo "::error::${binary} is not reported as stripped by file"
+              exit 1
+            fi
+            if grep -q 'not stripped' <<< "$description" ||
+              grep -q 'with debug_info' <<< "$description"; then
+              echo "::error::${binary} still contains debug information"
+              exit 1
+            fi
+          done
 
       - name: Create SHA256SUMS
         run: |

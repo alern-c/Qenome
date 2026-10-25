@@ -4,6 +4,7 @@ const zon = @import("build.zig.zon");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const strip = b.option(bool, "strip", "Strip the debug information from the binary");
 
     const mod = b.addModule("Qenome", .{
         .root_source_file = b.path("src/root.zig"),
@@ -31,6 +32,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .strip = strip,
             .imports = &.{
                 .{ .name = "Qenome", .module = mod },
             },
