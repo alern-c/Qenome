@@ -355,9 +355,11 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\                       at most 1000); a timing that takes longer
         \\                       than a second reports its progress on stderr
         \\  --format <FORMAT>    human (default) or kv
-        \\  --show-binds         print the bind values in the summary; by default
-        \\                       only their numbers, types and text lengths are
-        \\                       printed, so that the values stay out of logs
+        \\  --show-binds         print the bind values: human lists them in the
+        \\                       summary, and kv adds them after the number and
+        \\                       type; without it, human leaves the binds out and
+        \\                       kv prints only their numbers, types and text
+        \\                       lengths, so that the values stay out of logs
         \\  --help, -h           print this message and exit with status 0
         \\
         \\The three paths may also be given by position: database, SELECT file,
@@ -385,12 +387,31 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\
         \\output (stdout, written once after every run; empty when an input is
         \\rejected, the time limit is reached, or the run is interrupted):
-        \\  The default (--format human) starts with a summary: whether the result
-        \\  rows match, the time verdict, whether the plan changed, the times, and
-        \\  the size increase. Then come the counters and times of both copies
-        \\  side by side, the query plans, the row comparison, the timing
-        \\  conditions, and the inputs and versions. --format kv prints the same
-        \\  facts as one `key: value` per line, for scripts and logs.
+        \\  The default (--format human) aims at a decision: a summary (whether
+        \\  the result rows match, the time verdict, whether the plan changed,
+        \\  the times and rounds, and the size increase), the counters and
+        \\  times of both copies side by side, and the query plans. A
+        \\  difference, a comparison that is not possible, or rows in another
+        \\  order adds the explanation and example rows; --show-binds adds the
+        \\  bind values; a build without optimization adds a note that its
+        \\  times are slower.
+        \\  The kv format prints every fact as one `key: value` per line, for
+        \\  scripts and logs: it keeps the inputs, the SQLite and Zig
+        \\  versions, the build mode, the OS and architecture, the work
+        \\  directory, and the timing conditions below, which the human
+        \\  output leaves out.
+        \\  Timing conditions: each copy gets one warm-up run whose rows were
+        \\  compared and that is not timed; the timed rounds alternate
+        \\  baseline-variant and variant-baseline (ABBA); a round times
+        \\  sqlite3_step from the reset statement to SQLITE_DONE with the
+        \\  interrupt checks, and does not read columns or time prepare, bind,
+        \\  or the plan read; the cache is warm, since each copy reuses its
+        \\  connection and page cache after its file was just written.
+        \\  Result rows are compared as a multiset: each distinct row must
+        \\  appear the same number of times. Row order is a reference only
+        \\  and is not part of the result: rows may change order without
+        \\  ORDER BY or among equal ORDER BY keys, and ORDER BY itself is not
+        \\  checked.
         \\  Time verdict: improved (less work, a median more than 20% lower, and
         \\  faster in every round), no-effect (the same plan and counters, and
         \\  medians within 20%), needs-check (anything else, with the reasons), or

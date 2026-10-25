@@ -199,6 +199,10 @@ const line_width = 80;
 
 const value_column = 16;
 
+const debug_note = "  debug build (no optimization): the times are slower than a release build\n";
+
+const row_order_differs = "differs (reference only; rows may change order without ORDER BY or among equal ORDER BY keys, and ORDER BY itself is not checked)";
+
 pub fn writeHumanSummary(
     stdout: *Io.Writer,
     header: Header,
@@ -207,7 +211,7 @@ pub fn writeHumanSummary(
     outcome: cli_comparison.Outcome,
     report: TimeReport,
 ) Io.Writer.Error!void {
-    try writeOverview(stdout, before, after, outcome, report);
+    try writeOverview(stdout, header, before, after, outcome, report);
     try stdout.writeByte('\n');
     try writeSideBySide(stdout, before, after, report);
     try stdout.writeAll("\nQuery plan\n");
@@ -215,16 +219,15 @@ pub fn writeHumanSummary(
     try writePlan(stdout, before.plan);
     try stdout.writeAll("  variant (candidate index applied)\n");
     try writePlan(stdout, after.plan);
-    try stdout.writeAll("\nResult rows\n");
-    try writeRowsDetail(stdout, outcome);
-    try stdout.writeAll("\nTiming\n");
-    try writeTimingDetail(stdout, report);
-    try stdout.writeAll("\nRun\n");
-    try writeRunDetail(stdout, header);
+    if (outcome.verdict != .match or !outcome.comparison.?.same_order) {
+        try stdout.writeAll("\nResult rows\n");
+        try writeRowsDetail(stdout, outcome);
+    }
 }
 
 fn writeOverview(
     stdout: *Io.Writer,
+    header: Header,
     before: cli_comparison.Measurement,
     after: cli_comparison.Measurement,
     outcome: cli_comparison.Outcome,
@@ -264,7 +267,7 @@ fn writeOverview(
         try writeRatio(&text, timing.baseline.median, timing.variant.median);
         try text.print("); the variant was faster in {d} of {d} rounds", .{ timing.variant_faster_rounds, timing.rounds });
     } else {
-        try text.writeAll("not measured");
+        try text.writeAll("not measured (0 rounds)");
     }
     try writeField(stdout, "time", text.buffered());
 
@@ -275,6 +278,16 @@ fn writeOverview(
     try writeMebibytes(&text, increase);
     try text.writeAll("; the whole database file, not the index alone)");
     try writeField(stdout, "db size", text.buffered());
+
+    if (header.show_binds and header.binds.len != 0) {
+        try writeLabel(stdout, "binds");
+        for (header.binds, 0..) |bind, at| {
+            if (at != 0) try stdout.writeAll(", ");
+            try writeBind(stdout, bind, true);
+        }
+        try stdout.writeByte('\n');
+    }
+    if (builtin.mode == .debug) try stdout.writeAll(debug_note);
 }
 
 fn writeSideBySide(
@@ -287,17 +300,15 @@ fn writeSideBySide(
     try writeCountRow(stdout, "rows", before.rows, after.rows);
     try writeCountRow(stdout, "fullscan-steps", before.counters.fullscan_steps, after.counters.fullscan_steps);
     try writeCountRow(stdout, "vm-steps", before.counters.vm_steps, after.counters.vm_steps);
-    try writeCountRow(stdout, "sort-ops", before.counters.sort_ops, after.counters.sort_ops);
-    try writeCountRow(stdout, "autoindex-rows", before.counters.autoindex_rows, after.counters.autoindex_rows);
+    if (before.counters.sort_ops != 0 or after.counters.sort_ops != 0) {
+        try writeCountRow(stdout, "sort-ops", before.counters.sort_ops, after.counters.sort_ops);
+    }
+    if (before.counters.autoindex_rows != 0 or after.counters.autoindex_rows != 0) {
+        try writeCountRow(stdout, "autoindex-rows", before.counters.autoindex_rows, after.counters.autoindex_rows);
+    }
     if (report.timing) |timing| {
-        var ratio_buffer: [32]u8 = undefined;
-        var ratio = Io.Writer.fixed(&ratio_buffer);
-        try writeRatio(&ratio, timing.baseline.median, timing.variant.median);
-        try writeTimeRow(stdout, "time median", timing.baseline.median, timing.variant.median, ratio.buffered());
         try writeTimeRow(stdout, "time p25", timing.baseline.p25, timing.variant.p25, "");
         try writeTimeRow(stdout, "time p75", timing.baseline.p75, timing.variant.p75, "");
-        try writeTimeRow(stdout, "time min", timing.baseline.min, timing.variant.min, "");
-        try writeTimeRow(stdout, "time max", timing.baseline.max, timing.variant.max, "");
     }
     try writeCountRow(stdout, "db file bytes", report.sizes.baseline, report.sizes.variant);
 }
@@ -340,6 +351,7 @@ fn writeRatio(writer: *Io.Writer, baseline: u64, variant: u64) Io.Writer.Error!v
 
 fn writePlan(stdout: *Io.Writer, plan: Plan) Io.Writer.Error!void {
     if (plan.rows.len == 0) return stdout.writeAll("    (no plan lines)\n");
+    const nested = planNested(plan);
     for (plan.rows) |row| {
         const indent = 4 + 2 * planDepth(plan, row);
         var buffer: [96]u8 = undefined;
@@ -347,7 +359,8 @@ fn writePlan(stdout: *Io.Writer, plan: Plan) Io.Writer.Error!void {
         try labels.print("[{t}", .{row.label.kind});
         if (row.label.covering) try labels.writeAll(", covering");
         if (row.label.automatic) try labels.writeAll(", automatic");
-        try labels.print("; id {d}, parent {d}]", .{ row.id, row.parent });
+        if (nested) try labels.print("; id {d}, parent {d}", .{ row.id, row.parent });
+        try labels.writeByte(']');
 
         try writeIndent(stdout, indent);
         try stdout.writeAll(row.detail);
@@ -359,6 +372,11 @@ fn writePlan(stdout: *Io.Writer, plan: Plan) Io.Writer.Error!void {
         }
         try stdout.print("{s}\n", .{labels.buffered()});
     }
+}
+
+fn planNested(plan: Plan) bool {
+    for (plan.rows) |row| if (planDepth(plan, row) != 0) return true;
+    return false;
 }
 
 fn planDepth(plan: Plan, row: PlanRow) usize {
@@ -373,11 +391,12 @@ fn planDepth(plan: Plan, row: PlanRow) usize {
 }
 
 fn writeRowsDetail(stdout: *Io.Writer, outcome: cli_comparison.Outcome) Io.Writer.Error!void {
+    if (outcome.verdict == .match) return writeField(stdout, "row order", row_order_differs);
     try writeIndent(stdout, 2);
     try writeWrapped(stdout, switch (outcome.verdict) {
-        .match => "match: the same rows on both copies, compared as a multiset (each distinct row the same number of times)",
         .mismatch => "MISMATCH: the rows differ, compared as a multiset; the cause is not determined",
         .incomparable => "INCOMPARABLE: the rows of the two copies cannot be compared",
+        .match => unreachable,
     }, 2, 4);
     try stdout.writeByte('\n');
     for (outcome.reasons[0..outcome.reason_count]) |reason| {
@@ -394,7 +413,6 @@ fn writeRowsDetail(stdout: *Io.Writer, outcome: cli_comparison.Outcome) Io.Write
         try writeExamples(stdout, "baseline only", comparison.baseline_only, comparison.baselineExamples());
         try writeExamples(stdout, "variant only", comparison.variant_only, comparison.variantExamples());
     };
-    try writeField(stdout, "row order", rowOrder(outcome));
 }
 
 fn writeExamples(stdout: *Io.Writer, label: []const u8, count: usize, examples: []const []const u8) Io.Writer.Error!void {
@@ -411,62 +429,6 @@ fn writeExamples(stdout: *Io.Writer, label: []const u8, count: usize, examples: 
     }
 }
 
-fn rowOrder(outcome: cli_comparison.Outcome) []const u8 {
-    return if (outcome.verdict != .match)
-        "not applicable"
-    else if (outcome.comparison.?.same_order)
-        "same (reference only; not part of the result)"
-    else
-        "differs (reference only; rows may change order without ORDER BY or among equal ORDER BY keys, and ORDER BY itself is not checked)";
-}
-
-fn writeTimingDetail(stdout: *Io.Writer, report: TimeReport) Io.Writer.Error!void {
-    var buffer: [256]u8 = undefined;
-    var text = Io.Writer.fixed(&buffer);
-    const rounds = if (report.timing) |timing| timing.rounds else 0;
-    try text.print("{d} per copy", .{rounds});
-    if (rounds == 0) try text.writeAll(" (not timed)");
-    try writeField(stdout, "rounds", text.buffered());
-    try writeField(stdout, "warm-up", measure_warmup);
-    try writeField(stdout, "order", measure_order);
-    try writeField(stdout, "scope", measure_scope);
-    try writeField(stdout, "cache", measure_cache);
-    if (report.timing) |timing| {
-        try writeRawStats(stdout, "baseline ns", timing.baseline);
-        try writeRawStats(stdout, "variant ns", timing.variant);
-    }
-}
-
-fn writeRawStats(stdout: *Io.Writer, label: []const u8, stats: cli_timing.Stats) Io.Writer.Error!void {
-    var buffer: [160]u8 = undefined;
-    var text = Io.Writer.fixed(&buffer);
-    try text.print("median={d} p25={d} p75={d} min={d} max={d}", .{ stats.median, stats.p25, stats.p75, stats.min, stats.max });
-    try writeField(stdout, label, text.buffered());
-}
-
-fn writeRunDetail(stdout: *Io.Writer, header: Header) Io.Writer.Error!void {
-    try writeRawField(stdout, "db", header.database_path);
-    try writeRawField(stdout, "select", header.select_path);
-    try writeRawField(stdout, "index-sql", header.index_path);
-    try writeLabel(stdout, "binds");
-    if (header.binds.len == 0) try stdout.writeAll("none");
-    for (header.binds, 0..) |bind, at| {
-        if (at != 0) try stdout.writeAll(", ");
-        try writeBind(stdout, bind, header.show_binds);
-    }
-    try stdout.writeByte('\n');
-    if (header.binds.len != 0 and !header.show_binds) {
-        try writeIndent(stdout, value_column);
-        try stdout.writeAll("(values hidden; --show-binds prints them)\n");
-    }
-    try writeRawField(stdout, "work dir", header.work_parent);
-    try writeField(stdout, "sqlite", std.mem.span(header.sqlite_version));
-    try writeField(stdout, "source id", std.mem.span(header.sqlite_source_id));
-    try writeField(stdout, "zig", builtin.zig_version_string);
-    try writeField(stdout, "build mode", @tagName(builtin.mode));
-    try writeField(stdout, "os-arch", @tagName(builtin.os.tag) ++ "-" ++ @tagName(builtin.cpu.arch));
-}
-
 fn writeLabel(stdout: *Io.Writer, label: []const u8) Io.Writer.Error!void {
     try stdout.print("  {s}", .{label});
     try writeIndent(stdout, value_column -| (2 + label.len));
@@ -475,15 +437,6 @@ fn writeLabel(stdout: *Io.Writer, label: []const u8) Io.Writer.Error!void {
 fn writeField(stdout: *Io.Writer, label: []const u8, value: []const u8) Io.Writer.Error!void {
     try writeLabel(stdout, label);
     try writeWrapped(stdout, value, value_column, value_column);
-    try stdout.writeByte('\n');
-}
-
-fn writeRawField(stdout: *Io.Writer, label: []const u8, value: []const u8) Io.Writer.Error!void {
-    try writeLabel(stdout, label);
-    for (value) |byte| switch (byte) {
-        0...0x1f, 0x7f => try stdout.print("\\x{x:0>2}", .{byte}),
-        else => try stdout.writeByte(byte),
-    };
     try stdout.writeByte('\n');
 }
 
@@ -688,7 +641,7 @@ test "the human summary puts the conclusion first and the copies side by side" {
     };
     try writeReport(&stdout, .human, header, before, after, outcome, report);
 
-    const expected =
+    const head =
         \\Summary
         \\  result rows   match (the same rows on both copies)
         \\  time verdict  improved: less work, a median more than 20% lower, and faster in
@@ -699,58 +652,36 @@ test "the human summary puts the conclusion first and the copies side by side" {
         \\  db size       +2,170,880 bytes (+2.07 MiB; the whole database file, not the
         \\                index alone)
         \\
+    ;
+    const note: []const u8 = "  debug build (no optimization): the times are slower than a release build\n";
+    const tail =
+        \\
         \\Baseline vs variant           baseline         variant          change
         \\  rows                           1,200           1,200            same
         \\  fullscan-steps               199,999               0        -199,999
         \\  vm-steps                     600,407             710        -599,697
-        \\  sort-ops                           0               0            same
-        \\  autoindex-rows                     0               0            same
-        \\  time median                  4.33 ms        37.29 us          0.009x
         \\  time p25                     4.16 ms        33.20 us
         \\  time p75                     4.36 ms        40.42 us
-        \\  time min                     4.10 ms        28.58 us
-        \\  time max                     4.47 ms        71.58 us
         \\  db file bytes              5,087,232       7,258,112      +2,170,880
         \\
         \\Query plan
         \\  baseline (candidate index not applied)
-        \\    SCAN t  [scan; id 2, parent 0]
+        \\    SCAN t  [scan]
         \\  variant (candidate index applied)
         \\    SEARCH t USING COVERING INDEX idx_a (a=?)
         \\      [search, covering; id 3, parent 0]
         \\      CORRELATED SCALAR SUBQUERY 1 WITH A VERY LONG DETAIL THAT FILLS THE LINE
         \\        [other; id 5, parent 3]
         \\
-        \\Result rows
-        \\  match: the same rows on both copies, compared as a multiset (each distinct row
-        \\    the same number of times)
-        \\  row order     same (reference only; not part of the result)
-        \\
-        \\Timing
-        \\  rounds        10 per copy
-        \\  warm-up       1 per copy (the run whose rows were compared, not timed)
-        \\  order         rounds alternate baseline-variant and variant-baseline (ABBA)
-        \\  scope         sqlite3_step from the reset statement to SQLITE_DONE with the
-        \\                interrupt checks; columns are not read; prepare, bind, and the
-        \\                plan read are not timed
-        \\  cache         warm; each copy reuses its connection and page cache, and its
-        \\                file was just written
-        \\  baseline ns   median=4331750 p25=4158324 p75=4364397 min=4098250 max=4465958
-        \\  variant ns    median=37292 p25=33198 p75=40417 min=28583 max=71583
-        \\
-        \\Run
-        \\  db            db.sqlite
-        \\  select        select.sql
-        \\  index-sql     index.sql
-        \\  binds         1:int, 2:text (6 bytes)
-        \\                (values hidden; --show-binds prints them)
-        \\  work dir      /tmp
-        \\  sqlite        0.0.0
-        \\  source id     test-source-id
-        \\
     ;
-    try testing.expectEqualStrings(expected, stdout.buffered()[0..@min(expected.len, stdout.buffered().len)]);
-    try testing.expect(std.mem.endsWith(u8, stdout.buffered(), "  zig           " ++ builtin.zig_version_string ++ "\n  build mode    " ++ @tagName(builtin.mode) ++ "\n  os-arch       " ++ @tagName(builtin.os.tag) ++ "-" ++ @tagName(builtin.cpu.arch) ++ "\n"));
+    try testing.expect(std.mem.startsWith(u8, stdout.buffered(), head));
+    const rest = stdout.buffered()[head.len..];
+    if (builtin.mode == .debug) {
+        try testing.expect(std.mem.startsWith(u8, rest, note));
+        try testing.expectEqualStrings(tail, rest[note.len..]);
+    } else {
+        try testing.expectEqualStrings(tail, rest);
+    }
     var lines = std.mem.splitScalar(u8, stdout.buffered(), '\n');
     while (lines.next()) |line| try testing.expect(line.len <= line_width);
 }
@@ -781,44 +712,157 @@ test "the human summary lists the verdict reasons and says when nothing was time
     report.judgement.add("the result rows cannot be compared, so the SELECT is not timed");
     try writeReport(&stdout, .human, header, measurement, measurement, outcome, report);
 
-    try testing.expect(std.mem.startsWith(u8, stdout.buffered(),
+    const head =
         \\Summary
         \\  result rows   INCOMPARABLE (the rows cannot be compared; see Result rows)
         \\  time verdict  not-judged:
         \\                - the result rows cannot be compared, so the SELECT is not timed
         \\  query plan    the same on both copies
-        \\  time          not measured
+        \\  time          not measured (0 rounds)
         \\  db size       0 bytes (0.00 MiB; the whole database file, not the index alone)
+        \\
+    ;
+    const note: []const u8 = "  debug build (no optimization): the times are slower than a release build\n";
+    const tail =
         \\
         \\Baseline vs variant           baseline         variant          change
         \\  rows                               2               2            same
         \\  fullscan-steps                     1               1            same
         \\  vm-steps                           2               2            same
-        \\  sort-ops                           0               0            same
-        \\  autoindex-rows                     0               0            same
         \\  db file bytes                  4,096           4,096            same
         \\
-    ));
-    try testing.expect(std.mem.indexOf(u8, stdout.buffered(),
+        \\Query plan
+        \\  baseline (candidate index not applied)
+        \\    SCAN t  [scan]
+        \\  variant (candidate index applied)
+        \\    SCAN t  [scan]
+        \\
         \\Result rows
         \\  INCOMPARABLE: the rows of the two copies cannot be compared
         \\  - the SELECT calls random(), whose result changes between runs
         \\    try: compare the SELECT without random()
-        \\  row order     not applicable
         \\
-        \\Timing
-        \\  rounds        0 per copy (not timed)
-        \\
-    ) != null);
-    try testing.expect(std.mem.indexOf(u8, stdout.buffered(), "  binds         none\n") != null);
+    ;
+    try testing.expect(std.mem.startsWith(u8, stdout.buffered(), head));
+    const rest = stdout.buffered()[head.len..];
+    if (builtin.mode == .debug) {
+        try testing.expect(std.mem.startsWith(u8, rest, note));
+        try testing.expectEqualStrings(tail, rest[note.len..]);
+    } else {
+        try testing.expectEqualStrings(tail, rest);
+    }
+    try testing.expect(std.mem.indexOf(u8, stdout.buffered(), "  binds") == null);
     try testing.expect(std.mem.indexOf(u8, stdout.buffered(), " ns ") == null);
 }
 
-test "a path keeps its text but not its control characters" {
-    var buffer: [128]u8 = undefined;
-    var writer = Io.Writer.fixed(&buffer);
-    try writeRawField(&writer, "select", "/tmp/a b\x1b[31m\nc.sql");
-    try testing.expectEqualStrings("  select        /tmp/a b\\x1b[31m\\x0ac.sql\n", writer.buffered());
+test "the human summary keeps a counter row when one side is not zero" {
+    var buffer: [4096]u8 = undefined;
+    var stdout = Io.Writer.fixed(&buffer);
+    const header: Header = .{
+        .database_path = "db.sqlite",
+        .select_path = "select.sql",
+        .index_path = "index.sql",
+        .work_parent = "/tmp",
+        .sqlite_version = "0.0.0",
+        .sqlite_source_id = "test-source-id",
+        .binds = &.{},
+        .show_binds = false,
+    };
+    const before: cli_comparison.Measurement = .{
+        .rows = 2,
+        .plan = .{ .rows = @constCast(&scan_line) },
+        .counters = .{ .fullscan_steps = 1, .vm_steps = 2, .sort_ops = 3, .autoindex_rows = 4 },
+        .columns = 1,
+    };
+    const after: cli_comparison.Measurement = .{
+        .rows = 2,
+        .plan = .{ .rows = @constCast(&scan_line) },
+        .counters = .{ .fullscan_steps = 1, .vm_steps = 2, .sort_ops = 0, .autoindex_rows = 0 },
+        .columns = 1,
+    };
+    const comparison: result.Comparison = .{ .matched = true, .same_order = true };
+    const outcome: cli_comparison.Outcome = .{ .verdict = .match, .comparison = comparison };
+    const report: TimeReport = .{ .sizes = .{ .baseline = 4096, .variant = 4096 }, .judgement = .{ .verdict = .no_effect } };
+    try writeReport(&stdout, .human, header, before, after, outcome, report);
+    try testing.expect(std.mem.indexOf(u8, stdout.buffered(), "  sort-ops") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout.buffered(), "  autoindex-rows") != null);
+}
+
+test "the human summary shows the bind values only when asked" {
+    var buffer: [4096]u8 = undefined;
+    const binds = [_]cli_args.BindArg{
+        .{ .number = 1, .value = .{ .int = 7 } },
+        .{ .number = 2, .value = .{ .text = "secret" } },
+    };
+    var header: Header = .{
+        .database_path = "db.sqlite",
+        .select_path = "select.sql",
+        .index_path = "index.sql",
+        .work_parent = "/tmp",
+        .sqlite_version = "0.0.0",
+        .sqlite_source_id = "test-source-id",
+        .binds = &binds,
+        .show_binds = false,
+    };
+    const measurement: cli_comparison.Measurement = .{
+        .rows = 2,
+        .plan = .{ .rows = @constCast(&scan_line) },
+        .counters = .{ .fullscan_steps = 1, .vm_steps = 2, .sort_ops = 0, .autoindex_rows = 0 },
+        .columns = 1,
+    };
+    const comparison: result.Comparison = .{ .matched = true, .same_order = true };
+    const outcome: cli_comparison.Outcome = .{ .verdict = .match, .comparison = comparison };
+    const report: TimeReport = .{ .sizes = .{ .baseline = 4096, .variant = 4096 }, .judgement = .{ .verdict = .not_judged } };
+
+    var stdout = Io.Writer.fixed(&buffer);
+    try writeReport(&stdout, .human, header, measurement, measurement, outcome, report);
+    try testing.expect(std.mem.indexOf(u8, stdout.buffered(), "binds") == null);
+
+    header.show_binds = true;
+    var shown_buffer: [4096]u8 = undefined;
+    var shown = Io.Writer.fixed(&shown_buffer);
+    try writeReport(&shown, .human, header, measurement, measurement, outcome, report);
+    try testing.expect(std.mem.indexOf(u8, shown.buffered(), "  binds         1:int:7, 2:text:'secret'\n") != null);
+}
+
+test "the human summary notes a debug build when the times were measured" {
+    var buffer: [4096]u8 = undefined;
+    var stdout = Io.Writer.fixed(&buffer);
+    const header: Header = .{
+        .database_path = "db.sqlite",
+        .select_path = "select.sql",
+        .index_path = "index.sql",
+        .work_parent = "/tmp",
+        .sqlite_version = "0.0.0",
+        .sqlite_source_id = "test-source-id",
+        .binds = &.{},
+        .show_binds = false,
+    };
+    const measurement: cli_comparison.Measurement = .{
+        .rows = 2,
+        .plan = .{ .rows = @constCast(&scan_line) },
+        .counters = .{ .fullscan_steps = 1, .vm_steps = 2, .sort_ops = 0, .autoindex_rows = 0 },
+        .columns = 1,
+    };
+    const comparison: result.Comparison = .{ .matched = true, .same_order = true };
+    const outcome: cli_comparison.Outcome = .{ .verdict = .match, .comparison = comparison };
+    const report: TimeReport = .{
+        .timing = .{
+            .baseline = .{ .median = 4_331_750, .p25 = 4_158_324, .p75 = 4_364_397, .min = 4_098_250, .max = 4_465_958 },
+            .variant = .{ .median = 37_292, .p25 = 33_198, .p75 = 40_417, .min = 28_583, .max = 71_583 },
+            .rounds = 2,
+            .variant_faster_rounds = 2,
+        },
+        .sizes = .{ .baseline = 4096, .variant = 4096 },
+        .judgement = .{ .verdict = .no_effect },
+    };
+    try writeReport(&stdout, .human, header, measurement, measurement, outcome, report);
+    const note = "  debug build (no optimization): the times are slower than a release build\n";
+    if (builtin.mode == .debug) {
+        try testing.expect(std.mem.indexOf(u8, stdout.buffered(), note) != null);
+    } else {
+        try testing.expect(std.mem.indexOf(u8, stdout.buffered(), "debug build") == null);
+    }
 }
 
 test "a plan whose parents loop still ends" {

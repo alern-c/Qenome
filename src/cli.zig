@@ -317,7 +317,7 @@ test "the compatibility re-exports keep the public names and signatures" {
     try testing.expectEqualStrings("s", parsed.select.?);
     try testing.expectEqualStrings("i", parsed.index_sql.?);
 
-    var buffer: [4096]u8 = undefined;
+    var buffer: [8192]u8 = undefined;
     var writer = Io.Writer.fixed(&buffer);
     try usage(&writer);
     try testing.expect(std.mem.startsWith(u8, writer.buffered(), "usage: qenome"));
