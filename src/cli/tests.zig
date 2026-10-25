@@ -155,6 +155,48 @@ fn reportValue(stdout: []const u8, line_key: []const u8, key: []const u8) !u64 {
     return std.fmt.parseUnsigned(u64, rest[0..end], 10);
 }
 
+fn jsonGet(value: std.json.Value, key: []const u8) !std.json.Value {
+    return switch (value) {
+        .object => |object| object.get(key) orelse error.TestUnexpectedResult,
+        else => error.TestUnexpectedResult,
+    };
+}
+
+fn jsonText(value: std.json.Value, key: []const u8) ![]const u8 {
+    return switch (try jsonGet(value, key)) {
+        .string => |text| text,
+        else => error.TestUnexpectedResult,
+    };
+}
+
+fn jsonInt(value: std.json.Value, key: []const u8) !i64 {
+    return switch (try jsonGet(value, key)) {
+        .integer => |number| number,
+        else => error.TestUnexpectedResult,
+    };
+}
+
+fn jsonBool(value: std.json.Value, key: []const u8) !bool {
+    return switch (try jsonGet(value, key)) {
+        .bool => |flag| flag,
+        else => error.TestUnexpectedResult,
+    };
+}
+
+fn jsonItems(value: std.json.Value, key: []const u8) ![]std.json.Value {
+    return switch (try jsonGet(value, key)) {
+        .array => |array| array.items,
+        else => error.TestUnexpectedResult,
+    };
+}
+
+fn parseJson(text: []const u8) !std.json.Parsed(std.json.Value) {
+    try testing.expect(text.len != 0);
+    try testing.expectEqual(@as(u8, '\n'), text[text.len - 1]);
+    try testing.expect(std.unicode.utf8ValidateSlice(text));
+    return std.json.parseFromSlice(std.json.Value, testing.allocator, text, .{});
+}
+
 test "a bare invocation shows the synopsis and every missing option" {
     var stdout_buffer: [512]u8 = undefined;
     var stderr_buffer: [1024]u8 = undefined;
@@ -1218,7 +1260,7 @@ test "a usage error names the argument it is about" {
         .{ .argv = &.{ "Qenome", "d", "s", "i", "extra" }, .stderr = "error: unexpected argument 'extra'; paths are the database, the SELECT file and the CREATE INDEX file, at most 3 (see --help)\n" },
         .{ .argv = &.{ "Qenome", "", "s", "i" }, .stderr = "error: a path cannot be empty (see --help)\n" },
         .{ .argv = &.{ "Qenome", "--db" }, .stderr = "error: --db needs a value (see --help)\n" },
-        .{ .argv = &.{ "Qenome", "--format", "json" }, .stderr = "error: --format expects human or kv\n" },
+        .{ .argv = &.{ "Qenome", "--format", "JSON" }, .stderr = "error: --format expects human, kv or json\n" },
     };
     for (cases) |case| {
         var stdout_buffer: [512]u8 = undefined;
@@ -1663,7 +1705,7 @@ test "help fits in 80 columns and names the formats" {
     var stderr_buffer: [512]u8 = undefined;
     const result = callRun(testing.allocator, &.{ "Qenome", "--help" }, null, &stdout_buffer, &stderr_buffer);
     try testing.expectEqual(ExitCode.ok, result.code);
-    try testing.expect(contains(result.stdout, "  --format <FORMAT>    human (default) or kv\n"));
+    try testing.expect(contains(result.stdout, "  --format <FORMAT>    human (default), kv or json\n"));
     try testing.expect(contains(result.stdout, "exit status:"));
     try expectNarrow(result.stdout, &.{});
 }
@@ -1687,4 +1729,184 @@ test "help puts the usage, options, examples and exit status before the details"
     try testing.expect(contains(result.stdout, "named parameters"));
     try testing.expect(contains(result.stdout, "share the number of their first appearance"));
     try expectNarrow(result.stdout, &.{});
+}
+
+test "json format parses and carries the decision keys" {
+    var fixture = try CliFixture.init("SELECT a FROM t WHERE a = ?1", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+
+    var stdout_buffer: [32768]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const result = fixture.runFormat("json", &.{ "--bind", "1:int:1", "--runs", "0" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    const root = parsed.value;
+
+    try testing.expectEqual(@as(i64, 1), try jsonInt(root, "schema_version"));
+    try testing.expectEqual(@as(i64, 0), try jsonInt(root, "exit_code"));
+    try testing.expectEqualStrings("not-judged", try jsonText(root, "verdict"));
+    const verdict_reasons = try jsonItems(root, "verdict_reasons");
+    try testing.expectEqual(@as(usize, 1), verdict_reasons.len);
+    try testing.expectEqualStrings("--runs 0 skips the timing", verdict_reasons[0].string);
+    try testing.expectEqualStrings("match", try jsonText(root, "result"));
+    try testing.expectEqualStrings("same", try jsonText(root, "row_order"));
+    try testing.expectEqual(@as(usize, 0), (try jsonItems(root, "result_reasons")).len);
+    try testing.expect(try jsonBool(root, "plan_changed"));
+    try testing.expect(try jsonGet(root, "timing") == .null);
+    try testing.expectEqual(@as(i64, 0), try jsonInt(try jsonGet(root, "measurement"), "runs_per_copy"));
+
+    const baseline = try jsonGet(root, "baseline");
+    const variant = try jsonGet(root, "variant");
+    try testing.expectEqual(@as(i64, 1), try jsonInt(baseline, "rows"));
+    try testing.expectEqualStrings("SCAN t", try jsonText((try jsonItems(baseline, "plan"))[0], "detail"));
+    try testing.expectEqualStrings("search", try jsonText((try jsonItems(variant, "plan"))[0], "kind"));
+    try testing.expectEqual(@as(i64, 0), try jsonInt(try jsonGet(variant, "counters"), "fullscan_steps"));
+
+    const sizes = try jsonGet(root, "size_bytes");
+    const baseline_size = try jsonInt(sizes, "baseline");
+    const variant_size = try jsonInt(sizes, "variant");
+    try testing.expect(variant_size > baseline_size);
+    try testing.expectEqual(variant_size - baseline_size, try jsonInt(sizes, "increase"));
+
+    const inputs = try jsonGet(root, "inputs");
+    try testing.expectEqualStrings(fixture.db_path, try jsonText(inputs, "database"));
+    try testing.expectEqualStrings(fixture.select_path, try jsonText(inputs, "select"));
+    try testing.expectEqualStrings(fixture.index_path, try jsonText(inputs, "index_sql"));
+
+    const environment = try jsonGet(root, "environment");
+    try testing.expectEqualStrings(sqlite.pinned_version, try jsonText(environment, "sqlite_version"));
+    try testing.expectEqualStrings(sqlite.pinned_source_id, try jsonText(environment, "sqlite_source_id"));
+    try testing.expectEqualStrings(builtin.zig_version_string, try jsonText(environment, "zig_version"));
+    try testing.expectEqualStrings(@tagName(builtin.mode), try jsonText(environment, "build_mode"));
+    try testing.expectEqualStrings(@tagName(builtin.os.tag), try jsonText(environment, "os"));
+    try testing.expectEqualStrings(@tagName(builtin.cpu.arch), try jsonText(environment, "arch"));
+    try testing.expectEqualStrings(fixture.work_parent, try jsonText(environment, "work_dir_parent"));
+
+    const binds = try jsonItems(root, "binds");
+    try testing.expectEqual(@as(usize, 1), binds.len);
+    try testing.expectEqualStrings("int", try jsonText(binds[0], "type"));
+    try testing.expect(std.mem.indexOf(u8, result.stdout, "\"value\"") == null);
+    try fixture.expectNoLeftovers();
+}
+
+test "json format hides bind values unless --show-binds is given" {
+    var fixture = try CliFixture.init("SELECT a FROM t WHERE b = ?1", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+    const binds = [_][:0]const u8{ "--bind", "1:text:secret", "--runs", "0" };
+
+    var hidden_buffer: [32768]u8 = undefined;
+    var hidden_stderr: [1024]u8 = undefined;
+    const hidden = fixture.runFormat("json", &binds, &hidden_buffer, &hidden_stderr);
+    try testing.expectEqual(ExitCode.ok, hidden.code);
+    try testing.expect(std.mem.indexOf(u8, hidden.stdout, "secret") == null);
+    try testing.expect(std.mem.indexOf(u8, hidden.stdout, "\"value\"") == null);
+
+    var parsed_hidden = try parseJson(hidden.stdout);
+    defer parsed_hidden.deinit();
+    const hidden_bind = (try jsonItems(parsed_hidden.value, "binds"))[0];
+    try testing.expectEqualStrings("text", try jsonText(hidden_bind, "type"));
+    try testing.expectEqual(@as(i64, 6), try jsonInt(hidden_bind, "text_bytes"));
+
+    var shown_buffer: [32768]u8 = undefined;
+    var shown_stderr: [1024]u8 = undefined;
+    const shown = fixture.runFormat("json", &(binds ++ [_][:0]const u8{"--show-binds"}), &shown_buffer, &shown_stderr);
+    try testing.expectEqual(ExitCode.ok, shown.code);
+
+    var parsed_shown = try parseJson(shown.stdout);
+    defer parsed_shown.deinit();
+    const shown_bind = (try jsonItems(parsed_shown.value, "binds"))[0];
+    try testing.expectEqualStrings("secret", try jsonText(shown_bind, "value"));
+    try fixture.expectNoLeftovers();
+}
+
+test "json format on a mismatch keeps the counts and example rows, including non-utf8 and blob values" {
+    var fixture = try CliFixture.initWithSchema("SELECT a, b FROM t GROUP BY a", "CREATE INDEX idx_ab ON t(a, b DESC)",
+        \\CREATE TABLE t(a INTEGER, b TEXT);
+        \\INSERT INTO t VALUES (1, CAST(x'00ff' AS TEXT)), (1, x'00ff');
+    );
+    defer fixture.deinit();
+
+    const weird_path = try fixture.dir.file("sel\"ect\\\npath.sql", "SELECT a, b FROM t GROUP BY a");
+    defer testing.allocator.free(weird_path);
+
+    var stdout_buffer: [32768]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const result = callRun(testing.allocator, &.{
+        "Qenome",
+        "--db",
+        fixture.db_path,
+        "--select",
+        weird_path,
+        "--index-sql",
+        fixture.index_path,
+        "--format",
+        "json",
+    }, fixture.work_parent, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.mismatch, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    const root = parsed.value;
+
+    try testing.expectEqual(@as(i64, 3), try jsonInt(root, "exit_code"));
+    try testing.expectEqualStrings("mismatch", try jsonText(root, "result"));
+    try testing.expectEqualStrings("not-applicable", try jsonText(root, "row_order"));
+    try testing.expectEqualStrings("not-judged", try jsonText(root, "verdict"));
+    try testing.expect(try jsonGet(root, "timing") == .null);
+    try testing.expectEqualStrings(weird_path, try jsonText(try jsonGet(root, "inputs"), "select"));
+
+    const differences = try jsonGet(root, "row_differences");
+    try testing.expectEqual(@as(i64, 1), try jsonInt(differences, "baseline_only"));
+    try testing.expectEqual(@as(i64, 1), try jsonInt(differences, "variant_only"));
+    const baseline_examples = try jsonItems(differences, "baseline_only_examples");
+    const variant_examples = try jsonItems(differences, "variant_only_examples");
+    try testing.expectEqual(@as(usize, 1), baseline_examples.len);
+    try testing.expectEqual(@as(usize, 1), variant_examples.len);
+    try testing.expectEqualStrings("[1, '\\x00\\xff']", baseline_examples[0].string);
+    try testing.expectEqualStrings("[1, x'00ff']", variant_examples[0].string);
+    try fixture.expectNoLeftovers();
+}
+
+test "json format on an incomparable select pairs each reason with its hint" {
+    var fixture = try CliFixture.init("SELECT a, random() FROM t", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+
+    var stdout_buffer: [32768]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const result = fixture.runFormat("json", &.{}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.incomparable, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    const root = parsed.value;
+
+    try testing.expectEqual(@as(i64, 4), try jsonInt(root, "exit_code"));
+    try testing.expectEqualStrings("incomparable", try jsonText(root, "result"));
+    try testing.expectEqualStrings("not-applicable", try jsonText(root, "row_order"));
+    try testing.expectEqualStrings("not-judged", try jsonText(root, "verdict"));
+    try testing.expect(try jsonGet(root, "timing") == .null);
+
+    const reasons = try jsonItems(root, "result_reasons");
+    try testing.expect(reasons.len != 0);
+    try testing.expect(contains(try jsonText(reasons[0], "text"), "random()"));
+    try testing.expect(contains(try jsonText(reasons[0], "hint"), "random()"));
+    try fixture.expectNoLeftovers();
+}
+
+test "json format keeps stdout empty when the select is rejected" {
+    var fixture = try CliFixture.init("INSERT INTO t VALUES (3, 'z')", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+
+    var stdout_buffer: [1024]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = fixture.runFormat("json", &.{}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try testing.expect(std.mem.startsWith(u8, result.stderr, "error: --select: "));
+    try fixture.expectNoLeftovers();
 }

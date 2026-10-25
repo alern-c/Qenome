@@ -234,6 +234,7 @@ fn runChecked(
 
     if (signalPending()) return reportInterrupted(stderr);
 
+    const code = resultExitCode(outcome);
     const header: cli_report.Header = .{
         .database_path = inputs.database_path,
         .select_path = inputs.select_path,
@@ -243,12 +244,16 @@ fn runChecked(
         .sqlite_source_id = sqliteSourceId(),
         .binds = inputs.binds,
         .show_binds = inputs.show_binds,
+        .exit_code = @backingInt(code),
     };
-    writeReport(stdout, inputs.format, header, before, after, outcome, report) catch {
-        stderr.print("error: the summary could not be written\n", .{}) catch {};
+    writeReport(stdout, arena, inputs.format, header, before, after, outcome, report) catch |err| {
+        switch (err) {
+            error.OutOfMemory => stderr.print("error: out of memory\n", .{}) catch {},
+            else => stderr.print("error: the summary could not be written\n", .{}) catch {},
+        }
         return .rejected;
     };
-    return resultExitCode(outcome);
+    return code;
 }
 
 fn reportSqlFileError(stderr: *Io.Writer, option: []const u8, path: []const u8, err: anyerror) Io.Writer.Error!void {
