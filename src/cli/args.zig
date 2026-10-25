@@ -43,6 +43,8 @@ pub const Format = enum {
 
 pub const Args = struct {
     db: ?[:0]const u8 = null,
+    d1: ?[:0]const u8 = null,
+    config: ?[:0]const u8 = null,
     select: ?[:0]const u8 = null,
     index_sql: ?[:0]const u8 = null,
     binds: []const db.BindArg = &.{},
@@ -66,6 +68,8 @@ pub const ParseError = error{
     InvalidTimeout,
     InvalidRuns,
     InvalidFormat,
+    ConflictingDatabase,
+    ConfigRequiresD1,
     OutOfMemory,
 };
 
@@ -121,6 +125,12 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
         } else if (std.mem.eql(u8, name, "--db")) {
             if (args.db != null) return error.DuplicateOption;
             args.db = try optionValue(argv, &index, inline_value);
+        } else if (std.mem.eql(u8, name, "--d1")) {
+            if (args.d1 != null) return error.DuplicateOption;
+            args.d1 = try optionValue(argv, &index, inline_value);
+        } else if (std.mem.eql(u8, name, "--config")) {
+            if (args.config != null) return error.DuplicateOption;
+            args.config = try optionValue(argv, &index, inline_value);
         } else if (std.mem.eql(u8, name, "--select")) {
             if (args.select != null) return error.DuplicateOption;
             args.select = try optionValue(argv, &index, inline_value);
@@ -153,6 +163,14 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
         }
     }
     offending.* = null;
+    if (args.db != null and args.d1 != null) {
+        offending.* = "--d1";
+        return error.ConflictingDatabase;
+    }
+    if (args.config != null and args.d1 == null) {
+        offending.* = "--config";
+        return error.ConfigRequiresD1;
+    }
     args.binds = try binds.toOwnedSlice(allocator);
     return args;
 }
@@ -176,7 +194,7 @@ fn splitInline(arg: [:0]const u8) ?Inline {
 
 fn assignPositional(args: *Args, value: [:0]const u8) ParseError!void {
     if (value.len == 0) return error.EmptyPath;
-    if (args.db == null) {
+    if (args.db == null and args.d1 == null) {
         args.db = value;
         return;
     }
@@ -211,8 +229,8 @@ pub const required_option_count = 3;
 
 pub fn missingRequired(args: Args, buffer: *[required_option_count][]const u8) []const []const u8 {
     var count: usize = 0;
-    if (args.db == null) {
-        buffer[count] = "the database (a path or --db)";
+    if (args.db == null and args.d1 == null) {
+        buffer[count] = "the database (a path, --db or --d1)";
         count += 1;
     }
     if (args.select == null) {
@@ -229,6 +247,8 @@ pub fn missingRequired(args: Args, buffer: *[required_option_count][]const u8) [
 const long_options = [_][]const u8{
     "--help",
     "--db",
+    "--d1",
+    "--config",
     "--select",
     "--index-sql",
     "--bind",
@@ -350,6 +370,8 @@ fn parseBind(raw: [:0]const u8) ParseError!db.BindArg {
 
 pub const usage_line = "usage: qenome <DB> <SELECT_FILE> <INDEX_FILE> [options]";
 
+pub const d1_usage_line = "       qenome --d1 <BINDING> <SELECT_FILE> <INDEX_FILE> [options]";
+
 pub const version = build_options.version;
 
 pub fn printVersion(writer: *Io.Writer) Io.Writer.Error!void {
@@ -357,12 +379,17 @@ pub fn printVersion(writer: *Io.Writer) Io.Writer.Error!void {
 }
 
 pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
-    try writer.writeAll(usage_line ++ "\n\n" ++
+    try writer.writeAll(usage_line ++ "\n" ++ d1_usage_line ++ "\n\n" ++
         \\Compares one read-only SELECT before and after one candidate CREATE INDEX
         \\on a local SQLite database, without changing the database.
         \\
         \\options (a value may also be written as --option=value):
-        \\  --db <PATH>          SQLite database file (required, once)
+        \\  --db <PATH>          SQLite database file (required, once; not with --d1)
+        \\  --d1 <BINDING>       use the local D1 database of this d1_databases
+        \\                       binding from a wrangler config instead of --db
+        \\  --config <PATH>      wrangler config for --d1 (default: wrangler.toml,
+        \\                       wrangler.jsonc or wrangler.json in the current
+        \\                       directory)
         \\  --select <FILE>      file holding one read-only SELECT (required, once)
         \\  --index-sql <FILE>   file holding one candidate CREATE INDEX (required, once)
         \\  --bind <N>:<TYPE>[:<VALUE>]
@@ -402,13 +429,24 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\  qenome app.db select.sql index.sql --bind 1:int:1234
         \\  qenome --db app.db --select select.sql --index-sql index.sql --format kv
         \\  qenome app.db select.sql index.sql --format json
+        \\  qenome --d1 DB select.sql index.sql
         \\
         \\The same paths can be given as --db, --select and --index-sql.
         \\
+        \\--d1 reads the top-level d1_databases bindings of a wrangler config and
+        \\uses preview_database_id (database_id when it is not set) to find
+        \\<config dir>/.wrangler/state/v3/d1/miniflare-D1DatabaseObject/<id>.sqlite,
+        \\the file that wrangler dev and wrangler d1 execute --local create. It
+        \\stops with status 4 when the config or the binding cannot be chosen, or
+        \\when that file does not exist yet. The comparison uses the bundled
+        \\SQLite 3.51.2 while D1 runs SQLite 3.53.4, so plans and times can
+        \\differ, and the times come from this local copy, not from production
+        \\D1.
+        \\
         \\exit status: 0 result rows match, 1 rejected, 2 usage error,
-        \\3 result rows differ, 4 results cannot be compared, 5 cleanup
-        \\failure, 124 time limit reached, 129 / 130 / 143 interrupted by
-        \\SIGHUP / SIGINT / SIGTERM
+        \\3 result rows differ, 4 results cannot be compared or --d1 cannot
+        \\locate the local database, 5 cleanup failure, 124 time limit reached,
+        \\129 / 130 / 143 interrupted by SIGHUP / SIGINT / SIGTERM
         \\
         \\The database is opened read-only and copied as one snapshot into a
         \\private directory under $TMPDIR (default /tmp) as a baseline and a
@@ -474,6 +512,8 @@ pub fn parseErrorMessage(err: ParseError) []const u8 {
         error.InvalidTimeout => "--timeout-ms expects a non-negative integer",
         error.InvalidRuns => std.fmt.comptimePrint("--runs expects an integer from 0 to {d}", .{max_runs}),
         error.InvalidFormat => "--format expects human, kv or json",
+        error.ConflictingDatabase => "use either --db <PATH> or --d1 <BINDING>, not both (see --help)",
+        error.ConfigRequiresD1 => "--config is only used with --d1 (see --help)",
         error.OutOfMemory => "out of memory",
     };
 }
@@ -787,7 +827,7 @@ test "missing required options keep the usage order" {
     defer testing.allocator.free(none.binds);
     const all = missingRequired(none, &buffer);
     try testing.expectEqual(@as(usize, 3), all.len);
-    try testing.expectEqualStrings("the database (a path or --db)", all[0]);
+    try testing.expectEqualStrings("the database (a path, --db or --d1)", all[0]);
     try testing.expectEqualStrings("the SELECT file (a path or --select)", all[1]);
     try testing.expectEqualStrings("the CREATE INDEX file (a path or --index-sql)", all[2]);
 
@@ -795,7 +835,7 @@ test "missing required options keep the usage order" {
     defer testing.allocator.free(partial.binds);
     const rest = missingRequired(partial, &buffer);
     try testing.expectEqual(@as(usize, 2), rest.len);
-    try testing.expectEqualStrings("the database (a path or --db)", rest[0]);
+    try testing.expectEqualStrings("the database (a path, --db or --d1)", rest[0]);
     try testing.expectEqualStrings("the CREATE INDEX file (a path or --index-sql)", rest[1]);
 }
 
@@ -829,6 +869,8 @@ test "a misspelt option suggests the closest known name" {
 test "a value option rejects an empty value" {
     const options = [_][:0]const u8{
         "--db",
+        "--d1",
+        "--config",
         "--select",
         "--index-sql",
         "--bind",
@@ -876,7 +918,7 @@ test "a missing value is not taken from the next option" {
 }
 
 test "a single-value option may be given only once" {
-    const options = [_][:0]const u8{ "--db", "--select", "--index-sql" };
+    const options = [_][:0]const u8{ "--db", "--d1", "--config", "--select", "--index-sql" };
     for (options) |option| {
         var offending: ?[:0]const u8 = null;
         try testing.expectError(
@@ -911,25 +953,24 @@ test "help wins over every other argument error" {
 }
 
 test "every known long option is accepted by the parser" {
-    const cases = [_]struct { option: [:0]const u8, value: ?[:0]const u8 }{
-        .{ .option = "--help", .value = null },
-        .{ .option = "--db", .value = "d" },
-        .{ .option = "--select", .value = "s" },
-        .{ .option = "--index-sql", .value = "i" },
-        .{ .option = "--bind", .value = "1:null" },
-        .{ .option = "--timeout-ms", .value = "1" },
-        .{ .option = "--show-binds", .value = null },
-        .{ .option = "--show-rows", .value = null },
-        .{ .option = "--runs", .value = "1" },
-        .{ .option = "--format", .value = "kv" },
-        .{ .option = "--version", .value = null },
+    const cases = [_][]const [:0]const u8{
+        &.{ "Qenome", "--help" },
+        &.{ "Qenome", "--db", "d" },
+        &.{ "Qenome", "--d1", "DB" },
+        &.{ "Qenome", "--d1", "DB", "--config", "wrangler.toml" },
+        &.{ "Qenome", "--select", "s" },
+        &.{ "Qenome", "--index-sql", "i" },
+        &.{ "Qenome", "--bind", "1:null" },
+        &.{ "Qenome", "--timeout-ms", "1" },
+        &.{ "Qenome", "--show-binds" },
+        &.{ "Qenome", "--show-rows" },
+        &.{ "Qenome", "--runs", "1" },
+        &.{ "Qenome", "--format", "kv" },
+        &.{ "Qenome", "--version" },
     };
     try testing.expectEqual(long_options.len, cases.len);
-    for (cases) |case| {
-        const args = if (case.value) |value|
-            try parseArgs(testing.allocator, &.{ "Qenome", case.option, value })
-        else
-            try parseArgs(testing.allocator, &.{ "Qenome", case.option });
+    for (cases) |argv| {
+        const args = try parseArgs(testing.allocator, argv);
         testing.allocator.free(args.binds);
     }
 }
@@ -947,6 +988,44 @@ test "an inline value keeps an option-like value" {
     try testing.expectEqualStrings("--select", args.db.?);
     try testing.expectEqualStrings("--index-sql", args.select.?);
     try testing.expectEqualStrings("--runs", args.index_sql.?);
+}
+
+test "--d1 and --db cannot be used together" {
+    const cases = [_][]const [:0]const u8{
+        &.{ "Qenome", "--d1", "DB", "--db", "app.db", "s.sql", "i.sql" },
+        &.{ "Qenome", "--db", "app.db", "--d1", "DB", "s.sql", "i.sql" },
+    };
+    for (cases) |argv| {
+        var offending: ?[:0]const u8 = null;
+        try testing.expectError(error.ConflictingDatabase, parseArgsReporting(testing.allocator, argv, &offending));
+        try testing.expectEqualStrings("--d1", offending.?);
+    }
+}
+
+test "--config needs --d1" {
+    var offending: ?[:0]const u8 = null;
+    try testing.expectError(
+        error.ConfigRequiresD1,
+        parseArgsReporting(testing.allocator, &.{ "Qenome", "--db", "app.db", "--config", "wrangler.toml", "s.sql", "i.sql" }, &offending),
+    );
+    try testing.expectEqualStrings("--config", offending.?);
+}
+
+test "--d1 leaves the positional paths to SELECT and CREATE INDEX" {
+    const args = try parseArgs(testing.allocator, &.{ "Qenome", "--d1", "DB", "s.sql", "i.sql" });
+    defer testing.allocator.free(args.binds);
+    try testing.expect(args.db == null);
+    try testing.expectEqualStrings("DB", args.d1.?);
+    try testing.expectEqualStrings("s.sql", args.select.?);
+    try testing.expectEqualStrings("i.sql", args.index_sql.?);
+}
+
+test "the usage shows the D1 synopsis" {
+    var buffer: [8192]u8 = undefined;
+    var writer = Io.Writer.fixed(&buffer);
+    try usage(&writer);
+    try testing.expect(std.mem.indexOf(u8, writer.buffered(), "--d1 <BINDING>") != null);
+    try testing.expect(std.mem.indexOf(u8, writer.buffered(), "3.53.4") != null);
 }
 
 test "common file errors are shown in plain English" {

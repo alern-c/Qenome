@@ -206,7 +206,8 @@ test "a bare invocation shows the synopsis and every missing option" {
     try testing.expectEqualStrings("", result.stdout);
     try testing.expectEqualStrings(
         "usage: qenome <DB> <SELECT_FILE> <INDEX_FILE> [options]\n" ++
-            "error: missing: the database (a path or --db), the SELECT file (a path or --select), the CREATE INDEX file (a path or --index-sql) (see --help)\n",
+            "       qenome --d1 <BINDING> <SELECT_FILE> <INDEX_FILE> [options]\n" ++
+            "error: missing: the database (a path, --db or --d1), the SELECT file (a path or --select), the CREATE INDEX file (a path or --index-sql) (see --help)\n",
         result.stderr,
     );
 }
@@ -1973,4 +1974,359 @@ test "json format keeps stdout empty when the select is rejected" {
     try testing.expectEqualStrings("", result.stdout);
     try testing.expect(std.mem.startsWith(u8, result.stderr, "error: --select: "));
     try fixture.expectNoLeftovers();
+}
+
+const d1_database_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
+const d1_file_name = "b4b7ee9bc0328fad0039fd55bcee866dbb7978adad944643b49c9071c8746c37.sqlite";
+
+const d1_state_dir = ".wrangler/state/v3/d1/miniflare-D1DatabaseObject";
+
+fn joinSentinel(allocator: std.mem.Allocator, directory: []const u8, name: []const u8) ![:0]u8 {
+    return std.fs.path.joinZ(allocator, &.{ directory, name });
+}
+
+const Cwd = struct {
+    original: [:0]u8,
+
+    fn enter(allocator: std.mem.Allocator, path: []const u8) !Cwd {
+        const original = try std.process.currentPathAlloc(testing.io, allocator);
+        try std.process.setCurrentPath(testing.io, path);
+        return .{ .original = original };
+    }
+
+    fn restore(self: *Cwd, allocator: std.mem.Allocator) void {
+        std.process.setCurrentPath(testing.io, self.original) catch {};
+        allocator.free(self.original);
+    }
+};
+
+const D1Fixture = struct {
+    dir: Fixture,
+    root: [:0]u8,
+    config_path: [:0]u8,
+    select_path: [:0]u8,
+    index_path: [:0]u8,
+    work_parent: [:0]u8,
+    local_path: [:0]u8,
+
+    fn init(
+        allocator: std.mem.Allocator,
+        config_name: []const u8,
+        config_text: []const u8,
+        create_local: bool,
+    ) !D1Fixture {
+        var dir = try Fixture.init();
+        errdefer dir.deinit();
+        const root = try dir.tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+        errdefer allocator.free(root);
+        const config_path = try joinSentinel(allocator, root, config_name);
+        errdefer allocator.free(config_path);
+        try dir.tmp.dir.writeFile(testing.io, .{ .sub_path = config_name, .data = config_text });
+        try dir.tmp.dir.createDirPath(testing.io, d1_state_dir);
+        const local_path = try joinSentinel(allocator, root, d1_state_dir ++ "/" ++ d1_file_name);
+        errdefer allocator.free(local_path);
+        if (create_local) try db.createTestDatabase(local_path, fixture_schema);
+        const select_path = try dir.file("select.sql", "SELECT b FROM t WHERE b = 'x'");
+        errdefer allocator.free(select_path);
+        const index_path = try dir.file("index.sql", "CREATE INDEX idx_b2 ON t(b)");
+        errdefer allocator.free(index_path);
+        try dir.tmp.dir.createDir(testing.io, "work", .default_dir);
+        const work_parent = try dir.tmp.dir.realPathFileAlloc(testing.io, "work", allocator);
+        return .{
+            .dir = dir,
+            .root = root,
+            .config_path = config_path,
+            .select_path = select_path,
+            .index_path = index_path,
+            .work_parent = work_parent,
+            .local_path = local_path,
+        };
+    }
+
+    fn deinit(self: *D1Fixture, allocator: std.mem.Allocator) void {
+        allocator.free(self.root);
+        allocator.free(self.config_path);
+        allocator.free(self.select_path);
+        allocator.free(self.index_path);
+        allocator.free(self.work_parent);
+        allocator.free(self.local_path);
+        self.dir.deinit();
+    }
+
+    fn expectNoLeftovers(self: *D1Fixture) !void {
+        var parent = try self.dir.tmp.dir.openDir(testing.io, "work", .{ .iterate = true });
+        defer parent.close(testing.io);
+        var it = parent.iterate();
+        if (try it.next(testing.io)) |entry| {
+            std.debug.print("left behind: {s}\n", .{entry.name});
+            return error.TemporaryDirectoryLeft;
+        }
+    }
+
+    fn run(
+        self: *D1Fixture,
+        allocator: std.mem.Allocator,
+        binding: [:0]const u8,
+        with_config: bool,
+        format: [:0]const u8,
+        extra: []const [:0]const u8,
+        stdout_buffer: []u8,
+        stderr_buffer: []u8,
+    ) RunResult {
+        var argv: [24][:0]const u8 = undefined;
+        argv[0] = "Qenome";
+        argv[1] = "--d1";
+        argv[2] = binding;
+        var count: usize = 3;
+        if (with_config) {
+            argv[count] = "--config";
+            argv[count + 1] = self.config_path;
+            count += 2;
+        }
+        argv[count] = "--select";
+        argv[count + 1] = self.select_path;
+        argv[count + 2] = "--index-sql";
+        argv[count + 3] = self.index_path;
+        argv[count + 4] = "--format";
+        argv[count + 5] = format;
+        count += 6;
+        @memcpy(argv[count..][0..extra.len], extra);
+        return callRun(allocator, argv[0 .. count + extra.len], self.work_parent, stdout_buffer, stderr_buffer);
+    }
+};
+
+const d1_toml =
+    \\name = "app"
+    \\compatibility_date = "2024-01-01"
+    \\
+    \\# the local database
+    \\[[d1_databases]]
+    \\binding = "DB"
+    \\database_name = "app-db"
+    \\database_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    \\
+;
+
+const d1_jsonc =
+    \\{
+    \\  // local development
+    \\  "name": "app",
+    \\  "d1_databases": [
+    \\    {
+    \\      "binding": "DB",
+    \\      "database_name": "app-db",
+    \\      "database_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    \\    },
+    \\  ],
+    \\}
+    \\
+;
+
+test "d1 with a wrangler.toml compares the local database (kv)" {
+    var fixture = try D1Fixture.init(testing.allocator, "wrangler.toml", d1_toml, true);
+    defer fixture.deinit(testing.allocator);
+
+    var stdout_buffer: [32768]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = fixture.run(testing.allocator, "DB", true, "kv", &.{}, &stdout_buffer, &stderr_buffer);
+
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+    try testing.expect(contains(result.stdout, "d1-binding: DB\n"));
+    try testing.expect(contains(result.stdout, "d1-config: "));
+    try testing.expect(contains(result.stdout, "d1-database-id: " ++ d1_database_id ++ "\n"));
+    try testing.expect(contains(result.stdout, "d1-local-database: "));
+    try testing.expect(contains(result.stdout, d1_file_name));
+    try testing.expect(contains(result.stdout, "d1-sqlite-version: 3.53.4\n"));
+    try testing.expect(contains(result.stdout, "SQLite 3.51.2"));
+    try testing.expect(contains(result.stdout, "plans and times can differ"));
+    try testing.expect(contains(result.stdout, "d1-caution: "));
+    try testing.expect(contains(result.stdout, "production D1"));
+    try testing.expect(contains(result.stdout, "result: match"));
+    try fixture.expectNoLeftovers();
+}
+
+test "d1 with a wrangler.jsonc shows the same notes in human and json" {
+    var fixture = try D1Fixture.init(testing.allocator, "wrangler.jsonc", d1_jsonc, true);
+    defer fixture.deinit(testing.allocator);
+
+    var human_buffer: [32768]u8 = undefined;
+    var human_error: [2048]u8 = undefined;
+    const human = fixture.run(testing.allocator, "DB", true, "human", &.{}, &human_buffer, &human_error);
+    try testing.expectEqual(ExitCode.ok, human.code);
+    try testing.expectEqualStrings("", human.stderr);
+    try testing.expect(contains(human.stdout, "\nD1\n"));
+    try testing.expect(contains(human.stdout, "binding"));
+    try testing.expect(contains(human.stdout, "local file"));
+    try testing.expect(contains(human.stdout, "3.51.2"));
+    try testing.expect(contains(human.stdout, "3.53.4"));
+    try testing.expect(contains(human.stdout, "production D1"));
+
+    var json_buffer: [65536]u8 = undefined;
+    var json_error: [2048]u8 = undefined;
+    const json = fixture.run(testing.allocator, "DB", true, "json", &.{}, &json_buffer, &json_error);
+    try testing.expectEqual(ExitCode.ok, json.code);
+    try testing.expectEqualStrings("", json.stderr);
+
+    var parsed = try parseJson(json.stdout);
+    defer parsed.deinit();
+    const root = parsed.value;
+    try testing.expectEqual(@as(i64, 1), try jsonInt(root, "schema_version"));
+    try testing.expectEqualStrings("match", try jsonText(root, "result"));
+    const d1 = try jsonGet(root, "d1");
+    try testing.expectEqualStrings("DB", try jsonText(d1, "binding"));
+    try testing.expectEqualStrings(d1_database_id, try jsonText(d1, "database_id"));
+    try testing.expectEqualStrings("3.53.4", try jsonText(d1, "sqlite_version"));
+    try testing.expect(contains(try jsonText(d1, "sqlite_version_note"), "3.51.2"));
+    try testing.expect(contains(try jsonText(d1, "caution"), "production D1"));
+    try testing.expectEqualStrings(fixture.local_path, try jsonText(d1, "local_database"));
+}
+
+test "d1 finds the config in the current directory" {
+    var fixture = try D1Fixture.init(testing.allocator, "wrangler.toml", d1_toml, true);
+    defer fixture.deinit(testing.allocator);
+
+    var cwd = try Cwd.enter(testing.allocator, fixture.root);
+    defer cwd.restore(testing.allocator);
+
+    var stdout_buffer: [32768]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = fixture.run(testing.allocator, "DB", false, "kv", &.{}, &stdout_buffer, &stderr_buffer);
+
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+    try testing.expect(contains(result.stdout, "d1-config: wrangler.toml\n"));
+    const expected = try std.fs.path.join(testing.allocator, &.{ ".wrangler", "state", "v3", "d1", "miniflare-D1DatabaseObject", d1_file_name });
+    defer testing.allocator.free(expected);
+    var line_buffer: [512]u8 = undefined;
+    const line = try std.fmt.bufPrint(&line_buffer, "d1-local-database: {s}\n", .{expected});
+    try testing.expect(contains(result.stdout, line));
+    try fixture.expectNoLeftovers();
+}
+
+test "d1 stops with status 4 when no wrangler config is present" {
+    var dir = try Fixture.init();
+    defer dir.deinit();
+    const select_path = try dir.file("select.sql", "SELECT 1");
+    defer testing.allocator.free(select_path);
+    const index_path = try dir.file("index.sql", "CREATE INDEX idx_a ON t(a)");
+    defer testing.allocator.free(index_path);
+
+    const root = try dir.tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    var cwd = try Cwd.enter(testing.allocator, root);
+    defer cwd.restore(testing.allocator);
+
+    var stdout_buffer: [1024]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = callRun(testing.allocator, &.{
+        "Qenome", "--d1", "DB", "--select", select_path, "--index-sql", index_path, "--format", "json",
+    }, null, &stdout_buffer, &stderr_buffer);
+
+    try testing.expectEqual(ExitCode.incomparable, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try testing.expect(contains(result.stderr, "no wrangler config in the current directory"));
+    try testing.expect(contains(result.stderr, "wrangler.toml"));
+    try testing.expect(contains(result.stderr, "--config <PATH>"));
+}
+
+test "d1 stops with status 4 when the binding is missing" {
+    var fixture = try D1Fixture.init(testing.allocator, "wrangler.toml", d1_toml, true);
+    defer fixture.deinit(testing.allocator);
+
+    var stdout_buffer: [1024]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = fixture.run(testing.allocator, "MISSING", true, "kv", &.{}, &stdout_buffer, &stderr_buffer);
+
+    try testing.expectEqual(ExitCode.incomparable, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try testing.expect(contains(result.stderr, "no top-level d1_databases binding named 'MISSING'"));
+    try testing.expect(contains(result.stderr, "known bindings: DB"));
+    try fixture.expectNoLeftovers();
+}
+
+test "d1 stops with status 4 when two config files are present" {
+    var fixture = try D1Fixture.init(testing.allocator, "wrangler.toml", d1_toml, true);
+    defer fixture.deinit(testing.allocator);
+    try fixture.dir.tmp.dir.writeFile(testing.io, .{ .sub_path = "wrangler.jsonc", .data = d1_jsonc });
+
+    var cwd = try Cwd.enter(testing.allocator, fixture.root);
+    defer cwd.restore(testing.allocator);
+
+    var stdout_buffer: [1024]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = fixture.run(testing.allocator, "DB", false, "kv", &.{}, &stdout_buffer, &stderr_buffer);
+
+    try testing.expectEqual(ExitCode.incomparable, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try testing.expect(contains(result.stderr, "more than one wrangler config"));
+    try testing.expect(contains(result.stderr, "wrangler.toml, wrangler.jsonc"));
+}
+
+test "d1 stops with status 4 when the binding is duplicated" {
+    const duplicated =
+        \\[[d1_databases]]
+        \\binding = "DB"
+        \\database_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        \\[[d1_databases]]
+        \\binding = "DB"
+        \\database_id = "11111111-2222-3333-4444-555555555555"
+        \\
+    ;
+    var fixture = try D1Fixture.init(testing.allocator, "wrangler.toml", duplicated, true);
+    defer fixture.deinit(testing.allocator);
+
+    var stdout_buffer: [1024]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = fixture.run(testing.allocator, "DB", true, "kv", &.{}, &stdout_buffer, &stderr_buffer);
+
+    try testing.expectEqual(ExitCode.incomparable, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try testing.expect(contains(result.stderr, "more than one d1_databases binding named 'DB'"));
+}
+
+test "d1 stops with status 4 when the local database does not exist yet" {
+    var fixture = try D1Fixture.init(testing.allocator, "wrangler.jsonc", d1_jsonc, false);
+    defer fixture.deinit(testing.allocator);
+
+    var stdout_buffer: [1024]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = fixture.run(testing.allocator, "DB", true, "json", &.{}, &stdout_buffer, &stderr_buffer);
+
+    try testing.expectEqual(ExitCode.incomparable, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try testing.expect(contains(result.stderr, "no local D1 database at"));
+    try testing.expect(contains(result.stderr, d1_file_name));
+    try testing.expect(contains(result.stderr, "wrangler d1 execute DB --local"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a plain --db run prints no D1 facts in any format" {
+    var fixture = try CliFixture.init("SELECT b FROM t WHERE b = 'x'", "CREATE INDEX idx_b2 ON t(b)");
+    defer fixture.deinit();
+
+    var stdout_buffer: [65536]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+
+    const human = fixture.runFormat("human", &.{ "--runs", "0" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, human.code);
+    try testing.expectEqualStrings("", human.stderr);
+    try testing.expect(!contains(human.stdout, "\nD1\n"));
+    try testing.expect(!contains(human.stdout, "production D1"));
+    try testing.expect(!contains(human.stdout, "3.53.4"));
+
+    const kv = fixture.runFormat("kv", &.{ "--runs", "0" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, kv.code);
+    for ([_][]const u8{ "d1-binding: ", "d1-config: ", "d1-database-id: ", "d1-local-database: ", "d1-sqlite-version: ", "d1-caution: " }) |key| {
+        try testing.expect(!contains(kv.stdout, key));
+    }
+    try testing.expect(!contains(kv.stdout, "3.53.4"));
+
+    const json = fixture.runFormat("json", &.{ "--runs", "0" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, json.code);
+    var parsed = try parseJson(json.stdout);
+    defer parsed.deinit();
+    try testing.expectEqual(@as(i64, 1), try jsonInt(parsed.value, "schema_version"));
+    try testing.expectError(error.TestUnexpectedResult, jsonGet(parsed.value, "d1"));
 }

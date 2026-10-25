@@ -4,6 +4,7 @@ const db = @import("db.zig");
 const result_rows = @import("result.zig");
 
 const cli_args = @import("cli/args.zig");
+const cli_d1 = @import("cli/d1.zig");
 const cli_control = @import("cli/control.zig");
 const cli_comparison = @import("cli/comparison.zig");
 const cli_query = @import("cli/query.zig");
@@ -92,7 +93,27 @@ pub fn run(
         return missingArguments(stderr, missing, missing.len == cli_args.required_option_count);
     }
 
-    const database_path = args.db.?;
+    var d1: ?cli_d1.Resolved = null;
+
+    const database_path = if (args.d1) |binding| resolved: {
+        const outcome = cli_d1.resolve(io, arena, Io.Dir.cwd(), binding, args.config) catch |err| {
+            stderr.print("error: {s}\n", .{fileErrorMessage(err)}) catch {};
+            return .rejected;
+        };
+        switch (outcome) {
+            .resolved => |resolution| {
+                d1 = resolution;
+                break :resolved arena.dupeSentinel(u8, resolution.local_path, 0) catch {
+                    stderr.print("error: out of memory\n", .{}) catch {};
+                    return .rejected;
+                };
+            },
+            .failure => |failure| {
+                reportD1Failure(stderr, failure) catch {};
+                return .incomparable;
+            },
+        }
+    } else args.db.?;
     const select_path = args.select.?;
     const index_path = args.index_sql.?;
 
@@ -121,6 +142,7 @@ pub fn run(
 
         const inputs: Inputs = .{
             .database_path = database_path,
+            .d1 = d1,
             .baseline_path = work.baseline_path,
             .variant_path = work.variant_path,
             .select_path = select_path,
@@ -144,6 +166,7 @@ const Inputs = struct {
     database_path: [:0]const u8,
     baseline_path: [:0]const u8,
     variant_path: [:0]const u8,
+    d1: ?cli_d1.Resolved = null,
     select_path: [:0]const u8,
     index_path: [:0]const u8,
     select_sql: [:0]const u8,
@@ -249,6 +272,7 @@ fn runChecked(
         .show_binds = inputs.show_binds,
         .show_rows = inputs.show_rows,
         .exit_code = @backingInt(code),
+        .d1 = inputs.d1,
     };
     writeReport(stdout, arena, inputs.format, header, before, after, outcome, report) catch |err| {
         switch (err) {
@@ -258,6 +282,52 @@ fn runChecked(
         return .rejected;
     };
     return code;
+}
+
+fn reportD1Failure(stderr: *Io.Writer, failure: cli_d1.Failure) Io.Writer.Error!void {
+    const binding = failure.binding;
+    switch (failure.kind) {
+        .config_not_found => try stderr.print(
+            "error: --d1 {s}: no wrangler config in the current directory (expected {s}, {s} or {s}); pass --config <PATH>, or run qenome in the wrangler project\n",
+            .{ binding, cli_d1.config_names[0], cli_d1.config_names[1], cli_d1.config_names[2] },
+        ),
+        .config_ambiguous => try stderr.print(
+            "error: --d1 {s}: more than one wrangler config in the current directory ({s}); pass --config <PATH> to choose one\n",
+            .{ binding, failure.detail },
+        ),
+        .config_unreadable => try stderr.print(
+            "error: --d1 {s}: cannot read the wrangler config '{s}': {s}\n",
+            .{ binding, failure.config_path, fileErrorMessage(failure.other orelse error.Unexpected) },
+        ),
+        .config_unsupported => try stderr.print(
+            "error: --d1 {s}: --config '{s}' must name a .toml, .jsonc or .json file\n",
+            .{ binding, failure.config_path },
+        ),
+        .config_invalid => try stderr.print(
+            "error: --d1 {s}: cannot use the wrangler config '{s}': {s}\n",
+            .{ binding, failure.config_path, failure.detail },
+        ),
+        .binding_not_found => try stderr.print(
+            "error: --d1 {s}: no top-level d1_databases binding named '{s}' in '{s}' ({s})\n",
+            .{ binding, failure.binding, failure.config_path, failure.detail },
+        ),
+        .binding_ambiguous => try stderr.print(
+            "error: --d1 {s}: '{s}' has more than one d1_databases binding named '{s}' ({s}); keep one so that the local database is unambiguous\n",
+            .{ binding, failure.config_path, failure.binding, failure.detail },
+        ),
+        .database_id_missing => try stderr.print(
+            "error: --d1 {s}: the binding in '{s}' has no database_id and no preview_database_id, so its local database cannot be found\n",
+            .{ binding, failure.config_path },
+        ),
+        .local_file_missing => try stderr.print(
+            "error: --d1 {s}: no local D1 database at '{s}'; create it first with a local wrangler command in '{s}', for example npx wrangler d1 execute {s} --local --command \"SELECT 1\" (or npx wrangler dev and use the database once)\n",
+            .{ binding, failure.local_path, std.fs.path.dirname(failure.config_path) orelse ".", binding },
+        ),
+        .local_file_unreadable => try stderr.print(
+            "error: --d1 {s}: cannot open the local D1 database '{s}': {s}\n",
+            .{ binding, failure.local_path, fileErrorMessage(failure.other orelse error.Unexpected) },
+        ),
+    }
 }
 
 fn reportSqlFileError(stderr: *Io.Writer, option: []const u8, path: []const u8, err: anyerror) Io.Writer.Error!void {
@@ -304,7 +374,7 @@ fn reportParseError(stderr: *Io.Writer, err: ParseError, offending: ?[:0]const u
 }
 
 fn missingArguments(stderr: *Io.Writer, missing: []const []const u8, show_usage: bool) ExitCode {
-    if (show_usage) stderr.writeAll(cli_args.usage_line ++ "\n") catch {};
+    if (show_usage) stderr.print("{s}\n{s}\n", .{ cli_args.usage_line, cli_args.d1_usage_line }) catch {};
     stderr.writeAll("error: missing: ") catch {};
     for (missing, 0..) |name, position| {
         if (position != 0) stderr.writeAll(", ") catch {};

@@ -3,6 +3,7 @@ const Io = std.Io;
 const builtin = @import("builtin");
 const result = @import("../result.zig");
 const cli_args = @import("args.zig");
+const cli_d1 = @import("d1.zig");
 const cli_comparison = @import("comparison.zig");
 const cli_timing = @import("timing.zig");
 const PlanRow = cli_comparison.PlanRow;
@@ -19,6 +20,7 @@ pub const Header = struct {
     show_binds: bool,
     show_rows: bool = false,
     exit_code: u8 = 0,
+    d1: ?cli_d1.Resolved = null,
 };
 
 pub const Sizes = struct {
@@ -65,6 +67,7 @@ pub fn writeSummary(
     try stdout.print("sqlite: {s}\nsqlite-source-id: {s}\n", .{
         header.sqlite_version, header.sqlite_source_id,
     });
+    try writeD1Kv(stdout, header);
     try writePlanAndCounters(stdout, before);
     try stdout.print("measured-on: variant (candidate index applied)\nrows: {d}\n", .{after.rows});
     try writePlanAndCounters(stdout, after);
@@ -172,6 +175,64 @@ fn writeBind(writer: *Io.Writer, bind: cli_args.BindArg, show: bool) Io.Writer.E
     }
 }
 
+const d1_caution = "the times are measured on this local copy; they do not guarantee the speed on production D1";
+
+fn writeD1VersionNote(writer: *Io.Writer, header: Header) Io.Writer.Error!void {
+    try writer.print(
+        "SQLite {s} here (bundled, runs the comparison) and SQLite {s} in D1; plans and times can differ",
+        .{ header.sqlite_version, cli_d1.local_engine_sqlite_version },
+    );
+}
+
+fn writeD1Kv(stdout: *Io.Writer, header: Header) Io.Writer.Error!void {
+    const d1 = header.d1 orelse return;
+    try stdout.print(
+        "d1-binding: {s}\nd1-config: {s}\nd1-database-id: {s}\nd1-local-database: {s}\nd1-sqlite-version: {s}\nd1-sqlite-version-note: ",
+        .{ d1.binding, d1.config_path, d1.database_id, d1.local_path, cli_d1.local_engine_sqlite_version },
+    );
+    try writeD1VersionNote(stdout, header);
+    try stdout.print("\nd1-caution: {s}\n", .{d1_caution});
+}
+
+fn writeD1Human(stdout: *Io.Writer, header: Header) Io.Writer.Error!void {
+    const d1 = header.d1 orelse return;
+    try stdout.writeAll("\nD1\n");
+    try writeField(stdout, "binding", d1.binding);
+    try writeField(stdout, "config", d1.config_path);
+    try writeField(stdout, "database id", d1.database_id);
+    try writeField(stdout, "local file", d1.local_path);
+    var buffer: [512]u8 = undefined;
+    var note = Io.Writer.fixed(&buffer);
+    try writeD1VersionNote(&note, header);
+    try writeField(stdout, "sqlite", note.buffered());
+    try writeField(stdout, "caution", d1_caution);
+}
+
+fn writeJsonD1(json: *std.json.Stringify, allocator: std.mem.Allocator, header: Header) Error!void {
+    const d1 = header.d1 orelse return;
+    try json.beginObject();
+    try json.objectField("binding");
+    try writeJsonText(json, allocator, d1.binding);
+    try json.objectField("config");
+    try writeJsonText(json, allocator, d1.config_path);
+    try json.objectField("database_id");
+    try writeJsonText(json, allocator, d1.database_id);
+    try json.objectField("local_database");
+    try writeJsonText(json, allocator, d1.local_path);
+    try json.objectField("sqlite_version");
+    try writeJsonText(json, allocator, cli_d1.local_engine_sqlite_version);
+    try json.objectField("sqlite_version_note");
+    const note = try std.fmt.allocPrint(
+        allocator,
+        "SQLite {s} here (bundled, runs the comparison) and SQLite {s} in D1; plans and times can differ",
+        .{ header.sqlite_version, cli_d1.local_engine_sqlite_version },
+    );
+    try writeJsonText(json, allocator, note);
+    try json.objectField("caution");
+    try writeJsonText(json, allocator, d1_caution);
+    try json.endObject();
+}
+
 const json_schema_version: u8 = 1;
 
 pub fn writeJsonReport(
@@ -259,6 +320,10 @@ pub fn writeJsonReport(
     try json.objectField("work_dir_parent");
     try writeJsonText(&json, allocator, header.work_parent);
     try json.endObject();
+    if (header.d1 != null) {
+        try json.objectField("d1");
+        try writeJsonD1(&json, allocator, header);
+    }
     try json.objectField("measurement");
     try json.beginObject();
     try json.objectField("runs_per_copy");
@@ -558,6 +623,7 @@ pub fn writeHumanSummary(
     report: TimeReport,
 ) Io.Writer.Error!void {
     try writeOverview(stdout, header, before, after, outcome, report);
+    if (header.d1 != null) try writeD1Human(stdout, header);
     try stdout.writeByte('\n');
     try writeSideBySide(stdout, before, after, report);
     try stdout.writeAll("\nQuery plan\n");
