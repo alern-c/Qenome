@@ -23,7 +23,7 @@ zig-out/bin/qenome app.db select.sql index.sql --format json
 - `--bind <N>:<TYPE>[:<VALUE>]`: SELECT のパラメータに渡す値。TYPE は int / real / text / null で、繰り返し指定できる。`:name` などの名前付きは最初に現れたときの SQLite の番号（同じ名前は同じ番号）、`?NNN` は NNN を指定する
 - `--runs <N>`: 結果が一致したあとの計測ラウンド数（既定 10、0 で計測しない）
 - `--timeout-ms <MS>`: 索引作成と SELECT 1回あたりの制限時間（既定 30000、0 で無効）
-- `--format <human|kv|json>`: 出力形式（既定 human）。human は判断に使う Summary・左右比較表・実行計画に絞り、kv は入力・版・計時条件まで含む全項目を1行1項目で出し、json は同じ事実と判定を1個の JSON オブジェクトで出す。`--show-binds` を付けるとバインド値も出す
+- `--format <human|kv|json>`: 出力形式（既定 human）。human は判断に使う Summary・左右比較表・実行計画に絞り、kv は入力・版・計時条件まで含む全項目を1行1項目で出し、json は同じ事実と判定を1個の JSON オブジェクトで出す。`--show-binds` を付けるとバインド値も出す。json の不一致行の例は既定では出さず、`--show-rows` で出す
 - `--help`, `-h`: 使い方を表示して終了する
 - `--version`: バージョン（`build.zig.zon` の version）を `qenome <version>` で表示して終了する
 
@@ -72,7 +72,7 @@ fi
 | `result` | 結果行の比較（`match` / `mismatch` / `incomparable`） |
 | `row_order` | 行順（`same` / `differs` / `not-applicable`）。一致判定には含めず、`match` のときだけ `same` / `differs` になる参考情報 |
 | `result_reasons` | 比較できない理由。各要素は `text` と `hint`（無いときは `null`） |
-| `row_differences` | `baseline_only` / `variant_only` の件数と、`baseline_only_examples` / `variant_only_examples` の例の行 |
+| `row_differences` | `baseline_only` / `variant_only` の件数。`baseline_only_examples` / `variant_only_examples` は配列のままで、既定は空。`--show-rows` で最大 5 件の例の行が入る |
 | `plan_changed` | 実行計画が baseline と variant で変わったか |
 | `baseline` / `variant` | それぞれの `rows`、`plan`（`id` / `parent` / `kind` / `covering` / `automatic` / `detail`）、`counters`（`fullscan_steps` / `vm_steps` / `sort_ops` / `autoindex_rows`） |
 | `timing` | `rounds`、`variant_faster_rounds`、`ratio`、`baseline` / `variant` の `median_ns` / `p25_ns` / `p75_ns` / `min_ns` / `max_ns`。計時しなければ `null`、baseline の median が 0 なら `ratio` は `null` |
@@ -82,8 +82,9 @@ fi
 | `measurement` | 計時条件（`runs_per_copy` / `warmup` / `order` / `scope` / `cache`） |
 | `binds` | `number` / `type`。text は `text_bytes` も持つ。`--show-binds` を付けたときだけ値が `value` に入る |
 
-- 文字列は JSON としてエスケープします。非 UTF-8 のバイトは `\xNN` の表記（例: `'\xff'`）、BLOB は `x'00ff'` の表記で例の行に入ります。
+- 文字列は JSON としてエスケープします。`--show-rows` で出す例の行では、非 UTF-8 のバイトは `\xNN` の表記（例: `'\xff'`）、BLOB は `x'00ff'` の表記です。
 - `binds` は kv と同じ秘匿方針です。`--show-binds` が無いときは値を出さず、番号・型・テキストの長さだけを出します。real の非有限値（inf）は JSON 数値にできないため、`"inf"` / `"-inf"` の文字列で出します。
+- `row_differences` の件数（`baseline_only` / `variant_only`）は常に出します。例の配列キーも残しますが、既定では空です。行の値を入れるのは `--show-rows` を付けたときだけです。human と kv は、これまでどおり例の行を出します。
 - `row_order` は参考情報で、結果の一致判定には含めません。
 
 ## 守るルール

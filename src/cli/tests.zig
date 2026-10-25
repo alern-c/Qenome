@@ -1300,6 +1300,7 @@ test "an unknown option suggests the closest known name" {
 test "a flag does not take an inline value" {
     const cases = [_]struct { arg: [:0]const u8, stderr: []const u8 }{
         .{ .arg = "--show-binds=1", .stderr = "error: --show-binds does not take a value (see --help)\n" },
+        .{ .arg = "--show-rows=1", .stderr = "error: --show-rows does not take a value (see --help)\n" },
         .{ .arg = "--help=1", .stderr = "error: --help does not take a value (see --help)\n" },
         .{ .arg = "--version=1", .stderr = "error: --version does not take a value (see --help)\n" },
     };
@@ -1706,6 +1707,7 @@ test "help fits in 80 columns and names the formats" {
     const result = callRun(testing.allocator, &.{ "Qenome", "--help" }, null, &stdout_buffer, &stderr_buffer);
     try testing.expectEqual(ExitCode.ok, result.code);
     try testing.expect(contains(result.stdout, "  --format <FORMAT>    human (default), kv or json\n"));
+    try testing.expect(contains(result.stdout, "  --show-rows          json prints the example rows"));
     try testing.expect(contains(result.stdout, "exit status:"));
     try expectNarrow(result.stdout, &.{});
 }
@@ -1822,7 +1824,7 @@ test "json format hides bind values unless --show-binds is given" {
     try fixture.expectNoLeftovers();
 }
 
-test "json format on a mismatch keeps the counts and example rows, including non-utf8 and blob values" {
+test "json format on a mismatch keeps the counts and hides example rows unless --show-rows is given" {
     var fixture = try CliFixture.initWithSchema("SELECT a, b FROM t GROUP BY a", "CREATE INDEX idx_ab ON t(a, b DESC)",
         \\CREATE TABLE t(a INTEGER, b TEXT);
         \\INSERT INTO t VALUES (1, CAST(x'00ff' AS TEXT)), (1, x'00ff');
@@ -1862,8 +1864,35 @@ test "json format on a mismatch keeps the counts and example rows, including non
     const differences = try jsonGet(root, "row_differences");
     try testing.expectEqual(@as(i64, 1), try jsonInt(differences, "baseline_only"));
     try testing.expectEqual(@as(i64, 1), try jsonInt(differences, "variant_only"));
-    const baseline_examples = try jsonItems(differences, "baseline_only_examples");
-    const variant_examples = try jsonItems(differences, "variant_only_examples");
+    try testing.expectEqual(@as(usize, 0), (try jsonItems(differences, "baseline_only_examples")).len);
+    try testing.expectEqual(@as(usize, 0), (try jsonItems(differences, "variant_only_examples")).len);
+    try testing.expect(std.mem.indexOf(u8, result.stdout, "\\x00") == null);
+    try testing.expect(std.mem.indexOf(u8, result.stdout, "x'00ff'") == null);
+
+    var shown_buffer: [32768]u8 = undefined;
+    var shown_stderr: [1024]u8 = undefined;
+    const shown = callRun(testing.allocator, &.{
+        "Qenome",
+        "--db",
+        fixture.db_path,
+        "--select",
+        weird_path,
+        "--index-sql",
+        fixture.index_path,
+        "--format",
+        "json",
+        "--show-rows",
+    }, fixture.work_parent, &shown_buffer, &shown_stderr);
+    try testing.expectEqual(ExitCode.mismatch, shown.code);
+    try testing.expectEqualStrings("", shown.stderr);
+
+    var shown_parsed = try parseJson(shown.stdout);
+    defer shown_parsed.deinit();
+    const shown_differences = try jsonGet(shown_parsed.value, "row_differences");
+    try testing.expectEqual(@as(i64, 1), try jsonInt(shown_differences, "baseline_only"));
+    try testing.expectEqual(@as(i64, 1), try jsonInt(shown_differences, "variant_only"));
+    const baseline_examples = try jsonItems(shown_differences, "baseline_only_examples");
+    const variant_examples = try jsonItems(shown_differences, "variant_only_examples");
     try testing.expectEqual(@as(usize, 1), baseline_examples.len);
     try testing.expectEqual(@as(usize, 1), variant_examples.len);
     try testing.expectEqualStrings("[1, '\\x00\\xff']", baseline_examples[0].string);
