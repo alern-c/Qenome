@@ -239,6 +239,8 @@ pub fn writeJsonReport(
     try json.endObject();
     try json.objectField("environment");
     try json.beginObject();
+    try json.objectField("qenome_version");
+    try json.write(cli_args.version);
     try json.objectField("sqlite_version");
     try writeJsonText(&json, allocator, std.mem.span(header.sqlite_version));
     try json.objectField("sqlite_source_id");
@@ -1466,6 +1468,7 @@ test "the json report carries the decision, the plans, the times and the sizes" 
     try testing.expectEqualStrings("index.sql", try jsonText(inputs, "index_sql"));
 
     const environment = try jsonGet(root, "environment");
+    try testing.expectEqualStrings(cli_args.version, try jsonText(environment, "qenome_version"));
     try testing.expectEqualStrings("0.0.0", try jsonText(environment, "sqlite_version"));
     try testing.expectEqualStrings("test-source-id", try jsonText(environment, "sqlite_source_id"));
     try testing.expectEqualStrings(builtin.zig_version_string, try jsonText(environment, "zig_version"));
