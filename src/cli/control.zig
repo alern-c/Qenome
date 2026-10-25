@@ -25,16 +25,49 @@ const handled_signals = if (supports_signals)
 else
     [_]std.posix.SIG{};
 
+const supports_console_ctrl = builtin.os.tag == .windows;
+
+const windows = std.os.windows;
+
+const ctrl_c_event: windows.DWORD = 0;
+
+const ctrl_break_event: windows.DWORD = 1;
+
+const sigint_number: u8 = 2;
+
+const console_ctrl_handler = *const fn (ctrl_type: windows.DWORD) callconv(.winapi) windows.BOOL;
+
+extern "kernel32" fn SetConsoleCtrlHandler(handler: ?console_ctrl_handler, add: windows.BOOL) callconv(.winapi) windows.BOOL;
+
 var signal_flag: std.atomic.Value(bool) = .init(false);
 
 var received_signal: std.atomic.Value(u8) = .init(0);
 
-pub fn handleSignal(sig: std.posix.SIG) callconv(.c) void {
-    _ = received_signal.cmpxchgStrong(0, @intCast(@backingInt(sig)), .release, .monotonic);
+fn recordSignal(number: u8) void {
+    _ = received_signal.cmpxchgStrong(0, number, .release, .monotonic);
     signal_flag.store(true, .release);
 }
 
+pub fn handleSignal(sig: std.posix.SIG) callconv(.c) void {
+    recordSignal(@intCast(@backingInt(sig)));
+}
+
+fn handleConsoleCtrl(ctrl_type: windows.DWORD) callconv(.winapi) windows.BOOL {
+    if (ctrl_type != ctrl_c_event and ctrl_type != ctrl_break_event) return .FALSE;
+    recordSignal(sigint_number);
+    return .TRUE;
+}
+
+fn installConsoleCtrlHandler() void {
+    _ = SetConsoleCtrlHandler(handleConsoleCtrl, .TRUE);
+}
+
 pub fn installSignalHandlers() void {
+    if (comptime supports_console_ctrl) {
+        installConsoleCtrlHandler();
+        return;
+    }
+    if (comptime !supports_signals) return;
     const action: std.posix.Sigaction = .{
         .handler = .{ .handler = handleSignal },
         .mask = std.posix.sigemptyset(),

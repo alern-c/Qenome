@@ -1,5 +1,6 @@
 const std = @import("std");
 const Io = std.Io;
+const builtin = @import("builtin");
 const db = @import("../db.zig");
 const cli_comparison = @import("comparison.zig");
 const cli_control = @import("control.zig");
@@ -16,6 +17,8 @@ pub fn tempParentPath(temp_parent: ?[]const u8) []const u8 {
 }
 
 pub const work_dir_prefix = "qenome-";
+
+const work_dir_permissions: Io.File.Permissions = if (builtin.os.tag == .windows) .default_dir else .fromMode(0o700);
 
 const work_dir_random_bytes = 12;
 
@@ -45,7 +48,7 @@ pub const WorkDir = struct {
             var random_bytes: [work_dir_random_bytes]u8 = undefined;
             io.random(&random_bytes);
             _ = std.fmt.bufPrint(&work.name, work_dir_prefix ++ "{x}", .{&random_bytes}) catch unreachable;
-            parent.createDir(io, &work.name, .fromMode(0o700)) catch |err| switch (err) {
+            parent.createDir(io, &work.name, work_dir_permissions) catch |err| switch (err) {
                 error.PathAlreadyExists => continue,
                 else => |e| return e,
             };
