@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `--format json` writes a backslash as `\\` and an invalid UTF-8 byte as `\xNN` in string values, so the four characters `\xff` and the byte 0xFF stay distinct. Paths, plan detail, reasons, and bind text use this encoding. `schema_version` is 2.
+- `--format json` writes a backslash as `\\` and an invalid UTF-8 byte as `\xNN` in string values, so the four characters `\xff` and the byte 0xFF stay distinct. Paths, plan detail, reasons, and bind text use this encoding. `schema_version` stays 1, because JSON output has not been in a release.
 
 ## [0.1.0] - 2026-10-25
 

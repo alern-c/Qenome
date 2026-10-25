@@ -66,7 +66,7 @@ fi
 
 | キー | 内容 |
 | --- | --- |
-| `schema_version` | 形式の版（現在 2） |
+| `schema_version` | 形式の版（現在 1） |
 | `exit_code` | 比較結果に対応する終了コード（0 / 3 / 4）。後片付けに失敗した場合は、JSON を書いた後にプロセスが 5 で終わる |
 | `verdict` / `verdict_reasons` | 時間判定とその理由（`improved` / `no-effect` / `needs-check` / `not-judged`） |
 | `result` | 結果行の比較（`match` / `mismatch` / `incomparable`） |

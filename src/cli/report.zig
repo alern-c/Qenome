@@ -169,7 +169,7 @@ fn writeBind(writer: *Io.Writer, bind: cli_args.BindArg, show: bool) Io.Writer.E
     }
 }
 
-const json_schema_version: u8 = 2;
+const json_schema_version: u8 = 1;
 
 pub fn writeJsonReport(
     stdout: *Io.Writer,
@@ -1403,7 +1403,7 @@ test "the json report carries the decision, the plans, the times and the sizes" 
     defer parsed.deinit();
     const root = parsed.value;
 
-    try testing.expectEqual(@as(i64, 2), try jsonInt(root, "schema_version"));
+    try testing.expectEqual(@as(i64, 1), try jsonInt(root, "schema_version"));
     try testing.expectEqual(@as(i64, 0), try jsonInt(root, "exit_code"));
     try testing.expectEqualStrings("improved", try jsonText(root, "verdict"));
     try testing.expectEqual(@as(usize, 0), (try jsonItems(root, "verdict_reasons")).len);

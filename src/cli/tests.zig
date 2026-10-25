@@ -1745,7 +1745,7 @@ test "json format parses and carries the decision keys" {
     defer parsed.deinit();
     const root = parsed.value;
 
-    try testing.expectEqual(@as(i64, 2), try jsonInt(root, "schema_version"));
+    try testing.expectEqual(@as(i64, 1), try jsonInt(root, "schema_version"));
     try testing.expectEqual(@as(i64, 0), try jsonInt(root, "exit_code"));
     try testing.expectEqualStrings("not-judged", try jsonText(root, "verdict"));
     const verdict_reasons = try jsonItems(root, "verdict_reasons");
