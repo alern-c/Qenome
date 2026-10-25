@@ -3,6 +3,11 @@ import re
 import sys
 
 APPROVED_FILES = [
+    "src/sqlite.zig",
+    "src/result.zig",
+    "src/db.zig",
+    "src/root.zig",
+    "src/main.zig",
     "src/cli.zig",
     "src/cli/args.zig",
     "src/cli/control.zig",
@@ -17,6 +22,16 @@ APPROVED_FILES = [
 PRODUCTION_FILES = [path for path in APPROVED_FILES if path != "src/cli/tests.zig"]
 
 PRODUCTION_IMPORTS = {
+    "src/sqlite.zig": [],
+    "src/result.zig": ["src/sqlite.zig"],
+    "src/db.zig": ["src/sqlite.zig", "src/result.zig"],
+    "src/root.zig": [
+        "src/sqlite.zig",
+        "src/db.zig",
+        "src/result.zig",
+        "src/cli.zig",
+    ],
+    "src/main.zig": [],
     "src/cli.zig": [
         "src/db.zig",
         "src/result.zig",
@@ -79,6 +94,10 @@ TEST_IMPORTS = {
 
 BUILTIN_IMPORTS = ["std", "builtin"]
 
+MODULE_IMPORTS = {
+    "src/main.zig": ["Qenome"],
+}
+
 IMPORT_CANDIDATE = re.compile(r"@import\b")
 DECL_IMPORT = re.compile(r'^(?:pub )?const [A-Za-z_][A-Za-z0-9_]* = @import\("([^"\\]*)"\);\s*$')
 ENTRY_IMPORT = re.compile(r'^\s*_ = @import\("([^"\\]*)"\);\s*$')
@@ -137,27 +156,36 @@ def resolve(importer, path_text):
         return None
     return resolved.replace(os.sep, "/")
 
-def check_files(root, sources, violations):
-    for rel_path in APPROVED_FILES:
-        if rel_path not in sources:
-            violations.append((rel_path, 0, "missing-file", "the approved file is missing"))
-    cli_dir = os.path.join(root, "src", "cli")
+def check_directory(root, rel_dir, violations):
+    directory = os.path.join(root, rel_dir.replace("/", os.sep))
     try:
-        names = sorted(os.listdir(cli_dir))
+        names = sorted(os.listdir(directory))
     except OSError as error:
-        if os.path.exists(cli_dir):
+        if os.path.exists(directory):
             violations.append(
-                ("src/cli", 0, "unreadable-directory", f"could not list src/cli: {error}")
+                (rel_dir, 0, "unreadable-directory", f"could not list {rel_dir}: {error}")
             )
         return
     for name in names:
         if not name.endswith(".zig"):
             continue
-        rel_path = "src/cli/" + name
+        rel_path = rel_dir + "/" + name
         if rel_path not in APPROVED_FILES:
             violations.append(
-                (rel_path, 0, "unknown-file", "a file under src/cli/ that the rules do not know")
+                (
+                    rel_path,
+                    0,
+                    "unknown-file",
+                    f"a file under {rel_dir}/ that the rules do not know",
+                )
             )
+
+def check_files(root, sources, violations):
+    for rel_path in APPROVED_FILES:
+        if rel_path not in sources:
+            violations.append((rel_path, 0, "missing-file", "the approved file is missing"))
+    check_directory(root, "src", violations)
+    check_directory(root, "src/cli", violations)
 
 def check_imports(sources, violations):
     for rel_path, source in sorted(sources.items()):
@@ -166,8 +194,9 @@ def check_imports(sources, violations):
             table = TEST_IMPORTS.get(rel_path)
         if table is None:
             continue
+        modules = MODULE_IMPORTS.get(rel_path, [])
         for number, path_text, _form in source.imports:
-            if path_text in BUILTIN_IMPORTS:
+            if path_text in BUILTIN_IMPORTS or path_text in modules:
                 continue
             resolved = resolve(rel_path, path_text)
             if resolved is None:
