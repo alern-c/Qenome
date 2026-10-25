@@ -11,10 +11,28 @@ FAILURES = []
 
 CANONICAL_FILES = {
     "build.zig": '// the module is built as @import("Qenome")\n',
-    "src/main.zig": 'const Qenome = @import("Qenome");\n',
-    "src/db.zig": "// the database layer\n",
-    "src/result.zig": "// the result rows\n",
-    "src/sqlite.zig": "// the sqlite ffi\n",
+    "src/main.zig": 'const std = @import("std");\nconst Qenome = @import("Qenome");\n',
+    "src/root.zig": (
+        'pub const sqlite = @import("sqlite.zig");\n'
+        'pub const db = @import("db.zig");\n'
+        'pub const result = @import("result.zig");\n'
+        'pub const cli = @import("cli.zig");\n'
+        "\n"
+        "test {\n"
+        '    _ = @import("sqlite.zig");\n'
+        '    _ = @import("db.zig");\n'
+        '    _ = @import("result.zig");\n'
+        '    _ = @import("cli.zig");\n'
+        "}\n"
+    ),
+    "src/db.zig": (
+        'const std = @import("std");\n'
+        'const builtin = @import("builtin");\n'
+        'const sqlite = @import("sqlite.zig");\n'
+        'const result = @import("result.zig");\n'
+    ),
+    "src/result.zig": 'const std = @import("std");\nconst sqlite = @import("sqlite.zig");\n',
+    "src/sqlite.zig": 'const std = @import("std");\n',
     "src/cli.zig": (
         'const std = @import("std");\n'
         'const db = @import("db.zig");\n'
@@ -135,6 +153,7 @@ def expect_rejected(name, code, output, rule, mention=None):
 def main():
     code, output = case(None)
     expect_clean("the smallest approved tree passes", code, output)
+    expect("the whole tree is checked", "(14 files checked" in output, output.strip())
 
     code, output = case(lambda root: os.remove(os.path.join(root, "src/cli/tests.zig")))
     expect_rejected("a missing test file fails", code, output, "missing-file", "src/cli/tests.zig")
@@ -142,8 +161,17 @@ def main():
     code, output = case(lambda root: os.remove(os.path.join(root, "src/cli/query.zig")))
     expect_rejected("a missing module fails", code, output, "missing-file", "src/cli/query.zig")
 
+    for rel_path in ("src/sqlite.zig", "src/result.zig", "src/db.zig", "src/root.zig", "src/main.zig"):
+        code, output = case(
+            lambda root, rel_path=rel_path: os.remove(os.path.join(root, rel_path))
+        )
+        expect_rejected("a missing " + rel_path + " fails", code, output, "missing-file", rel_path)
+
     code, output = case(lambda root: write_file(root, "src/cli/extra.zig", "// new\n"))
     expect_rejected("an unknown file under src/cli fails", code, output, "unknown-file", "extra.zig")
+
+    code, output = case(lambda root: write_file(root, "src/extra.zig", "// new\n"))
+    expect_rejected("an unknown file under src fails", code, output, "unknown-file", "src/extra.zig")
 
     code, output = case(lambda root: shutil.rmtree(os.path.join(root, "src/cli")))
     expect_rejected("a missing src/cli directory fails", code, output, "missing-file", "src/cli/args.zig")
@@ -156,7 +184,62 @@ def main():
     expect_rejected("an unapproved import fails", code, output, "unapproved-import", "src/sqlite.zig")
 
     code, output = case(
-        lambda root: write_file(root, "src/cli/args.zig", 'const cli = @import("../cli.zig");\n')
+        lambda root: write_file(
+            root, "src/sqlite.zig", 'const std = @import("std");\nconst cli = @import("cli.zig");\n'
+        )
+    )
+    expect_rejected(
+        "the bottom layer may not import the CLI", code, output, "unapproved-import", "src/cli.zig"
+    )
+
+    code, output = case(
+        lambda root: write_file(
+            root,
+            "src/db.zig",
+            'const sqlite = @import("sqlite.zig");\nconst result = @import("result.zig");\n'
+            'const cli_query = @import("cli/query.zig");\n',
+        )
+    )
+    expect_rejected(
+        "the database layer may not import the CLI submodules",
+        code,
+        output,
+        "unapproved-import",
+        "src/cli/query.zig",
+    )
+
+    code, output = case(
+        lambda root: write_file(root, "src/main.zig", 'const db = @import("db.zig");\n')
+    )
+    expect_rejected(
+        "the executable may not import a path", code, output, "unapproved-import", "src/db.zig"
+    )
+
+    code, output = case(
+        lambda root: write_file(root, "src/db.zig", 'const Qenome = @import("Qenome");\n')
+    )
+    expect_rejected(
+        "only the executable may import the module name",
+        code,
+        output,
+        "unapproved-import",
+        "Qenome",
+    )
+
+    code, output = case(
+        lambda root: (
+            write_file(root, "src/result.zig", 'const db = @import("db.zig");\n'),
+            write_file(root, "src/db.zig", 'const result = @import("result.zig");\n'),
+        )
+    )
+    expect_rejected(
+        "a cycle outside the CLI layer fails", code, output, "cycle", "src/result.zig"
+    )
+
+    code, output = case(
+        lambda root: write_file(
+            root, "src/cli/args.zig", 'const cli = @import("../cli.zig");\n'
+        )
     )
     expect_rejected("a child may not import the coordinator", code, output, "unapproved-import", "src/cli.zig")
 
