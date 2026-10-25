@@ -22,10 +22,12 @@ zig-out/bin/qenome --db app.db --select select.sql --index-sql index.sql --forma
 - `--bind <N>:<TYPE>[:<VALUE>]`: SELECT のパラメータに渡す値。TYPE は int / real / text / null で、繰り返し指定できる。`:name` などの名前付きは最初に現れたときの SQLite の番号（同じ名前は同じ番号）、`?NNN` は NNN を指定する
 - `--runs <N>`: 結果が一致したあとの計測ラウンド数（既定 10、0 で計測しない）
 - `--timeout-ms <MS>`: 索引作成と SELECT 1回あたりの制限時間（既定 30000、0 で無効）
-- `--format <human|kv>`: 出力形式（既定 human）。`--show-binds` を付けるとバインド値も表示する
+- `--format <human|kv>`: 出力形式（既定 human）。human は判断に使う Summary・左右比較表・実行計画に絞り、kv は入力・版・計時条件まで含む全項目を1行1項目で出す。`--show-binds` を付けるとバインド値も出す
 - `--help`, `-h`: 使い方を表示して終了する
 
 値を取るオプションは `--db=app.db` のように `=` でも書けます。
+
+human 出力は集計（Summary）、左右比較表、実行計画を主とし、結果が一致しない・比較できない・行の順序が変わったときにだけ説明と例を足します。入力パス、SQLite と Zig の版、ビルド種別、OS と CPU、作業ディレクトリ、計時条件は `--format kv` に出ます。
 
 ## 終了コード
 

@@ -1035,19 +1035,11 @@ test "the default summary puts the conclusion first and the copies side by side"
         "\nBaseline vs variant           baseline         variant          change\n",
         "  rows                               1               1            same\n",
         "  fullscan-steps                     1               0              -1\n",
-        "  time median ",
+        "  time p25 ",
+        "  time p75 ",
         "  db file bytes ",
-        "\nQuery plan\n  baseline (candidate index not applied)\n    SCAN t  [scan; id ",
-        "  variant (candidate index applied)\n    SEARCH t USING COVERING INDEX idx_a (a=?)\n      [search, covering; id ",
-        "\nResult rows\n  match: ",
-        "  row order     same (reference only; not part of the result)\n",
-        "\nTiming\n  rounds        2 per copy\n",
-        "  baseline ns   median=",
-        "\nRun\n  db            ",
-        "  binds         1:int\n                (values hidden; --show-binds prints them)\n",
-        "  sqlite        " ++ sqlite.pinned_version ++ "\n",
-        "  source id     ",
-        "  zig           " ++ builtin.zig_version_string ++ "\n",
+        "\nQuery plan\n  baseline (candidate index not applied)\n    SCAN t  [scan]\n",
+        "  variant (candidate index applied)\n    SEARCH t USING COVERING INDEX idx_a (a=?)  [search, covering]\n",
     };
     var from: usize = 0;
     for (in_order) |part| {
@@ -1057,9 +1049,10 @@ test "the default summary puts the conclusion first and the copies side by side"
         };
         from = at + part.len;
     }
-    try testing.expect(contains(result.stdout, fixture.db_path));
-    try testing.expect(contains(result.stdout, fixture.index_path));
-    try expectNarrow(result.stdout, &.{ fixture.db_path, fixture.select_path, fixture.index_path, fixture.work_parent });
+    for ([_][]const u8{ "Timing", "Run\n", "Result rows", "time median", "binds", "work dir", "source id", " sqlite", fixture.db_path }) |gone| {
+        try testing.expect(!contains(result.stdout, gone));
+    }
+    try expectNarrow(result.stdout, &.{});
     try fixture.expectNoLeftovers();
 }
 
@@ -1082,18 +1075,18 @@ test "the default summary of a mismatch shows the one-sided rows and no times" {
         \\                - the result rows do not match, so the SELECT is not timed
         \\
     ));
-    try testing.expect(contains(result.stdout, "  time          not measured\n"));
-    try testing.expect(contains(result.stdout,
+    try testing.expect(contains(result.stdout, "  time          not measured (0 rounds)\n"));
+    try testing.expect(contains(result.stdout, "\nResult rows\n" ++
         \\  MISMATCH: the rows differ, compared as a multiset; the cause is not determined
         \\  baseline only 1 row, the first 1 below
         \\                [1, 'x']
         \\  variant only  1 row, the first 1 below
         \\                [1, 'y']
-        \\  row order     not applicable
         \\
     ));
     try testing.expect(!contains(result.stdout, "time median"));
-    try expectNarrow(result.stdout, &.{ fixture.db_path, fixture.select_path, fixture.index_path, fixture.work_parent });
+    try testing.expect(!contains(result.stdout, "row order"));
+    try expectNarrow(result.stdout, &.{});
     try fixture.expectNoLeftovers();
 }
 
@@ -1106,7 +1099,7 @@ test "the default summary of an incomparable select pairs each reason with its h
     const result = fixture.runFormat("human", &.{}, &stdout_buffer, &stderr_buffer);
     try testing.expectEqual(ExitCode.incomparable, result.code);
     try testing.expect(std.mem.startsWith(u8, result.stdout, "Summary\n  result rows   INCOMPARABLE (the rows cannot be compared; see Result rows)\n"));
-    try testing.expect(contains(result.stdout,
+    try testing.expect(contains(result.stdout, "\nResult rows\n" ++
         \\  INCOMPARABLE: the rows of the two copies cannot be compared
         \\  - the rows differ, and the SELECT has LIMIT or OFFSET, which can pick other
         \\    rows when the order changes
@@ -1116,7 +1109,8 @@ test "the default summary of an incomparable select pairs each reason with its h
         \\  baseline only 1 row, the first 1 below
         \\
     ));
-    try expectNarrow(result.stdout, &.{ fixture.db_path, fixture.select_path, fixture.index_path, fixture.work_parent });
+    try testing.expect(!contains(result.stdout, "row order"));
+    try expectNarrow(result.stdout, &.{});
 }
 
 test "the default summary hides the bind values unless --show-binds is given" {
@@ -1128,7 +1122,7 @@ test "the default summary hides the bind values unless --show-binds is given" {
     var stderr_buffer: [1024]u8 = undefined;
     const hidden = fixture.runFormat("human", &binds, &stdout_buffer, &stderr_buffer);
     try testing.expectEqual(ExitCode.ok, hidden.code);
-    try testing.expect(contains(hidden.stdout, "  binds         1:int, 2:text (6 bytes), 3:null, 4:real\n                (values hidden; --show-binds prints them)\n"));
+    try testing.expect(!contains(hidden.stdout, "binds"));
     try testing.expect(!contains(hidden.stdout, "secret"));
     try testing.expect(!contains(hidden.stdout, "1.5"));
 
@@ -1136,7 +1130,24 @@ test "the default summary hides the bind values unless --show-binds is given" {
     var shown_stderr_buffer: [1024]u8 = undefined;
     const shown = fixture.runFormat("human", &(binds ++ [_][:0]const u8{"--show-binds"}), &shown_stdout_buffer, &shown_stderr_buffer);
     try testing.expectEqual(ExitCode.ok, shown.code);
-    try testing.expect(contains(shown.stdout, "  binds         1:int:1, 2:text:'secret', 3:null, 4:real:1.5e0\n  work dir"));
+    try testing.expect(contains(shown.stdout, "  binds         1:int:1, 2:text:'secret', 3:null, 4:real:1.5e0\n"));
+}
+
+test "the default summary notes rows in a different order" {
+    var fixture = try CliFixture.initWithSchema("SELECT a FROM t WHERE a > ?1", "CREATE INDEX idx_a ON t(a)",
+        \\CREATE TABLE t(a INTEGER, b TEXT);
+        \\INSERT INTO t VALUES (3, 'z'), (1, 'x'), (2, 'y');
+    );
+    defer fixture.deinit();
+
+    var stdout_buffer: [8192]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const result = fixture.runFormat("human", &.{ "--bind", "1:int:0", "--runs", "0" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expect(contains(result.stdout, "\nResult rows\n  row order     differs (reference only;"));
+    try testing.expect(!contains(result.stdout, "same (reference only"));
+    try expectNarrow(result.stdout, &.{});
+    try fixture.expectNoLeftovers();
 }
 
 test "a usage error names the argument it is about" {
@@ -1586,7 +1597,7 @@ test "a bind error says how many parameters the SELECT has" {
 }
 
 test "help fits in 80 columns and names the formats" {
-    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_buffer: [8192]u8 = undefined;
     var stderr_buffer: [512]u8 = undefined;
     const result = callRun(testing.allocator, &.{ "Qenome", "--help" }, null, &stdout_buffer, &stderr_buffer);
     try testing.expectEqual(ExitCode.ok, result.code);
@@ -1596,7 +1607,7 @@ test "help fits in 80 columns and names the formats" {
 }
 
 test "help puts the usage, options, examples and exit status before the details" {
-    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_buffer: [8192]u8 = undefined;
     var stderr_buffer: [512]u8 = undefined;
     const result = callRun(testing.allocator, &.{ "Qenome", "--help" }, null, &stdout_buffer, &stderr_buffer);
     try testing.expectEqual(ExitCode.ok, result.code);
