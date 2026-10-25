@@ -26,6 +26,7 @@ pub const ExitCode = cli_control.ExitCode;
 pub const finalExitCode = cli_control.finalExitCode;
 
 const tempParentPath = cli_workspace.tempParentPath;
+pub const tempParent = cli_workspace.tempParent;
 const WorkDir = cli_workspace.WorkDir;
 const prepareCopies = cli_workspace.prepareCopies;
 const fileSize = cli_workspace.fileSize;
@@ -131,6 +132,7 @@ pub fn run(
             .runs = args.runs,
             .work_parent = parent_path,
             .show_binds = args.show_binds,
+            .show_rows = args.show_rows,
             .format = args.format,
         };
         break :blk runChecked(io, arena, allocator, inputs, stdout, stderr, &cleanup_failed, &work);
@@ -151,6 +153,7 @@ const Inputs = struct {
     runs: u32,
     work_parent: []const u8,
     show_binds: bool = false,
+    show_rows: bool = false,
     format: cli_args.Format = .human,
     progress_interval_ns: u64 = std.time.ns_per_s,
 };
@@ -244,6 +247,7 @@ fn runChecked(
         .sqlite_source_id = sqliteSourceId(),
         .binds = inputs.binds,
         .show_binds = inputs.show_binds,
+        .show_rows = inputs.show_rows,
         .exit_code = @backingInt(code),
     };
     writeReport(stdout, arena, inputs.format, header, before, after, outcome, report) catch |err| {

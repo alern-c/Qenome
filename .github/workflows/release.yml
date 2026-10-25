@@ -1,0 +1,218 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Zig (resolved from build.zig.zon)
+        uses: mlugg/setup-zig@v2
+
+      - name: Verify the effective Zig version
+        run: |
+          pattern='s/.*minimum_zig_version *= *"\([^"]*\)".*/\1/p'
+          expected="$(sed -n "$pattern" build.zig.zon)"
+          actual="$(zig version)"
+          echo "build.zig.zon minimum_zig_version: ${expected:-<not found>}"
+          echo "effective zig version: $actual"
+          test -n "$expected"
+          test "$actual" = "$expected"
+
+      - name: Read the version from build.zig.zon
+        id: version
+        run: |
+          pattern='s/^ *\.version *= *"\([^"]*\)".*/\1/p'
+          version="$(sed -n "$pattern" build.zig.zon)"
+          echo "build.zig.zon version: ${version:-<not found>}"
+          test -n "$version"
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Check the tag against build.zig.zon
+        if: github.ref_type == 'tag'
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          tag="$(printf '%s' "$GITHUB_REF_NAME" | sed 's/^v//')"
+          echo "tag version: ${tag}"
+          test "$VERSION" = "$tag"
+
+      - name: Build the five targets
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          build() {
+            target="$1"
+            name="$2"
+            suffix="$3"
+            zig build -Doptimize=ReleaseSafe -Dstrip=true \
+              -Dtarget="$target" --summary all
+            cp "zig-out/bin/qenome${suffix}" \
+              "dist/qenome-${VERSION}-${name}${suffix}"
+          }
+          build x86_64-linux-musl x86_64-linux ""
+          build aarch64-linux-musl aarch64-linux ""
+          build x86_64-macos x86_64-macos ""
+          build aarch64-macos aarch64-macos ""
+          build x86_64-windows x86_64-windows ".exe"
+          ls -l dist
+
+      - name: Check that the Linux binaries are stripped
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          for asset in x86_64-linux aarch64-linux; do
+            binary="dist/qenome-${VERSION}-${asset}"
+            description="$(file -b "$binary")"
+            echo "${binary}: ${description}"
+            if ! grep -q 'stripped' <<< "$description"; then
+              echo "::error::${binary} is not reported as stripped by file"
+              exit 1
+            fi
+            if grep -q 'not stripped' <<< "$description" ||
+              grep -q 'with debug_info' <<< "$description"; then
+              echo "::error::${binary} still contains debug information"
+              exit 1
+            fi
+          done
+
+      - name: Create SHA256SUMS
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum qenome-* > SHA256SUMS
+          cat SHA256SUMS
+          test "$(awk 'END {print NR}' SHA256SUMS)" = 5
+          sha256sum -c SHA256SUMS
+
+      - name: Create the fixture database
+        run: |
+          set -euo pipefail
+          mkdir -p testdata/generated
+          db=testdata/generated/qenome-fixture.db
+          sqlite3 "$db" ".read testdata/schema.sql"
+          sqlite3 "$db" ".read testdata/seed.sql"
+          sqlite3 "$db" ".read testdata/verify.sql"
+          ls -l testdata/generated
+
+      - name: Upload the release assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-assets
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Upload the fixture database
+        uses: actions/upload-artifact@v7
+        with:
+          name: fixture
+          path: testdata/generated/qenome-fixture.db
+          if-no-files-found: error
+
+  smoke-test:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: x86_64-linux
+            suffix: ""
+          - os: macos-latest
+            asset: aarch64-macos
+            suffix: ""
+          - os: windows-latest
+            asset: x86_64-windows
+            suffix: ".exe"
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Download the release assets
+        uses: actions/download-artifact@v8
+        with:
+          name: release-assets
+          path: dist
+
+      - name: Download the fixture database
+        uses: actions/download-artifact@v8
+        with:
+          name: fixture
+          path: fixture
+
+      - name: Run --version without Zig
+        shell: bash
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          ASSET: ${{ matrix.asset }}
+          SUFFIX: ${{ matrix.suffix }}
+        run: |
+          set -euo pipefail
+          binary="dist/qenome-${VERSION}-${ASSET}${SUFFIX}"
+          chmod +x "$binary" || true
+          echo "binary: $binary"
+          output="$("$binary" --version)"
+          output="${output%$'\r'}"
+          echo "$output"
+          test "$output" = "qenome ${VERSION}"
+
+      - name: Compare one small case without Zig
+        shell: bash
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          ASSET: ${{ matrix.asset }}
+          SUFFIX: ${{ matrix.suffix }}
+        run: |
+          set -euo pipefail
+          binary="dist/qenome-${VERSION}-${ASSET}${SUFFIX}"
+          chmod +x "$binary" || true
+          "$binary" fixture/qenome-fixture.db \
+            testdata/cases/improved.sql \
+            testdata/cases/improved.index.sql \
+            --bind 1:int:1234 --runs 3
+          echo "the comparison exited with status 0"
+
+  release:
+    needs: [build, smoke-test]
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download the release assets
+        uses: actions/download-artifact@v8
+        with:
+          name: release-assets
+          path: dist
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum -c SHA256SUMS
+          gh release create "$TAG" --verify-tag --title "$TAG" \
+            --generate-notes qenome-* SHA256SUMS

@@ -17,6 +17,7 @@ pub const Header = struct {
     sqlite_source_id: [*:0]const u8,
     binds: []const cli_args.BindArg,
     show_binds: bool,
+    show_rows: bool = false,
     exit_code: u8 = 0,
 };
 
@@ -79,15 +80,17 @@ pub fn writeSummary(
     }
     if (outcome.comparison) |comparison| if (!comparison.matched) {
         try stdout.print("baseline-only-rows: {d}\nvariant-only-rows: {d}\n", .{ comparison.baseline_only, comparison.variant_only });
-        for (comparison.baselineExamples()) |row| {
-            try stdout.writeAll("baseline-only-row: ");
-            try result.writeRow(stdout, row);
-            try stdout.writeByte('\n');
-        }
-        for (comparison.variantExamples()) |row| {
-            try stdout.writeAll("variant-only-row: ");
-            try result.writeRow(stdout, row);
-            try stdout.writeByte('\n');
+        if (header.show_rows) {
+            for (comparison.baselineExamples()) |row| {
+                try stdout.writeAll("baseline-only-row: ");
+                try result.writeRow(stdout, row);
+                try stdout.writeByte('\n');
+            }
+            for (comparison.variantExamples()) |row| {
+                try stdout.writeAll("variant-only-row: ");
+                try result.writeRow(stdout, row);
+                try stdout.writeByte('\n');
+            }
         }
     };
     const order = if (outcome.verdict != .match)
@@ -206,7 +209,7 @@ pub fn writeJsonReport(
     try json.objectField("result_reasons");
     try writeJsonReasons(&json, allocator, outcome);
     try json.objectField("row_differences");
-    try writeJsonRowDifferences(&json, allocator, outcome.comparison);
+    try writeJsonRowDifferences(&json, allocator, outcome.comparison, header.show_rows);
     try json.objectField("plan_changed");
     try json.write(!cli_timing.samePlan(before.plan, after.plan));
     try json.objectField("baseline");
@@ -239,6 +242,8 @@ pub fn writeJsonReport(
     try json.endObject();
     try json.objectField("environment");
     try json.beginObject();
+    try json.objectField("qenome_version");
+    try json.write(cli_args.version);
     try json.objectField("sqlite_version");
     try writeJsonText(&json, allocator, std.mem.span(header.sqlite_version));
     try json.objectField("sqlite_source_id");
@@ -308,6 +313,7 @@ fn writeJsonRowDifferences(
     json: *std.json.Stringify,
     allocator: std.mem.Allocator,
     comparison: ?result.Comparison,
+    show_rows: bool,
 ) Error!void {
     try json.beginObject();
     try json.objectField("baseline_only");
@@ -316,14 +322,18 @@ fn writeJsonRowDifferences(
     try json.write(if (comparison) |value| value.variant_only else 0);
     try json.objectField("baseline_only_examples");
     try json.beginArray();
-    if (comparison) |value| {
-        for (value.baselineExamples()) |row| try writeJsonRow(json, allocator, row);
+    if (show_rows) {
+        if (comparison) |value| {
+            for (value.baselineExamples()) |row| try writeJsonRow(json, allocator, row);
+        }
     }
     try json.endArray();
     try json.objectField("variant_only_examples");
     try json.beginArray();
-    if (comparison) |value| {
-        for (value.variantExamples()) |row| try writeJsonRow(json, allocator, row);
+    if (show_rows) {
+        if (comparison) |value| {
+            for (value.variantExamples()) |row| try writeJsonRow(json, allocator, row);
+        }
     }
     try json.endArray();
     try json.endObject();
@@ -466,7 +476,7 @@ fn nonFiniteRealText(value: f64) []const u8 {
 }
 
 fn writeJsonText(json: *std.json.Stringify, allocator: std.mem.Allocator, value: []const u8) Error!void {
-    if (std.unicode.utf8ValidateSlice(value)) {
+    if (std.unicode.utf8ValidateSlice(value) and std.mem.indexOfScalar(u8, value, '\\') == null) {
         try json.write(value);
         return;
     }
@@ -482,7 +492,7 @@ fn escapeInvalidUtf8(allocator: std.mem.Allocator, value: []const u8) Error![]u8
     while (rest.len != 0) {
         const byte = rest[0];
         if (byte < 0x80) {
-            try out.writer.writeByte(byte);
+            if (byte == '\\') try out.writer.writeAll("\\\\") else try out.writer.writeByte(byte);
             rest = rest[1..];
             continue;
         }
@@ -557,7 +567,7 @@ pub fn writeHumanSummary(
     try writePlan(stdout, after.plan);
     if (outcome.verdict != .match or !outcome.comparison.?.same_order) {
         try stdout.writeAll("\nResult rows\n");
-        try writeRowsDetail(stdout, outcome);
+        try writeRowsDetail(stdout, outcome, header.show_rows);
     }
 }
 
@@ -726,7 +736,7 @@ fn planDepth(plan: Plan, row: PlanRow) usize {
     return depth;
 }
 
-fn writeRowsDetail(stdout: *Io.Writer, outcome: cli_comparison.Outcome) Io.Writer.Error!void {
+fn writeRowsDetail(stdout: *Io.Writer, outcome: cli_comparison.Outcome, show_rows: bool) Io.Writer.Error!void {
     if (outcome.verdict == .match) return writeField(stdout, "row order", row_order_differs);
     try writeIndent(stdout, 2);
     try writeWrapped(stdout, switch (outcome.verdict) {
@@ -746,18 +756,22 @@ fn writeRowsDetail(stdout: *Io.Writer, outcome: cli_comparison.Outcome) Io.Write
         }
     }
     if (outcome.comparison) |comparison| if (!comparison.matched) {
-        try writeExamples(stdout, "baseline only", comparison.baseline_only, comparison.baselineExamples());
-        try writeExamples(stdout, "variant only", comparison.variant_only, comparison.variantExamples());
+        try writeExamples(stdout, "baseline only", comparison.baseline_only, comparison.baselineExamples(), show_rows);
+        try writeExamples(stdout, "variant only", comparison.variant_only, comparison.variantExamples(), show_rows);
+        if (!show_rows and (comparison.baselineExamples().len != 0 or comparison.variantExamples().len != 0)) {
+            try writeField(stdout, "examples", "rerun with --show-rows to see them");
+        }
     };
 }
 
-fn writeExamples(stdout: *Io.Writer, label: []const u8, count: usize, examples: []const []const u8) Io.Writer.Error!void {
+fn writeExamples(stdout: *Io.Writer, label: []const u8, count: usize, examples: []const []const u8, show_rows: bool) Io.Writer.Error!void {
     var buffer: [64]u8 = undefined;
     var text = Io.Writer.fixed(&buffer);
     try writeCount(&text, count);
     try text.writeAll(if (count == 1) " row" else " rows");
-    if (examples.len != 0) try text.print(", the first {d} below", .{examples.len});
+    if (show_rows and examples.len != 0) try text.print(", the first {d} below", .{examples.len});
     try writeField(stdout, label, text.buffered());
+    if (!show_rows) return;
     for (examples) |row| {
         try writeIndent(stdout, value_column);
         try result.writeRow(stdout, row);
@@ -1466,6 +1480,7 @@ test "the json report carries the decision, the plans, the times and the sizes" 
     try testing.expectEqualStrings("index.sql", try jsonText(inputs, "index_sql"));
 
     const environment = try jsonGet(root, "environment");
+    try testing.expectEqualStrings(cli_args.version, try jsonText(environment, "qenome_version"));
     try testing.expectEqualStrings("0.0.0", try jsonText(environment, "sqlite_version"));
     try testing.expectEqualStrings("test-source-id", try jsonText(environment, "sqlite_source_id"));
     try testing.expectEqualStrings(builtin.zig_version_string, try jsonText(environment, "zig_version"));
@@ -1553,6 +1568,76 @@ test "the json report shows the bind values only when asked" {
     try testing.expect(try jsonGet(binds_json[2], "value") == .null);
     try testing.expectEqual(@as(f64, 1.5), try jsonFloat(binds_json[3], "value"));
     try testing.expectEqualStrings("inf", try jsonText(binds_json[4], "value"));
+}
+
+test "the json report omits one-sided row values unless asked" {
+    const email = "ada@example.com";
+    const person = "Ada Lovelace";
+    var baseline_row: [1 + 4 + email.len]u8 = undefined;
+    baseline_row[0] = 3;
+    std.mem.writeInt(u32, baseline_row[1..5], email.len, .little);
+    @memcpy(baseline_row[5..], email);
+    var variant_row: [1 + 4 + person.len]u8 = undefined;
+    variant_row[0] = 3;
+    std.mem.writeInt(u32, variant_row[1..5], person.len, .little);
+    @memcpy(variant_row[5..], person);
+
+    var comparison: result.Comparison = .{
+        .matched = false,
+        .same_order = false,
+        .baseline_only = 2,
+        .variant_only = 1,
+    };
+    comparison.baseline_examples[0] = &baseline_row;
+    comparison.baseline_example_count = 1;
+    comparison.variant_examples[0] = &variant_row;
+    comparison.variant_example_count = 1;
+    const outcome: cli_comparison.Outcome = .{ .verdict = .mismatch, .comparison = comparison };
+    const measurement: cli_comparison.Measurement = .{
+        .rows = 2,
+        .plan = .{ .rows = @constCast(&scan_line) },
+        .counters = .{ .fullscan_steps = 1, .vm_steps = 2, .sort_ops = 0, .autoindex_rows = 0 },
+        .columns = 1,
+    };
+    var report: TimeReport = .{ .sizes = .{ .baseline = 8192, .variant = 12288 }, .judgement = .{ .verdict = .not_judged } };
+    report.judgement.add("the result rows do not match, so the SELECT is not timed");
+
+    for ([_]bool{ false, true }) |show_rows| {
+        var buffer: [16384]u8 = undefined;
+        var stdout = Io.Writer.fixed(&buffer);
+        const header: Header = .{
+            .database_path = "db.sqlite",
+            .select_path = "select.sql",
+            .index_path = "index.sql",
+            .work_parent = "/tmp",
+            .sqlite_version = "0.0.0",
+            .sqlite_source_id = "test-source-id",
+            .binds = &.{},
+            .show_binds = false,
+            .show_rows = show_rows,
+            .exit_code = 3,
+        };
+        try writeReport(&stdout, testing.allocator, .json, header, measurement, measurement, outcome, report);
+
+        var parsed = try parseReportJson(stdout.buffered());
+        defer parsed.deinit();
+        const differences = try jsonGet(parsed.value, "row_differences");
+        try testing.expectEqual(@as(i64, 2), try jsonInt(differences, "baseline_only"));
+        try testing.expectEqual(@as(i64, 1), try jsonInt(differences, "variant_only"));
+        const baseline_examples = try jsonItems(differences, "baseline_only_examples");
+        const variant_examples = try jsonItems(differences, "variant_only_examples");
+        if (show_rows) {
+            try testing.expectEqual(@as(usize, 1), baseline_examples.len);
+            try testing.expectEqual(@as(usize, 1), variant_examples.len);
+            try testing.expectEqualStrings("['" ++ email ++ "']", baseline_examples[0].string);
+            try testing.expectEqualStrings("['" ++ person ++ "']", variant_examples[0].string);
+        } else {
+            try testing.expectEqual(@as(usize, 0), baseline_examples.len);
+            try testing.expectEqual(@as(usize, 0), variant_examples.len);
+            try testing.expect(std.mem.indexOf(u8, stdout.buffered(), email) == null);
+            try testing.expect(std.mem.indexOf(u8, stdout.buffered(), person) == null);
+        }
+    }
 }
 
 test "the json report has a null timing and a null ratio when nothing was timed or the baseline is zero" {
@@ -1657,9 +1742,9 @@ test "the json report escapes quotes, controls and non-utf8 text" {
 
     try testing.expectEqualStrings("incomparable", try jsonText(root, "result"));
     try testing.expectEqualStrings("not-applicable", try jsonText(root, "row_order"));
-    try testing.expectEqualStrings("db\"\n\\\x01\x7f\u{9b}\u{202e}\u{1f600}\\xff.sqlite", try jsonText(try jsonGet(root, "inputs"), "database"));
+    try testing.expectEqualStrings("db\"\n\\\\\x01\x7f\u{9b}\u{202e}\u{1f600}\\xff.sqlite", try jsonText(try jsonGet(root, "inputs"), "database"));
     const plan = try jsonItems(try jsonGet(root, "baseline"), "plan");
-    try testing.expectEqualStrings("SCAN \"t\"\n\\\x01\\xff", try jsonText(plan[0], "detail"));
+    try testing.expectEqualStrings("SCAN \"t\"\n\\\\\x01\\xff", try jsonText(plan[0], "detail"));
     const reasons = try jsonItems(root, "result_reasons");
     try testing.expectEqual(@as(usize, 1), reasons.len);
     try testing.expectEqualStrings("reason \"\x01\\xff\"", try jsonText(reasons[0], "text"));
@@ -1667,6 +1752,27 @@ test "the json report escapes quotes, controls and non-utf8 text" {
     const verdict_reasons = try jsonItems(root, "verdict_reasons");
     try testing.expectEqual(@as(usize, 1), verdict_reasons.len);
     try testing.expectEqualStrings("not judged \\xff", verdict_reasons[0].string);
+}
+
+test "a literal backslash sequence and the byte 0xFF are different json strings" {
+    try expectJsonText("\\xff", "\\\\xff");
+    try expectJsonText("\xff", "\\xff");
+    try expectJsonText("\\\xff", "\\\\\\xff");
+    try expectJsonText("db.sqlite", "db.sqlite");
+}
+
+fn expectJsonText(input: []const u8, expected: []const u8) !void {
+    var buffer: [256]u8 = undefined;
+    var stdout = Io.Writer.fixed(&buffer);
+    var json: std.json.Stringify = .{ .writer = &stdout, .options = .{ .escape_unicode = true } };
+    try writeJsonText(&json, testing.allocator, input);
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, stdout.buffered(), .{});
+    defer parsed.deinit();
+    const text = switch (parsed.value) {
+        .string => |value| value,
+        else => return error.TestUnexpectedResult,
+    };
+    try testing.expectEqualStrings(expected, text);
 }
 
 test "the json report leaves stdout empty when a temporary allocation fails" {

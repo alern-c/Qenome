@@ -40,6 +40,7 @@ CANONICAL_FILES = {
         "}\n"
     ),
     "README.md": "# excluded\n",
+    "README.ja.md": "# excluded\n",
     "scripts/tool.py": (
         "import os\n"
         "\n"
@@ -180,7 +181,7 @@ def main():
     expect_clean("the canonical tree passes", code, output)
     expect("the canonical tree reports its root", "root=" in output, output.strip())
     expect("the canonical tree counts the checked files", "8 files checked" in output, output.strip())
-    expect("the canonical tree counts the excluded files", "5 excluded" in output, output.strip())
+    expect("the canonical tree counts the excluded files", "6 excluded" in output, output.strip())
 
     code, output = case(append("src/main.zig", "// note\n"))
     expect_rejected(
@@ -406,6 +407,9 @@ def main():
 
     code, output = case(append("README.md", "# note\n"))
     expect_clean("an excluded document passes", code, output)
+
+    code, output = case(append("README.ja.md", "# note\n"))
+    expect_clean("an excluded Japanese document passes", code, output)
 
     code, output = case(append("testdata/README.md", "# note\n"))
     expect_clean("an excluded test data document passes", code, output)

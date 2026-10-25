@@ -49,6 +49,7 @@ pub const Args = struct {
     timeout_ms: u64 = default_timeout_ms,
     runs: u32 = default_runs,
     show_binds: bool = false,
+    show_rows: bool = false,
     format: Format = .human,
     help: bool = false,
     version: bool = false,
@@ -135,6 +136,9 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
         } else if (std.mem.eql(u8, name, "--show-binds")) {
             if (inline_value != null) return error.UnexpectedValue;
             args.show_binds = true;
+        } else if (std.mem.eql(u8, name, "--show-rows")) {
+            if (inline_value != null) return error.UnexpectedValue;
+            args.show_rows = true;
         } else if (std.mem.eql(u8, name, "--runs")) {
             const raw = try optionValue(argv, &index, inline_value);
             args.runs = std.fmt.parseUnsigned(u32, raw, 10) catch return error.InvalidRuns;
@@ -230,6 +234,7 @@ const long_options = [_][]const u8{
     "--bind",
     "--timeout-ms",
     "--show-binds",
+    "--show-rows",
     "--runs",
     "--format",
     "--version",
@@ -381,6 +386,10 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\                       binds out and kv and json print only their
         \\                       numbers, types and text lengths, so that the
         \\                       values stay out of logs
+        \\  --show-rows          print the example rows that only one copy
+        \\                       returned, in human, kv and json. Without it,
+        \\                       only the counts are printed, so row values stay
+        \\                       out of logs. Human says to rerun with this flag
         \\  --version            print the version and exit with status 0
         \\  --help, -h           print this message and exit with status 0
         \\
@@ -415,19 +424,21 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\  the times and rounds, and the size increase), the counters and
         \\  times of both copies side by side, and the query plans. A
         \\  difference, a comparison that is not possible, or rows in another
-        \\  order adds the explanation and example rows; --show-binds adds the
-        \\  bind values; a build without optimization adds a note that its
-        \\  times are slower.
+        \\  order adds the explanation and the one-sided counts. The example
+        \\  rows are printed only with --show-rows; otherwise human says to
+        \\  rerun with that flag. --show-binds adds the bind values; a build
+        \\  without optimization adds a note that its times are slower.
         \\  The kv format prints every fact as one `key: value` per line, for
         \\  scripts and logs: it keeps the inputs, the SQLite and Zig
         \\  versions, the build mode, the OS and architecture, the work
         \\  directory, and the timing conditions below, which the human
-        \\  output leaves out.
+        \\  output leaves out. Example row values appear only with --show-rows.
         \\  The json format prints one JSON object and a trailing newline:
         \\  schema_version, the time verdict and its reasons, the result
-        \\  comparison with its reasons, counts and example rows, both plans
-        \\  and counters, the times and sizes, the inputs, versions, timing
-        \\  conditions, and the binds with the same secrecy as kv.
+        \\  comparison with its reasons, the counts, and example rows only
+        \\  when --show-rows is set (the arrays are empty otherwise), both
+        \\  plans and counters, the times and sizes, the inputs, versions,
+        \\  timing conditions, and the binds with the same secrecy as kv.
         \\  Timing conditions: each copy gets one warm-up run whose rows were
         \\  compared and that is not timed; the timed rounds alternate
         \\  baseline-variant and variant-baseline (ABBA); a round times
@@ -703,8 +714,20 @@ test "a value option takes its value after an equals sign" {
     try testing.expectEqual(Format.kv, args.format);
 }
 
+test "show-rows defaults to off and does not reveal binds" {
+    const hidden = try parseArgs(testing.allocator, &.{"Qenome"});
+    defer testing.allocator.free(hidden.binds);
+    try testing.expect(!hidden.show_rows);
+    try testing.expect(!hidden.show_binds);
+
+    const shown = try parseArgs(testing.allocator, &.{ "Qenome", "--show-rows" });
+    defer testing.allocator.free(shown.binds);
+    try testing.expect(shown.show_rows);
+    try testing.expect(!shown.show_binds);
+}
+
 test "a flag rejects an inline value" {
-    for ([_][:0]const u8{ "--help=1", "--show-binds=true", "--version=1" }) |arg| {
+    for ([_][:0]const u8{ "--help=1", "--show-binds=true", "--show-rows=1", "--version=1" }) |arg| {
         var offending: ?[:0]const u8 = null;
         try testing.expectError(
             error.UnexpectedValue,
@@ -839,6 +862,7 @@ test "a missing value is not taken from the next option" {
         .{ .argv = &.{ "Qenome", "--db", "d.db", "--select", "--index-sql" }, .option = "--select" },
         .{ .argv = &.{ "Qenome", "--db", "--runs=3" }, .option = "--db" },
         .{ .argv = &.{ "Qenome", "--db", "--show-binds" }, .option = "--db" },
+        .{ .argv = &.{ "Qenome", "--db", "--show-rows" }, .option = "--db" },
         .{ .argv = &.{ "Qenome", "--bind", "--runs", "3" }, .option = "--bind" },
     };
     for (cases) |case| {
@@ -895,6 +919,7 @@ test "every known long option is accepted by the parser" {
         .{ .option = "--bind", .value = "1:null" },
         .{ .option = "--timeout-ms", .value = "1" },
         .{ .option = "--show-binds", .value = null },
+        .{ .option = "--show-rows", .value = null },
         .{ .option = "--runs", .value = "1" },
         .{ .option = "--format", .value = "kv" },
         .{ .option = "--version", .value = null },

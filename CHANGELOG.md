@@ -7,10 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-26
+
+### Changed
+
+- Release binaries no longer carry debug information. The Linux binaries shrink from about 11 MB to about 2 MB, and a panic stack trace shows addresses instead of function names and lines.
+
+## [0.3.0] - 2026-10-26
+
+### Added
+
+- The project is licensed under the Apache License 2.0. The license text is the unmodified official text and is in `LICENSE`.
+- Windows 向けのビルドと実行に対応した。
+
+### Changed
+
+- `README.md` is now in English; the Japanese version is in `README.ja.md`.
+
+## [0.2.0] - 2026-10-25
+
 ### Added
 
 - `--version` prints the version from `build.zig.zon` as `qenome <version>` and exits with status 0.
-- `--format json` prints one JSON object with a trailing newline after a comparison that finishes: the time verdict and its reasons, the result comparison with its reasons, counts and example rows, both plans and counters, the times and sizes, the inputs, versions and timing conditions, and the binds (their values only with `--show-binds`). The human and kv formats are unchanged.
+- `--format json` prints one JSON object with a trailing newline after a comparison that finishes: the time verdict and its reasons, the result comparison with its reasons, counts and example rows (the examples only with `--show-rows`), both plans and counters, the times and sizes, the inputs, versions and timing conditions, and the binds (their values only with `--show-binds`).
+- `--format json` includes `environment.qenome_version`, the same version `--version` prints from `build.zig.zon`. `schema_version` stays 1.
+
+### Changed
+
+- Mismatched result rows are counts unless `--show-rows` is set, in every format. Human omits the example rows and says to rerun with `--show-rows`. kv omits `baseline-only-row` and `variant-only-row`. json leaves `baseline_only_examples` and `variant_only_examples` empty. The counts stay, and `schema_version` stays 1. The hint for `sum()`, `avg()` and `total()` says to rerun with `--show-rows` instead of pointing at those lines.
+
+### Fixed
+
+- `--format json` writes a backslash as `\\` and an invalid UTF-8 byte as `\xNN` in string values, so the four characters `\xff` and the byte 0xFF stay distinct. Paths, plan detail, reasons, and bind text use this encoding. `schema_version` stays 1, because JSON output has not been in a release.
 
 ## [0.1.0] - 2026-10-25
 

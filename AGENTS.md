@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Qenome は、ローカル SQLite の SELECT 1本に対して、候補の `CREATE INDEX` を1本試したときの変化を比較する Zig 製 CLI です。使い方・出力・終了コードは README が正本です。このファイルには、どの AI ツールで作業しても同じ手順になるように、このリポジトリ固有の事実だけを書きます。
+Qenome は、ローカル SQLite の SELECT 1本に対して、候補の `CREATE INDEX` を1本試したときの変化を比較する Zig 製 CLI です。使い方・出力・終了コードは `README.md`（日本語版は `README.ja.md`）が正本です。このファイルには、どの AI ツールで作業しても同じ手順になるように、このリポジトリ固有の事実だけを書きます。
 
 ## ビルドとテスト
 
@@ -24,7 +24,7 @@ python3 scripts/check_all.py
 ## ルールの正本
 
 - アーキテクチャ境界（`src/` に置けるファイルと import の向き）は `scripts/check_architecture.py` が正本です。`src/` にファイルを足すときは、このスクリプトの `APPROVED_FILES` と import の表も更新します。`scripts/test_check_architecture.py` が自己テストです。
-- コードにコメントは書きません。説明は README に書きます。規則の正本は `scripts/check_comments.py`、自己テストは `scripts/test_check_comments.py` です。
+- コードにコメントは書きません。説明は `README.md` / `README.ja.md` に書きます。規則の正本は `scripts/check_comments.py`、自己テストは `scripts/test_check_comments.py` です。
 - `check_comments.py` は tracked の全ファイルを「コメントを検査する」か「除外する」に分類します。新しい種類のファイルを足すときは、検査対象として扱えるか `EXCLUDED_FILES` に入れるかを決めてください。未分類のまま置くと検査が失敗します。
 
 ## CLAUDE.md
