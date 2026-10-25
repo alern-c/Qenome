@@ -405,6 +405,14 @@ def main():
         "a .gitattributes comment fails", code, output, ".gitattributes:", "a comment line"
     )
 
+    code, output = case(create("scripts/tool.sh", "set -euo pipefail\nprintf ok\n"))
+    expect_clean("a shell script without a comment line passes", code, output)
+
+    code, output = case(create("scripts/tool.sh", "set -euo pipefail\n# note\n"))
+    expect_rejected(
+        "a shell comment line fails", code, output, "scripts/tool.sh:", "a comment line"
+    )
+
     code, output = case(append("README.md", "# note\n"))
     expect_clean("an excluded document passes", code, output)
 
