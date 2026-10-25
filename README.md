@@ -10,13 +10,13 @@ Qenome is a CLI that compares one read-only `SELECT` on a local SQLite database 
 
 Download an asset from the [Releases](https://github.com/alern-c/Qenome/releases) page, together with the `SHA256SUMS` file from the same release.
 
-Release assets are uncompressed binaries named `qenome-<version>-<arch>-<os>` (`qenome-<version>-<arch>-<os>.exe` on Windows). For example:
+Prebuilt binaries are provided for Linux, macOS, and Windows. Release assets are uncompressed binaries named `qenome-<version>-<arch>-<os>` (`qenome-<version>-<arch>-<os>.exe` on Windows). For example:
 
 - `qenome-0.2.0-x86_64-linux`
 - `qenome-0.2.0-aarch64-macos`
 - `qenome-0.2.0-x86_64-windows.exe`
 
-The release page lists the assets that were built. Pick the one whose `<arch>` and `<os>` match your machine. `SHA256SUMS` uses the `sha256sum` format: a SHA-256 hash, two spaces, and the file name.
+The release page lists the assets that were built; pick the one whose `<arch>` and `<os>` match your machine. `SHA256SUMS` uses the `sha256sum` format: a SHA-256 hash, two spaces, and the file name.
 
 Verify the download before running it. Replace `0.2.0` and the file name in these examples with the version and asset you downloaded.
 
