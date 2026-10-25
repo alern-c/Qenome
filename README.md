@@ -66,7 +66,7 @@ fi
 
 | キー | 内容 |
 | --- | --- |
-| `schema_version` | 形式の版（現在 1） |
+| `schema_version` | 形式の版（現在 2） |
 | `exit_code` | 比較結果に対応する終了コード（0 / 3 / 4）。後片付けに失敗した場合は、JSON を書いた後にプロセスが 5 で終わる |
 | `verdict` / `verdict_reasons` | 時間判定とその理由（`improved` / `no-effect` / `needs-check` / `not-judged`） |
 | `result` | 結果行の比較（`match` / `mismatch` / `incomparable`） |
@@ -82,7 +82,7 @@ fi
 | `measurement` | 計時条件（`runs_per_copy` / `warmup` / `order` / `scope` / `cache`） |
 | `binds` | `number` / `type`。text は `text_bytes` も持つ。`--show-binds` を付けたときだけ値が `value` に入る |
 
-- 文字列は JSON としてエスケープします。非 UTF-8 のバイトは `\xNN` の表記（例: `'\xff'`）、BLOB は `x'00ff'` の表記で例の行に入ります。
+- 文字列値では、バックスラッシュを `\\`、非 UTF-8 のバイトを `\xNN`（バイト 0xFF なら `\xff`）と書いてから JSON としてエスケープします。4文字の `\xff` は `\\xff` になり、バイト 0xFF とは別の文字列です。元のバイト列に戻すときは、`\\` をバックスラッシュ1個、`\xNN` をそのバイト、それ以外の文字をそのまま読みます。入力パス、計画の detail、理由、bind の text がこの規則です。例の行の TEXT も同じ規則（前後に `'`）で、BLOB は `x'00ff'` です。
 - `binds` は kv と同じ秘匿方針です。`--show-binds` が無いときは値を出さず、番号・型・テキストの長さだけを出します。real の非有限値（inf）は JSON 数値にできないため、`"inf"` / `"-inf"` の文字列で出します。
 - `row_order` は参考情報で、結果の一致判定には含めません。
 

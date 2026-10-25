@@ -169,7 +169,7 @@ fn writeBind(writer: *Io.Writer, bind: cli_args.BindArg, show: bool) Io.Writer.E
     }
 }
 
-const json_schema_version: u8 = 1;
+const json_schema_version: u8 = 2;
 
 pub fn writeJsonReport(
     stdout: *Io.Writer,
@@ -466,7 +466,7 @@ fn nonFiniteRealText(value: f64) []const u8 {
 }
 
 fn writeJsonText(json: *std.json.Stringify, allocator: std.mem.Allocator, value: []const u8) Error!void {
-    if (std.unicode.utf8ValidateSlice(value)) {
+    if (std.unicode.utf8ValidateSlice(value) and std.mem.indexOfScalar(u8, value, '\\') == null) {
         try json.write(value);
         return;
     }
@@ -482,7 +482,7 @@ fn escapeInvalidUtf8(allocator: std.mem.Allocator, value: []const u8) Error![]u8
     while (rest.len != 0) {
         const byte = rest[0];
         if (byte < 0x80) {
-            try out.writer.writeByte(byte);
+            if (byte == '\\') try out.writer.writeAll("\\\\") else try out.writer.writeByte(byte);
             rest = rest[1..];
             continue;
         }
@@ -1403,7 +1403,7 @@ test "the json report carries the decision, the plans, the times and the sizes" 
     defer parsed.deinit();
     const root = parsed.value;
 
-    try testing.expectEqual(@as(i64, 1), try jsonInt(root, "schema_version"));
+    try testing.expectEqual(@as(i64, 2), try jsonInt(root, "schema_version"));
     try testing.expectEqual(@as(i64, 0), try jsonInt(root, "exit_code"));
     try testing.expectEqualStrings("improved", try jsonText(root, "verdict"));
     try testing.expectEqual(@as(usize, 0), (try jsonItems(root, "verdict_reasons")).len);
@@ -1657,9 +1657,9 @@ test "the json report escapes quotes, controls and non-utf8 text" {
 
     try testing.expectEqualStrings("incomparable", try jsonText(root, "result"));
     try testing.expectEqualStrings("not-applicable", try jsonText(root, "row_order"));
-    try testing.expectEqualStrings("db\"\n\\\x01\x7f\u{9b}\u{202e}\u{1f600}\\xff.sqlite", try jsonText(try jsonGet(root, "inputs"), "database"));
+    try testing.expectEqualStrings("db\"\n\\\\\x01\x7f\u{9b}\u{202e}\u{1f600}\\xff.sqlite", try jsonText(try jsonGet(root, "inputs"), "database"));
     const plan = try jsonItems(try jsonGet(root, "baseline"), "plan");
-    try testing.expectEqualStrings("SCAN \"t\"\n\\\x01\\xff", try jsonText(plan[0], "detail"));
+    try testing.expectEqualStrings("SCAN \"t\"\n\\\\\x01\\xff", try jsonText(plan[0], "detail"));
     const reasons = try jsonItems(root, "result_reasons");
     try testing.expectEqual(@as(usize, 1), reasons.len);
     try testing.expectEqualStrings("reason \"\x01\\xff\"", try jsonText(reasons[0], "text"));
@@ -1667,6 +1667,27 @@ test "the json report escapes quotes, controls and non-utf8 text" {
     const verdict_reasons = try jsonItems(root, "verdict_reasons");
     try testing.expectEqual(@as(usize, 1), verdict_reasons.len);
     try testing.expectEqualStrings("not judged \\xff", verdict_reasons[0].string);
+}
+
+test "a literal backslash sequence and the byte 0xFF are different json strings" {
+    try expectJsonText("\\xff", "\\\\xff");
+    try expectJsonText("\xff", "\\xff");
+    try expectJsonText("\\\xff", "\\\\\\xff");
+    try expectJsonText("db.sqlite", "db.sqlite");
+}
+
+fn expectJsonText(input: []const u8, expected: []const u8) !void {
+    var buffer: [256]u8 = undefined;
+    var stdout = Io.Writer.fixed(&buffer);
+    var json: std.json.Stringify = .{ .writer = &stdout, .options = .{ .escape_unicode = true } };
+    try writeJsonText(&json, testing.allocator, input);
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, stdout.buffered(), .{});
+    defer parsed.deinit();
+    const text = switch (parsed.value) {
+        .string => |value| value,
+        else => return error.TestUnexpectedResult,
+    };
+    try testing.expectEqualStrings(expected, text);
 }
 
 test "the json report leaves stdout empty when a temporary allocation fails" {
