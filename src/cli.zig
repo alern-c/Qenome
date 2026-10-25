@@ -78,16 +78,22 @@ pub fn run(
         return .ok;
     }
 
-    const database_path = args.db orelse return missingArgument(stderr, "--db");
-    const select_path = args.select orelse return missingArgument(stderr, "--select");
-    const index_path = args.index_sql orelse return missingArgument(stderr, "--index-sql");
+    var missing_buffer: [cli_args.required_option_count][]const u8 = undefined;
+    const missing = cli_args.missingRequired(args, &missing_buffer);
+    if (missing.len != 0) {
+        return missingArguments(stderr, missing, missing.len == cli_args.required_option_count);
+    }
+
+    const database_path = args.db.?;
+    const select_path = args.select.?;
+    const index_path = args.index_sql.?;
 
     const select_sql = readSqlFile(io, arena, select_path) catch |err| {
-        stderr.print("error: cannot read --select file '{s}': {s}\n", .{ select_path, fileErrorMessage(err) }) catch {};
+        reportSqlFileError(stderr, "--select", select_path, err) catch {};
         return .rejected;
     };
     const index_sql = readSqlFile(io, arena, index_path) catch |err| {
-        stderr.print("error: cannot read --index-sql file '{s}': {s}\n", .{ index_path, fileErrorMessage(err) }) catch {};
+        reportSqlFileError(stderr, "--index-sql", index_path, err) catch {};
         return .rejected;
     };
 
@@ -95,7 +101,7 @@ pub fn run(
 
     const parent_path = tempParentPath(temp_parent);
     var work = WorkDir.create(io, arena, parent_path) catch |err| {
-        stderr.print("error: cannot create a temporary directory under '{s}': {s}\n", .{ parent_path, @errorName(err) }) catch {};
+        stderr.print("error: cannot create a temporary directory under '{s}': {s}\n", .{ parent_path, fileErrorMessage(err) }) catch {};
         return .rejected;
     };
 
@@ -238,21 +244,57 @@ fn runChecked(
     return resultExitCode(outcome);
 }
 
+fn reportSqlFileError(stderr: *Io.Writer, option: []const u8, path: []const u8, err: anyerror) Io.Writer.Error!void {
+    try stderr.print("error: cannot read {s} file '{s}': {s}", .{ option, path, fileErrorMessage(err) });
+    if (cli_args.looksLikeSql(path)) {
+        try stderr.print("; {s} takes a path to a file holding the SQL, not the SQL text", .{option});
+    }
+    try stderr.writeAll("\n");
+}
+
 fn reportParseError(stderr: *Io.Writer, err: ParseError, offending: ?[:0]const u8) Io.Writer.Error!void {
     const arg = offending orelse return stderr.print("error: {s}\n", .{parseErrorMessage(err)});
     switch (err) {
-        error.UnknownOption, error.UnexpectedArgument => {
-            try stderr.writeAll(if (err == error.UnknownOption) "error: unknown option " else "error: unexpected argument ");
+        error.UnknownOption => {
+            try stderr.writeAll("error: unknown option ");
             try result_rows.writeText(stderr, arg);
+            if (cli_args.suggestOptionName(arg)) |suggestion| {
+                try stderr.writeAll("; did you mean '");
+                try stderr.writeAll(suggestion);
+                try stderr.writeAll("'?");
+            }
             try stderr.writeAll(" (see --help)\n");
         },
-        error.MissingValue => try stderr.print("error: {s} needs a value (see --help)\n", .{arg}),
+        error.MissingValue => {
+            const end = std.mem.indexOfScalar(u8, arg, '=') orelse arg.len;
+            try stderr.print("error: {s} needs a value (see --help)\n", .{arg[0..end]});
+        },
+        error.DuplicateOption => {
+            const end = std.mem.indexOfScalar(u8, arg, '=') orelse arg.len;
+            try stderr.print("error: {s} was given more than once (see --help)\n", .{arg[0..end]});
+        },
+        error.TooManyPaths => {
+            try stderr.writeAll("error: unexpected argument ");
+            try result_rows.writeText(stderr, arg);
+            try stderr.writeAll("; paths are the database, the SELECT file and the CREATE INDEX file, at most 3 (see --help)\n");
+        },
+        error.EmptyPath => try stderr.writeAll("error: a path cannot be empty (see --help)\n"),
+        error.UnexpectedValue => {
+            const end = std.mem.indexOfScalar(u8, arg, '=') orelse arg.len;
+            try stderr.print("error: {s} does not take a value (see --help)\n", .{arg[0..end]});
+        },
         else => try stderr.print("error: {s}\n", .{parseErrorMessage(err)}),
     }
 }
 
-fn missingArgument(stderr: *Io.Writer, option: []const u8) ExitCode {
-    stderr.print("error: {s} is required (see --help)\n", .{option}) catch {};
+fn missingArguments(stderr: *Io.Writer, missing: []const []const u8, show_usage: bool) ExitCode {
+    if (show_usage) stderr.writeAll(cli_args.usage_line ++ "\n") catch {};
+    stderr.writeAll("error: missing: ") catch {};
+    for (missing, 0..) |name, position| {
+        if (position != 0) stderr.writeAll(", ") catch {};
+        stderr.writeAll(name) catch {};
+    }
+    stderr.writeAll(" (see --help)\n") catch {};
     return .usage;
 }
 

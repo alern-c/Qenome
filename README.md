@@ -7,19 +7,25 @@ Qenome は、ローカル SQLite の SELECT 1本に対して、候補の `CREATE
 
 ```sh
 zig build
-zig-out/bin/qenome --db app.db --select select.sql --index-sql index.sql
+zig-out/bin/qenome app.db select.sql index.sql
+zig-out/bin/qenome app.db select.sql index.sql --bind 1:int:1234
+zig-out/bin/qenome --db app.db --select select.sql --index-sql index.sql --format kv
 ```
+
+パスは DB・SELECT ファイル・CREATE INDEX ファイルの順に埋まり、`--db` / `--select` / `--index-sql` でも指定できます（混在可）。`--` の後は `-` で始まるパスとして扱います。
 
 `select.sql` には読み取り専用の SELECT を1本、`index.sql` には候補の `CREATE INDEX` を1本書きます。
 
-- `--db <PATH>`: 対象の SQLite データベース（必須）
-- `--select <FILE>`: 比較する SELECT を1本書いたファイル（必須）
-- `--index-sql <FILE>`: 候補の CREATE INDEX を1本書いたファイル（必須）
-- `--bind <N>:<TYPE>[:<VALUE>]`: SELECT のパラメータに渡す値。TYPE は int / real / text / null で、繰り返し指定できる
+- `--db <PATH>`: 対象の SQLite データベース（必須、1回だけ）
+- `--select <FILE>`: 比較する SELECT を1本書いたファイル（必須、1回だけ）
+- `--index-sql <FILE>`: 候補の CREATE INDEX を1本書いたファイル（必須、1回だけ）
+- `--bind <N>:<TYPE>[:<VALUE>]`: SELECT のパラメータに渡す値。TYPE は int / real / text / null で、繰り返し指定できる。`:name` などの名前付きは最初に現れたときの SQLite の番号（同じ名前は同じ番号）、`?NNN` は NNN を指定する
 - `--runs <N>`: 結果が一致したあとの計測ラウンド数（既定 10、0 で計測しない）
 - `--timeout-ms <MS>`: 索引作成と SELECT 1回あたりの制限時間（既定 30000、0 で無効）
 - `--format <human|kv>`: 出力形式（既定 human）。`--show-binds` を付けるとバインド値も表示する
-- `--help`: 使い方を表示して終了する
+- `--help`, `-h`: 使い方を表示して終了する
+
+値を取るオプションは `--db=app.db` のように `=` でも書けます。
 
 ## 終了コード
 

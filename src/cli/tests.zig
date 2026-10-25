@@ -155,14 +155,39 @@ fn reportValue(stdout: []const u8, line_key: []const u8, key: []const u8) !u64 {
     return std.fmt.parseUnsigned(u64, rest[0..end], 10);
 }
 
-test "usage error for missing required arguments" {
+test "a bare invocation shows the synopsis and every missing option" {
     var stdout_buffer: [512]u8 = undefined;
-    var stderr_buffer: [512]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
     const result = callRun(testing.allocator, &.{"Qenome"}, null, &stdout_buffer, &stderr_buffer);
 
     try testing.expectEqual(ExitCode.usage, result.code);
     try testing.expectEqualStrings("", result.stdout);
-    try testing.expect(std.mem.indexOf(u8, result.stderr, "--db") != null);
+    try testing.expectEqualStrings(
+        "usage: qenome <DB> <SELECT_FILE> <INDEX_FILE> [options]\n" ++
+            "error: missing: the database (a path or --db), the SELECT file (a path or --select), the CREATE INDEX file (a path or --index-sql) (see --help)\n",
+        result.stderr,
+    );
+}
+
+test "the remaining required options are listed together" {
+    const cases = [_]struct { argv: []const [:0]const u8, stderr: []const u8 }{
+        .{
+            .argv = &.{ "Qenome", "--db", "x" },
+            .stderr = "error: missing: the SELECT file (a path or --select), the CREATE INDEX file (a path or --index-sql) (see --help)\n",
+        },
+        .{
+            .argv = &.{ "Qenome", "--db", "x", "--select", "y" },
+            .stderr = "error: missing: the CREATE INDEX file (a path or --index-sql) (see --help)\n",
+        },
+    };
+    for (cases) |case| {
+        var stdout_buffer: [512]u8 = undefined;
+        var stderr_buffer: [512]u8 = undefined;
+        const result = callRun(testing.allocator, case.argv, null, &stdout_buffer, &stderr_buffer);
+        try testing.expectEqual(ExitCode.usage, result.code);
+        try testing.expectEqualStrings("", result.stdout);
+        try testing.expectEqualStrings(case.stderr, result.stderr);
+    }
 }
 
 test "unknown option" {
@@ -205,7 +230,7 @@ test "runs parsing accepts 0 to 1000 and rejects the rest" {
         defer testing.allocator.free(args.binds);
         try testing.expectEqual(try std.fmt.parseUnsigned(u32, raw, 10), args.runs);
     }
-    for ([_][:0]const u8{ "1001", "-1", "x", "", "4294967296" }) |raw| {
+    for ([_][:0]const u8{ "1001", "-1", "x", "4294967296" }) |raw| {
         var stdout_buffer: [512]u8 = undefined;
         var stderr_buffer: [512]u8 = undefined;
         const result = callRun(testing.allocator, &.{ "Qenome", "--runs", raw }, null, &stdout_buffer, &stderr_buffer);
@@ -773,7 +798,9 @@ test "a missing temporary directory parent exits 1" {
 
     try testing.expectEqual(ExitCode.rejected, result.code);
     try testing.expectEqualStrings("", result.stdout);
-    try testing.expect(std.mem.indexOf(u8, result.stderr, "temporary directory") != null);
+    try testing.expect(contains(result.stderr, "temporary directory"));
+    try testing.expect(contains(result.stderr, ": no such file\n"));
+    try testing.expect(!contains(result.stderr, "FileNotFound"));
 }
 
 test "a missing database exits 1 and leaves no temporary directory" {
@@ -1116,7 +1143,8 @@ test "a usage error names the argument it is about" {
     const cases = [_]struct { argv: []const [:0]const u8, stderr: []const u8 }{
         .{ .argv = &.{ "Qenome", "--nope" }, .stderr = "error: unknown option '--nope' (see --help)\n" },
         .{ .argv = &.{ "Qenome", "--\x1b[2J" }, .stderr = "error: unknown option '--\\x1b[2J' (see --help)\n" },
-        .{ .argv = &.{ "Qenome", "stray.sql" }, .stderr = "error: unexpected argument 'stray.sql' (see --help)\n" },
+        .{ .argv = &.{ "Qenome", "d", "s", "i", "extra" }, .stderr = "error: unexpected argument 'extra'; paths are the database, the SELECT file and the CREATE INDEX file, at most 3 (see --help)\n" },
+        .{ .argv = &.{ "Qenome", "", "s", "i" }, .stderr = "error: a path cannot be empty (see --help)\n" },
         .{ .argv = &.{ "Qenome", "--db" }, .stderr = "error: --db needs a value (see --help)\n" },
         .{ .argv = &.{ "Qenome", "--format", "json" }, .stderr = "error: --format expects human or kv\n" },
     };
@@ -1130,6 +1158,420 @@ test "a usage error names the argument it is about" {
     }
 }
 
+test "an unknown option suggests the closest known name" {
+    const cases = [_]struct { argv: []const [:0]const u8, stderr: []const u8 }{
+        .{
+            .argv = &.{ "Qenome", "--run", "3" },
+            .stderr = "error: unknown option '--run'; did you mean '--runs'? (see --help)\n",
+        },
+        .{
+            .argv = &.{ "Qenome", "--indexsql=x" },
+            .stderr = "error: unknown option '--indexsql=x'; did you mean '--index-sql'? (see --help)\n",
+        },
+        .{
+            .argv = &.{ "Qenome", "-db", "x" },
+            .stderr = "error: unknown option '-db'; did you mean '--db'? (see --help)\n",
+        },
+    };
+    for (cases) |case| {
+        var stdout_buffer: [512]u8 = undefined;
+        var stderr_buffer: [512]u8 = undefined;
+        const result = callRun(testing.allocator, case.argv, null, &stdout_buffer, &stderr_buffer);
+        try testing.expectEqual(ExitCode.usage, result.code);
+        try testing.expectEqualStrings("", result.stdout);
+        try testing.expectEqualStrings(case.stderr, result.stderr);
+    }
+}
+
+test "a flag does not take an inline value" {
+    const cases = [_]struct { arg: [:0]const u8, stderr: []const u8 }{
+        .{ .arg = "--show-binds=1", .stderr = "error: --show-binds does not take a value (see --help)\n" },
+        .{ .arg = "--help=1", .stderr = "error: --help does not take a value (see --help)\n" },
+    };
+    for (cases) |case| {
+        var stdout_buffer: [512]u8 = undefined;
+        var stderr_buffer: [512]u8 = undefined;
+        const result = callRun(testing.allocator, &.{ "Qenome", case.arg }, null, &stdout_buffer, &stderr_buffer);
+        try testing.expectEqual(ExitCode.usage, result.code);
+        try testing.expectEqualStrings("", result.stdout);
+        try testing.expectEqualStrings(case.stderr, result.stderr);
+    }
+}
+
+test "an empty value is a usage error" {
+    const cases = [_]struct { argv: []const [:0]const u8, stderr: []const u8 }{
+        .{
+            .argv = &.{ "Qenome", "--db=", "--select", "s", "--index-sql", "i" },
+            .stderr = "error: --db needs a value (see --help)\n",
+        },
+        .{
+            .argv = &.{ "Qenome", "--db", "", "--select", "s", "--index-sql", "i" },
+            .stderr = "error: --db needs a value (see --help)\n",
+        },
+        .{
+            .argv = &.{ "Qenome", "--format=", "--db", "d", "--select", "s", "--index-sql", "i" },
+            .stderr = "error: --format needs a value (see --help)\n",
+        },
+    };
+    for (cases) |case| {
+        var stdout_buffer: [512]u8 = undefined;
+        var stderr_buffer: [512]u8 = undefined;
+        const result = callRun(testing.allocator, case.argv, null, &stdout_buffer, &stderr_buffer);
+        try testing.expectEqual(ExitCode.usage, result.code);
+        try testing.expectEqualStrings("", result.stdout);
+        try testing.expectEqualStrings(case.stderr, result.stderr);
+    }
+}
+
+test "a missing value is not taken from the next option" {
+    const cases = [_]struct { argv: []const [:0]const u8, stderr: []const u8 }{
+        .{
+            .argv = &.{ "Qenome", "--db", "--select", "s.sql", "--index-sql", "i.sql" },
+            .stderr = "error: --db needs a value (see --help)\n",
+        },
+        .{
+            .argv = &.{ "Qenome", "--db", "d.db", "--select", "--index-sql", "i.sql" },
+            .stderr = "error: --select needs a value (see --help)\n",
+        },
+    };
+    for (cases) |case| {
+        var stdout_buffer: [512]u8 = undefined;
+        var stderr_buffer: [512]u8 = undefined;
+        const result = callRun(testing.allocator, case.argv, null, &stdout_buffer, &stderr_buffer);
+        try testing.expectEqual(ExitCode.usage, result.code);
+        try testing.expectEqualStrings("", result.stdout);
+        try testing.expectEqualStrings(case.stderr, result.stderr);
+    }
+}
+
+test "a repeated single-value option is a usage error" {
+    const cases = [_]struct { argv: []const [:0]const u8, stderr: []const u8 }{
+        .{
+            .argv = &.{ "Qenome", "--db", "a", "--db", "b" },
+            .stderr = "error: --db was given more than once (see --help)\n",
+        },
+        .{
+            .argv = &.{ "Qenome", "--select=a", "--select=b" },
+            .stderr = "error: --select was given more than once (see --help)\n",
+        },
+        .{
+            .argv = &.{ "Qenome", "--index-sql", "a", "--index-sql=b" },
+            .stderr = "error: --index-sql was given more than once (see --help)\n",
+        },
+    };
+    for (cases) |case| {
+        var stdout_buffer: [512]u8 = undefined;
+        var stderr_buffer: [512]u8 = undefined;
+        const result = callRun(testing.allocator, case.argv, null, &stdout_buffer, &stderr_buffer);
+        try testing.expectEqual(ExitCode.usage, result.code);
+        try testing.expectEqualStrings("", result.stdout);
+        try testing.expectEqualStrings(case.stderr, result.stderr);
+    }
+}
+
+test "help wins over other argument errors" {
+    const cases = [_][]const [:0]const u8{
+        &.{ "Qenome", "-h", "--db" },
+        &.{ "Qenome", "--help", "--nope" },
+        &.{ "Qenome", "--db=", "--help" },
+        &.{ "Qenome", "--db", "a", "--db", "b", "-h" },
+    };
+    for (cases) |argv| {
+        var stdout_buffer: [4096]u8 = undefined;
+        var stderr_buffer: [512]u8 = undefined;
+        const result = callRun(testing.allocator, argv, null, &stdout_buffer, &stderr_buffer);
+        try testing.expectEqual(ExitCode.ok, result.code);
+        try testing.expect(std.mem.startsWith(u8, result.stdout, "usage: qenome"));
+        try testing.expectEqualStrings("", result.stderr);
+    }
+}
+
+test "the equals form runs a comparison" {
+    var fixture = try CliFixture.init("SELECT a FROM t WHERE a = 1", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+
+    var db_buffer: [1024]u8 = undefined;
+    var select_buffer: [1024]u8 = undefined;
+    var index_buffer: [1024]u8 = undefined;
+    const db_arg = try std.mem.printSentinel(&db_buffer, "--db={s}", .{fixture.db_path}, 0);
+    const select_arg = try std.mem.printSentinel(&select_buffer, "--select={s}", .{fixture.select_path}, 0);
+    const index_arg = try std.mem.printSentinel(&index_buffer, "--index-sql={s}", .{fixture.index_path}, 0);
+
+    var stdout_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [512]u8 = undefined;
+    const result = callRun(
+        testing.allocator,
+        &.{ "Qenome", db_arg, select_arg, index_arg, "--runs=0", "--format=kv" },
+        fixture.work_parent,
+        &stdout_buffer,
+        &stderr_buffer,
+    );
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expect(contains(result.stdout, "result: match (row multiset)\n"));
+    try testing.expectEqualStrings("", result.stderr);
+    try fixture.expectNoLeftovers();
+}
+
+test "sql text in place of a file path gets a hint" {
+    var stdout_buffer: [1024]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const result = callRun(
+        testing.allocator,
+        &.{ "Qenome", "--db", "d", "--select", "SELECT 1", "--index-sql", "i" },
+        null,
+        &stdout_buffer,
+        &stderr_buffer,
+    );
+    try testing.expectEqual(ExitCode.rejected, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try testing.expectEqualStrings(
+        "error: cannot read --select file 'SELECT 1': no such file; --select takes a path to a file holding the SQL, not the SQL text\n",
+        result.stderr,
+    );
+}
+
+test "sql text in place of the index file gets a hint" {
+    var fixture = try CliFixture.init("SELECT a FROM t WHERE a = 1", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+
+    var stdout_buffer: [1024]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const result = callRun(
+        testing.allocator,
+        &.{ "Qenome", "--db", fixture.db_path, "--select", fixture.select_path, "--index-sql", "CREATE INDEX idx_a ON t(a)" },
+        fixture.work_parent,
+        &stdout_buffer,
+        &stderr_buffer,
+    );
+    try testing.expectEqual(ExitCode.rejected, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try testing.expectEqualStrings(
+        "error: cannot read --index-sql file 'CREATE INDEX idx_a ON t(a)': no such file; --index-sql takes a path to a file holding the SQL, not the SQL text\n",
+        result.stderr,
+    );
+}
+
+test "a directory in place of a file says it is a directory" {
+    var fixture = try CliFixture.init("SELECT a FROM t WHERE a = 1", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+
+    var stdout_buffer: [1024]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const result = callRun(
+        testing.allocator,
+        &.{ "Qenome", "--db", fixture.db_path, "--select", fixture.work_parent, "--index-sql", fixture.index_path },
+        null,
+        &stdout_buffer,
+        &stderr_buffer,
+    );
+    try testing.expectEqual(ExitCode.rejected, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try testing.expect(contains(result.stderr, ": is a directory\n"));
+    try testing.expect(!contains(result.stderr, "IsDir"));
+}
+
+test "bind count errors name the problem and the next step" {
+    const cases = [_]struct {
+        select_sql: [:0]const u8,
+        index_sql: [:0]const u8,
+        extra: []const [:0]const u8,
+        stderr: []const u8,
+    }{
+        .{
+            .select_sql = "SELECT a FROM t WHERE a = ?1 AND b = ?2",
+            .index_sql = "CREATE INDEX idx_a ON t(a)",
+            .extra = &.{ "--bind", "2:int:1" },
+            .stderr = "error: --bind: the SELECT has 2 parameters but --bind is missing parameter 1; add one per parameter, e.g. --bind 1:int:1234 (parameters in the SELECT: 2; --bind given: 1)\n",
+        },
+        .{
+            .select_sql = "SELECT a FROM t WHERE a = ?1 AND b = ?2",
+            .index_sql = "CREATE INDEX idx_a ON t(a)",
+            .extra = &.{ "--bind", "1:int:1", "--bind", "1:text:x" },
+            .stderr = "error: --bind: bind number 1 is given more than once; give each parameter once, e.g. --bind 1:int:1234 (parameters in the SELECT: 2; --bind given: 2)\n",
+        },
+        .{
+            .select_sql = "SELECT a FROM t WHERE a = ?1 AND b = ?2",
+            .index_sql = "CREATE INDEX idx_a ON t(a)",
+            .extra = &.{ "--bind", "3:int:1" },
+            .stderr = "error: --bind: bind number 3 is outside 1..2; use the parameter numbers 1 to 2, e.g. --bind 2:int:1234 (parameters in the SELECT: 2; --bind given: 1)\n",
+        },
+        .{
+            .select_sql = "SELECT a FROM t WHERE a = ?1",
+            .index_sql = "CREATE INDEX idx_a ON t(a)",
+            .extra = &.{ "--bind", "1:int:1", "--bind", "1:int:2" },
+            .stderr = "error: --bind: the SELECT has 1 parameter but 2 --bind values were given; bind number 1 is repeated (give exactly one per parameter); e.g. --bind 1:int:1234 (parameters in the SELECT: 1; --bind given: 2)\n",
+        },
+        .{
+            .select_sql = "SELECT 1",
+            .index_sql = "CREATE INDEX idx_a ON t(a)",
+            .extra = &.{ "--bind", "1:int:1" },
+            .stderr = "error: --bind: the SELECT has no parameters but --bind was given; remove the --bind values (parameters in the SELECT: 0; --bind given: 1)\n",
+        },
+    };
+    for (cases) |case| {
+        var fixture = try CliFixture.init(case.select_sql, case.index_sql);
+        defer fixture.deinit();
+        var stdout_buffer: [1024]u8 = undefined;
+        var stderr_buffer: [2048]u8 = undefined;
+        const result = fixture.run(case.extra, &stdout_buffer, &stderr_buffer);
+        try testing.expectEqual(ExitCode.rejected, result.code);
+        try testing.expectEqualStrings("", result.stdout);
+        try testing.expectEqualStrings(case.stderr, result.stderr);
+        try fixture.expectNoLeftovers();
+    }
+}
+
+test "positional paths run a comparison" {
+    var fixture = try CliFixture.init("SELECT a FROM t WHERE a = 1", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+
+    var stdout_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [512]u8 = undefined;
+    const result = callRun(
+        testing.allocator,
+        &.{ "Qenome", fixture.db_path, fixture.select_path, fixture.index_path, "--runs=0", "--format=kv" },
+        fixture.work_parent,
+        &stdout_buffer,
+        &stderr_buffer,
+    );
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expect(contains(result.stdout, "result: match (row multiset)\n"));
+    try testing.expectEqualStrings("", result.stderr);
+    try fixture.expectNoLeftovers();
+}
+
+test "positional and named paths can be mixed" {
+    var fixture = try CliFixture.init("SELECT a FROM t WHERE a = 1", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+
+    var first_stdout: [4096]u8 = undefined;
+    var first_stderr: [512]u8 = undefined;
+    const first = callRun(
+        testing.allocator,
+        &.{ "Qenome", fixture.db_path, "--select", fixture.select_path, "--index-sql", fixture.index_path, "--runs=0", "--format=kv" },
+        fixture.work_parent,
+        &first_stdout,
+        &first_stderr,
+    );
+    try testing.expectEqual(ExitCode.ok, first.code);
+    try testing.expect(contains(first.stdout, "result: match (row multiset)\n"));
+    try testing.expectEqualStrings("", first.stderr);
+    try fixture.expectNoLeftovers();
+
+    var second_stdout: [4096]u8 = undefined;
+    var second_stderr: [512]u8 = undefined;
+    const second = callRun(
+        testing.allocator,
+        &.{ "Qenome", "--db", fixture.db_path, fixture.select_path, fixture.index_path, "--runs=0", "--format=kv" },
+        fixture.work_parent,
+        &second_stdout,
+        &second_stderr,
+    );
+    try testing.expectEqual(ExitCode.ok, second.code);
+    try testing.expect(contains(second.stdout, "result: match (row multiset)\n"));
+    try testing.expectEqualStrings("", second.stderr);
+    try fixture.expectNoLeftovers();
+}
+
+test "a duplicate path and named option is a usage error" {
+    var fixture = try CliFixture.init("SELECT a FROM t WHERE a = 1", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+
+    var stdout_buffer: [512]u8 = undefined;
+    var stderr_buffer: [512]u8 = undefined;
+    const result = callRun(
+        testing.allocator,
+        &.{ "Qenome", fixture.db_path, "--db", "other.db", "--select", fixture.select_path, "--index-sql", fixture.index_path },
+        null,
+        &stdout_buffer,
+        &stderr_buffer,
+    );
+    try testing.expectEqual(ExitCode.usage, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try testing.expectEqualStrings("error: --db was given more than once (see --help)\n", result.stderr);
+}
+
+test "a fourth path is a usage error" {
+    var fixture = try CliFixture.init("SELECT a FROM t WHERE a = 1", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+
+    var stdout_buffer: [512]u8 = undefined;
+    var stderr_buffer: [512]u8 = undefined;
+    const result = callRun(
+        testing.allocator,
+        &.{ "Qenome", fixture.db_path, fixture.select_path, fixture.index_path, "extra" },
+        null,
+        &stdout_buffer,
+        &stderr_buffer,
+    );
+    try testing.expectEqual(ExitCode.usage, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try testing.expectEqualStrings("error: unexpected argument 'extra'; paths are the database, the SELECT file and the CREATE INDEX file, at most 3 (see --help)\n", result.stderr);
+}
+
+test "swapped SELECT and CREATE INDEX files get a hint" {
+    var forward = try CliFixture.init("CREATE INDEX idx_a ON t(a)", "SELECT a FROM t");
+    defer forward.deinit();
+
+    var forward_stdout: [512]u8 = undefined;
+    var forward_stderr: [1024]u8 = undefined;
+    const forward_result = forward.run(&.{}, &forward_stdout, &forward_stderr);
+    try testing.expectEqual(ExitCode.rejected, forward_result.code);
+    try testing.expectEqualStrings("", forward_result.stdout);
+    try testing.expectEqualStrings(
+        "error: --select: the statement is not allowed here: not authorized\nhint: the SELECT and CREATE INDEX files may be swapped\n",
+        forward_result.stderr,
+    );
+    try forward.expectNoLeftovers();
+
+    var backward = try CliFixture.init("SELECT a FROM t", "SELECT a FROM t");
+    defer backward.deinit();
+
+    var backward_stdout: [512]u8 = undefined;
+    var backward_stderr: [1024]u8 = undefined;
+    const backward_result = backward.run(&.{}, &backward_stdout, &backward_stderr);
+    try testing.expectEqual(ExitCode.rejected, backward_result.code);
+    try testing.expectEqualStrings("", backward_result.stdout);
+    try testing.expectEqualStrings(
+        "error: --index-sql: the statement is not allowed here: not authorized\nhint: the SELECT and CREATE INDEX files may be swapped\n",
+        backward_result.stderr,
+    );
+    try backward.expectNoLeftovers();
+
+    var insert = try CliFixture.init("INSERT INTO t VALUES (1)", "CREATE INDEX idx_a ON t(a)");
+    defer insert.deinit();
+
+    var insert_stdout: [512]u8 = undefined;
+    var insert_stderr: [1024]u8 = undefined;
+    const insert_result = insert.run(&.{}, &insert_stdout, &insert_stderr);
+    try testing.expectEqual(ExitCode.rejected, insert_result.code);
+    try testing.expectEqualStrings("", insert_result.stdout);
+    try testing.expectEqualStrings("error: --select: the statement is not allowed here: not authorized\n", insert_result.stderr);
+    try insert.expectNoLeftovers();
+}
+
+test "named and numbered parameters use SQLite's parameter numbers" {
+    var mixed = try CliFixture.init("SELECT a FROM t WHERE a = ?2 OR a = :cid", "CREATE INDEX idx_a ON t(a)");
+    defer mixed.deinit();
+    var mixed_stdout: [4096]u8 = undefined;
+    var mixed_stderr: [512]u8 = undefined;
+    const mixed_result = mixed.run(&.{ "--bind", "1:null", "--bind", "2:int:1", "--bind", "3:int:2", "--runs", "0" }, &mixed_stdout, &mixed_stderr);
+    try testing.expectEqual(ExitCode.ok, mixed_result.code);
+    try testing.expectEqual(@as(usize, 2), std.mem.count(u8, mixed_result.stdout, "rows: 2\n"));
+    try testing.expectEqualStrings("", mixed_result.stderr);
+    try mixed.expectNoLeftovers();
+
+    var repeated = try CliFixture.init("SELECT a FROM t WHERE a = :cid OR a = :cid", "CREATE INDEX idx_a ON t(a)");
+    defer repeated.deinit();
+    var repeated_stdout: [4096]u8 = undefined;
+    var repeated_stderr: [512]u8 = undefined;
+    const repeated_result = repeated.run(&.{ "--bind", "1:int:1", "--runs", "0" }, &repeated_stdout, &repeated_stderr);
+    try testing.expectEqual(ExitCode.ok, repeated_result.code);
+    try testing.expectEqual(@as(usize, 2), std.mem.count(u8, repeated_result.stdout, "rows: 1\n"));
+    try testing.expectEqualStrings("", repeated_result.stderr);
+    try repeated.expectNoLeftovers();
+}
+
 test "a bind error says how many parameters the SELECT has" {
     var fixture = try CliFixture.init("SELECT a FROM t WHERE a = ?1", "CREATE INDEX idx_a ON t(a)");
     defer fixture.deinit();
@@ -1139,7 +1581,7 @@ test "a bind error says how many parameters the SELECT has" {
     const result = fixture.runFormat("human", &.{}, &stdout_buffer, &stderr_buffer);
     try testing.expectEqual(ExitCode.rejected, result.code);
     try testing.expectEqualStrings("", result.stdout);
-    try testing.expectEqualStrings("error: --bind: every number in 1..parameter count must be given exactly once (parameters in the SELECT: 1; --bind given: 0)\n", result.stderr);
+    try testing.expectEqualStrings("error: --bind: the SELECT has 1 parameter but no --bind was given; add one per parameter, e.g. --bind 1:int:1234 (parameters in the SELECT: 1; --bind given: 0)\n", result.stderr);
     try fixture.expectNoLeftovers();
 }
 
@@ -1149,6 +1591,27 @@ test "help fits in 80 columns and names the formats" {
     const result = callRun(testing.allocator, &.{ "Qenome", "--help" }, null, &stdout_buffer, &stderr_buffer);
     try testing.expectEqual(ExitCode.ok, result.code);
     try testing.expect(contains(result.stdout, "  --format <FORMAT>    human (default) or kv\n"));
-    try testing.expect(std.mem.endsWith(u8, result.stdout, "SIGHUP / SIGINT / SIGTERM\n"));
+    try testing.expect(contains(result.stdout, "exit status:"));
+    try expectNarrow(result.stdout, &.{});
+}
+
+test "help puts the usage, options, examples and exit status before the details" {
+    var stdout_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [512]u8 = undefined;
+    const result = callRun(testing.allocator, &.{ "Qenome", "--help" }, null, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+
+    var last: usize = 0;
+    for ([_][]const u8{ "usage: qenome", "options", "examples:", "exit status:", "output (stdout" }) |needle| {
+        const at = std.mem.indexOf(u8, result.stdout, needle) orelse return error.MissingText;
+        try testing.expect(at >= last);
+        last = at;
+    }
+    try testing.expect(contains(result.stdout, "  qenome app.db select.sql index.sql\n"));
+    try testing.expect(contains(result.stdout, "--bind 1:int:1234"));
+    try testing.expect(contains(result.stdout, "--format kv"));
+    try testing.expect(contains(result.stdout, "The same paths can be given as --db, --select and --index-sql."));
+    try testing.expect(contains(result.stdout, "named parameters"));
+    try testing.expect(contains(result.stdout, "share the number of their first appearance"));
     try expectNarrow(result.stdout, &.{});
 }

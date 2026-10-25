@@ -9,6 +9,8 @@ const Side = cli_comparison.Side;
 
 pub const Kind = enum { baseline, variant };
 
+const swapped_hint = "hint: the SELECT and CREATE INDEX files may be swapped\n";
+
 pub fn sqliteVersion() [*:0]const u8 {
     return sqlite.sqlite3_libversion();
 }
@@ -45,7 +47,14 @@ pub const QuerySession = struct {
 
         const statement = self.database.prepareSelect(sql) catch |err| {
             switch (kind) {
-                .baseline => reportSelectFailure(stderr, err, &self.database, index_sql),
+                .baseline => {
+                    reportSelectFailure(stderr, err, &self.database, index_sql);
+                    self.database.checkCreateIndex(sql) catch {
+                        failure.* = .rejected;
+                        return false;
+                    };
+                    stderr.writeAll(swapped_hint) catch {};
+                },
                 .variant => reportCheckFailure(stderr, "--select on the variant", err, &self.database),
             }
             failure.* = .rejected;
@@ -54,8 +63,10 @@ pub const QuerySession = struct {
         self.statement = statement;
 
         db.bindAll(statement, binds) catch |err| {
-            const detail = bindErrorMessage(err);
-            const counts: BindCounts = .{ .parameters = sqlite.sqlite3_bind_parameter_count(statement), .given = binds.len };
+            const parameters = sqlite.sqlite3_bind_parameter_count(statement);
+            var detail_buffer: [512]u8 = undefined;
+            const detail = bindDetail(&detail_buffer, err, binds, parameters);
+            const counts: BindCounts = .{ .parameters = parameters, .given = binds.len };
             switch (kind) {
                 .baseline => stderr.print("error: --bind: {s} ({f})\n", .{ detail, counts }) catch {},
                 .variant => stderr.print("error: --bind on the variant: {s} ({f})\n", .{ detail, counts }) catch {},
@@ -95,6 +106,8 @@ pub const QuerySession = struct {
     pub fn checkCreateIndex(self: *QuerySession, sql: [:0]const u8, stderr: *Io.Writer) bool {
         self.database.checkCreateIndex(sql) catch |err| {
             reportCheckFailure(stderr, "--index-sql", err, &self.database);
+            self.database.checkSelect(sql) catch return false;
+            stderr.writeAll(swapped_hint) catch {};
             return false;
         };
         return true;
@@ -282,6 +295,86 @@ fn checkErrorMessage(err: db.CheckError) []const u8 {
         error.StatementNotReadOnly => "the statement is not read-only",
         error.StatementNotCreateIndex => "the statement is not one CREATE INDEX",
     };
+}
+
+fn bindDetail(buffer: []u8, err: db.BindError, binds: []const db.BindArg, count: c_int) []const u8 {
+    var writer = Io.Writer.fixed(buffer);
+    writeBindDetail(&writer, err, binds, count) catch return bindErrorMessage(err);
+    return writer.buffered();
+}
+
+fn writeBindDetail(writer: *Io.Writer, err: db.BindError, binds: []const db.BindArg, count: c_int) Io.Writer.Error!void {
+    const total: u64 = @intCast(count);
+    const problems = bindProblems(binds, total);
+    switch (err) {
+        error.MissingBindNumber => {
+            try writer.print("the SELECT has {d} parameter{s} but ", .{ total, plural(total) });
+            if (binds.len == 0) {
+                try writer.writeAll("no --bind was given");
+            } else {
+                try writer.print("--bind is missing parameter {d}", .{problems.first_missing});
+                if (problems.missing > 1) try writer.print(" and {d} more", .{problems.missing - 1});
+            }
+            try writer.print("; add one per parameter, e.g. --bind {d}:int:1234", .{problems.first_missing});
+        },
+        error.DuplicateBindNumber => {
+            const number = problems.duplicate orelse 1;
+            try writer.print("bind number {d} is given more than once; give each parameter once, e.g. --bind {d}:int:1234", .{ number, number });
+        },
+        error.BindNumberOutOfRange => {
+            const number = problems.outside orelse 1;
+            try writer.print("bind number {d} is outside 1..{d}; use the parameter numbers 1 to {d}, e.g. --bind {d}:int:1234", .{ number, total, total, if (total == 0) 1 else total });
+        },
+        error.ParameterCountMismatch => {
+            if (total == 0) {
+                try writer.writeAll("the SELECT has no parameters but --bind was given; remove the --bind values");
+            } else {
+                try writer.print("the SELECT has {d} parameter{s} but {d} --bind values were given; ", .{ total, plural(total), binds.len });
+                if (problems.duplicate) |number| {
+                    try writer.print("bind number {d} is repeated (give exactly one per parameter)", .{number});
+                } else if (problems.outside) |number| {
+                    try writer.print("bind number {d} is outside 1..{d} (give exactly one per parameter)", .{ number, total });
+                } else {
+                    try writer.writeAll("give exactly one per parameter");
+                }
+                try writer.writeAll("; e.g. --bind 1:int:1234");
+                if (total > 1) try writer.writeAll(" --bind 2:int:1234");
+            }
+        },
+        error.BindFailed => try writer.writeAll("SQLite refused a bind value; check the value for each parameter"),
+    }
+}
+
+const BindProblems = struct {
+    first_missing: u64 = 1,
+    missing: u64 = 0,
+    duplicate: ?u64 = null,
+    outside: ?u64 = null,
+};
+
+fn bindProblems(binds: []const db.BindArg, total: u64) BindProblems {
+    var seen: std.StaticBitSet(sqlite.max_parameter_number) = .empty;
+    var problems: BindProblems = .{};
+    for (binds) |bind| {
+        if (bind.number == 0 or bind.number > total) {
+            if (problems.outside == null) problems.outside = bind.number;
+            continue;
+        }
+        const position: usize = @intCast(bind.number - 1);
+        if (seen.isSet(position) and problems.duplicate == null) problems.duplicate = bind.number;
+        seen.set(position);
+    }
+    var number: u64 = 1;
+    while (number <= total) : (number += 1) {
+        if (seen.isSet(@intCast(number - 1))) continue;
+        if (problems.missing == 0) problems.first_missing = number;
+        problems.missing += 1;
+    }
+    return problems;
+}
+
+fn plural(number: u64) []const u8 {
+    return if (number == 1) "" else "s";
 }
 
 fn bindErrorMessage(err: db.BindError) []const u8 {
