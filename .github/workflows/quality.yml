@@ -18,36 +18,5 @@ jobs:
       - name: Set up Zig (resolved from build.zig.zon)
         uses: mlugg/setup-zig@v2
 
-      - name: Verify the effective Zig version
-        run: |
-          pattern='s/.*minimum_zig_version *= *"\([^"]*\)".*/\1/p'
-          expected="$(sed -n "$pattern" build.zig.zon)"
-          actual="$(zig version)"
-          echo "build.zig.zon minimum_zig_version: ${expected:-<not found>}"
-          echo "effective zig version: $actual"
-          test -n "$expected"
-          test "$actual" = "$expected"
-
-      - name: Check formatting
-        run: zig fmt --check .
-
-      - name: Build
-        run: zig build --summary all
-
-      - name: Test
-        run: zig build test --summary all
-
-      - name: Show the Python version
-        run: python3 --version
-
-      - name: Test the architecture checker
-        run: python3 scripts/test_check_architecture.py
-
-      - name: Check the architecture boundaries
-        run: python3 scripts/check_architecture.py
-
-      - name: Test the comment checker
-        run: python3 scripts/test_check_comments.py
-
-      - name: Check for comments
-        run: python3 scripts/check_comments.py
+      - name: Run every quality check
+        run: python3 scripts/check_all.py

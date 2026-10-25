@@ -196,14 +196,10 @@ Main keys:
 ## Development checks
 
 ```sh
-zig fmt --check .
-zig build
-zig build test
-python3 scripts/test_check_comments.py
-python3 scripts/check_comments.py
-python3 scripts/test_check_architecture.py
-python3 scripts/check_architecture.py
+python3 scripts/check_all.py
 ```
+
+The quality workflow in CI runs the same script. It checks the effective Zig version, runs `zig fmt --check .`, the build, the tests, and the architecture and comment checks in order, and stops at the first stage that fails.
 
 The codebase carries no comments: explanations live in the README, and the checks are the source of truth for the rules they enforce.
 

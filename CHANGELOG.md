@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Release notes now come from the matching CHANGELOG section.
 
+## [0.3.1] - 2026-10-26
+
+### Changed
+
+- Release binaries no longer carry debug information. The Linux binaries shrink from about 11 MB to about 2 MB, and a panic stack trace shows addresses instead of function names and lines.
+
 ## [0.3.0] - 2026-10-26
 
 ### Added
