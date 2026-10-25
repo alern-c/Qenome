@@ -1,6 +1,7 @@
 const std = @import("std");
 const Io = std.Io;
 const db = @import("../db.zig");
+const build_options = @import("build_options");
 
 pub const BindArg = db.BindArg;
 
@@ -49,6 +50,7 @@ pub const Args = struct {
     show_binds: bool = false,
     format: Format = .human,
     help: bool = false,
+    version: bool = false,
 };
 
 pub const ParseError = error{
@@ -73,6 +75,7 @@ pub fn parseArgs(allocator: std.mem.Allocator, argv: []const [:0]const u8) Parse
 pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const u8, offending: *?[:0]const u8) ParseError!Args {
     var args: Args = .{};
     const rest = if (argv.len > 1) argv[1..] else argv[0..0];
+    var version_requested = false;
     for (rest) |arg| {
         if (std.mem.eql(u8, arg, "--")) break;
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
@@ -80,6 +83,12 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
             offending.* = null;
             return args;
         }
+        if (std.mem.eql(u8, arg, "--version")) version_requested = true;
+    }
+    if (version_requested) {
+        args.version = true;
+        offending.* = null;
+        return args;
     }
 
     var binds: std.ArrayList(db.BindArg) = .empty;
@@ -104,6 +113,9 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
         if (std.mem.eql(u8, name, "--help") or std.mem.eql(u8, name, "-h")) {
             if (inline_value != null) return error.UnexpectedValue;
             args.help = true;
+        } else if (std.mem.eql(u8, name, "--version")) {
+            if (inline_value != null) return error.UnexpectedValue;
+            args.version = true;
         } else if (std.mem.eql(u8, name, "--db")) {
             if (args.db != null) return error.DuplicateOption;
             args.db = try optionValue(argv, &index, inline_value);
@@ -219,6 +231,7 @@ const long_options = [_][]const u8{
     "--show-binds",
     "--runs",
     "--format",
+    "--version",
 };
 
 const max_option_name = 32;
@@ -331,6 +344,12 @@ fn parseBind(raw: [:0]const u8) ParseError!db.BindArg {
 
 pub const usage_line = "usage: qenome <DB> <SELECT_FILE> <INDEX_FILE> [options]";
 
+pub const version = build_options.version;
+
+pub fn printVersion(writer: *Io.Writer) Io.Writer.Error!void {
+    try writer.print("qenome {s}\n", .{version});
+}
+
 pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
     try writer.writeAll(usage_line ++ "\n\n" ++
         \\Compares one read-only SELECT before and after one candidate CREATE INDEX
@@ -360,6 +379,7 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\                       type; without it, human leaves the binds out and
         \\                       kv prints only their numbers, types and text
         \\                       lengths, so that the values stay out of logs
+        \\  --version            print the version and exit with status 0
         \\  --help, -h           print this message and exit with status 0
         \\
         \\The three paths may also be given by position: database, SELECT file,
@@ -673,7 +693,7 @@ test "a value option takes its value after an equals sign" {
 }
 
 test "a flag rejects an inline value" {
-    for ([_][:0]const u8{ "--help=1", "--show-binds=true" }) |arg| {
+    for ([_][:0]const u8{ "--help=1", "--show-binds=true", "--version=1" }) |arg| {
         var offending: ?[:0]const u8 = null;
         try testing.expectError(
             error.UnexpectedValue,
@@ -681,6 +701,49 @@ test "a flag rejects an inline value" {
         );
         try testing.expectEqualStrings(arg, offending.?);
     }
+}
+
+test "version is a flag that wins over other argument errors" {
+    const cases = [_][]const [:0]const u8{
+        &.{ "Qenome", "--version" },
+        &.{ "Qenome", "--version", "--nope" },
+        &.{ "Qenome", "--version", "--db=" },
+        &.{ "Qenome", "--db", "--version" },
+        &.{ "Qenome", "--runs", "x", "--version" },
+    };
+    for (cases) |argv| {
+        const args = try parseArgs(testing.allocator, argv);
+        testing.allocator.free(args.binds);
+        try testing.expect(args.version);
+        try testing.expect(!args.help);
+    }
+
+    const help_wins = [_][]const [:0]const u8{
+        &.{ "Qenome", "--version", "--help" },
+        &.{ "Qenome", "--help", "--version" },
+        &.{ "Qenome", "--version", "-h", "--nope" },
+    };
+    for (help_wins) |argv| {
+        const args = try parseArgs(testing.allocator, argv);
+        testing.allocator.free(args.binds);
+        try testing.expect(args.help);
+        try testing.expect(!args.version);
+    }
+}
+
+test "a version after the double dash is a path" {
+    const args = try parseArgs(testing.allocator, &.{ "Qenome", "--", "--version" });
+    defer testing.allocator.free(args.binds);
+    try testing.expect(!args.version);
+    try testing.expectEqualStrings("--version", args.db.?);
+}
+
+test "the version line names the program and the version" {
+    var buffer: [64]u8 = undefined;
+    var writer = Io.Writer.fixed(&buffer);
+    try printVersion(&writer);
+    try testing.expectEqualStrings("qenome " ++ version ++ "\n", writer.buffered());
+    try testing.expect(version.len != 0);
 }
 
 test "missing required options keep the usage order" {
@@ -823,6 +886,7 @@ test "every known long option is accepted by the parser" {
         .{ .option = "--show-binds", .value = null },
         .{ .option = "--runs", .value = "1" },
         .{ .option = "--format", .value = "kv" },
+        .{ .option = "--version", .value = null },
     };
     try testing.expectEqual(long_options.len, cases.len);
     for (cases) |case| {

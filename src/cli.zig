@@ -21,6 +21,7 @@ pub const Args = cli_args.Args;
 pub const ParseError = cli_args.ParseError;
 pub const parseArgs = cli_args.parseArgs;
 pub const usage = cli_args.usage;
+pub const version = cli_args.version;
 pub const ExitCode = cli_control.ExitCode;
 pub const finalExitCode = cli_control.finalExitCode;
 
@@ -43,6 +44,7 @@ const signalPending = cli_control.signalPending;
 const reportInterrupted = cli_control.reportInterrupted;
 const parseErrorMessage = cli_args.parseErrorMessage;
 const fileErrorMessage = cli_args.fileErrorMessage;
+const printVersion = cli_args.printVersion;
 
 fn resultExitCode(outcome: cli_comparison.Outcome) ExitCode {
     return switch (outcome.verdict) {
@@ -75,6 +77,11 @@ pub fn run(
 
     if (args.help) {
         usage(stdout) catch {};
+        return .ok;
+    }
+
+    if (args.version) {
+        printVersion(stdout) catch {};
         return .ok;
     }
 

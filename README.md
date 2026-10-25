@@ -24,6 +24,7 @@ zig-out/bin/qenome --db app.db --select select.sql --index-sql index.sql --forma
 - `--timeout-ms <MS>`: 索引作成と SELECT 1回あたりの制限時間（既定 30000、0 で無効）
 - `--format <human|kv>`: 出力形式（既定 human）。human は判断に使う Summary・左右比較表・実行計画に絞り、kv は入力・版・計時条件まで含む全項目を1行1項目で出す。`--show-binds` を付けるとバインド値も出す
 - `--help`, `-h`: 使い方を表示して終了する
+- `--version`: バージョン（`build.zig.zon` の version）を `qenome <version>` で表示して終了する
 
 値を取るオプションは `--db=app.db` のように `=` でも書けます。
 

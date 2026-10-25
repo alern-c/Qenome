@@ -255,6 +255,67 @@ test "help exits 0" {
     }
 }
 
+test "version exits 0" {
+    var stdout_buffer: [256]u8 = undefined;
+    var stderr_buffer: [512]u8 = undefined;
+    const result = callRun(testing.allocator, &.{ "Qenome", "--version" }, null, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("qenome " ++ cli.version ++ "\n", result.stdout);
+    try testing.expectEqualStrings("", result.stderr);
+}
+
+test "version wins over other argument errors and help wins over version" {
+    const version_wins = [_][]const [:0]const u8{
+        &.{ "Qenome", "--version", "--nope" },
+        &.{ "Qenome", "--db", "--version" },
+    };
+    for (version_wins) |argv| {
+        var stdout_buffer: [256]u8 = undefined;
+        var stderr_buffer: [512]u8 = undefined;
+        const result = callRun(testing.allocator, argv, null, &stdout_buffer, &stderr_buffer);
+        try testing.expectEqual(ExitCode.ok, result.code);
+        try testing.expectEqualStrings("qenome " ++ cli.version ++ "\n", result.stdout);
+        try testing.expectEqualStrings("", result.stderr);
+    }
+
+    const help_wins = [_][]const [:0]const u8{
+        &.{ "Qenome", "--version", "--help" },
+        &.{ "Qenome", "--help", "--version" },
+    };
+    for (help_wins) |argv| {
+        var stdout_buffer: [4096]u8 = undefined;
+        var stderr_buffer: [512]u8 = undefined;
+        const result = callRun(testing.allocator, argv, null, &stdout_buffer, &stderr_buffer);
+        try testing.expectEqual(ExitCode.ok, result.code);
+        try testing.expect(std.mem.startsWith(u8, result.stdout, "usage: qenome"));
+        try testing.expect(!std.mem.startsWith(u8, result.stdout, "qenome " ++ cli.version));
+        try testing.expectEqualStrings("", result.stderr);
+    }
+}
+
+test "a version after the double dash is a path" {
+    var stdout_buffer: [256]u8 = undefined;
+    var stderr_buffer: [512]u8 = undefined;
+    const result = callRun(testing.allocator, &.{ "Qenome", "--", "--version" }, null, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.usage, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try testing.expectEqualStrings(
+        "error: missing: the SELECT file (a path or --select), the CREATE INDEX file (a path or --index-sql) (see --help)\n",
+        result.stderr,
+    );
+}
+
+test "the short version flags are unknown options" {
+    for ([_][:0]const u8{ "-V", "-v" }) |flag| {
+        var stdout_buffer: [256]u8 = undefined;
+        var stderr_buffer: [512]u8 = undefined;
+        const result = callRun(testing.allocator, &.{ "Qenome", flag }, null, &stdout_buffer, &stderr_buffer);
+        try testing.expectEqual(ExitCode.usage, result.code);
+        try testing.expectEqualStrings("", result.stdout);
+        try testing.expect(std.mem.indexOf(u8, result.stderr, "unknown option") != null);
+    }
+}
+
 test "accepted run prints summary on stdout and nothing on stderr (exit 0)" {
     var fixture = try CliFixture.init("SELECT a FROM t WHERE a = ?1", "CREATE INDEX idx_a ON t(a)");
     defer fixture.deinit();
@@ -1198,6 +1259,7 @@ test "a flag does not take an inline value" {
     const cases = [_]struct { arg: [:0]const u8, stderr: []const u8 }{
         .{ .arg = "--show-binds=1", .stderr = "error: --show-binds does not take a value (see --help)\n" },
         .{ .arg = "--help=1", .stderr = "error: --help does not take a value (see --help)\n" },
+        .{ .arg = "--version=1", .stderr = "error: --version does not take a value (see --help)\n" },
     };
     for (cases) |case| {
         var stdout_buffer: [512]u8 = undefined;

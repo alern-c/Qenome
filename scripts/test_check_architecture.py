@@ -54,6 +54,7 @@ CANONICAL_FILES = {
     "src/cli/args.zig": (
         'const std = @import("std");\n'
         'const db = @import("../db.zig");\n'
+        'const build_options = @import("build_options");\n'
     ),
     "src/cli/control.zig": (
         'const std = @import("std");\n'
@@ -252,6 +253,19 @@ def main():
         lambda root: write_file(root, "src/cli/args.zig", 'const db = @import("some_module");\n')
     )
     expect_rejected("an unknown module fails", code, output, "unapproved-import", "some_module")
+
+    code, output = case(
+        lambda root: write_file(
+            root, "src/cli/control.zig", 'const build_options = @import("build_options");\n'
+        )
+    )
+    expect_rejected(
+        "only the argument parser may import the build options",
+        code,
+        output,
+        "unapproved-import",
+        "build_options",
+    )
 
     code, output = case(
         lambda root: write_file(root, "src/cli/args.zig", "const db = @import(name);\n")
