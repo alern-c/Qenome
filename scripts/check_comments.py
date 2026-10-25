@@ -7,6 +7,7 @@ import tokenize
 
 EXCLUDED_FILES = [
     "CHANGELOG.md",
+    "LICENSE",
     "README.md",
     "README.ja.md",
     "testdata/README.md",
