@@ -7,12 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Release notes now come from the matching CHANGELOG section.
+
 ## [0.3.0] - 2026-10-26
 
 ### Added
 
 - The project is licensed under the Apache License 2.0. The license text is the unmodified official text and is in `LICENSE`.
-- Windows 向けのビルドと実行に対応した。
+- Windows (x86_64) builds are supported.
 
 ### Changed
 

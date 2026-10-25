@@ -179,11 +179,25 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ github.ref }}
+
       - name: Download the release assets
         uses: actions/download-artifact@v8
         with:
           name: release-assets
           path: dist
+
+      - name: Read the release notes from CHANGELOG.md
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="$(printf '%s' "$TAG" | sed 's/^v//')"
+          bash scripts/changelog-section.sh CHANGELOG.md "$version" > release-notes.md
+          test -s release-notes.md
 
       - name: Create the release
         env:
@@ -195,4 +209,4 @@ jobs:
           cd dist
           sha256sum -c SHA256SUMS
           gh release create "$TAG" --verify-tag --title "$TAG" \
-            --generate-notes qenome-* SHA256SUMS
+            --notes-file ../release-notes.md qenome-* SHA256SUMS

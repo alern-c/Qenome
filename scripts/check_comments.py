@@ -20,6 +20,7 @@ KINDS_BY_SUFFIX = {
     ".zig": "zig",
     ".zon": "zig",
     ".py": "python",
+    ".sh": "hash",
     ".sql": "sql",
     ".yml": "yaml",
     ".yaml": "yaml",
