@@ -1808,6 +1808,7 @@ test "json format parses and carries the decision keys" {
     try testing.expectEqualStrings(fixture.index_path, try jsonText(inputs, "index_sql"));
 
     const environment = try jsonGet(root, "environment");
+    try testing.expectEqualStrings(cli.version, try jsonText(environment, "qenome_version"));
     try testing.expectEqualStrings(sqlite.pinned_version, try jsonText(environment, "sqlite_version"));
     try testing.expectEqualStrings(sqlite.pinned_source_id, try jsonText(environment, "sqlite_source_id"));
     try testing.expectEqualStrings(builtin.zig_version_string, try jsonText(environment, "zig_version"));
