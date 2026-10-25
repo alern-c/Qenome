@@ -6,7 +6,9 @@ import sys
 import tokenize
 
 EXCLUDED_FILES = [
+    "AGENTS.md",
     "CHANGELOG.md",
+    "CLAUDE.md",
     "LICENSE",
     "README.md",
     "README.ja.md",

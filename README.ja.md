@@ -197,14 +197,10 @@ fi
 ## 開発時の検査
 
 ```sh
-zig fmt --check .
-zig build
-zig build test
-python3 scripts/test_check_comments.py
-python3 scripts/check_comments.py
-python3 scripts/test_check_architecture.py
-python3 scripts/check_architecture.py
+python3 scripts/check_all.py
 ```
+
+CI の quality ワークフローも同じスクリプトを呼びます。Zig の版の照合、`zig fmt --check .`、ビルド、テスト、アーキテクチャとコメントの検査を順に実行し、最初に失敗した段階で止まります。
 
 コードにコメントは書きません。説明は README に書き、ルールの正本は検査スクリプトです。
 
