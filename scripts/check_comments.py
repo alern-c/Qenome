@@ -8,6 +8,7 @@ import tokenize
 EXCLUDED_FILES = [
     "CHANGELOG.md",
     "README.md",
+    "README.ja.md",
     "testdata/README.md",
     "vendor/sqlite3/PROVENANCE.txt",
     "vendor/sqlite3/sqlite3.c",
