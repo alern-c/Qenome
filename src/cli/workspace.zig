@@ -16,6 +16,20 @@ pub fn tempParentPath(temp_parent: ?[]const u8) []const u8 {
     return if (value.len == 0) "/tmp" else value;
 }
 
+pub fn tempParent(environ: *const std.process.Environ.Map) ?[]const u8 {
+    if (builtin.os.tag != .windows) return environ.get("TMPDIR");
+    return windowsTempParent(environ.get("TMP"), environ.get("TEMP"), environ.get("USERPROFILE"));
+}
+
+pub fn windowsTempParent(tmp: ?[]const u8, temp: ?[]const u8, userprofile: ?[]const u8) ?[]const u8 {
+    const candidates = [_]?[]const u8{ tmp, temp, userprofile };
+    for (candidates) |candidate| {
+        const value = candidate orelse continue;
+        if (value.len != 0) return value;
+    }
+    return null;
+}
+
 pub const work_dir_prefix = "qenome-";
 
 const work_dir_permissions: Io.File.Permissions = if (builtin.os.tag == .windows) .default_dir else .fromMode(0o700);
@@ -162,6 +176,29 @@ test "an unset or empty TMPDIR means /tmp" {
     try testing.expectEqualStrings("/tmp", tempParentPath(null));
     try testing.expectEqualStrings("/tmp", tempParentPath(""));
     try testing.expectEqualStrings("rel/dir", tempParentPath("rel/dir"));
+}
+
+test "the Windows temp parent skips empty and unset values in order" {
+    try testing.expectEqualStrings("C:\\tmp", windowsTempParent("C:\\tmp", "C:\\temp", "C:\\profile").?);
+    try testing.expectEqualStrings("C:\\temp", windowsTempParent("", "C:\\temp", "C:\\profile").?);
+    try testing.expectEqualStrings("C:\\temp", windowsTempParent(null, "C:\\temp", "C:\\profile").?);
+    try testing.expectEqualStrings("C:\\profile", windowsTempParent("", "", "C:\\profile").?);
+    try testing.expect(windowsTempParent("", "", "") == null);
+    try testing.expect(windowsTempParent(null, null, null) == null);
+}
+
+test "the temp parent reads TMPDIR on POSIX and the Windows variables on Windows" {
+    var environ: std.process.Environ.Map = .init(testing.allocator);
+    defer environ.deinit();
+    try environ.put("TMPDIR", "posix-dir");
+    try environ.put("TMP", "");
+    try environ.put("TEMP", "windows-dir");
+
+    if (builtin.os.tag == .windows) {
+        try testing.expectEqualStrings("windows-dir", tempParent(&environ).?);
+    } else {
+        try testing.expectEqualStrings("posix-dir", tempParent(&environ).?);
+    }
 }
 
 test "the work directory is private and the variant is a byte copy of the baseline" {

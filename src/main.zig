@@ -1,6 +1,5 @@
 const std = @import("std");
 const Io = std.Io;
-const builtin = @import("builtin");
 
 const Qenome = @import("Qenome");
 
@@ -16,15 +15,10 @@ pub fn main(init: std.process.Init) !void {
     var stderr_file_writer: Io.File.Writer = .init(.stderr(), io, &stderr_buffer);
     const stderr = &stderr_file_writer.interface;
 
-    const temp_parent = tempParent(init.environ_map);
+    const temp_parent = Qenome.cli.tempParent(init.environ_map);
     const code = Qenome.cli.run(io, init.gpa, argv, temp_parent, stdout, stderr);
 
     try stdout.flush();
     stderr.flush() catch {};
     if (code != .ok) std.process.exit(@backingInt(code));
-}
-
-fn tempParent(environ: *const std.process.Environ.Map) ?[]const u8 {
-    if (builtin.os.tag != .windows) return environ.get("TMPDIR");
-    return environ.get("TMP") orelse environ.get("TEMP") orelse environ.get("USERPROFILE");
 }
