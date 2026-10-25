@@ -10,8 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `--version` prints the version from `build.zig.zon` as `qenome <version>` and exits with status 0.
-- `--format json` prints one JSON object with a trailing newline after a comparison that finishes: the time verdict and its reasons, the result comparison with its reasons, counts and example rows, both plans and counters, the times and sizes, the inputs, versions and timing conditions, and the binds (their values only with `--show-binds`). The human and kv formats are unchanged.
+- `--format json` prints one JSON object with a trailing newline after a comparison that finishes: the time verdict and its reasons, the result comparison with its reasons, counts and example rows (the examples only with `--show-rows`), both plans and counters, the times and sizes, the inputs, versions and timing conditions, and the binds (their values only with `--show-binds`).
 - `--format json` includes `environment.qenome_version`, the same version `--version` prints from `build.zig.zon`. `schema_version` stays 1.
+
+### Changed
+
+- Mismatched result rows are counts unless `--show-rows` is set, in every format. Human omits the example rows and says to rerun with `--show-rows`. kv omits `baseline-only-row` and `variant-only-row`. json leaves `baseline_only_examples` and `variant_only_examples` empty. The counts stay, and `schema_version` stays 1. The hint for `sum()`, `avg()` and `total()` says to rerun with `--show-rows` instead of pointing at those lines.
 
 ## [0.1.0] - 2026-10-25
 
