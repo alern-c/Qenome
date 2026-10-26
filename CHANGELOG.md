@@ -15,8 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `README.md` and `README.ja.md` have a Quick start that creates the test database, builds Qenome, and runs three examples: an index that removes the full scan (`improved`), an index the SELECT cannot use (`no-effect`), and a SELECT whose rows cannot be compared (`incomparable`, exit status 4). Each command ends with the result it has to report.
 - `scripts/check_quick_start.py` runs the Quick start commands from `README.md` as written, compares each result with its `# expect:` marker, and checks that `README.ja.md` holds the same commands. `python3 scripts/check_all.py` and the quality workflow run it on every commit, so the README and the program cannot drift apart. The stages print a skip on Windows, where the Quick start commands do not run.
 - The fixture has a third case, `testdata/cases/incomparable.sql` and its candidate index, for a SELECT whose rows cannot be compared.
+- `examples/d1-toml` and `examples/d1-jsonc` are sample wrangler projects for `--d1`: the same database and queries, once with `wrangler.toml` and once with `wrangler.jsonc`. Each has one `DEMO_DB` binding, a `schema.sql` that loads 200,000 rows, and the `select.sql` and `index.sql` of the `improved` case. They need only `npx wrangler@4.152.0`, and `.wrangler/` is not tracked by Git.
+- `docs/demo.gif` records `qenome --d1 DEMO_DB select.sql index.sql --runs 40` in the sample project, with the matching `docs/demo.tape` for re-recording it. `README.md` and `README.ja.md` show it near the top.
+- The D1 section of `README.md` and `README.ja.md` gives the commands that load a sample project and the verdict they report.
 
 ### Changed
+
+- `scripts/check_comments.py` checks `.toml` and `.jsonc` files for `#`, `//`, and `/*` markers, and `.tape` files for comment lines, so the samples and the recording script follow the no-comment rule too. `docs/demo.gif` is excluded.
 
 - Release notes now come from the matching CHANGELOG section.
 

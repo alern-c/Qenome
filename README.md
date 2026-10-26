@@ -4,6 +4,10 @@ English | [日本語](README.ja.md)
 
 Qenome is a CLI that compares one read-only `SELECT` on a local SQLite database before and after one candidate `CREATE INDEX`. It opens the database read-only, copies it into an isolated snapshot, and reports what changed: the result rows, the query plan, the time, and the size increase. The original database is never modified.
 
+![The D1 sample project: qenome --d1 DEMO_DB select.sql index.sql --runs 40 reports matching rows, an improved time verdict, and the D1 block with the SQLite versions and the caution](docs/demo.gif)
+
+The recording comes from [`examples/d1-toml`](#try-the-sample-project), and the sample runs on your machine with two commands.
+
 ## Installation
 
 ### Prebuilt binaries (GitHub Releases)
@@ -172,6 +176,21 @@ Every `--d1` comparison prints two facts in all formats:
 
 Sections for other environments (`[env.<name>]`) and custom persist paths (`--persist-to`) are not read.
 
+#### Try the sample project
+
+`examples/d1-toml` and `examples/d1-jsonc` hold the same database and queries, once with `wrangler.toml` and once with `wrangler.jsonc`. Each is a wrangler project on its own: the config has one binding, `DEMO_DB`, and the `database_id` is a placeholder that is never deployed. Node.js is needed because wrangler runs through `npx`. Nothing is installed into the repository, and `.wrangler/` is not tracked by Git.
+
+Run these commands in `examples/d1-toml`. The same commands work in `examples/d1-jsonc`.
+
+```sh
+npx wrangler@4.152.0 d1 execute DEMO_DB --local --file schema.sql
+qenome --d1 DEMO_DB select.sql index.sql --runs 40
+```
+
+The first command writes the local database into `.wrangler/` and loads 200,000 rows. The second compares `select.sql` with the candidate index in `index.sql`: `result rows` is `match`, `time verdict` is `improved`, the plan changes from `SCAN events` to `SEARCH events USING INDEX ix_events_customer_id (customer_id=?)`, and the D1 block reports the SQLite versions and the caution. The exit status is 0.
+
+`schema.sql` recreates `events`, so it can be run again at any time. Nothing is deployed. The commands use `qenome` from `PATH`; right after [From source](#from-source) it is `./zig-out/bin/qenome`. `4.152.0` is the wrangler version the sample was checked with.
+
 ## Output formats
 
 ### human (default)
@@ -278,6 +297,8 @@ python3 scripts/check_all.py
 The quality workflow in CI runs the same script. It checks the effective Zig version, runs `zig fmt --check .`, the build, the tests, and the architecture and comment checks in order, and stops at the first stage that fails. The last two stages check the [Quick start](#quick-start): `scripts/check_quick_start.py` runs the commands in this README as written and compares each result with its `# expect:` marker, and `README.ja.md` must hold the same commands. An example added to the Quick start needs that marker, so that CI checks it too, and the section keeps a checked example for `improved`, `no-effect`, and `incomparable`. Both Quick start stages run on Linux and macOS; on Windows they print a skip and the other stages still run.
 
 The codebase carries no comments: explanations live in the README, and the checks are the source of truth for the rules they enforce.
+
+`docs/demo.gif` is recorded with `vhs docs/demo.tape` from the repository root, after `zig build -Doptimize=ReleaseFast`. The tape copies `examples/d1-toml` into a temporary directory and silences the terminal echo while it loads the sample, so the recording holds only the Qenome command and its output.
 
 ## License
 

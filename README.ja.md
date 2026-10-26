@@ -5,6 +5,10 @@
 Qenome は、ローカル SQLite の SELECT 1本に対して、候補の `CREATE INDEX` を1本試したときの変化を比較する CLI です。
 データベースを読み取り専用で開いて隔離コピーを作り、索引の前後で結果・実行計画・時間・容量の増分を示します。元のデータベースは変更しません。
 
+![D1 のサンプルプロジェクトで qenome --d1 DEMO_DB select.sql index.sql --runs 40 を実行するターミナル。結果の行が一致し、時間の判定が improved で、D1 ブロックに SQLite の版と注意が出ている](docs/demo.gif)
+
+この録画は [`examples/d1-toml`](#サンプルプロジェクトを試す) のもの。サンプルは手元でコマンド2本で再現できます。
+
 ## インストール
 
 ### ビルド済みバイナリ（GitHub Releases）
@@ -173,6 +177,21 @@ qenome --d1 DB select.sql index.sql --config packages/api/wrangler.toml
 
 `[env.<name>]` ごとの設定と独自の保存先（`--persist-to`）は読みません。
 
+#### サンプルプロジェクトを試す
+
+`examples/d1-toml` と `examples/d1-jsonc` には、同じデータベースとクエリを `wrangler.toml` 版と `wrangler.jsonc` 版で置いています。どちらも独立した wrangler プロジェクトで、設定には `DEMO_DB` のバインディング1つだけがあり、`database_id` はデプロイしないプレースホルダーです。wrangler は `npx` で動かすため Node.js が要ります。リポジトリには何もインストールせず、`.wrangler/` は Git の追跡対象外です。
+
+`examples/d1-toml` で次のコマンドを実行します。`examples/d1-jsonc` でも同じコマンドが動きます。
+
+```sh
+npx wrangler@4.152.0 d1 execute DEMO_DB --local --file schema.sql
+qenome --d1 DEMO_DB select.sql index.sql --runs 40
+```
+
+1行目が `.wrangler/` にローカルのデータベースを作り、20万行を投入します。2行目が `select.sql` と `index.sql` の候補索引を比較し、`result rows` が `match`、`time verdict` が `improved`、実行計画が `SCAN events` から `SEARCH events USING INDEX ix_events_customer_id (customer_id=?)` に変わり、D1 ブロックに SQLite の版と注意が出ます。終了コードは 0 です。
+
+`schema.sql` は `events` を作り直すので、いつでも再実行できます。デプロイはしません。`qenome` は PATH 上のものを使う想定で、[ソースからビルド](#ソースからビルド) の直後は `./zig-out/bin/qenome` です。`4.152.0` はサンプルを確認した wrangler の版です。
+
 ## 出力形式
 
 ### human（既定）
@@ -279,6 +298,8 @@ python3 scripts/check_all.py
 CI の quality ワークフローも同じスクリプトを呼びます。Zig の版の照合、`zig fmt --check .`、ビルド、テスト、アーキテクチャとコメントの検査を順に実行し、最初に失敗した段階で止まります。最後の2段階は[クイックスタート](#クイックスタート)の検査です。`scripts/check_quick_start.py` は英語版 `README.md` のコマンドを書いてあるとおりに実行して各結果を `# expect:` と照合し、`README.ja.md`（このファイル）が同じコマンドを持っていることも確かめます。クイックスタートに例を足すときは、この印も付けてください。CI がその例も検査します。`improved`・`no-effect`・`incomparable` の例は、それぞれ1つ以上残っている必要があります。クイックスタートの2段階は Linux と macOS で実行します。Windows では skip を表示し、ほかの段階はそのまま実行します。
 
 コードにコメントは書きません。説明は README に書き、ルールの正本は検査スクリプトです。
+
+`docs/demo.gif` は、`zig build -Doptimize=ReleaseFast` のあと、リポジトリのルートで `vhs docs/demo.tape` を実行して撮り直します。台本は `examples/d1-toml` を一時ディレクトリへコピーし、サンプルの投入中はターミナルのエコーを止めるので、録画に残るのは Qenome のコマンドと出力だけです。
 
 ## ライセンス
 
