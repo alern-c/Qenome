@@ -1,3 +1,4 @@
+import importlib.util
 import os
 import shutil
 import stat
@@ -44,6 +45,15 @@ FAKE_QENOME = (
     'printf "\\nPlan\\n"\n'
     'exit "$code"\n'
 )
+
+
+def load_checker():
+    spec = importlib.util.spec_from_file_location("check_quick_start", CHECKER)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("cannot load " + CHECKER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def write_file(root, rel_path, text):
@@ -154,6 +164,14 @@ def expect(name, condition, detail):
     print("FAIL: " + name + ": " + str(detail))
 
 
+def finish(message):
+    if FAILURES:
+        print("test_quick_start: " + str(len(FAILURES)) + " failure(s): " + ", ".join(FAILURES))
+        return 1
+    print("test_quick_start: " + message)
+    return 0
+
+
 def expect_clean(name, code, output):
     expect(name, code == 0, "exit " + str(code) + ", output: " + output.strip())
 
@@ -169,6 +187,17 @@ def expect_unusable(name, code, output, mention):
 
 
 def main():
+    checker = load_checker()
+    windows = checker.windows_skip_reason("nt")
+    expect("Windows is skipped", windows is not None, windows)
+    expect("the skip names Windows", windows is not None and "Windows" in windows, windows)
+    expect("the skip says skipped", windows is not None and "skipped" in windows, windows)
+    expect("Linux and macOS are checked", checker.windows_skip_reason("posix") is None, "posix")
+    expect("an empty platform name is checked", checker.windows_skip_reason("") is None, "empty")
+    skip = checker.windows_skip_reason(os.name)
+    if skip is not None:
+        return finish(skip)
+
     code, output = case()
     expect_clean("the canonical tree passes", code, output)
     expect("the canonical tree counts the commands", "3 commands checked" in output, output.strip())
@@ -406,11 +435,7 @@ def main():
     code, output = run_checker(os.path.join(tempfile.gettempdir(), "qenome-missing-root"))
     expect_unusable("a missing root is refused", code, output, "not a directory")
 
-    if FAILURES:
-        print("test_quick_start: " + str(len(FAILURES)) + " failure(s): " + ", ".join(FAILURES))
-        return 1
-    print("test_quick_start: ok")
-    return 0
+    return finish("ok")
 
 
 if __name__ == "__main__":

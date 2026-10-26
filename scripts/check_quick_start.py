@@ -10,6 +10,7 @@ SOURCE = "README.md"
 TRANSLATION = "README.ja.md"
 HEADINGS = {SOURCE: "Quick start", TRANSLATION: "クイックスタート"}
 EXPECT_KEYS = ("result", "verdict", "exit")
+WINDOWS_SKIP = "skipped on Windows: the Quick start commands are for Linux and macOS"
 
 FENCE = re.compile(r"^```(.*)$")
 HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*$")
@@ -341,6 +342,12 @@ def run(root):
     return violations, checked
 
 
+def windows_skip_reason(platform_name):
+    if platform_name == "nt":
+        return WINDOWS_SKIP
+    return None
+
+
 def main(argv):
     root = None
     rest = argv[1:]
@@ -357,8 +364,9 @@ def main(argv):
     if not os.path.isdir(root):
         sys.stderr.write("quick-start: not a directory: " + root + "\n")
         return 2
-    if os.name == "nt":
-        print("quick-start: skipped on Windows (the Quick start commands are for Linux and macOS)")
+    skip = windows_skip_reason(os.name)
+    if skip is not None:
+        print("quick-start: " + skip)
         return 0
     try:
         violations, checked = run(root)

@@ -241,7 +241,7 @@ Main keys:
 python3 scripts/check_all.py
 ```
 
-The quality workflow in CI runs the same script. It checks the effective Zig version, runs `zig fmt --check .`, the build, the tests, and the architecture and comment checks in order, and stops at the first stage that fails. The last two stages check the [Quick start](#quick-start): `scripts/check_quick_start.py` runs the commands in this README as written and compares each result with its `# expect:` marker, and `README.ja.md` must hold the same commands. An example added to the Quick start needs that marker, so that CI checks it too, and the section keeps a checked example for `improved`, `no-effect`, and `incomparable`.
+The quality workflow in CI runs the same script. It checks the effective Zig version, runs `zig fmt --check .`, the build, the tests, and the architecture and comment checks in order, and stops at the first stage that fails. The last two stages check the [Quick start](#quick-start): `scripts/check_quick_start.py` runs the commands in this README as written and compares each result with its `# expect:` marker, and `README.ja.md` must hold the same commands. An example added to the Quick start needs that marker, so that CI checks it too, and the section keeps a checked example for `improved`, `no-effect`, and `incomparable`. Both Quick start stages run on Linux and macOS; on Windows they print a skip and the other stages still run.
 
 The codebase carries no comments: explanations live in the README, and the checks are the source of truth for the rules they enforce.
 
