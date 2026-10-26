@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-10-26
+
 ### Added
 
 - `--d1 <BINDING>` compares the local database of a D1 binding from `wrangler.toml`, `wrangler.jsonc`, or `wrangler.json` instead of a `--db` path. It finds `<config directory>/.wrangler/state/v3/d1/miniflare-D1DatabaseObject/<id>.sqlite` from `preview_database_id` or `database_id`, the file that local wrangler commands write. `--config <PATH>` names the config; otherwise it is searched in the current directory. The rule was checked against local databases written by wrangler 3.114.17 and 4.152.0.
