@@ -485,6 +485,10 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\  when --show-rows is set (the arrays are empty otherwise), both
         \\  plans and counters, the times and sizes, the inputs, versions,
         \\  timing conditions, and the binds with the same secrecy as kv.
+        \\  On failure with --format json, stdout stays empty and stderr is
+        \\  one JSON object: schema_version, exit_code, and error with code,
+        \\  message, and hint (the next step). human and kv keep a text
+        \\  error on stderr.
         \\  Timing conditions: each copy gets one warm-up run whose rows were
         \\  compared and that is not timed; the timed rounds alternate
         \\  baseline-variant and variant-baseline (ABBA); a round times
@@ -502,8 +506,8 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\  same number of rows), needs-check (the rows match but the variant reads
         \\  or writes more, with the reasons), or not-judged (the rows differ or
         \\  cannot be compared, with the reasons; --runs 0 is still judged). The
-        \\  rows read and rows written are the counts a local D1 reports, not the
-        \\  rows a D1 database bills, and they are 32-bit counters that wrap past
+        \\  rows read and rows written use the same counting as local D1
+        \\  (workerd patch). They are 32-bit counters that wrap past
         \\  4294967295. The times are a reference only and never change the verdict
         \\  or the exit status. Plan labels (kind, covering, automatic) are hints
         \\  read from SQLite's wording; the detail text is what SQLite reported.
