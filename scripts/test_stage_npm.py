@@ -164,6 +164,65 @@ def test_empty_binary():
         shutil.rmtree(work, ignore_errors=True)
 
 
+def test_launcher_permissions():
+    if shutil.which("node") is None:
+        print("skip: the launcher test needs node")
+        return
+    done = subprocess.run(
+        ["node", "-p", "process.platform + '-' + process.arch"],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+    )
+    target = done.stdout.strip()
+    known = [platform["dir"] for platform in stage_npm.PLATFORMS]
+    if done.returncode != 0 or target not in known:
+        print("skip: the launcher test needs a supported node target")
+        return
+    with open(stage_npm.launcher_path(ROOT), "rb") as handle:
+        launcher = handle.read()
+    work = tempfile.mkdtemp(prefix="qenome-launcher-")
+    try:
+        app = os.path.join(work, "app")
+        os.makedirs(os.path.join(app, "bin"))
+        package = os.path.join(app, "node_modules", "@qenome", target)
+        os.makedirs(os.path.join(package, "bin"))
+        with open(os.path.join(package, "package.json"), "w", encoding="utf-8") as handle:
+            handle.write('{"name": "@qenome/' + target + '", "version": "0.0.0"}\n')
+        script = os.path.join(app, "bin", "qenome.js")
+        with open(script, "wb") as handle:
+            handle.write(launcher)
+        binary = os.path.join(package, "bin", "qenome")
+        with open(binary, "wb") as handle:
+            handle.write(b"#!/bin/sh\necho launcher-ok\n")
+        os.chmod(binary, 0o500)
+        done = subprocess.run(
+            ["node", script], capture_output=True, text=True, stdin=subprocess.DEVNULL
+        )
+        output = done.stdout.replace("\r\n", "\n")
+        expect(
+            "an executable binary starts without chmod",
+            done.returncode == 0 and output == "launcher-ok\n",
+            (done.returncode, done.stdout, done.stderr),
+        )
+        mode = stat.S_IMODE(os.stat(binary).st_mode)
+        expect("an executable binary keeps its mode", mode == 0o500, oct(mode))
+        os.chmod(binary, 0o644)
+        done = subprocess.run(
+            ["node", script], capture_output=True, text=True, stdin=subprocess.DEVNULL
+        )
+        output = done.stdout.replace("\r\n", "\n")
+        expect(
+            "a binary without the execute bits still starts",
+            done.returncode == 0 and output == "launcher-ok\n",
+            (done.returncode, done.stdout, done.stderr),
+        )
+        mode = stat.S_IMODE(os.stat(binary).st_mode)
+        expect("a binary without the execute bits is made executable", mode == 0o755, oct(mode))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def test_publish_guards():
     env = dict(os.environ)
     env.pop("ACTIONS_ID_TOKEN_REQUEST_URL", None)
@@ -200,6 +259,7 @@ def main():
     test_render(version)
     test_stage(version)
     test_empty_binary()
+    test_launcher_permissions()
     test_publish_guards()
     if FAILURES:
         print(str(len(FAILURES)) + " case(s) failed: " + ", ".join(FAILURES))

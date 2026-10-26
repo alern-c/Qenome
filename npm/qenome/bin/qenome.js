@@ -2,7 +2,7 @@
 "use strict";
 
 const { spawn, execFileSync } = require("child_process");
-const { chmodSync, existsSync } = require("fs");
+const { accessSync, chmodSync, constants, existsSync } = require("fs");
 const { join } = require("path");
 
 const packages = {
@@ -27,6 +27,15 @@ function clearQuarantine(binary) {
     });
   } catch (error) {
     return error;
+  }
+}
+
+function isExecutable(binary) {
+  try {
+    accessSync(binary, constants.X_OK);
+    return true;
+  } catch (error) {
+    return false;
   }
 }
 
@@ -58,10 +67,14 @@ function binaryPath() {
   if (!existsSync(binary)) {
     fail("could not find the binary at " + binary);
   }
-  try {
-    chmodSync(binary, 0o755);
-  } catch (error) {
-    fail("could not mark the binary executable: " + error.message);
+  if (!isExecutable(binary)) {
+    try {
+      chmodSync(binary, 0o755);
+    } catch (error) {
+      process.stderr.write(
+        "qenome: could not mark the binary executable: " + error.message + "\n"
+      );
+    }
   }
   clearQuarantine(binary);
   return binary;
