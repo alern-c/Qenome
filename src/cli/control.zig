@@ -168,6 +168,9 @@ pub fn classifyError(message: []const u8) ErrorClass {
     if (std.mem.indexOf(u8, message, "needs a value") != null or std.mem.indexOf(u8, message, "missing its value") != null) {
         return .{ .code = "usage_missing_value", .hint = "Repeat the option with a value, for example --db app.db." };
     }
+    if (std.mem.indexOf(u8, message, "more than once") != null and std.mem.indexOf(u8, message, "bind number") != null) {
+        return .{ .code = "bind_rejected", .hint = "Give each SELECT parameter exactly one --bind N:TYPE:VALUE." };
+    }
     if (std.mem.indexOf(u8, message, "more than once") != null) {
         return .{ .code = "usage_duplicate", .hint = "Pass that option once." };
     }
@@ -539,6 +542,9 @@ test "error text maps to a stable code and a next step" {
         .{ .message = "cannot open the baseline 'a.db' read-only: missing", .code = "database_unreadable" },
         .{ .message = "cannot open 'a.db' read-only: missing", .code = "database_unreadable" },
         .{ .message = "--bind: missing parameter 1", .code = "bind_rejected" },
+        .{ .message = "--bind: bind number 1 is given more than once; give each parameter once, e.g. --bind 1:int:1234 (parameters in the SELECT: 2; --bind given: 2)", .code = "bind_rejected" },
+        .{ .message = "--bind on the variant: bind number 2 is given more than once; give each parameter once, e.g. --bind 2:int:1234 (parameters in the SELECT: 2; --bind given: 3)", .code = "bind_rejected" },
+        .{ .message = "--bind: a bind number is given more than once", .code = "bind_rejected" },
         .{ .message = "the database connection could not be closed: busy", .code = "connection_close_failed" },
         .{ .message = "cannot copy 'a.db': the database is locked by another connection: busy", .code = "snapshot_locked" },
         .{ .message = "cannot copy 'a.db' into the temporary directory: io", .code = "snapshot_failed" },

@@ -2054,6 +2054,20 @@ test "json format keeps stdout empty when the select is rejected" {
     try fixture.expectNoLeftovers();
 }
 
+test "json format reports a repeated bind number as bind_rejected" {
+    var fixture = try CliFixture.init("SELECT a FROM t WHERE a = ?1 AND b = ?2", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+
+    var stdout_buffer: [1024]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = fixture.runFormat("json", &.{ "--bind", "1:int:1", "--bind", "1:text:x" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try expectJsonFailure(result.stderr, "bind_rejected", 1);
+    try testing.expect(contains(result.stderr, "bind number 1 is given more than once"));
+    try fixture.expectNoLeftovers();
+}
+
 const d1_database_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 
 const d1_file_name = "b4b7ee9bc0328fad0039fd55bcee866dbb7978adad944643b49c9071c8746c37.sqlite";
