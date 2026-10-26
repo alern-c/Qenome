@@ -12,6 +12,7 @@ EXCLUDED_FILES = [
     "LICENSE",
     "README.md",
     "README.ja.md",
+    "docs/demo.gif",
     "testdata/README.md",
     "vendor/sqlite3/PROVENANCE.txt",
     "vendor/sqlite3/sqlite3.c",
@@ -24,6 +25,9 @@ KINDS_BY_SUFFIX = {
     ".py": "python",
     ".sh": "hash",
     ".sql": "sql",
+    ".tape": "hash",
+    ".toml": "toml",
+    ".jsonc": "jsonc",
     ".yml": "yaml",
     ".yaml": "yaml",
 }
@@ -187,22 +191,39 @@ def scan_sql(text):
     return comments
 
 
-def scan_yaml(text):
+def scan_markers(text, markers):
     comments = []
     for number, line in enumerate(text.split("\n"), 1):
-        index = line.find("#")
-        while index >= 0:
-            comments.append(
-                Comment(
-                    number,
-                    index,
-                    number,
-                    index + 1,
-                    "a YAML # character at column " + str(index + 1),
+        for marker, label in markers:
+            index = line.find(marker)
+            while index >= 0:
+                comments.append(
+                    Comment(
+                        number,
+                        index,
+                        number,
+                        index + len(marker),
+                        label + str(index + 1),
+                    )
                 )
-            )
-            index = line.find("#", index + 1)
+                index = line.find(marker, index + len(marker))
+    comments.sort(key=lambda comment: (comment.first_line, comment.first_column))
     return comments
+
+
+def scan_yaml(text):
+    return scan_markers(text, [("#", "a YAML # character at column ")])
+
+
+def scan_toml(text):
+    return scan_markers(text, [("#", "a TOML # character at column ")])
+
+
+def scan_jsonc(text):
+    return scan_markers(
+        text,
+        [("//", "a JSONC // at column "), ("/*", "a JSONC /* at column ")],
+    )
 
 
 def scan_hash_lines(text):
@@ -222,6 +243,10 @@ def iter_comments(kind, text):
         return scan_sql(text)
     if kind == "yaml":
         return scan_yaml(text)
+    if kind == "toml":
+        return scan_toml(text)
+    if kind == "jsonc":
+        return scan_jsonc(text)
     return scan_hash_lines(text)
 
 
