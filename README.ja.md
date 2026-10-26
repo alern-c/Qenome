@@ -11,6 +11,16 @@ Qenome は、ローカル SQLite の SELECT 1本に対して、候補の `CREATE
 
 ## インストール
 
+### npm
+
+Linux と macOS の x64 と arm64 では、次で実行できます。
+
+```sh
+npx qenome --version
+```
+
+`npm install --global qenome` でも同じコマンドが入ります。入るのは小さなランチャーと、そのマシン向けのバイナリ1つです（`@qenome/linux-x64`、`@qenome/linux-arm64`、`@qenome/darwin-x64`、`@qenome/darwin-arm64` のいずれか）。版は `build.zig.zon` の `.version` です。Windows は下の GitHub Releases のアセットを使います。
+
 ### ビルド済みバイナリ（GitHub Releases）
 
 [Releases](https://github.com/alern-c/Qenome/releases) ページから、使う環境のアセットと、同じリリースの `SHA256SUMS` をダウンロードします。

@@ -14,6 +14,7 @@ EXCLUDED_FILES = [
     "README.md",
     "README.ja.md",
     "docs/demo.gif",
+    "docs/npm.md",
     "testdata/README.md",
     "vendor/sqlite3/PROVENANCE.txt",
     "vendor/sqlite3/patches/0001-row-counts-plain.patch",
@@ -29,6 +30,8 @@ KINDS_BY_SUFFIX = {
     ".sql": "sql",
     ".tape": "hash",
     ".toml": "toml",
+    ".js": "javascript",
+    ".json": "json",
     ".jsonc": "jsonc",
     ".yml": "yaml",
     ".yaml": "yaml",
@@ -228,6 +231,83 @@ def scan_jsonc(text):
     )
 
 
+def quoted_end(text, start, quote):
+    index = start + 1
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if char == "\\":
+            index += 2
+            continue
+        if char == quote:
+            return index + 1
+        if char == "\n" and quote != "`":
+            return index
+        index += 1
+    return length
+
+
+def scan_slash_comments(text, quotes, line_label, block_label, allow_shebang):
+    comments = []
+    index = 0
+    line = 1
+    column = 0
+    length = len(text)
+    if allow_shebang and text.startswith("#!"):
+        newline = text.find("\n")
+        if newline < 0:
+            return comments
+        index = newline
+        column = newline
+    while index < length:
+        char = text[index]
+        if char in quotes:
+            end = quoted_end(text, index, char)
+            line, column = advance(text, index, end, line, column)
+            index = end
+            continue
+        if char == "/" and text.startswith("//", index):
+            end = text.find("\n", index)
+            end = length if end < 0 else end
+            comments.append(
+                Comment(line, column, line, column + (end - index), line_label)
+            )
+            index = end
+            continue
+        if char == "/" and text.startswith("/*", index):
+            end = text.find("*/", index + 2)
+            end = length if end < 0 else end + 2
+            end_line, end_column = advance(text, index, end, line, column)
+            comments.append(Comment(line, column, end_line, end_column, block_label))
+            line, column = end_line, end_column
+            index = end
+            continue
+        if char == "\n":
+            line += 1
+            column = 0
+            index += 1
+            continue
+        index += 1
+        column += 1
+    return comments
+
+
+def scan_json(text):
+    return scan_slash_comments(
+        text, '"', "a JSON line comment", "a JSON block comment", False
+    )
+
+
+def scan_js(text):
+    return scan_slash_comments(
+        text,
+        "\"'`",
+        "a JavaScript line comment",
+        "a JavaScript block comment",
+        True,
+    )
+
+
 def scan_hash_lines(text):
     comments = []
     for number, line in enumerate(text.split("\n"), 1):
@@ -249,6 +329,10 @@ def iter_comments(kind, text):
         return scan_toml(text)
     if kind == "jsonc":
         return scan_jsonc(text)
+    if kind == "json":
+        return scan_json(text)
+    if kind == "javascript":
+        return scan_js(text)
     return scan_hash_lines(text)
 
 

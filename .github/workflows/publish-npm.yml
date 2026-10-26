@@ -1,0 +1,49 @@
+name: publish-npm
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-npm
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require the main branch
+        run: test "$GITHUB_REF" = "refs/heads/main"
+
+  publish:
+    needs: guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Zig (resolved from build.zig.zon)
+        uses: mlugg/setup-zig@v2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Install the current npm for trusted publishing
+        run: npm install -g npm@latest
+
+      - name: Stage the packages from build.zig.zon
+        run: python3 scripts/stage_npm.py
+
+      - name: Publish with OIDC and provenance
+        run: python3 scripts/publish_npm.py --publish

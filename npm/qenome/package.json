@@ -1,0 +1,29 @@
+{
+  "name": "qenome",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Compare one read-only SQLite SELECT before and after one candidate CREATE INDEX.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alern-c/Qenome.git",
+    "directory": "npm/qenome"
+  },
+  "homepage": "https://github.com/alern-c/Qenome",
+  "publishConfig": {
+    "access": "public"
+  },
+  "bin": {
+    "qenome": "bin/qenome.js"
+  },
+  "files": ["bin", "LICENSE", "NOTICE", "README.md"],
+  "engines": {
+    "node": ">=18"
+  },
+  "optionalDependencies": {
+    "@qenome/darwin-arm64": "0.0.0",
+    "@qenome/darwin-x64": "0.0.0",
+    "@qenome/linux-arm64": "0.0.0",
+    "@qenome/linux-x64": "0.0.0"
+  }
+}

@@ -82,6 +82,10 @@ def main():
         ),
         ("Check for comments", command([sys.executable, "scripts/check_comments.py"])),
         (
+            "Test the npm package staging",
+            command([sys.executable, "scripts/test_stage_npm.py"]),
+        ),
+        (
             "Test the Quick start checker",
             command([sys.executable, "scripts/test_check_quick_start.py"]),
         ),

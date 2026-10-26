@@ -10,6 +10,16 @@ The recording comes from [`examples/d1-toml`](#try-the-sample-project), and the 
 
 ## Installation
 
+### npm
+
+On Linux and macOS, for x64 and arm64:
+
+```sh
+npx qenome --version
+```
+
+`npm install --global qenome` installs the same command. The package is a small launcher plus one optional binary for the machine you are on (`@qenome/linux-x64`, `@qenome/linux-arm64`, `@qenome/darwin-x64`, or `@qenome/darwin-arm64`). The version is `.version` in `build.zig.zon`. Windows builds are the GitHub Release assets below.
+
 ### Prebuilt binaries (GitHub Releases)
 
 Download an asset from the [Releases](https://github.com/alern-c/Qenome/releases) page, together with the `SHA256SUMS` file from the same release.

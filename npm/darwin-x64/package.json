@@ -1,0 +1,20 @@
+{
+  "name": "@qenome/darwin-x64",
+  "version": "0.0.0",
+  "private": true,
+  "description": "macOS x64 binary for the qenome launcher.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alern-c/Qenome.git",
+    "directory": "npm/darwin-x64"
+  },
+  "homepage": "https://github.com/alern-c/Qenome",
+  "publishConfig": {
+    "access": "public"
+  },
+  "preferUnplugged": true,
+  "os": ["darwin"],
+  "cpu": ["x64"],
+  "files": ["bin", "LICENSE", "NOTICE", "README.md"]
+}
