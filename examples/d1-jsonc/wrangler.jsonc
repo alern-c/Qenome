@@ -1,0 +1,11 @@
+{
+  "name": "qenome-demo",
+  "compatibility_date": "2026-01-01",
+  "d1_databases": [
+    {
+      "binding": "DEMO_DB",
+      "database_name": "qenome-demo",
+      "database_id": "12345678-1234-4321-8765-123456789012"
+    }
+  ]
+}

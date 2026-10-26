@@ -17,5 +17,7 @@ zig-out/
 
 testdata/generated/
 
+.wrangler/
+
 __pycache__/
 *.pyc
