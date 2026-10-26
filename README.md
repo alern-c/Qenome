@@ -64,6 +64,48 @@ zig build
 
 `zig build` writes the binary to `zig-out/bin/qenome` (`zig-out\bin\qenome.exe` on Windows). For timings that match a release build, build with `zig build -Doptimize=ReleaseFast`.
 
+## Quick start
+
+This walkthrough creates the test database, builds Qenome, and runs three examples. Run the commands from the repository root, one block at a time, on Linux or macOS. They need Zig 0.17.0 (see [From source](#from-source)) and the `sqlite3` command-line tool, which loads the SQL files into the new database.
+
+Create the test database from `testdata/schema.sql` and `testdata/seed.sql`. `verify.sql` prints one `ok` line for each of its 17 checks, and fails the load when a value is not the expected one.
+
+```sh
+mkdir -p testdata/generated
+rm -f testdata/generated/qenome-fixture.db
+sqlite3 testdata/generated/qenome-fixture.db ".read testdata/schema.sql"
+sqlite3 testdata/generated/qenome-fixture.db ".read testdata/seed.sql"
+sqlite3 testdata/generated/qenome-fixture.db ".read testdata/verify.sql"
+```
+
+Build Qenome:
+
+```sh
+zig build
+```
+
+The three examples run `zig-out/bin/qenome`. Each command ends with the result it has to report: `result` and `verdict` from the Summary, and the exit status. `python3 scripts/check_all.py` and the quality workflow run these lines as written, so the README and the program stay in step. `--runs 40` keeps the medians steady on a busy machine; the default is `10`.
+
+An index that removes the full scan. The candidate index turns `SCAN events` into `SEARCH events USING INDEX ix_events_customer_id (customer_id=?)`, and both copies return the same 100 rows.
+
+```sh
+./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/improved.sql testdata/cases/improved.index.sql --bind 1:int:1234 --runs 40  # expect: result=match verdict=improved exit=0
+```
+
+An index that cannot help. The SELECT wraps the column in `lower()`, so SQLite cannot use the index on `status`, and the plan, the counters, and the medians stay the same.
+
+```sh
+./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/no-effect.sql testdata/cases/no-effect.index.sql --bind 1:text:ok --runs 40  # expect: result=match verdict=no-effect exit=0
+```
+
+A SELECT whose rows cannot be compared. `ORDER BY random()` picks other rows on every run, so Qenome reports the rows as incomparable instead of claiming that they match, and it does not time the SELECT. The exit status 4 is the expected result here, not an error.
+
+```sh
+./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/incomparable.sql testdata/cases/incomparable.index.sql  # expect: result=incomparable verdict=not-judged exit=4
+```
+
+The first database build takes about a second, and each timed example a few seconds. `testdata/README.md` records the fixture, the queries, and their expected plan and counters.
+
 ## Usage
 
 ```sh
@@ -233,7 +275,7 @@ Main keys:
 python3 scripts/check_all.py
 ```
 
-The quality workflow in CI runs the same script. It checks the effective Zig version, runs `zig fmt --check .`, the build, the tests, and the architecture and comment checks in order, and stops at the first stage that fails.
+The quality workflow in CI runs the same script. It checks the effective Zig version, runs `zig fmt --check .`, the build, the tests, and the architecture and comment checks in order, and stops at the first stage that fails. The last two stages check the [Quick start](#quick-start): `scripts/check_quick_start.py` runs the commands in this README as written and compares each result with its `# expect:` marker, and `README.ja.md` must hold the same commands. An example added to the Quick start needs that marker, so that CI checks it too, and the section keeps a checked example for `improved`, `no-effect`, and `incomparable`. Both Quick start stages run on Linux and macOS; on Windows they print a skip and the other stages still run.
 
 The codebase carries no comments: explanations live in the README, and the checks are the source of truth for the rules they enforce.
 

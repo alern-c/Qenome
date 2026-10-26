@@ -65,6 +65,48 @@ zig build
 
 `zig build` はバイナリを `zig-out/bin/qenome`（Windows は `zig-out\bin\qenome.exe`）に書き出します。リリースビルドに近い時間を測るには `zig build -Doptimize=ReleaseFast` でビルドしてください。
 
+## クイックスタート
+
+この手順では、テスト用データベースを作り、Qenome をビルドし、3つの例を実行します。コマンドはリポジトリのルートで、ブロックごとに Linux か macOS で実行してください。必要なものは Zig 0.17.0（「ソースからビルド」を参照）と `sqlite3` コマンドラインツールです。`sqlite3` は SQL ファイルを新しいデータベースへ読み込みます。
+
+`testdata/schema.sql` と `testdata/seed.sql` からテスト用データベースを作ります。`verify.sql` は17項目それぞれについて `ok` を1行出力し、期待値と違う値があればその時点で失敗します。
+
+```sh
+mkdir -p testdata/generated
+rm -f testdata/generated/qenome-fixture.db
+sqlite3 testdata/generated/qenome-fixture.db ".read testdata/schema.sql"
+sqlite3 testdata/generated/qenome-fixture.db ".read testdata/seed.sql"
+sqlite3 testdata/generated/qenome-fixture.db ".read testdata/verify.sql"
+```
+
+Qenome をビルドします。
+
+```sh
+zig build
+```
+
+3つの例は `zig-out/bin/qenome` を実行します。各コマンドの末尾には、その例が返すべき結果（Summary の `result` と `verdict`、終了コード）を書いてあります。`python3 scripts/check_all.py` と CI の quality ワークフローは、これらの行を書いてあるとおりに実行するので、README とプログラムのずれは見つかります。`--runs 40` は、負荷のあるマシンでも中央値を安定させるための指定です（既定は `10`）。
+
+全走査をなくす索引: 候補の索引で `SCAN events` が `SEARCH events USING INDEX ix_events_customer_id (customer_id=?)` に変わり、両方のコピーが同じ100行を返します。
+
+```sh
+./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/improved.sql testdata/cases/improved.index.sql --bind 1:int:1234 --runs 40  # expect: result=match verdict=improved exit=0
+```
+
+効果のない索引: SELECT が列を `lower()` で包むため、SQLite は `status` の索引を使えません。計画・件数・中央値は変わりません。
+
+```sh
+./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/no-effect.sql testdata/cases/no-effect.index.sql --bind 1:text:ok --runs 40  # expect: result=match verdict=no-effect exit=0
+```
+
+比較できない SELECT: `ORDER BY random()` は実行するたびに別の行を選ぶため、Qenome は行が一致したと報告せず、比較できないと報告します。この例では SELECT を計測しません。ここでの終了コード 4 は期待どおりの結果で、エラーではありません。
+
+```sh
+./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/incomparable.sql testdata/cases/incomparable.index.sql  # expect: result=incomparable verdict=not-judged exit=4
+```
+
+データベースの作成はおよそ1秒、計測する例はそれぞれ数秒で終わります。fixture・クエリ・期待する計画と件数は `testdata/README.md` に記録しています。
+
 ## 使い方
 
 ```sh
@@ -234,7 +276,7 @@ fi
 python3 scripts/check_all.py
 ```
 
-CI の quality ワークフローも同じスクリプトを呼びます。Zig の版の照合、`zig fmt --check .`、ビルド、テスト、アーキテクチャとコメントの検査を順に実行し、最初に失敗した段階で止まります。
+CI の quality ワークフローも同じスクリプトを呼びます。Zig の版の照合、`zig fmt --check .`、ビルド、テスト、アーキテクチャとコメントの検査を順に実行し、最初に失敗した段階で止まります。最後の2段階は[クイックスタート](#クイックスタート)の検査です。`scripts/check_quick_start.py` は英語版 `README.md` のコマンドを書いてあるとおりに実行して各結果を `# expect:` と照合し、`README.ja.md`（このファイル）が同じコマンドを持っていることも確かめます。クイックスタートに例を足すときは、この印も付けてください。CI がその例も検査します。`improved`・`no-effect`・`incomparable` の例は、それぞれ1つ以上残っている必要があります。クイックスタートの2段階は Linux と macOS で実行します。Windows では skip を表示し、ほかの段階はそのまま実行します。
 
 コードにコメントは書きません。説明は README に書き、ルールの正本は検査スクリプトです。
 
