@@ -120,15 +120,13 @@ pub const TimeSummary = struct {
     variant_faster_rounds: usize,
 };
 
-const noise_band_percent = 20;
-
-pub const TimeVerdict = enum {
+pub const RowVerdict = enum {
     improved,
     no_effect,
     needs_check,
     not_judged,
 
-    pub fn text(self: TimeVerdict) []const u8 {
+    pub fn text(self: RowVerdict) []const u8 {
         return switch (self) {
             .improved => "improved",
             .no_effect => "no-effect",
@@ -139,7 +137,7 @@ pub const TimeVerdict = enum {
 };
 
 pub const Judgement = struct {
-    verdict: TimeVerdict,
+    verdict: RowVerdict,
     reasons: [max_reasons][]const u8 = undefined,
     reason_count: usize = 0,
 
@@ -152,41 +150,26 @@ pub const Judgement = struct {
     }
 };
 
-pub fn judgeTime(before: Measurement, after: Measurement, times: TimeSummary) Judgement {
+pub fn judgeRows(before: Measurement, after: Measurement) Judgement {
     var judgement: Judgement = .{ .verdict = .needs_check };
-    const baseline = times.baseline.median;
-    const variant = times.variant.median;
-    if (baseline == 0) {
-        judgement.add("the baseline median is 0 ns, so the times cannot be compared");
+    const baseline = before.counters;
+    const variant = after.counters;
+    if (variant.rows_read > baseline.rows_read) {
+        judgement.add("the rows match, but the variant reads more rows than the baseline");
         return judgement;
     }
-    const b = before.counters;
-    const a = after.counters;
-    const same_work = std.meta.eql(b, a) and samePlan(before.plan, after.plan);
-    const less_work = a.vm_steps < b.vm_steps and a.fullscan_steps <= b.fullscan_steps and
-        a.sort_ops <= b.sort_ops and a.autoindex_rows <= b.autoindex_rows;
-    const difference = if (variant > baseline) variant - baseline else baseline - variant;
-    const within_band = @as(u128, difference) * 100 <= @as(u128, baseline) * noise_band_percent;
-
-    if (same_work) {
-        if (within_band) {
-            judgement.verdict = .no_effect;
-        } else {
-            judgement.add(std.fmt.comptimePrint("the plans and counters are the same, but the medians differ by more than {d}%", .{noise_band_percent}));
-        }
+    if (variant.rows_written > baseline.rows_written) {
+        judgement.add(if (variant.rows_read == baseline.rows_read)
+            "the rows match and both copies read the same number of rows, but the variant writes more rows"
+        else
+            "the rows match and the variant reads fewer rows, but the variant writes more rows");
         return judgement;
     }
-    if (!less_work) {
-        judgement.add("the plan or the counters changed, but not to fewer VM steps without any other counter growing");
+    if (variant.rows_read == baseline.rows_read) {
+        judgement.verdict = .no_effect;
         return judgement;
     }
-    if (variant >= baseline or within_band) {
-        judgement.add(std.fmt.comptimePrint("the variant runs fewer VM steps, but its median is not more than {d}% below the baseline median", .{noise_band_percent}));
-    }
-    if (times.variant_faster_rounds != times.rounds) {
-        judgement.add("the variant runs fewer VM steps, but it was not faster in every round");
-    }
-    if (judgement.reason_count == 0) judgement.verdict = .improved;
+    judgement.verdict = .improved;
     return judgement;
 }
 
@@ -209,25 +192,16 @@ pub fn parentLine(plan: db.Plan, parent: i64) ?usize {
 const scan_line = [_]db.PlanRow{.{ .id = 2, .parent = 0, .label = .{ .kind = .scan }, .detail = "SCAN t" }};
 const search_line = [_]db.PlanRow{.{ .id = 3, .parent = 0, .label = .{ .kind = .search }, .detail = "SEARCH t USING INDEX idx_a (a=?)" }};
 
-fn testMeasurement(plan: []const db.PlanRow, fullscan_steps: u32, vm_steps: u32) Measurement {
+fn testMeasurement(rows_read: u32, rows_written: u32) Measurement {
     return .{
         .rows = 1,
-        .plan = .{ .rows = @constCast(plan) },
-        .counters = .{ .fullscan_steps = fullscan_steps, .vm_steps = vm_steps, .sort_ops = 0, .autoindex_rows = 0 },
+        .plan = .{ .rows = @constCast(&scan_line) },
+        .counters = .{ .rows_read = rows_read, .rows_written = rows_written, .fullscan_steps = 0, .vm_steps = 0, .sort_ops = 0, .autoindex_rows = 0 },
         .columns = 1,
     };
 }
 
-fn testTimes(baseline: u64, variant: u64, faster: usize) TimeSummary {
-    return .{
-        .baseline = .{ .median = baseline, .p25 = baseline, .p75 = baseline, .min = baseline, .max = baseline },
-        .variant = .{ .median = variant, .p25 = variant, .p75 = variant, .min = variant, .max = variant },
-        .rounds = 10,
-        .variant_faster_rounds = faster,
-    };
-}
-
-fn expectJudgement(expected: TimeVerdict, reason: ?[]const u8, judgement: Judgement) !void {
+fn expectJudgement(expected: RowVerdict, reason: ?[]const u8, judgement: Judgement) !void {
     try testing.expectEqual(expected, judgement.verdict);
     if (reason) |text| {
         try testing.expectEqual(@as(usize, 1), judgement.reason_count);
@@ -249,52 +223,32 @@ test "summarize of one sample has no spread" {
     try testing.expectEqual(Stats{ .median = 7, .p25 = 7, .p75 = 7, .min = 7, .max = 7 }, summarize(&one));
 }
 
-test "judgeTime improved needs fewer steps, a median below the band and every round faster" {
-    const before = testMeasurement(&scan_line, 1000, 5000);
-    const after = testMeasurement(&search_line, 0, 50);
-    try expectJudgement(.improved, null, judgeTime(before, after, testTimes(1000, 799, 10)));
+test "judgeRows a variant that reads fewer rows is improved" {
+    try expectJudgement(.improved, null, judgeRows(testMeasurement(100_000, 0), testMeasurement(201, 0)));
+    try expectJudgement(.improved, null, judgeRows(testMeasurement(201, 4), testMeasurement(1, 0)));
 }
 
-test "judgeTime one slower round is needs-check" {
-    const before = testMeasurement(&scan_line, 1000, 5000);
-    const after = testMeasurement(&search_line, 0, 50);
-    try expectJudgement(.needs_check, "not faster in every round", judgeTime(before, after, testTimes(1000, 100, 9)));
+test "judgeRows the same read count is no-effect whatever the times" {
+    try expectJudgement(.no_effect, null, judgeRows(testMeasurement(1000, 0), testMeasurement(1000, 0)));
+    try expectJudgement(.no_effect, null, judgeRows(testMeasurement(1000, 7), testMeasurement(1000, 2)));
 }
 
-test "judgeTime an improvement inside the noise band is needs-check" {
-    const before = testMeasurement(&scan_line, 1000, 5000);
-    const after = testMeasurement(&search_line, 0, 50);
-    try expectJudgement(.needs_check, "not more than 20% below", judgeTime(before, after, testTimes(1000, 800, 10)));
+test "judgeRows reading more rows is needs-check" {
+    try expectJudgement(.needs_check, "reads more rows", judgeRows(testMeasurement(1000, 0), testMeasurement(1001, 0)));
 }
 
-test "judgeTime the same work within 20 percent is no-effect" {
-    const before = testMeasurement(&scan_line, 1000, 5000);
-    const moved = [_]db.PlanRow{.{ .id = 7, .parent = 0, .label = .{ .kind = .scan }, .detail = "SCAN t" }};
-    const after = testMeasurement(&moved, 1000, 5000);
-    try expectJudgement(.no_effect, null, judgeTime(before, after, testTimes(1000, 1200, 0)));
-    try expectJudgement(.no_effect, null, judgeTime(before, after, testTimes(1000, 800, 10)));
+test "judgeRows more rows written is needs-check" {
+    try expectJudgement(.needs_check, "but the variant writes more", judgeRows(testMeasurement(1000, 0), testMeasurement(10, 1)));
+    try expectJudgement(.needs_check, "the variant writes more", judgeRows(testMeasurement(1000, 5), testMeasurement(1000, 6)));
 }
 
-test "judgeTime the same work beyond 20 percent is needs-check" {
-    const before = testMeasurement(&scan_line, 1000, 5000);
-    const after = testMeasurement(&scan_line, 1000, 5000);
-    try expectJudgement(.needs_check, "differ by more than 20%", judgeTime(before, after, testTimes(1000, 1201, 0)));
-    try expectJudgement(.needs_check, "differ by more than 20%", judgeTime(before, after, testTimes(1000, 799, 10)));
+test "judgeRows ignores the plan and the times" {
+    const before = testMeasurement(1000, 0);
+    var after = testMeasurement(10, 0);
+    after.plan = .{ .rows = @constCast(&search_line) };
+    try expectJudgement(.improved, null, judgeRows(before, after));
 }
 
-test "judgeTime more work on the variant is needs-check even when it is faster" {
-    const before = testMeasurement(&scan_line, 1000, 5000);
-    const more_scans = testMeasurement(&search_line, 1001, 50);
-    try expectJudgement(.needs_check, "not to fewer VM steps", judgeTime(before, more_scans, testTimes(1000, 10, 10)));
-    const same_steps_other_plan = testMeasurement(&search_line, 1000, 5000);
-    try expectJudgement(.needs_check, "not to fewer VM steps", judgeTime(before, same_steps_other_plan, testTimes(1000, 10, 10)));
-}
-
-test "judgeTime a zero baseline median is needs-check" {
-    const before = testMeasurement(&scan_line, 1000, 5000);
-    const after = testMeasurement(&search_line, 0, 50);
-    try expectJudgement(.needs_check, "median is 0 ns", judgeTime(before, after, testTimes(0, 0, 0)));
-}
 const testing = std.testing;
 
 const fixture_schema: [:0]const u8 =

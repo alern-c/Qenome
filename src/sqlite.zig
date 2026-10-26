@@ -101,6 +101,10 @@ pub const SQLITE_STMTSTATUS_SORT = 2;
 pub const SQLITE_STMTSTATUS_AUTOINDEX = 3;
 pub const SQLITE_STMTSTATUS_VM_STEP = 4;
 
+pub const LIBSQL_STMTSTATUS_BASE: c_int = 1024;
+pub const LIBSQL_STMTSTATUS_ROWS_READ: c_int = LIBSQL_STMTSTATUS_BASE + 1;
+pub const LIBSQL_STMTSTATUS_ROWS_WRITTEN: c_int = LIBSQL_STMTSTATUS_BASE + 2;
+
 pub const Destructor = fn (?*anyopaque) callconv(.c) void;
 pub const DestructorPtr = ?*align(1) const Destructor;
 pub const SQLITE_TRANSIENT: DestructorPtr = @ptrFromInt(@as(usize, @bitCast(@as(isize, -1))));

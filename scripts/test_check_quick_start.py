@@ -40,7 +40,7 @@ FAKE_QENOME = (
     "fi\n"
     'printf "Summary\\n"\n'
     'printf "  result rows   %s (the same rows on both copies)\\n" "$result"\n'
-    'printf "  time verdict  %s: for the test\\n" "$verdict"\n'
+    'printf "  verdict       %s: for the test\\n" "$verdict"\n'
     'printf "  time          median 1.00 ms -> 2.00 ms (2.000x)\\n"\n'
     'printf "\\nPlan\\n"\n'
     'exit "$code"\n'

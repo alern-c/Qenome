@@ -28,7 +28,7 @@ pub const Sizes = struct {
     variant: u64 = 0,
 };
 
-pub const TimeReport = struct {
+pub const Report = struct {
     timing: ?cli_timing.TimeSummary = null,
     sizes: Sizes = .{},
     judgement: cli_timing.Judgement,
@@ -44,7 +44,7 @@ pub fn writeReport(
     before: cli_comparison.Measurement,
     after: cli_comparison.Measurement,
     outcome: cli_comparison.Outcome,
-    report: TimeReport,
+    report: Report,
 ) Error!void {
     switch (format) {
         .human => try writeHumanSummary(stdout, header, before, after, outcome, report),
@@ -59,7 +59,7 @@ pub fn writeSummary(
     before: cli_comparison.Measurement,
     after: cli_comparison.Measurement,
     outcome: cli_comparison.Outcome,
-    report: TimeReport,
+    report: Report,
 ) Io.Writer.Error!void {
     try stdout.print("db: {s}\nselect: {s}\nindex-sql: {s}\nmeasured-on: baseline (candidate index not applied)\nrows: {d}\n", .{
         header.database_path, header.select_path, header.index_path, before.rows,
@@ -103,10 +103,10 @@ pub fn writeSummary(
     else
         "differs (reference only; rows may change order without ORDER BY or among equal ORDER BY keys, and ORDER BY itself is not checked)";
     try stdout.print("row-order: {s}\n", .{order});
-    try writeTimeReport(stdout, header, report);
+    try writeFacts(stdout, header, report);
 }
 
-pub fn writeTimeReport(stdout: *Io.Writer, header: Header, report: TimeReport) Io.Writer.Error!void {
+pub fn writeFacts(stdout: *Io.Writer, header: Header, report: Report) Io.Writer.Error!void {
     if (header.binds.len == 0) try stdout.writeAll("bind: none\n");
     for (header.binds) |bind| {
         try stdout.writeAll("bind: ");
@@ -142,11 +142,11 @@ pub fn writeTimeReport(stdout: *Io.Writer, header: Header, report: TimeReport) I
         \\db-bytes-baseline: {d} (the snapshot file)
         \\db-bytes-variant: {d} (the snapshot file with the candidate index)
         \\db-bytes-increase: {d} (the whole database file, not the index alone)
-        \\time-verdict: {s}
+        \\verdict: {s}
         \\
     , .{ sizes.baseline, sizes.variant, @as(i128, sizes.variant) - @as(i128, sizes.baseline), report.judgement.verdict.text() });
     for (report.judgement.reasons[0..report.judgement.reason_count]) |reason| {
-        try stdout.print("time-verdict-reason: {s}\n", .{reason});
+        try stdout.print("verdict-reason: {s}\n", .{reason});
     }
 }
 
@@ -233,7 +233,7 @@ fn writeJsonD1(json: *std.json.Stringify, allocator: std.mem.Allocator, header: 
     try json.endObject();
 }
 
-const json_schema_version: u8 = 1;
+const json_schema_version: u8 = 2;
 
 pub fn writeJsonReport(
     stdout: *Io.Writer,
@@ -242,7 +242,7 @@ pub fn writeJsonReport(
     before: cli_comparison.Measurement,
     after: cli_comparison.Measurement,
     outcome: cli_comparison.Outcome,
-    report: TimeReport,
+    report: Report,
 ) Error!void {
     var out: Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
@@ -440,6 +440,10 @@ fn writeJsonMeasurement(
     try json.endArray();
     try json.objectField("counters");
     try json.beginObject();
+    try json.objectField("rows_read");
+    try json.write(measurement.counters.rows_read);
+    try json.objectField("rows_written");
+    try json.write(measurement.counters.rows_written);
     try json.objectField("fullscan_steps");
     try json.write(measurement.counters.fullscan_steps);
     try json.objectField("vm_steps");
@@ -601,8 +605,8 @@ pub fn writePlanAndCounters(stdout: *Io.Writer, measurement: cli_comparison.Meas
             row.id, row.parent, row.label.kind, row.label.covering, row.label.automatic, row.detail,
         });
     }
-    try stdout.print("fullscan-steps: {d}\nvm-steps: {d}\nsort-ops: {d}\nautoindex-rows: {d}\n", .{
-        measurement.counters.fullscan_steps, measurement.counters.vm_steps, measurement.counters.sort_ops, measurement.counters.autoindex_rows,
+    try stdout.print("rows-read: {d}\nrows-written: {d}\nfullscan-steps: {d}\nvm-steps: {d}\nsort-ops: {d}\nautoindex-rows: {d}\n", .{
+        measurement.counters.rows_read, measurement.counters.rows_written, measurement.counters.fullscan_steps, measurement.counters.vm_steps, measurement.counters.sort_ops, measurement.counters.autoindex_rows,
     });
 }
 
@@ -620,7 +624,7 @@ pub fn writeHumanSummary(
     before: cli_comparison.Measurement,
     after: cli_comparison.Measurement,
     outcome: cli_comparison.Outcome,
-    report: TimeReport,
+    report: Report,
 ) Io.Writer.Error!void {
     try writeOverview(stdout, header, before, after, outcome, report);
     if (header.d1 != null) try writeD1Human(stdout, header);
@@ -643,7 +647,7 @@ fn writeOverview(
     before: cli_comparison.Measurement,
     after: cli_comparison.Measurement,
     outcome: cli_comparison.Outcome,
-    report: TimeReport,
+    report: Report,
 ) Io.Writer.Error!void {
     try stdout.writeAll("Summary\n");
     try writeField(stdout, "result rows", switch (outcome.verdict) {
@@ -651,9 +655,16 @@ fn writeOverview(
         .mismatch => "MISMATCH (the rows differ; the cause is not determined)",
         .incomparable => "INCOMPARABLE (the rows cannot be compared; see Result rows)",
     });
-    try writeField(stdout, "time verdict", switch (report.judgement.verdict) {
-        .improved => "improved: less work, a median more than 20% lower, and faster in every round",
-        .no_effect => "no-effect: the same plan and counters, and medians within 20%",
+    var rows_buffer: [64]u8 = undefined;
+    var rows_text = Io.Writer.fixed(&rows_buffer);
+    try writeRowPair(&rows_text, before.counters.rows_read, after.counters.rows_read);
+    try writeField(stdout, "rows read", rows_text.buffered());
+    rows_text = Io.Writer.fixed(&rows_buffer);
+    try writeRowPair(&rows_text, before.counters.rows_written, after.counters.rows_written);
+    try writeField(stdout, "rows written", rows_text.buffered());
+    try writeField(stdout, "verdict", switch (report.judgement.verdict) {
+        .improved => "improved: the rows match, and the variant reads fewer rows",
+        .no_effect => "no-effect: the rows match, and the variant reads the same rows",
         .needs_check => "needs-check:",
         .not_judged => "not-judged:",
     });
@@ -677,9 +688,9 @@ fn writeOverview(
         try writeDuration(&text, timing.variant.median);
         try text.writeAll(" (");
         try writeRatio(&text, timing.baseline.median, timing.variant.median);
-        try text.print("); the variant was faster in {d} of {d} rounds", .{ timing.variant_faster_rounds, timing.rounds });
+        try text.print("); the variant was faster in {d} of {d} rounds (reference only)", .{ timing.variant_faster_rounds, timing.rounds });
     } else {
-        try text.writeAll("not measured (0 rounds)");
+        try text.writeAll("not measured (0 rounds; reference only)");
     }
     try writeField(stdout, "time", text.buffered());
 
@@ -706,10 +717,12 @@ fn writeSideBySide(
     stdout: *Io.Writer,
     before: cli_comparison.Measurement,
     after: cli_comparison.Measurement,
-    report: TimeReport,
+    report: Report,
 ) Io.Writer.Error!void {
     try stdout.print("{s:<22}{s:>16}{s:>16}{s:>16}\n", .{ "Baseline vs variant", "baseline", "variant", "change" });
-    try writeCountRow(stdout, "rows", before.rows, after.rows);
+    try writeCountRow(stdout, "rows read", before.counters.rows_read, after.counters.rows_read);
+    try writeCountRow(stdout, "rows written", before.counters.rows_written, after.counters.rows_written);
+    try writeCountRow(stdout, "result rows", before.rows, after.rows);
     try writeCountRow(stdout, "fullscan-steps", before.counters.fullscan_steps, after.counters.fullscan_steps);
     try writeCountRow(stdout, "vm-steps", before.counters.vm_steps, after.counters.vm_steps);
     if (before.counters.sort_ops != 0 or after.counters.sort_ops != 0) {
@@ -753,6 +766,12 @@ fn writeTableRow(stdout: *Io.Writer, label: []const u8, baseline: []const u8, va
     try stdout.print("  {s:<20}{s:>16}{s:>16}", .{ label, baseline, variant });
     if (change.len != 0) try stdout.print("{s:>16}", .{change});
     try stdout.writeByte('\n');
+}
+
+fn writeRowPair(writer: *Io.Writer, baseline: u32, variant: u32) Io.Writer.Error!void {
+    try writeCount(writer, baseline);
+    try writer.writeAll(" -> ");
+    try writeCount(writer, variant);
 }
 
 fn writeRatio(writer: *Io.Writer, baseline: u64, variant: u64) Io.Writer.Error!void {
@@ -943,18 +962,18 @@ test "the summary keeps its block order without a database" {
     const before: cli_comparison.Measurement = .{
         .rows = 2,
         .plan = .{ .rows = @constCast(&scan_line) },
-        .counters = .{ .fullscan_steps = 1, .vm_steps = 2, .sort_ops = 0, .autoindex_rows = 0 },
+        .counters = .{ .rows_read = 0, .rows_written = 0, .fullscan_steps = 1, .vm_steps = 2, .sort_ops = 0, .autoindex_rows = 0 },
         .columns = 1,
     };
     const after: cli_comparison.Measurement = .{
         .rows = 2,
         .plan = .{ .rows = @constCast(&scan_line) },
-        .counters = .{ .fullscan_steps = 0, .vm_steps = 1, .sort_ops = 0, .autoindex_rows = 0 },
+        .counters = .{ .rows_read = 0, .rows_written = 0, .fullscan_steps = 0, .vm_steps = 1, .sort_ops = 0, .autoindex_rows = 0 },
         .columns = 1,
     };
     const comparison: result.Comparison = .{ .matched = true, .same_order = true };
     const outcome: cli_comparison.Outcome = .{ .verdict = .match, .comparison = comparison };
-    const report: TimeReport = .{
+    const report: Report = .{
         .sizes = .{ .baseline = 4096, .variant = 8192 },
         .judgement = .{ .verdict = .not_judged },
     };
@@ -964,13 +983,13 @@ test "the summary keeps its block order without a database" {
         "db: db.sqlite\nselect: select.sql\nindex-sql: index.sql\n",
         "measured-on: baseline (candidate index not applied)\nrows: 2\n",
         "sqlite: 0.0.0\nsqlite-source-id: test-source-id\n",
-        "detail=SCAN t\n",
+        "detail=SCAN t\nrows-read: 0\nrows-written: 0\n",
         "measured-on: variant (candidate index applied)\nrows: 2\n",
         "result: match (row multiset)\n",
         "row-order: ",
         "bind: 1:int\n",
         "measure-runs: 0 per copy\n",
-        "time-verdict: not-judged\n",
+        "verdict: not-judged\n",
     };
     var from: usize = 0;
     for (keys) |key| {
@@ -1034,18 +1053,18 @@ test "the human summary puts the conclusion first and the copies side by side" {
     const before: cli_comparison.Measurement = .{
         .rows = 1200,
         .plan = .{ .rows = @constCast(&scan_line) },
-        .counters = .{ .fullscan_steps = 199_999, .vm_steps = 600_407, .sort_ops = 0, .autoindex_rows = 0 },
+        .counters = .{ .rows_read = 200_000, .rows_written = 0, .fullscan_steps = 199_999, .vm_steps = 600_407, .sort_ops = 0, .autoindex_rows = 0 },
         .columns = 1,
     };
     const after: cli_comparison.Measurement = .{
         .rows = 1200,
         .plan = .{ .rows = @constCast(&search_lines) },
-        .counters = .{ .fullscan_steps = 0, .vm_steps = 710, .sort_ops = 0, .autoindex_rows = 0 },
+        .counters = .{ .rows_read = 201, .rows_written = 0, .fullscan_steps = 0, .vm_steps = 710, .sort_ops = 0, .autoindex_rows = 0 },
         .columns = 1,
     };
     const comparison: result.Comparison = .{ .matched = true, .same_order = true };
     const outcome: cli_comparison.Outcome = .{ .verdict = .match, .comparison = comparison };
-    const report: TimeReport = .{
+    const report: Report = .{
         .timing = .{
             .baseline = .{ .median = 4_331_750, .p25 = 4_158_324, .p75 = 4_364_397, .min = 4_098_250, .max = 4_465_958 },
             .variant = .{ .median = 37_292, .p25 = 33_198, .p75 = 40_417, .min = 28_583, .max = 71_583 },
@@ -1060,11 +1079,12 @@ test "the human summary puts the conclusion first and the copies side by side" {
     const head =
         \\Summary
         \\  result rows   match (the same rows on both copies)
-        \\  time verdict  improved: less work, a median more than 20% lower, and faster in
-        \\                every round
+        \\  rows read     200,000 -> 201
+        \\  rows written  0 -> 0
+        \\  verdict       improved: the rows match, and the variant reads fewer rows
         \\  query plan    changed on the variant
         \\  time          median 4.33 ms -> 37.29 us (0.009x); the variant was faster in
-        \\                10 of 10 rounds
+        \\                10 of 10 rounds (reference only)
         \\  db size       +2,170,880 bytes (+2.07 MiB; the whole database file, not the
         \\                index alone)
         \\
@@ -1073,7 +1093,9 @@ test "the human summary puts the conclusion first and the copies side by side" {
     const tail =
         \\
         \\Baseline vs variant           baseline         variant          change
-        \\  rows                           1,200           1,200            same
+        \\  rows read                    200,000             201        -199,799
+        \\  rows written                       0               0            same
+        \\  result rows                    1,200           1,200            same
         \\  fullscan-steps               199,999               0        -199,999
         \\  vm-steps                     600,407             710        -599,697
         \\  time p25                     4.16 ms        33.20 us
@@ -1118,23 +1140,25 @@ test "the human summary lists the verdict reasons and says when nothing was time
     const measurement: cli_comparison.Measurement = .{
         .rows = 2,
         .plan = .{ .rows = @constCast(&scan_line) },
-        .counters = .{ .fullscan_steps = 1, .vm_steps = 2, .sort_ops = 0, .autoindex_rows = 0 },
+        .counters = .{ .rows_read = 0, .rows_written = 0, .fullscan_steps = 1, .vm_steps = 2, .sort_ops = 0, .autoindex_rows = 0 },
         .columns = 1,
     };
     var outcome: cli_comparison.Outcome = .{ .verdict = .incomparable };
     outcome.reasons[0] = .{ .text = "the SELECT calls random(), whose result changes between runs", .hint = "compare the SELECT without random()" };
     outcome.reason_count = 1;
-    var report: TimeReport = .{ .sizes = .{ .baseline = 4096, .variant = 4096 }, .judgement = .{ .verdict = .not_judged } };
+    var report: Report = .{ .sizes = .{ .baseline = 4096, .variant = 4096 }, .judgement = .{ .verdict = .not_judged } };
     report.judgement.add("the result rows cannot be compared, so the SELECT is not timed");
     try writeReport(&stdout, testing.allocator, .human, header, measurement, measurement, outcome, report);
 
     const head =
         \\Summary
         \\  result rows   INCOMPARABLE (the rows cannot be compared; see Result rows)
-        \\  time verdict  not-judged:
+        \\  rows read     0 -> 0
+        \\  rows written  0 -> 0
+        \\  verdict       not-judged:
         \\                - the result rows cannot be compared, so the SELECT is not timed
         \\  query plan    the same on both copies
-        \\  time          not measured (0 rounds)
+        \\  time          not measured (0 rounds; reference only)
         \\  db size       0 bytes (0.00 MiB; the whole database file, not the index alone)
         \\
     ;
@@ -1142,7 +1166,9 @@ test "the human summary lists the verdict reasons and says when nothing was time
     const tail =
         \\
         \\Baseline vs variant           baseline         variant          change
-        \\  rows                               2               2            same
+        \\  rows read                          0               0            same
+        \\  rows written                       0               0            same
+        \\  result rows                        2               2            same
         \\  fullscan-steps                     1               1            same
         \\  vm-steps                           2               2            same
         \\  db file bytes                  4,096           4,096            same
@@ -1187,18 +1213,18 @@ test "the human summary keeps a counter row when one side is not zero" {
     const before: cli_comparison.Measurement = .{
         .rows = 2,
         .plan = .{ .rows = @constCast(&scan_line) },
-        .counters = .{ .fullscan_steps = 1, .vm_steps = 2, .sort_ops = 3, .autoindex_rows = 4 },
+        .counters = .{ .rows_read = 0, .rows_written = 0, .fullscan_steps = 1, .vm_steps = 2, .sort_ops = 3, .autoindex_rows = 4 },
         .columns = 1,
     };
     const after: cli_comparison.Measurement = .{
         .rows = 2,
         .plan = .{ .rows = @constCast(&scan_line) },
-        .counters = .{ .fullscan_steps = 1, .vm_steps = 2, .sort_ops = 0, .autoindex_rows = 0 },
+        .counters = .{ .rows_read = 0, .rows_written = 0, .fullscan_steps = 1, .vm_steps = 2, .sort_ops = 0, .autoindex_rows = 0 },
         .columns = 1,
     };
     const comparison: result.Comparison = .{ .matched = true, .same_order = true };
     const outcome: cli_comparison.Outcome = .{ .verdict = .match, .comparison = comparison };
-    const report: TimeReport = .{ .sizes = .{ .baseline = 4096, .variant = 4096 }, .judgement = .{ .verdict = .no_effect } };
+    const report: Report = .{ .sizes = .{ .baseline = 4096, .variant = 4096 }, .judgement = .{ .verdict = .no_effect } };
     try writeReport(&stdout, testing.allocator, .human, header, before, after, outcome, report);
     try testing.expect(std.mem.indexOf(u8, stdout.buffered(), "  sort-ops") != null);
     try testing.expect(std.mem.indexOf(u8, stdout.buffered(), "  autoindex-rows") != null);
@@ -1223,12 +1249,12 @@ test "the human summary shows the bind values only when asked" {
     const measurement: cli_comparison.Measurement = .{
         .rows = 2,
         .plan = .{ .rows = @constCast(&scan_line) },
-        .counters = .{ .fullscan_steps = 1, .vm_steps = 2, .sort_ops = 0, .autoindex_rows = 0 },
+        .counters = .{ .rows_read = 0, .rows_written = 0, .fullscan_steps = 1, .vm_steps = 2, .sort_ops = 0, .autoindex_rows = 0 },
         .columns = 1,
     };
     const comparison: result.Comparison = .{ .matched = true, .same_order = true };
     const outcome: cli_comparison.Outcome = .{ .verdict = .match, .comparison = comparison };
-    const report: TimeReport = .{ .sizes = .{ .baseline = 4096, .variant = 4096 }, .judgement = .{ .verdict = .not_judged } };
+    const report: Report = .{ .sizes = .{ .baseline = 4096, .variant = 4096 }, .judgement = .{ .verdict = .not_judged } };
 
     var stdout = Io.Writer.fixed(&buffer);
     try writeReport(&stdout, testing.allocator, .human, header, measurement, measurement, outcome, report);
@@ -1257,12 +1283,12 @@ test "the human summary notes a debug build when the times were measured" {
     const measurement: cli_comparison.Measurement = .{
         .rows = 2,
         .plan = .{ .rows = @constCast(&scan_line) },
-        .counters = .{ .fullscan_steps = 1, .vm_steps = 2, .sort_ops = 0, .autoindex_rows = 0 },
+        .counters = .{ .rows_read = 0, .rows_written = 0, .fullscan_steps = 1, .vm_steps = 2, .sort_ops = 0, .autoindex_rows = 0 },
         .columns = 1,
     };
     const comparison: result.Comparison = .{ .matched = true, .same_order = true };
     const outcome: cli_comparison.Outcome = .{ .verdict = .match, .comparison = comparison };
-    const report: TimeReport = .{
+    const report: Report = .{
         .timing = .{
             .baseline = .{ .median = 4_331_750, .p25 = 4_158_324, .p75 = 4_364_397, .min = 4_098_250, .max = 4_465_958 },
             .variant = .{ .median = 37_292, .p25 = 33_198, .p75 = 40_417, .min = 28_583, .max = 71_583 },
@@ -1314,18 +1340,18 @@ test "the kv summary keeps every line of the single-format summary" {
     const before: cli_comparison.Measurement = .{
         .rows = 2,
         .plan = .{ .rows = @constCast(&scan_line) },
-        .counters = .{ .fullscan_steps = 199_999, .vm_steps = 600_407, .sort_ops = 0, .autoindex_rows = 0 },
+        .counters = .{ .rows_read = 200_000, .rows_written = 0, .fullscan_steps = 199_999, .vm_steps = 600_407, .sort_ops = 0, .autoindex_rows = 0 },
         .columns = 1,
     };
     const after: cli_comparison.Measurement = .{
         .rows = 2,
         .plan = .{ .rows = @constCast(&scan_line) },
-        .counters = .{ .fullscan_steps = 0, .vm_steps = 710, .sort_ops = 0, .autoindex_rows = 0 },
+        .counters = .{ .rows_read = 201, .rows_written = 0, .fullscan_steps = 0, .vm_steps = 710, .sort_ops = 0, .autoindex_rows = 0 },
         .columns = 1,
     };
     const comparison: result.Comparison = .{ .matched = true, .same_order = true };
     const outcome: cli_comparison.Outcome = .{ .verdict = .match, .comparison = comparison };
-    const report: TimeReport = .{
+    const report: Report = .{
         .timing = .{
             .baseline = .{ .median = 4_331_750, .p25 = 4_158_324, .p75 = 4_364_397, .min = 4_098_250, .max = 4_465_958 },
             .variant = .{ .median = 37_292, .p25 = 33_198, .p75 = 40_417, .min = 28_583, .max = 71_583 },
@@ -1345,6 +1371,8 @@ test "the kv summary keeps every line of the single-format summary" {
         \\sqlite: 0.0.0
         \\sqlite-source-id: test-source-id
         \\plan: id=2 parent=0 kind=scan covering=false automatic=false detail=SCAN t
+        \\rows-read: 200000
+        \\rows-written: 0
         \\fullscan-steps: 199999
         \\vm-steps: 600407
         \\sort-ops: 0
@@ -1352,6 +1380,8 @@ test "the kv summary keeps every line of the single-format summary" {
         \\measured-on: variant (candidate index applied)
         \\rows: 2
         \\plan: id=2 parent=0 kind=scan covering=false automatic=false detail=SCAN t
+        \\rows-read: 201
+        \\rows-written: 0
         \\fullscan-steps: 0
         \\vm-steps: 710
         \\sort-ops: 0
@@ -1375,7 +1405,7 @@ test "the kv summary keeps every line of the single-format summary" {
         \\db-bytes-baseline: 5087232 (the snapshot file)
         \\db-bytes-variant: 7258112 (the snapshot file with the candidate index)
         \\db-bytes-increase: 2170880 (the whole database file, not the index alone)
-        \\time-verdict: improved
+        \\verdict: improved
         \\
     , stdout.buffered());
 }
@@ -1456,18 +1486,18 @@ test "the json report carries the decision, the plans, the times and the sizes" 
     const before: cli_comparison.Measurement = .{
         .rows = 1200,
         .plan = .{ .rows = @constCast(&scan_line) },
-        .counters = .{ .fullscan_steps = 199_999, .vm_steps = 600_407, .sort_ops = 0, .autoindex_rows = 0 },
+        .counters = .{ .rows_read = 0, .rows_written = 0, .fullscan_steps = 199_999, .vm_steps = 600_407, .sort_ops = 0, .autoindex_rows = 0 },
         .columns = 1,
     };
     const after: cli_comparison.Measurement = .{
         .rows = 1200,
         .plan = .{ .rows = @constCast(&search_lines) },
-        .counters = .{ .fullscan_steps = 0, .vm_steps = 710, .sort_ops = 0, .autoindex_rows = 0 },
+        .counters = .{ .rows_read = 0, .rows_written = 0, .fullscan_steps = 0, .vm_steps = 710, .sort_ops = 0, .autoindex_rows = 0 },
         .columns = 1,
     };
     const comparison: result.Comparison = .{ .matched = true, .same_order = true };
     const outcome: cli_comparison.Outcome = .{ .verdict = .match, .comparison = comparison };
-    const report: TimeReport = .{
+    const report: Report = .{
         .timing = .{
             .baseline = .{ .median = 4_331_750, .p25 = 4_158_324, .p75 = 4_364_397, .min = 4_098_250, .max = 4_465_958 },
             .variant = .{ .median = 37_292, .p25 = 33_198, .p75 = 40_417, .min = 28_583, .max = 71_583 },
@@ -1483,7 +1513,7 @@ test "the json report carries the decision, the plans, the times and the sizes" 
     defer parsed.deinit();
     const root = parsed.value;
 
-    try testing.expectEqual(@as(i64, 1), try jsonInt(root, "schema_version"));
+    try testing.expectEqual(@as(i64, 2), try jsonInt(root, "schema_version"));
     try testing.expectEqual(@as(i64, 0), try jsonInt(root, "exit_code"));
     try testing.expectEqualStrings("improved", try jsonText(root, "verdict"));
     try testing.expectEqual(@as(usize, 0), (try jsonItems(root, "verdict_reasons")).len);
@@ -1600,12 +1630,12 @@ test "the json report shows the bind values only when asked" {
     const measurement: cli_comparison.Measurement = .{
         .rows = 2,
         .plan = .{ .rows = @constCast(&scan_line) },
-        .counters = .{ .fullscan_steps = 1, .vm_steps = 2, .sort_ops = 0, .autoindex_rows = 0 },
+        .counters = .{ .rows_read = 0, .rows_written = 0, .fullscan_steps = 1, .vm_steps = 2, .sort_ops = 0, .autoindex_rows = 0 },
         .columns = 1,
     };
     const comparison: result.Comparison = .{ .matched = false, .same_order = false, .baseline_only = 1, .variant_only = 1 };
     const outcome: cli_comparison.Outcome = .{ .verdict = .mismatch, .comparison = comparison };
-    var report: TimeReport = .{ .sizes = .{ .baseline = 8192, .variant = 8192 }, .judgement = .{ .verdict = .not_judged } };
+    var report: Report = .{ .sizes = .{ .baseline = 8192, .variant = 8192 }, .judgement = .{ .verdict = .not_judged } };
     report.judgement.add("the result rows do not match, so the SELECT is not timed");
     try writeReport(&stdout, testing.allocator, .json, header, measurement, measurement, outcome, report);
 
@@ -1662,10 +1692,10 @@ test "the json report omits one-sided row values unless asked" {
     const measurement: cli_comparison.Measurement = .{
         .rows = 2,
         .plan = .{ .rows = @constCast(&scan_line) },
-        .counters = .{ .fullscan_steps = 1, .vm_steps = 2, .sort_ops = 0, .autoindex_rows = 0 },
+        .counters = .{ .rows_read = 0, .rows_written = 0, .fullscan_steps = 1, .vm_steps = 2, .sort_ops = 0, .autoindex_rows = 0 },
         .columns = 1,
     };
-    var report: TimeReport = .{ .sizes = .{ .baseline = 8192, .variant = 12288 }, .judgement = .{ .verdict = .not_judged } };
+    var report: Report = .{ .sizes = .{ .baseline = 8192, .variant = 12288 }, .judgement = .{ .verdict = .not_judged } };
     report.judgement.add("the result rows do not match, so the SELECT is not timed");
 
     for ([_]bool{ false, true }) |show_rows| {
@@ -1721,13 +1751,13 @@ test "the json report has a null timing and a null ratio when nothing was timed 
     const measurement: cli_comparison.Measurement = .{
         .rows = 2,
         .plan = .{ .rows = @constCast(&scan_line) },
-        .counters = .{ .fullscan_steps = 1, .vm_steps = 2, .sort_ops = 0, .autoindex_rows = 0 },
+        .counters = .{ .rows_read = 0, .rows_written = 0, .fullscan_steps = 1, .vm_steps = 2, .sort_ops = 0, .autoindex_rows = 0 },
         .columns = 1,
     };
     const comparison: result.Comparison = .{ .matched = true, .same_order = true };
     const outcome: cli_comparison.Outcome = .{ .verdict = .match, .comparison = comparison };
 
-    var untimed_report: TimeReport = .{ .sizes = .{ .baseline = 4096, .variant = 2048 }, .judgement = .{ .verdict = .not_judged } };
+    var untimed_report: Report = .{ .sizes = .{ .baseline = 4096, .variant = 2048 }, .judgement = .{ .verdict = .not_judged } };
     untimed_report.judgement.add("--runs 0 skips the timing");
     var stdout = Io.Writer.fixed(&buffer);
     try writeReport(&stdout, testing.allocator, .json, header, measurement, measurement, outcome, untimed_report);
@@ -1741,7 +1771,7 @@ test "the json report has a null timing and a null ratio when nothing was timed 
 
     var zero_buffer: [16384]u8 = undefined;
     var zero_stdout = Io.Writer.fixed(&zero_buffer);
-    var zero_report: TimeReport = .{
+    var zero_report: Report = .{
         .timing = .{
             .baseline = .{ .median = 0, .p25 = 0, .p75 = 0, .min = 0, .max = 0 },
             .variant = .{ .median = 7, .p25 = 6, .p75 = 8, .min = 5, .max = 9 },
@@ -1786,13 +1816,13 @@ test "the json report escapes quotes, controls and non-utf8 text" {
             .label = .{ .kind = .scan },
             .detail = "SCAN \"t\"\n\\\x01\xff",
         }}) },
-        .counters = .{ .fullscan_steps = 1, .vm_steps = 2, .sort_ops = 0, .autoindex_rows = 0 },
+        .counters = .{ .rows_read = 0, .rows_written = 0, .fullscan_steps = 1, .vm_steps = 2, .sort_ops = 0, .autoindex_rows = 0 },
         .columns = 1,
     };
     var outcome: cli_comparison.Outcome = .{ .verdict = .incomparable };
     outcome.reasons[0] = .{ .text = "reason \"\x01\xff\"", .hint = "hint\nline" };
     outcome.reason_count = 1;
-    var report: TimeReport = .{ .sizes = .{ .baseline = 4096, .variant = 4096 }, .judgement = .{ .verdict = .not_judged } };
+    var report: Report = .{ .sizes = .{ .baseline = 4096, .variant = 4096 }, .judgement = .{ .verdict = .not_judged } };
     report.judgement.add("not judged \xff");
     try writeReport(&stdout, testing.allocator, .json, header, measurement, measurement, outcome, report);
 
@@ -1855,12 +1885,12 @@ test "the json report leaves stdout empty when a temporary allocation fails" {
     const measurement: cli_comparison.Measurement = .{
         .rows = 2,
         .plan = .{ .rows = @constCast(&scan_line) },
-        .counters = .{ .fullscan_steps = 1, .vm_steps = 2, .sort_ops = 0, .autoindex_rows = 0 },
+        .counters = .{ .rows_read = 0, .rows_written = 0, .fullscan_steps = 1, .vm_steps = 2, .sort_ops = 0, .autoindex_rows = 0 },
         .columns = 1,
     };
     const comparison: result.Comparison = .{ .matched = true, .same_order = true };
     const outcome: cli_comparison.Outcome = .{ .verdict = .match, .comparison = comparison };
-    const report: TimeReport = .{ .sizes = .{ .baseline = 4096, .variant = 4096 }, .judgement = .{ .verdict = .not_judged } };
+    const report: Report = .{ .sizes = .{ .baseline = 4096, .variant = 4096 }, .judgement = .{ .verdict = .not_judged } };
 
     var counting = std.testing.FailingAllocator.init(testing.allocator, .{});
     var counting_buffer: [32768]u8 = undefined;

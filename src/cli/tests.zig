@@ -973,6 +973,52 @@ test "a run on a wal database counts rows that are still in the wal" {
     try fixture.expectNoLeftovers();
 }
 
+fn readFixtureFile(fixture: *CliFixture, name: []const u8) ![]u8 {
+    return fixture.dir.tmp.dir.readFileAlloc(testing.io, name, testing.allocator, .unlimited);
+}
+
+test "a comparison leaves the source database and its wal bytes unchanged" {
+    var fixture = try CliFixture.init("SELECT a FROM w", "CREATE INDEX idx_w ON w(a)");
+    defer fixture.deinit();
+    const wal_path = try std.fmt.allocPrintSentinel(testing.allocator, "{s}/../wal.db", .{fixture.work_parent}, 0);
+    defer testing.allocator.free(wal_path);
+    const writer = try db.openTestWriter(wal_path,
+        \\PRAGMA journal_mode=WAL;
+        \\PRAGMA wal_autocheckpoint=0;
+        \\CREATE TABLE w(a INTEGER);
+        \\INSERT INTO w VALUES (1), (2), (3);
+    );
+    defer _ = sqlite.sqlite3_close(writer);
+
+    const main_before = try readFixtureFile(&fixture, "wal.db");
+    defer testing.allocator.free(main_before);
+    const wal_before = try readFixtureFile(&fixture, "wal.db-wal");
+    defer testing.allocator.free(wal_before);
+    try testing.expect(wal_before.len > 0);
+
+    var stdout_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const result = callRun(testing.allocator, &.{
+        "Qenome",
+        "--db",
+        wal_path,
+        "--select",
+        fixture.select_path,
+        "--index-sql",
+        fixture.index_path,
+    }, fixture.work_parent, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    const main_after = try readFixtureFile(&fixture, "wal.db");
+    defer testing.allocator.free(main_after);
+    const wal_after = try readFixtureFile(&fixture, "wal.db-wal");
+    defer testing.allocator.free(wal_after);
+    try testing.expectEqualSlices(u8, main_before, main_after);
+    try testing.expectEqualSlices(u8, wal_before, wal_after);
+    try fixture.expectNoLeftovers();
+}
+
 test "runs 3 prints binds, conditions, versions, times, sizes and the verdict after row-order" {
     var fixture = try CliFixture.init("SELECT a FROM t WHERE b = ?1", "CREATE INDEX idx_a ON t(a)");
     defer fixture.deinit();
@@ -1002,7 +1048,7 @@ test "runs 3 prints binds, conditions, versions, times, sizes and the verdict af
         "db-bytes-baseline: ",
         "db-bytes-variant: ",
         "db-bytes-increase: ",
-        "time-verdict: ",
+        "verdict: ",
     };
     var from: usize = 0;
     for (keys) |key| {
@@ -1039,7 +1085,9 @@ test "runs 0 skips the timing and keeps exit 0" {
     try testing.expectEqual(ExitCode.ok, result.code);
     try testing.expect(contains(result.stdout, "bind: 1:int\nmeasure-runs: 0 per copy\n"));
     try testing.expect(!contains(result.stdout, "time-baseline-ns"));
-    try testing.expect(contains(result.stdout, "time-verdict: not-judged\ntime-verdict-reason: --runs 0 skips the timing\n"));
+    try testing.expect(contains(result.stdout, "rows-read: 2\nrows-written: 0\n"));
+    try testing.expect(contains(result.stdout, "verdict: no-effect\n"));
+    try testing.expect(!contains(result.stdout, "verdict-reason"));
     try fixture.expectNoLeftovers();
 }
 
@@ -1056,7 +1104,7 @@ test "a mismatch is not timed and keeps exit 3" {
     try testing.expectEqual(ExitCode.mismatch, result.code);
     try testing.expect(contains(result.stdout, "bind: none\nmeasure-runs: 0 per copy\n"));
     try testing.expect(!contains(result.stdout, "time-baseline-ns"));
-    try testing.expect(contains(result.stdout, "time-verdict: not-judged\ntime-verdict-reason: the result rows do not match, so the SELECT is not timed\n"));
+    try testing.expect(contains(result.stdout, "verdict: not-judged\nverdict-reason: the result rows do not match, so the row counts are not judged\n"));
 }
 
 test "the size increase is the variant size minus the snapshot size" {
@@ -1086,7 +1134,7 @@ test "an incomparable select is not timed and keeps exit 4" {
     try testing.expectEqual(ExitCode.incomparable, result.code);
     try testing.expect(contains(result.stdout, "measure-runs: 0 per copy\n"));
     try testing.expect(!contains(result.stdout, "time-baseline-ns"));
-    try testing.expect(contains(result.stdout, "time-verdict: not-judged\ntime-verdict-reason: the result rows cannot be compared, so the SELECT is not timed\n"));
+    try testing.expect(contains(result.stdout, "verdict: not-judged\nverdict-reason: the result rows cannot be compared, so the row counts are not judged\n"));
 }
 
 test "binds show only their shape unless --show-binds is given" {
@@ -1140,14 +1188,23 @@ test "the default summary puts the conclusion first and the copies side by side"
     }, fixture.work_parent, &stdout_buffer, &stderr_buffer);
     try testing.expectEqual(ExitCode.ok, result.code);
     try testing.expectEqualStrings("", result.stderr);
-    try testing.expect(std.mem.startsWith(u8, result.stdout, "Summary\n  result rows   match (the same rows on both copies)\n  time verdict  "));
+    try testing.expect(std.mem.startsWith(u8, result.stdout,
+        \\Summary
+        \\  result rows   match (the same rows on both copies)
+        \\  rows read     2 -> 2
+        \\  rows written  0 -> 0
+        \\  verdict       no-effect: the rows match, and the variant reads the same rows
+        \\
+    ));
 
     const in_order = [_][]const u8{
         "  query plan    changed on the variant\n",
         "  time          median ",
         "  db size       +",
         "\nBaseline vs variant           baseline         variant          change\n",
-        "  rows                               1               1            same\n",
+        "  rows read                          2               2            same\n",
+        "  rows written                       0               0            same\n",
+        "  result rows                        1               1            same\n",
         "  fullscan-steps                     1               0              -1\n",
         "  time p25 ",
         "  time p75 ",
@@ -1185,11 +1242,13 @@ test "the default summary of a mismatch hides the one-sided rows unless --show-r
     try testing.expect(std.mem.startsWith(u8, result.stdout,
         \\Summary
         \\  result rows   MISMATCH (the rows differ; the cause is not determined)
-        \\  time verdict  not-judged:
-        \\                - the result rows do not match, so the SELECT is not timed
+        \\  rows read     4 -> 2
+        \\  rows written  0 -> 0
+        \\  verdict       not-judged:
+        \\                - the result rows do not match, so the row counts are not judged
         \\
     ));
-    try testing.expect(contains(result.stdout, "  time          not measured (0 rounds)\n"));
+    try testing.expect(contains(result.stdout, "  time          not measured (0 rounds; reference only)\n"));
     try testing.expect(contains(result.stdout, "\nResult rows\n" ++
         \\  MISMATCH: the rows differ, compared as a multiset; the cause is not determined
         \\  baseline only 1 row
@@ -1760,6 +1819,10 @@ test "help puts the usage, options, examples and exit status before the details"
     try testing.expect(contains(result.stdout, "The same paths can be given as --db, --select and --index-sql."));
     try testing.expect(contains(result.stdout, "named parameters"));
     try testing.expect(contains(result.stdout, "share the number of their first appearance"));
+    try testing.expect(contains(result.stdout, "0 skips the timing but keeps the"));
+    try testing.expect(contains(result.stdout, "--runs 0 is still judged"));
+    try testing.expect(!contains(result.stdout, "or --runs 0"));
+    try testing.expect(!contains(result.stdout, "Time verdict"));
     try expectNarrow(result.stdout, &.{});
 }
 
@@ -1777,12 +1840,11 @@ test "json format parses and carries the decision keys" {
     defer parsed.deinit();
     const root = parsed.value;
 
-    try testing.expectEqual(@as(i64, 1), try jsonInt(root, "schema_version"));
+    try testing.expectEqual(@as(i64, 2), try jsonInt(root, "schema_version"));
     try testing.expectEqual(@as(i64, 0), try jsonInt(root, "exit_code"));
-    try testing.expectEqualStrings("not-judged", try jsonText(root, "verdict"));
+    try testing.expectEqualStrings("no-effect", try jsonText(root, "verdict"));
     const verdict_reasons = try jsonItems(root, "verdict_reasons");
-    try testing.expectEqual(@as(usize, 1), verdict_reasons.len);
-    try testing.expectEqualStrings("--runs 0 skips the timing", verdict_reasons[0].string);
+    try testing.expectEqual(@as(usize, 0), verdict_reasons.len);
     try testing.expectEqualStrings("match", try jsonText(root, "result"));
     try testing.expectEqualStrings("same", try jsonText(root, "row_order"));
     try testing.expectEqual(@as(usize, 0), (try jsonItems(root, "result_reasons")).len);
@@ -1796,6 +1858,10 @@ test "json format parses and carries the decision keys" {
     try testing.expectEqualStrings("SCAN t", try jsonText((try jsonItems(baseline, "plan"))[0], "detail"));
     try testing.expectEqualStrings("search", try jsonText((try jsonItems(variant, "plan"))[0], "kind"));
     try testing.expectEqual(@as(i64, 0), try jsonInt(try jsonGet(variant, "counters"), "fullscan_steps"));
+    try testing.expectEqual(@as(i64, 2), try jsonInt(try jsonGet(baseline, "counters"), "rows_read"));
+    try testing.expectEqual(@as(i64, 2), try jsonInt(try jsonGet(variant, "counters"), "rows_read"));
+    try testing.expectEqual(@as(i64, 0), try jsonInt(try jsonGet(baseline, "counters"), "rows_written"));
+    try testing.expectEqual(@as(i64, 0), try jsonInt(try jsonGet(variant, "counters"), "rows_written"));
 
     const sizes = try jsonGet(root, "size_bytes");
     const baseline_size = try jsonInt(sizes, "baseline");
@@ -2173,7 +2239,7 @@ test "d1 with a wrangler.jsonc shows the same notes in human and json" {
     var parsed = try parseJson(json.stdout);
     defer parsed.deinit();
     const root = parsed.value;
-    try testing.expectEqual(@as(i64, 1), try jsonInt(root, "schema_version"));
+    try testing.expectEqual(@as(i64, 2), try jsonInt(root, "schema_version"));
     try testing.expectEqualStrings("match", try jsonText(root, "result"));
     const d1 = try jsonGet(root, "d1");
     try testing.expectEqualStrings("DB", try jsonText(d1, "binding"));
@@ -2348,7 +2414,7 @@ test "a plain --db run prints no D1 facts in any format" {
     try testing.expectEqual(ExitCode.ok, json.code);
     var parsed = try parseJson(json.stdout);
     defer parsed.deinit();
-    try testing.expectEqual(@as(i64, 1), try jsonInt(parsed.value, "schema_version"));
+    try testing.expectEqual(@as(i64, 2), try jsonInt(parsed.value, "schema_version"));
     try testing.expectError(error.TestUnexpectedResult, jsonGet(parsed.value, "d1"));
     try testing.expect(!contains(json.stdout, "sqlite_version_note"));
 }
