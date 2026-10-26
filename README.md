@@ -2,7 +2,11 @@
 
 English | [日本語](README.ja.md)
 
-Qenome is a CLI that compares one read-only `SELECT` on a local SQLite database before and after one candidate `CREATE INDEX`. It opens the database read-only, copies it into an isolated snapshot, and reports what changed: the result rows, the rows each copy read and wrote, the query plan, the time, and the size increase. The original database is never modified.
+Qenome checks whether a candidate index helps a query before you merge it. Give it one read-only `SELECT` and one `CREATE INDEX`. It copies a local SQLite file, or a local Cloudflare D1 database (`--d1 <BINDING>`, `--config`), into sandbox snapshots and compares them. The original database is never modified.
+
+The verdict uses the same counting as local D1 (workerd patch): rows read and rows written, together with the result rows, the query plan, the time, and the size increase. The numbers have not yet been checked against production D1.
+
+From this README, a D1 developer or their AI agent can get that verdict on a local D1 in a few minutes. See [Check a local D1](#check-a-local-d1) and [Use with AI agents](#use-with-ai-agents).
 
 ![The D1 sample project: qenome --d1 DEMO_DB select.sql index.sql --runs 40 reports matching rows, an improved verdict, and the D1 block with the SQLite versions and the caution](docs/demo.gif)
 
@@ -10,19 +14,27 @@ The recording comes from [`examples/d1-toml`](#try-the-sample-project), and the 
 
 ## Installation
 
+### npx
+
+```sh
+npx qenome --version
+```
+
+A D1 project runs Qenome this way. `npx` fetches the package and does not add a global binary. Use `npx qenome` in place of `qenome` in the examples when the binary is not on your `PATH`. The npm package is added in a separate change. Until `npx qenome` resolves, use [From source](#from-source) and call `zig-out/bin/qenome`.
+
 ### Prebuilt binaries (GitHub Releases)
 
 Download an asset from the [Releases](https://github.com/alern-c/Qenome/releases) page, together with the `SHA256SUMS` file from the same release.
 
 Prebuilt binaries are provided for Linux, macOS, and Windows. Release assets are uncompressed binaries named `qenome-<version>-<arch>-<os>` (`qenome-<version>-<arch>-<os>.exe` on Windows). For example:
 
-- `qenome-0.2.0-x86_64-linux`
-- `qenome-0.2.0-aarch64-macos`
-- `qenome-0.2.0-x86_64-windows.exe`
+- `qenome-0.3.2-x86_64-linux`
+- `qenome-0.3.2-aarch64-macos`
+- `qenome-0.3.2-x86_64-windows.exe`
 
 The release page lists the assets that were built; pick the one whose `<arch>` and `<os>` match your machine. `SHA256SUMS` uses the `sha256sum` format: a SHA-256 hash, two spaces, and the file name.
 
-Verify the download before running it. Replace `0.2.0` and the file name in these examples with the version and asset you downloaded.
+Verify the download before running it. Replace `0.3.2` and the file name in these examples with the version and asset you downloaded.
 
 Linux:
 
@@ -33,14 +45,14 @@ sha256sum --check --ignore-missing SHA256SUMS
 macOS:
 
 ```sh
-grep 'qenome-0.2.0-aarch64-macos$' SHA256SUMS | shasum -a 256 -c
+grep 'qenome-0.3.2-aarch64-macos$' SHA256SUMS | shasum -a 256 -c
 ```
 
 Windows (PowerShell):
 
 ```powershell
-Select-String 'qenome-0.2.0-x86_64-windows.exe$' SHA256SUMS
-Get-FileHash .\qenome-0.2.0-x86_64-windows.exe -Algorithm SHA256
+Select-String 'qenome-0.3.2-x86_64-windows.exe$' SHA256SUMS
+Get-FileHash .\qenome-0.3.2-x86_64-windows.exe -Algorithm SHA256
 ```
 
 `Get-FileHash` must print the same SHA-256 hash as the line from `SHA256SUMS` (uppercase letters are fine).
@@ -48,8 +60,8 @@ Get-FileHash .\qenome-0.2.0-x86_64-windows.exe -Algorithm SHA256
 Then give the binary execute permission (Linux and macOS) and run it:
 
 ```sh
-chmod +x qenome-0.2.0-aarch64-macos
-mv qenome-0.2.0-aarch64-macos qenome
+chmod +x qenome-0.3.2-aarch64-macos
+mv qenome-0.3.2-aarch64-macos qenome
 ./qenome --version
 ```
 
@@ -67,6 +79,44 @@ zig build
 ```
 
 `zig build` writes the binary to `zig-out/bin/qenome` (`zig-out\bin\qenome.exe` on Windows). For timings that match a release build, build with `zig build -Doptimize=ReleaseFast`.
+
+## Check a local D1
+
+Use this when the database is a local Cloudflare D1 and you want a verdict before merging an index. You need Node.js for `npx`, a wrangler project, and two SQL files: one `SELECT`, one `CREATE INDEX`.
+
+If the local database does not exist yet, create it once. `DB` is the `d1_databases` binding name:
+
+```sh
+npx wrangler d1 execute DB --local --command "SELECT 1"
+```
+
+From that project directory:
+
+```sh
+npx qenome --d1 DB select.sql index.sql --runs 0 --format json
+```
+
+`--runs 0` skips the timing and still returns the verdict. Exit status `0` means the result rows match. Read `verdict` in the JSON: `improved` means the variant read fewer rows, `no-effect` means it did not, and `needs-check` means it read or wrote more. The numbers use the same counting as local D1 (workerd patch). The numbers have not yet been checked against production D1.
+
+`--config <PATH>` names a wrangler file outside the current directory. The lookup rules are in [D1 local databases](#d1-local-databases). The JSON fields are in [docs/json.md](docs/json.md).
+
+A worked sample with a `wrangler.toml` is in [Try the sample project](#try-the-sample-project).
+
+## Use with AI agents
+
+An agent that changes a D1 schema should run Qenome before it keeps a `CREATE INDEX`. The instructions are [skills/qenome/SKILL.md](skills/qenome/SKILL.md): when to run, how to pass `--d1` and `--config`, how to read `schema_version` 2, and what to do with exit codes and warnings.
+
+Point the agent at that file. `--format json` is the machine-readable report, specified in [docs/json.md](docs/json.md).
+
+## Why not ...
+
+**EXPLAIN QUERY PLAN.** The plan says whether SQLite expects to touch an index. It does not run the `SELECT` on a copy of the data, so it cannot show that the result rows changed, how many rows were read or written, or how much the database file grew. Qenome runs the statement on both sandbox copies and counts with the same counting as local D1 (workerd patch).
+
+**`wrangler d1 execute --local`.** A local wrangler command can print one duration for the whole call. That duration moves from run to run, and wrangler does not build your candidate index on a copy and compare it with the current schema. Qenome leaves the original database unchanged and judges the index from the row counts. The times are a reference next to that verdict.
+
+**Production D1 metrics.** The numbers have not yet been checked against production D1. Qenome measures the local database only.
+
+**Applying the index and watching the app.** That writes the index into the database you ship. Qenome tries it on a sandbox copy, so a candidate that does not help can be dropped before the merge.
 
 ## Quick start
 
@@ -148,7 +198,7 @@ On Linux and macOS the directory is created so that only its owner can access it
 
 The verdict comes from the rows read, and it never changes the exit status.
 
-Rows read and rows written are counted the way a local D1 counts them: Qenome builds the bundled SQLite with Cloudflare's row-count patch from `workerd`, the counters a local D1 database reports. They are not the rows that production D1 bills, and they say nothing about a deployed database. Both counters are 32-bit: each wraps past 4,294,967,295 of its own count, so a SELECT that goes past that in one run reports a wrapped number, and the verdict compares the numbers as they were read. `NOTICE` records where the patch comes from, and `vendor/sqlite3/PROVENANCE.txt` records how to apply it again.
+Rows read and rows written use the same counting as local D1 (workerd patch): Qenome builds the bundled SQLite with Cloudflare's row-count patch from `workerd`. The numbers have not yet been checked against production D1. Both counters are 32-bit: each wraps past 4,294,967,295 of its own count, so a SELECT that goes past that in one run reports a wrapped number, and the verdict compares the numbers as they were read. `NOTICE` records where the patch comes from, and `vendor/sqlite3/PROVENANCE.txt` records how to apply it again.
 
 ### D1 local databases
 
@@ -214,7 +264,7 @@ Input paths, the SQLite and Zig versions, the build mode, the OS and architectur
 
 ### json
 
-`--format json` prints one JSON object with a trailing newline after a comparison finishes. When an input is rejected, the time limit is reached, or the run is interrupted, stdout stays empty; read the error on stderr and the exit status. Qenome does not print errors as JSON.
+`--format json` prints one JSON object with a trailing newline after a comparison finishes. The fields, including names reserved for the next core change, are specified in [docs/json.md](docs/json.md). When an input is rejected, the time limit is reached, or the run is interrupted, stdout stays empty. With `--format json`, stderr is then one JSON object (`schema_version`, `exit_code`, and `error` with `code`, `message`, and `hint`). `human` and `kv` keep the text `error:` line.
 
 The verdict is in the top-level `verdict` field:
 
@@ -225,7 +275,7 @@ The verdict is in the top-level `verdict` field:
 | `needs-check` | The rows match, but the variant reads or writes more rows; `verdict_reasons` holds the reasons |
 | `not-judged` | The rows differ or cannot be compared; `verdict_reasons` holds the reasons |
 
-The verdict uses the rows read and the rows written, counted the way a local D1 counts them. The times are a reference only, so `--runs 0` keeps the verdict.
+The verdict uses the rows read and the rows written, with the same counting as local D1 (workerd patch). The times are a reference only, so `--runs 0` keeps the verdict. The numbers have not yet been checked against production D1.
 
 Print only the verdict:
 
@@ -254,13 +304,15 @@ Main keys:
 | `row_differences` | `baseline_only` and `variant_only` counts. `baseline_only_examples` and `variant_only_examples` are arrays; they stay empty by default, and `--show-rows` fills them with up to 5 example rows |
 | `plan_changed` | Whether the query plan differs between baseline and variant |
 | `baseline` / `variant` | `rows`; `plan` (`id`, `parent`, `kind`, `covering`, `automatic`, `detail`); `counters` (`rows_read`, `rows_written`, `fullscan_steps`, `vm_steps`, `sort_ops`, `autoindex_rows`) |
-| `timing` | `rounds`, `variant_faster_rounds`, `ratio`, and `baseline` / `variant` with `median_ns`, `p25_ns`, `p75_ns`, `min_ns`, `max_ns`. `null` when not timed; `ratio` is `null` when the baseline median is `0` |
+| `timing` | `rounds`, `variant_faster_rounds`, `ratio`, and `baseline` / `variant` with `median_ns`, `p25_ns`, `p75_ns`, `min_ns`, `max_ns`. `null` when not timed; `ratio` is `null` when the baseline median is `0`. `noise_band` and `confidence_interval` are reserved and not emitted yet |
 | `size_bytes` | `baseline`, `variant`, and `increase` (the whole database file, not the index alone) |
 | `inputs` | `database`, `select`, and `index_sql` paths |
 | `d1` | Present only with `--d1`: `binding`, `config`, `database_id`, `local_database`, `sqlite_version` (D1's 3.53.4), `sqlite_version_note`, and `caution` |
 | `environment` | `qenome_version` (the same version as `--version`, from `build.zig.zon`), `sqlite_version`, `sqlite_source_id`, `zig_version`, `build_mode`, `os`, `arch`, `work_dir_parent` |
 | `measurement` | Timing conditions: `runs_per_copy` (timed rounds per copy; `0` when not timed), `warmup`, `order`, `scope`, `cache` |
 | `binds` | `number` and `type`; text also has `text_bytes`. `value` appears only with `--show-binds` |
+| `warnings` | Reserved, not emitted yet. An array of `{code, message}` once the core change lands (`no_analyze_stats`, `data_too_small`) |
+| `sqlite` | Reserved, not emitted yet. `bundled_version` and `db_header_version`. Until then, the bundled version is `environment.sqlite_version` |
 
 - String values write a backslash as `\\` and each byte that is not valid UTF-8 as `\xNN` (byte 0xFF becomes `\xff`), and the result is then escaped as JSON. A literal four-character `\xff` therefore becomes `\\xff` and is a different string from the byte 0xFF. To recover the original bytes, read `\\` as one backslash and `\xNN` as that byte, and leave everything else as it is. Paths, plan details, reasons, and bind text use this rule. Text values in the example rows use it too, surrounded by single quotes (for example `'\xff'`, which appears as `'\\xff'` in the JSON text); BLOBs are written as `x'00ff'`. Example values longer than 200 bytes are cut and followed by `...(N bytes)`.
 - `binds` keeps the same secrecy as kv. Without `--show-binds`, only the number, the type, and the text length appear. A non-finite real value (`inf` or `-inf`) is written as a string, because JSON numbers cannot represent it.
@@ -275,7 +327,7 @@ Main keys:
 | 1 | An input was rejected (unreadable file, invalid or rejected SQL, bind mismatch, index creation failure) |
 | 2 | A usage error |
 | 3 | The result rows differ |
-| 4 | The results cannot be compared, or `--d1` cannot locate the local database (no config, an ambiguous choice, or a local file that does not exist yet) |
+| 4 | The results cannot be compared, or `--d1` cannot locate exactly one local database (no config, more than one config, an unreadable or invalid config, an unknown or duplicate binding, a missing database id, a local file that does not exist yet, or a local file that cannot be opened) |
 | 5 | Cleanup failed after the comparison (this replaces 0; every other code is kept) |
 | 124 | A time limit was reached (`--timeout-ms`) |
 | 129 / 130 / 143 | Interrupted by `SIGHUP` / `SIGINT` / `SIGTERM` (POSIX) |

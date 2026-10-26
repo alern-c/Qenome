@@ -20,3 +20,18 @@ jobs:
 
       - name: Run every quality check
         run: python3 scripts/check_all.py
+
+  skill-examples:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Zig (resolved from build.zig.zon)
+        uses: mlugg/setup-zig@v2
+
+      - name: Build qenome
+        run: zig build
+
+      - name: Run the skill examples
+        run: python3 scripts/check_skill_examples.py

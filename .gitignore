@@ -16,6 +16,7 @@ zig-out/
 .workmux.yaml
 
 testdata/generated/
+testdata/skill/app.db
 
 .wrangler/
 

@@ -2,8 +2,11 @@
 
 [English](README.md) | 日本語
 
-Qenome は、ローカル SQLite の SELECT 1本に対して、候補の `CREATE INDEX` を1本試したときの変化を比較する CLI です。
-データベースを読み取り専用で開いて隔離コピーを作り、索引の前後で結果・読んだ行数・書いた行数・実行計画・時間・容量の増分を示します。元のデータベースは変更しません。
+Qenome は、索引をマージする前に、その索引がクエリの役に立つかを調べる CLI です。読み取り専用の `SELECT` を1本と、候補の `CREATE INDEX` を1本渡します。ローカルの SQLite ファイル、またはローカルの Cloudflare D1（`--d1 <BINDING>` と `--config`）をサンドボックスのコピーにして比較します。元のデータベースは変更しません。
+
+判定は、ローカル D1 と同じ数え方（workerd のパッチ）で出した読んだ行数・書いた行数と、結果の行・実行計画・時間・容量の増分です。この数値は、まだ本番 D1 と照合していません。
+
+この README だけで、D1 の開発者またはその AI エージェントは、数分でローカル D1 の判定を取れます。[ローカル D1 を調べる](#ローカル-d1-を調べる)と [AI エージェントと使う](#ai-エージェントと使う)を見てください。
 
 ![D1 のサンプルプロジェクトで qenome --d1 DEMO_DB select.sql index.sql --runs 40 を実行するターミナル。結果の行が一致し、判定が improved で、D1 ブロックに SQLite の版と注意が出ている](docs/demo.gif)
 
@@ -11,19 +14,27 @@ Qenome は、ローカル SQLite の SELECT 1本に対して、候補の `CREATE
 
 ## インストール
 
+### npx
+
+```sh
+npx qenome --version
+```
+
+D1 のプロジェクトでは、このコマンドで Qenome を実行します。`npx` はパッケージを取得し、グローバルにはインストールしません。バイナリが `PATH` に無いときは、下の例の `qenome` を `npx qenome` に置き換えてください。npm パッケージは別の変更で追加します。`npx qenome` が解決できるようになるまでは、[ソースからビルド](#ソースからビルド)して `zig-out/bin/qenome` を使ってください。
+
 ### ビルド済みバイナリ（GitHub Releases）
 
 [Releases](https://github.com/alern-c/Qenome/releases) ページから、使う環境のアセットと、同じリリースの `SHA256SUMS` をダウンロードします。
 
 配布するアセットは圧縮していないバイナリで、名前は `qenome-<version>-<arch>-<os>`（Windows は `qenome-<version>-<arch>-<os>.exe`）です。例:
 
-- `qenome-0.2.0-x86_64-linux`
-- `qenome-0.2.0-aarch64-macos`
-- `qenome-0.2.0-x86_64-windows.exe`
+- `qenome-0.3.2-x86_64-linux`
+- `qenome-0.3.2-aarch64-macos`
+- `qenome-0.3.2-x86_64-windows.exe`
 
 ビルド済みバイナリは Linux・macOS・Windows 向けに提供します。リリースページに、そのリリースでビルドしたアセットが並ぶので、`<arch>` と `<os>` が自分の環境に合うものを選んでください。`SHA256SUMS` は sha256sum 形式（SHA-256 のハッシュ、半角スペース2個、ファイル名）です。
 
-実行する前にダウンロードを検証します。次の例では、`0.2.0` とファイル名を、ダウンロードした版とアセットに置き換えてください。
+実行する前にダウンロードを検証します。次の例では、`0.3.2` とファイル名を、ダウンロードした版とアセットに置き換えてください。
 
 Linux:
 
@@ -34,14 +45,14 @@ sha256sum --check --ignore-missing SHA256SUMS
 macOS:
 
 ```sh
-grep 'qenome-0.2.0-aarch64-macos$' SHA256SUMS | shasum -a 256 -c
+grep 'qenome-0.3.2-aarch64-macos$' SHA256SUMS | shasum -a 256 -c
 ```
 
 Windows（PowerShell）:
 
 ```powershell
-Select-String 'qenome-0.2.0-x86_64-windows.exe$' SHA256SUMS
-Get-FileHash .\qenome-0.2.0-x86_64-windows.exe -Algorithm SHA256
+Select-String 'qenome-0.3.2-x86_64-windows.exe$' SHA256SUMS
+Get-FileHash .\qenome-0.3.2-x86_64-windows.exe -Algorithm SHA256
 ```
 
 `Get-FileHash` のハッシュが、`SHA256SUMS` の該当行と同じであることを確認してください（大文字・小文字は問いません）。
@@ -49,8 +60,8 @@ Get-FileHash .\qenome-0.2.0-x86_64-windows.exe -Algorithm SHA256
 次に実行権限を付けて実行します（Linux・macOS）。
 
 ```sh
-chmod +x qenome-0.2.0-aarch64-macos
-mv qenome-0.2.0-aarch64-macos qenome
+chmod +x qenome-0.3.2-aarch64-macos
+mv qenome-0.3.2-aarch64-macos qenome
 ./qenome --version
 ```
 
@@ -68,6 +79,44 @@ zig build
 ```
 
 `zig build` はバイナリを `zig-out/bin/qenome`（Windows は `zig-out\bin\qenome.exe`）に書き出します。リリースビルドに近い時間を測るには `zig build -Doptimize=ReleaseFast` でビルドしてください。
+
+## ローカル D1 を調べる
+
+データベースがローカルの Cloudflare D1 で、索引をマージする前に判定が欲しいときに使います。必要なものは、`npx` のための Node.js、wrangler のプロジェクト、`SELECT` を1本入れたファイル、`CREATE INDEX` を1本入れたファイルです。
+
+ローカルのデータベースがまだ無いときは、一度だけ作ります。`DB` は `d1_databases` のバインディング名です。
+
+```sh
+npx wrangler d1 execute DB --local --command "SELECT 1"
+```
+
+そのプロジェクトのディレクトリで実行します。
+
+```sh
+npx qenome --d1 DB select.sql index.sql --runs 0 --format json
+```
+
+`--runs 0` は計時を飛ばし、判定は出します。終了ステータス `0` は結果の行が一致したという意味です。JSON の `verdict` を読みます。`improved` は variant の読んだ行数が減った、`no-effect` は減らなかった、`needs-check` は読んだ行数か書いた行数が増えた、という意味です。数値はローカル D1 と同じ数え方（workerd のパッチ）です。この数値は、まだ本番 D1 と照合していません。
+
+カレントディレクトリ以外の wrangler ファイルは `--config <PATH>` で指定します。探し方は [D1 のローカルデータベース](#d1-のローカルデータベース)に、JSON のフィールドは [docs/json.md](docs/json.md) に書いてあります。
+
+`wrangler.toml` 付きの動くサンプルは [サンプルプロジェクトを試す](#サンプルプロジェクトを試す)です。
+
+## AI エージェントと使う
+
+D1 のスキーマを変えるエージェントは、`CREATE INDEX` を残す前に Qenome を実行します。手順は [skills/qenome/SKILL.md](skills/qenome/SKILL.md) です。いつ実行するか、`--d1` と `--config` の渡し方、`schema_version` 2 の読み方、終了コードと warnings への対応が書いてあります。
+
+エージェントにはそのファイルを渡してください。機械が読む報告は `--format json` で、仕様は [docs/json.md](docs/json.md) です。
+
+## なぜ他の方法ではないのか
+
+**EXPLAIN QUERY PLAN。** 計画は、SQLite が索引に触るつもりかを示します。データのコピーに対して `SELECT` を実行しないので、結果の行が変わったか、何行読み書きしたか、データベースファイルがどれだけ増えたかは出ません。Qenome は両方のサンドボックスコピーで文を実行し、ローカル D1 と同じ数え方（workerd のパッチ）で数えます。
+
+**`wrangler d1 execute --local`。** ローカルの wrangler は、呼び出し全体の所要時間を1つ出せます。その時間は実行のたびに動き、候補の索引をコピー上に作って現在のスキーマと比較することはしません。Qenome は元のデータベースを変えず、行数で索引を判定します。時間はその判定の横に置く参考値です。
+
+**本番 D1 のメトリクス。** この数値は、まだ本番 D1 と照合していません。Qenome が測るのはローカルのデータベースだけです。
+
+**索引を入れてアプリを見る。** それは出荷するデータベースへ索引を書き込みます。Qenome はサンドボックスのコピーで試すので、役に立たない候補はマージの前に捨てられます。
 
 ## クイックスタート
 
@@ -149,7 +198,7 @@ Linux と macOS では、このディレクトリを所有者だけがアクセ�
 
 判定は読んだ行数から決まり、終了コードを変えません。
 
-読んだ行数と書いた行数は、ローカル D1 と同じ数え方です。Qenome は同梱 SQLite を `workerd` の行数カウントのパッチ付きでビルドしており、ローカル D1 データベースが報告するのと同じカウンタを使います。本番 D1 の課金額や本番データベースの行数とは一致しません。どちらのカウンタも 32 ビットで、それぞれの回数が 1回の実行で 4,294,967,295 を超えると一周して小さい値に戻るため、その場合は巻き戻った値を報告し、判定もその値で比較します。パッチの出どころは `NOTICE`、当て直す手順は `vendor/sqlite3/PROVENANCE.txt` に記録しています。
+読んだ行数と書いた行数は、ローカル D1 と同じ数え方（workerd のパッチ）です。Qenome は同梱 SQLite を `workerd` の行数カウントのパッチ付きでビルドします。この数値は、まだ本番 D1 と照合していません。どちらのカウンタも 32 ビットで、それぞれの回数が 1回の実行で 4,294,967,295 を超えると一周して小さい値に戻るため、その場合は巻き戻った値を報告し、判定もその値で比較します。パッチの出どころは `NOTICE`、当て直す手順は `vendor/sqlite3/PROVENANCE.txt` に記録しています。
 
 ### D1 のローカルデータベース
 
@@ -215,7 +264,7 @@ kv は全項目を1行1項目の `key: value` で出し、スクリプトとロ�
 
 ### json
 
-json は、比較が終わったときに stdout へ JSON オブジェクトを1個だけ（末尾改行付きで）出します。入力拒否・時間上限・中断のときは stdout を空のままにし、stderr のエラーと終了コードで判別します。エラーを JSON で出す機能はありません。
+json は、比較が終わったときに stdout へ JSON オブジェクトを1個だけ（末尾改行付きで）出します。フィールド（次のコア変更で予約している名前を含む）は [docs/json.md](docs/json.md) が仕様です。入力拒否・時間上限・中断のときは stdout を空のままにします。`--format json` のとき、stderr は JSON オブジェクト1個です（`schema_version`、`exit_code`、`error` の `code` / `message` / `hint`）。`human` と `kv` はテキストの `error:` 行のままです。
 
 判定はトップレベルの `verdict` で読めます。
 
@@ -226,7 +275,7 @@ json は、比較が終わったときに stdout へ JSON オブジェクトを1
 | `needs-check` | 結果は一致するが、variant の読んだ行数か書いた行数が増えた。`verdict_reasons` に理由が入る |
 | `not-judged` | 結果が不一致・比較不能。`verdict_reasons` に理由が入る |
 
-判定は読んだ行数と書いた行数（ローカル D1 と同じ数え方）で決まります。時間は参考値なので、`--runs 0` でも判定は出ます。
+判定は、ローカル D1 と同じ数え方（workerd のパッチ）で数えた読んだ行数と書いた行数で決まります。時間は参考値なので、`--runs 0` でも判定は出ます。この数値は、まだ本番 D1 と照合していません。
 
 `verdict` だけを読む例:
 
@@ -255,13 +304,15 @@ fi
 | `row_differences` | `baseline_only` / `variant_only` の件数。`baseline_only_examples` / `variant_only_examples` は配列のままで、既定は空。`--show-rows` で最大 5 件の例の行が入る |
 | `plan_changed` | 実行計画が baseline と variant で変わったか |
 | `baseline` / `variant` | それぞれの `rows`、`plan`（`id` / `parent` / `kind` / `covering` / `automatic` / `detail`）、`counters`（`rows_read` / `rows_written` / `fullscan_steps` / `vm_steps` / `sort_ops` / `autoindex_rows`） |
-| `timing` | `rounds`、`variant_faster_rounds`、`ratio`、`baseline` / `variant` の `median_ns` / `p25_ns` / `p75_ns` / `min_ns` / `max_ns`。計時しなければ `null`、baseline の median が 0 なら `ratio` は `null` |
+| `timing` | `rounds`、`variant_faster_rounds`、`ratio`、`baseline` / `variant` の `median_ns` / `p25_ns` / `p75_ns` / `min_ns` / `max_ns`。計時しなければ `null`、baseline の median が 0 なら `ratio` は `null`。`noise_band` と `confidence_interval` は予約済みで、まだ出ない |
 | `size_bytes` | `baseline` / `variant` / `increase`（データベース全体のバイト数。索引単体ではない） |
 | `inputs` | `database` / `select` / `index_sql` のパス |
 | `d1` | `--d1` のときだけ出る: `binding` / `config` / `database_id` / `local_database` / `sqlite_version`（D1 側の 3.53.4） / `sqlite_version_note` / `caution` |
 | `environment` | `qenome_version`（`--version` と同じ、`build.zig.zon` の版） / `sqlite_version` / `sqlite_source_id` / `zig_version` / `build_mode` / `os` / `arch` / `work_dir_parent` |
 | `measurement` | 計時条件（`runs_per_copy`（各コピーの計測ラウンド数。計時しないときは 0）/ `warmup` / `order` / `scope` / `cache`） |
 | `binds` | `number` / `type`。text は `text_bytes` も持つ。`--show-binds` を付けたときだけ値が `value` に入る |
+| `warnings` | 予約済みで、まだ出ない。コア変更のあと `{code, message}` の配列（`no_analyze_stats`、`data_too_small`） |
+| `sqlite` | 予約済みで、まだ出ない。`bundled_version` と `db_header_version`。それまでは同梱版を `environment.sqlite_version` で読む |
 
 - 文字列値では、バックスラッシュを `\\`、非 UTF-8 のバイトを `\xNN`（バイト 0xFF なら `\xff`）と書いてから JSON としてエスケープします。4文字の `\xff` は `\\xff` になり、バイト 0xFF とは別の文字列です。元のバイト列に戻すときは、`\\` をバックスラッシュ1個、`\xNN` をそのバイト、それ以外の文字をそのまま読みます。入力パス、計画の detail、理由、bind の text がこの規則です。`--show-rows` で出す例の行の TEXT も同じ規則（前後に `'`。例: `'\xff'`。JSON のテキストでは `'\\xff'`）で、BLOB は `x'00ff'` です。200 バイトを超える例の値は切り詰め、`...(N bytes)` を付けます。
 - `binds` は kv と同じ秘匿方針です。`--show-binds` が無いときは値を出さず、番号・型・テキストの長さだけを出します。real の非有限値（`inf` / `-inf`）は JSON 数値にできないため、文字列で出します。
@@ -276,7 +327,7 @@ fi
 | 1 | 入力を拒否した（読めないファイル、不正・拒否された SQL、バインドの不一致、索引の作成失敗） |
 | 2 | 引数の誤り |
 | 3 | 結果が一致しない |
-| 4 | 結果を比較できない、または `--d1` がローカルデータベースを特定できない（設定が無い・曖昧・ローカルファイルが未作成） |
+| 4 | 結果を比較できない、または `--d1` がローカルデータベースをちょうど1つに決められない（設定が無い、設定が複数、設定が読めない・不正、バインディングが不明か重複、database id が無い、ローカルファイルが未作成、ローカルファイルを開けない） |
 | 5 | 比較のあとの後片付けに失敗した（0 のときだけ置き換え、それ以外のコードはそのまま） |
 | 124 | 時間上限に達した（`--timeout-ms`） |
 | 129 / 130 / 143 | `SIGHUP` / `SIGINT` / `SIGTERM` による中断（POSIX） |

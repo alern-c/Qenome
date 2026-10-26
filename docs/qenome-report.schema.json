@@ -1,0 +1,177 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "qenome-report.schema.json",
+  "title": "Qenome comparison report (schema_version 2)",
+  "description": "Stdout object after a comparison. Reserved fields are optional and are not emitted yet. See docs/json.md.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "exit_code",
+    "verdict",
+    "verdict_reasons",
+    "result",
+    "row_order",
+    "result_reasons",
+    "row_differences",
+    "plan_changed",
+    "baseline",
+    "variant",
+    "timing",
+    "size_bytes",
+    "inputs",
+    "environment",
+    "measurement",
+    "binds"
+  ],
+  "properties": {
+    "schema_version": { "const": 2 },
+    "exit_code": { "enum": [0, 3, 4] },
+    "verdict": { "enum": ["improved", "no-effect", "needs-check", "not-judged"] },
+    "verdict_reasons": { "type": "array", "items": { "type": "string" } },
+    "result": { "enum": ["match", "mismatch", "incomparable"] },
+    "row_order": { "enum": ["same", "differs", "not-applicable"] },
+    "result_reasons": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["text", "hint"],
+        "properties": {
+          "text": { "type": "string" },
+          "hint": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "row_differences": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["baseline_only", "variant_only", "baseline_only_examples", "variant_only_examples"],
+      "properties": {
+        "baseline_only": { "type": "integer" },
+        "variant_only": { "type": "integer" },
+        "baseline_only_examples": { "type": "array" },
+        "variant_only_examples": { "type": "array" }
+      }
+    },
+    "plan_changed": { "type": "boolean" },
+    "baseline": { "$ref": "#/$defs/side" },
+    "variant": { "$ref": "#/$defs/side" },
+    "timing": {
+      "description": "null when not timed. noise_band and confidence_interval are reserved and not emitted yet. Their inner keys are not frozen.",
+      "anyOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["rounds", "variant_faster_rounds", "ratio", "baseline", "variant"],
+          "properties": {
+            "rounds": { "type": "integer" },
+            "variant_faster_rounds": { "type": "integer" },
+            "ratio": { "type": ["number", "null"] },
+            "baseline": { "$ref": "#/$defs/timeStats" },
+            "variant": { "$ref": "#/$defs/timeStats" },
+            "noise_band": { "type": "object", "additionalProperties": true },
+            "confidence_interval": { "type": "object", "additionalProperties": true }
+          }
+        }
+      ]
+    },
+    "size_bytes": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["baseline", "variant", "increase"],
+      "properties": {
+        "baseline": { "type": "integer" },
+        "variant": { "type": "integer" },
+        "increase": { "type": "integer" }
+      }
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["database", "select", "index_sql"],
+      "properties": {
+        "database": { "type": "string" },
+        "select": { "type": "string" },
+        "index_sql": { "type": "string" }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["qenome_version", "sqlite_version", "sqlite_source_id", "zig_version", "build_mode", "os", "arch", "work_dir_parent"]
+    },
+    "d1": { "type": "object", "additionalProperties": true },
+    "measurement": { "type": "object", "additionalProperties": true },
+    "binds": { "type": "array" },
+    "warnings": {
+      "description": "Reserved. Not emitted yet.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/warning" }
+    },
+    "sqlite": {
+      "description": "Reserved. Not emitted yet. Read environment.sqlite_version until bundled_version exists.",
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "bundled_version": { "type": "string" },
+        "db_header_version": { "type": "string" }
+      }
+    }
+  },
+  "$defs": {
+    "side": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["rows", "plan", "counters"],
+      "properties": {
+        "rows": { "type": "integer" },
+        "plan": { "type": "array" },
+        "counters": { "$ref": "#/$defs/counters" },
+        "rows_read": {
+          "description": "Not emitted at this level. The implemented field is counters.rows_read.",
+          "type": "integer"
+        },
+        "rows_written": {
+          "description": "Not emitted at this level. The implemented field is counters.rows_written.",
+          "type": "integer"
+        }
+      }
+    },
+    "counters": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["rows_read", "rows_written", "fullscan_steps", "vm_steps", "sort_ops", "autoindex_rows"],
+      "properties": {
+        "rows_read": { "type": "integer" },
+        "rows_written": { "type": "integer" },
+        "fullscan_steps": { "type": "integer" },
+        "vm_steps": { "type": "integer" },
+        "sort_ops": { "type": "integer" },
+        "autoindex_rows": { "type": "integer" }
+      }
+    },
+    "timeStats": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["median_ns", "p25_ns", "p75_ns", "min_ns", "max_ns"],
+      "properties": {
+        "median_ns": { "type": "integer" },
+        "p25_ns": { "type": "integer" },
+        "p75_ns": { "type": "integer" },
+        "min_ns": { "type": "integer" },
+        "max_ns": { "type": "integer" }
+      }
+    },
+    "warning": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "type": "string" },
+        "message": { "type": "string" }
+      }
+    }
+  }
+}

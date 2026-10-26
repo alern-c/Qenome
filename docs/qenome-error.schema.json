@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "qenome-error.schema.json",
+  "title": "Qenome error (schema_version 2)",
+  "description": "Stderr object when --format json and the run fails, or when cleanup fails after a report. See docs/json.md.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema_version", "exit_code", "error"],
+  "properties": {
+    "schema_version": { "const": 2 },
+    "exit_code": {
+      "type": "integer",
+      "enum": [0, 1, 2, 3, 4, 5, 124, 129, 130, 143]
+    },
+    "error": { "$ref": "#/$defs/failure" },
+    "also": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/failure" }
+    }
+  },
+  "$defs": {
+    "failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "hint"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "message": { "type": "string", "minLength": 1 },
+        "hint": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

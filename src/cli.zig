@@ -64,6 +64,41 @@ pub fn run(
     stdout: *Io.Writer,
     stderr: *Io.Writer,
 ) ExitCode {
+    const json_errors = argvRequestsJson(argv);
+    var bridge: cli_control.JsonStderr = .init(stderr);
+    const sink = if (json_errors) &bridge.writer else stderr;
+    const code = runCaptured(io, allocator, argv, temp_parent, stdout, sink);
+    if (json_errors) bridge.finish(code);
+    return code;
+}
+
+fn argvRequestsJson(argv: []const [:0]const u8) bool {
+    var wants = false;
+    var index: usize = 1;
+    while (index < argv.len) : (index += 1) {
+        const arg = argv[index];
+        if (std.mem.eql(u8, arg, "--")) break;
+        if (std.mem.eql(u8, arg, "--format=json")) {
+            wants = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--format")) {
+            const next = index + 1;
+            if (next < argv.len and std.mem.eql(u8, argv[next], "json")) wants = true;
+            index = next;
+        }
+    }
+    return wants;
+}
+
+fn runCaptured(
+    io: Io,
+    allocator: std.mem.Allocator,
+    argv: []const [:0]const u8,
+    temp_parent: ?[]const u8,
+    stdout: *Io.Writer,
+    stderr: *Io.Writer,
+) ExitCode {
     installSignalHandlers();
     defer clearSignals();
 
