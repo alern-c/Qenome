@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `--d1 <BINDING>` compares the local database of a D1 binding from `wrangler.toml`, `wrangler.jsonc`, or `wrangler.json` instead of a `--db` path. It finds `<config directory>/.wrangler/state/v3/d1/miniflare-D1DatabaseObject/<id>.sqlite` from `preview_database_id` or `database_id`, the file that local wrangler commands write. `--config <PATH>` names the config; otherwise it is searched in the current directory. The rule was checked against local databases written by wrangler 3.114.17 and 4.152.0.
+- `--d1` stops with status 4 before comparing when it cannot choose exactly one database: no config, more than one config, an unknown or duplicated binding, a binding without an id, or a local file that does not exist yet. Nothing is written to stdout, and the reason is on stderr.
+- Every `--d1` comparison reports that the bundled SQLite is 3.51.2 while D1's local engine is 3.53.4, and that the times come from the local copy rather than production D1. `--format json` adds a `d1` object; `schema_version` stays 1. `--db` output is unchanged.
+
 ### Changed
 
 - Release notes now come from the matching CHANGELOG section.

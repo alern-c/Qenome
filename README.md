@@ -71,13 +71,16 @@ qenome app.db select.sql index.sql
 qenome app.db select.sql index.sql --bind 1:int:1234
 qenome --db app.db --select select.sql --index-sql index.sql --format kv
 qenome app.db select.sql index.sql --format json
+qenome --d1 DB select.sql index.sql
 ```
 
-The three paths fill the roles in this order: database, SELECT file, CREATE INDEX file. Each role can also be given with `--db`, `--select`, or `--index-sql`, and the two forms can be mixed; a positional path fills the first role that is still empty. After `--`, every argument is treated as a path, including paths that start with `-`.
+The three paths fill the roles in this order: database, SELECT file, CREATE INDEX file. Each role can also be given with `--db`, `--select`, or `--index-sql`, and the two forms can be mixed; a positional path fills the first role that is still empty. With `--d1`, the two positional paths fill the SELECT and CREATE INDEX roles. After `--`, every argument is treated as a path, including paths that start with `-`.
 
 `select.sql` holds one read-only `SELECT`; `index.sql` holds one candidate `CREATE INDEX`. Qenome rejects multiple statements, writes, and any other statement.
 
-- `--db <PATH>`: the SQLite database to read (required, once)
+- `--db <PATH>`: the SQLite database to read (required, once; not with `--d1`)
+- `--d1 <BINDING>`: the local D1 database of this `d1_databases` binding in a wrangler config, instead of `--db`. See [D1 local databases](#d1-local-databases)
+- `--config <PATH>`: the wrangler config for `--d1` (default: `wrangler.toml`, `wrangler.jsonc`, or `wrangler.json` in the current directory)
 - `--select <FILE>`: a file holding the one `SELECT` to compare (required, once)
 - `--index-sql <FILE>`: a file holding the one candidate `CREATE INDEX` (required, once)
 - `--bind <N>:<TYPE>[:<VALUE>]`: a typed value bound to parameter `N`; repeatable. `N` is SQLite's parameter number: named parameters share the number of their first appearance, and `?NNN` uses `NNN`. `TYPE` is `int`, `real`, `text`, or `null` (null takes no value). Every number in `1..parameter count` must be given exactly once, and a `SELECT` without parameters takes no `--bind`. The value is the rest of the argument, so text may contain `:`.
@@ -99,6 +102,34 @@ On Linux and macOS the directory is created so that only its owner can access it
 
 The time verdict never changes the exit status.
 
+### D1 local databases
+
+`--d1 <BINDING>` compares the local copy of a Cloudflare D1 database instead of a file named with `--db`. Qenome reads the top-level `d1_databases` entries of a wrangler config and uses the binding name to find that copy:
+
+- the config is `wrangler.toml`, `wrangler.jsonc`, or `wrangler.json` in the current directory; `--config <PATH>` names one file instead. JSONC comments (`//` and `/* */`) and trailing commas are accepted.
+- the database id is `preview_database_id` when it is set, and `database_id` otherwise; this is the same choice wrangler makes for local development.
+- the file is `<config directory>/.wrangler/state/v3/d1/miniflare-D1DatabaseObject/<id>.sqlite`, where `<id>` is the identifier miniflare derives from the database id. The rule was checked against local databases written by `wrangler` 3.114.17 and 4.152.0.
+
+```sh
+qenome --d1 DB select.sql index.sql
+qenome --d1 DB select.sql index.sql --config packages/api/wrangler.toml
+```
+
+Qenome stops with status 4, prints the reason on stderr, and writes nothing to stdout when it cannot pick exactly one database:
+
+- there is no config file in the current directory (pass `--config`, or run Qenome in the wrangler project);
+- there is more than one config file, so the config itself is ambiguous;
+- the binding name appears in no top-level `d1_databases` entry, or it appears more than once;
+- the binding has neither `database_id` nor `preview_database_id`;
+- the local `.sqlite` file does not exist yet. Run a local wrangler command in the project first, such as `npx wrangler d1 execute DB --local --command "SELECT 1"`, or `npx wrangler dev` and use the database once.
+
+Every `--d1` comparison prints two facts in all formats:
+
+- the bundled SQLite used for the comparison is 3.51.2, while D1's local engine runs SQLite 3.53.4, so plans and times can differ. D1 rejects `select sqlite_version()`, so 3.53.4 comes from the version string in wrangler's local engine;
+- the times are measured on the local copy, not on production D1, and do not promise the speed of a deployed database.
+
+Sections for other environments (`[env.<name>]`) and custom persist paths (`--persist-to`) are not read.
+
 ## Output formats
 
 ### human (default)
@@ -107,15 +138,16 @@ The time verdict never changes the exit status.
 
 - a Summary: whether the result rows match, the time verdict with its reasons, whether the plan changed, the median times and rounds, the size increase, and a note when the build is a debug build;
 - a side-by-side table of baseline and variant: rows, full-scan steps, VM steps, sort operations and autoindex rows when they are not zero, the p25 and p75 times when timed, and the database file bytes;
-- the query plan for both copies, with `kind`, `covering`, and `automatic` as hints read from SQLite's wording.
+- the query plan for both copies, with `kind`, `covering`, and `automatic` as hints read from SQLite's wording;
+- with `--d1`, a D1 block: the binding, the config, the database id, the local file, the SQLite version difference, and the caution about production D1.
 
 When the rows differ, cannot be compared, or come in another order, the human output adds an explanation and the one-sided counts. Example rows appear only with `--show-rows`; when they are hidden, the human output says to rerun with that flag. `--show-binds` adds the bind values.
 
-Input paths, the SQLite and Zig versions, the build mode, the OS and architecture, the work directory, and the timing conditions appear only in `kv` and `json`.
+Input paths, the SQLite and Zig versions, the build mode, the OS and architecture, the work directory, and the timing conditions appear only in `kv` and `json`. With `--d1`, `human` also shows the D1 block described above.
 
 ### kv
 
-`--format kv` prints every fact as one `key: value` line, for scripts and logs. It includes the inputs, the SQLite and Zig versions, the build mode, the OS and architecture, the work directory, and the timing conditions, which the human output leaves out. `baseline-only-row` and `variant-only-row` appear only with `--show-rows`.
+`--format kv` prints every fact as one `key: value` line, for scripts and logs. It includes the inputs, the SQLite and Zig versions, the build mode, the OS and architecture, the work directory, and the timing conditions, which the human output leaves out. With `--d1` it adds `d1-binding`, `d1-config`, `d1-database-id`, `d1-local-database`, `d1-sqlite-version`, `d1-sqlite-version-note`, and `d1-caution`. `baseline-only-row` and `variant-only-row` appear only with `--show-rows`.
 
 ### json
 
@@ -160,6 +192,7 @@ Main keys:
 | `timing` | `rounds`, `variant_faster_rounds`, `ratio`, and `baseline` / `variant` with `median_ns`, `p25_ns`, `p75_ns`, `min_ns`, `max_ns`. `null` when not timed; `ratio` is `null` when the baseline median is `0` |
 | `size_bytes` | `baseline`, `variant`, and `increase` (the whole database file, not the index alone) |
 | `inputs` | `database`, `select`, and `index_sql` paths |
+| `d1` | Present only with `--d1`: `binding`, `config`, `database_id`, `local_database`, `sqlite_version` (D1's 3.53.4), `sqlite_version_note`, and `caution` |
 | `environment` | `qenome_version` (the same version as `--version`, from `build.zig.zon`), `sqlite_version`, `sqlite_source_id`, `zig_version`, `build_mode`, `os`, `arch`, `work_dir_parent` |
 | `measurement` | Timing conditions: `runs_per_copy` (timed rounds per copy; `0` when not timed), `warmup`, `order`, `scope`, `cache` |
 | `binds` | `number` and `type`; text also has `text_bytes`. `value` appears only with `--show-binds` |
@@ -177,7 +210,7 @@ Main keys:
 | 1 | An input was rejected (unreadable file, invalid or rejected SQL, bind mismatch, index creation failure) |
 | 2 | A usage error |
 | 3 | The result rows differ |
-| 4 | The results cannot be compared |
+| 4 | The results cannot be compared, or `--d1` cannot locate the local database (no config, an ambiguous choice, or a local file that does not exist yet) |
 | 5 | Cleanup failed after the comparison (this replaces 0; every other code is kept) |
 | 124 | A time limit was reached (`--timeout-ms`) |
 | 129 / 130 / 143 | Interrupted by `SIGHUP` / `SIGINT` / `SIGTERM` (POSIX) |
@@ -192,6 +225,7 @@ Main keys:
 - The size is the increase of the whole database file, not the size of the index alone.
 - Reject multiple statements, writes, and dangerous DDL.
 - Clean up connections and temporary files on success, failure, and interruption.
+- Do not guess a D1 database file: stop when the binding does not resolve to exactly one file.
 
 ## Development checks
 
