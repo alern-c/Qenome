@@ -1,10 +1,10 @@
 const std = @import("std");
 
-pub const pinned_version = "3.51.2";
+pub const pinned_version = "3.53.4";
 
-pub const pinned_version_number: c_int = 3_051_002;
+pub const pinned_version_number: c_int = 3_053_004;
 
-pub const pinned_source_id = "2026-01-09 17:27:48 b270f8339eb13b504d0b2ba154ebca966b7dde08e40c3ed7d559749818cb2075";
+pub const pinned_source_id = "2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc";
 
 pub extern fn sqlite3_libversion() [*:0]const u8;
 pub extern fn sqlite3_libversion_number() c_int;

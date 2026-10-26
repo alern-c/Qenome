@@ -2139,7 +2139,7 @@ test "d1 with a wrangler.toml compares the local database (kv)" {
     try testing.expect(contains(result.stdout, "d1-local-database: "));
     try testing.expect(contains(result.stdout, d1_file_name));
     try testing.expect(contains(result.stdout, "d1-sqlite-version: 3.53.4\n"));
-    try testing.expect(contains(result.stdout, "SQLite 3.51.2"));
+    try testing.expect(contains(result.stdout, "SQLite " ++ sqlite.pinned_version));
     try testing.expect(contains(result.stdout, "plans and times can differ"));
     try testing.expect(contains(result.stdout, "d1-caution: "));
     try testing.expect(contains(result.stdout, "production D1"));
@@ -2159,7 +2159,8 @@ test "d1 with a wrangler.jsonc shows the same notes in human and json" {
     try testing.expect(contains(human.stdout, "\nD1\n"));
     try testing.expect(contains(human.stdout, "binding"));
     try testing.expect(contains(human.stdout, "local file"));
-    try testing.expect(contains(human.stdout, "3.51.2"));
+    try testing.expect(contains(human.stdout, sqlite.pinned_version));
+    try testing.expect(contains(human.stdout, "in D1"));
     try testing.expect(contains(human.stdout, "3.53.4"));
     try testing.expect(contains(human.stdout, "production D1"));
 
@@ -2178,7 +2179,7 @@ test "d1 with a wrangler.jsonc shows the same notes in human and json" {
     try testing.expectEqualStrings("DB", try jsonText(d1, "binding"));
     try testing.expectEqualStrings(d1_database_id, try jsonText(d1, "database_id"));
     try testing.expectEqualStrings("3.53.4", try jsonText(d1, "sqlite_version"));
-    try testing.expect(contains(try jsonText(d1, "sqlite_version_note"), "3.51.2"));
+    try testing.expect(contains(try jsonText(d1, "sqlite_version_note"), sqlite.pinned_version));
     try testing.expect(contains(try jsonText(d1, "caution"), "production D1"));
     try testing.expectEqualStrings(fixture.local_path, try jsonText(d1, "local_database"));
 }
@@ -2333,14 +2334,15 @@ test "a plain --db run prints no D1 facts in any format" {
     try testing.expectEqualStrings("", human.stderr);
     try testing.expect(!contains(human.stdout, "\nD1\n"));
     try testing.expect(!contains(human.stdout, "production D1"));
-    try testing.expect(!contains(human.stdout, "3.53.4"));
+    try testing.expect(!contains(human.stdout, "in D1"));
 
     const kv = fixture.runFormat("kv", &.{ "--runs", "0" }, &stdout_buffer, &stderr_buffer);
     try testing.expectEqual(ExitCode.ok, kv.code);
     for ([_][]const u8{ "d1-binding: ", "d1-config: ", "d1-database-id: ", "d1-local-database: ", "d1-sqlite-version: ", "d1-caution: " }) |key| {
         try testing.expect(!contains(kv.stdout, key));
     }
-    try testing.expect(!contains(kv.stdout, "3.53.4"));
+    try testing.expect(!contains(kv.stdout, "in D1"));
+    try testing.expect(!contains(kv.stdout, "sqlite_version_note"));
 
     const json = fixture.runFormat("json", &.{ "--runs", "0" }, &stdout_buffer, &stderr_buffer);
     try testing.expectEqual(ExitCode.ok, json.code);
@@ -2348,4 +2350,5 @@ test "a plain --db run prints no D1 facts in any format" {
     defer parsed.deinit();
     try testing.expectEqual(@as(i64, 1), try jsonInt(parsed.value, "schema_version"));
     try testing.expectError(error.TestUnexpectedResult, jsonGet(parsed.value, "d1"));
+    try testing.expect(!contains(json.stdout, "sqlite_version_note"));
 }
