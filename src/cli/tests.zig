@@ -176,6 +176,17 @@ fn jsonInt(value: std.json.Value, key: []const u8) !i64 {
     };
 }
 
+fn expectJsonFailure(stderr: []const u8, code: []const u8, exit_code: i64) !void {
+    var parsed = try parseJson(stderr);
+    defer parsed.deinit();
+    try testing.expectEqual(@as(i64, 2), try jsonInt(parsed.value, "schema_version"));
+    try testing.expectEqual(exit_code, try jsonInt(parsed.value, "exit_code"));
+    const failure = try jsonGet(parsed.value, "error");
+    try testing.expectEqualStrings(code, try jsonText(failure, "code"));
+    try testing.expect((try jsonText(failure, "message")).len != 0);
+    try testing.expect((try jsonText(failure, "hint")).len != 0);
+}
+
 fn jsonBool(value: std.json.Value, key: []const u8) !bool {
     return switch (try jsonGet(value, key)) {
         .bool => |flag| flag,
@@ -2038,7 +2049,22 @@ test "json format keeps stdout empty when the select is rejected" {
     const result = fixture.runFormat("json", &.{}, &stdout_buffer, &stderr_buffer);
     try testing.expectEqual(ExitCode.rejected, result.code);
     try testing.expectEqualStrings("", result.stdout);
-    try testing.expect(std.mem.startsWith(u8, result.stderr, "error: --select: "));
+    try expectJsonFailure(result.stderr, "statement_rejected", 1);
+    try testing.expect(contains(result.stderr, "--select:"));
+    try fixture.expectNoLeftovers();
+}
+
+test "json format reports a repeated bind number as bind_rejected" {
+    var fixture = try CliFixture.init("SELECT a FROM t WHERE a = ?1 AND b = ?2", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+
+    var stdout_buffer: [1024]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = fixture.runFormat("json", &.{ "--bind", "1:int:1", "--bind", "1:text:x" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try expectJsonFailure(result.stderr, "bind_rejected", 1);
+    try testing.expect(contains(result.stderr, "bind number 1 is given more than once"));
     try fixture.expectNoLeftovers();
 }
 
@@ -2312,9 +2338,10 @@ test "d1 stops with status 4 when no wrangler config is present" {
 
     try testing.expectEqual(ExitCode.incomparable, result.code);
     try testing.expectEqualStrings("", result.stdout);
+    try expectJsonFailure(result.stderr, "d1_config_not_found", 4);
     try testing.expect(contains(result.stderr, "no wrangler config in the current directory"));
     try testing.expect(contains(result.stderr, "wrangler.toml"));
-    try testing.expect(contains(result.stderr, "--config <PATH>"));
+    try testing.expect(contains(result.stderr, "--config"));
 }
 
 test "d1 stops with status 4 when the binding is missing" {
@@ -2382,9 +2409,10 @@ test "d1 stops with status 4 when the local database does not exist yet" {
 
     try testing.expectEqual(ExitCode.incomparable, result.code);
     try testing.expectEqualStrings("", result.stdout);
+    try expectJsonFailure(result.stderr, "d1_local_file_missing", 4);
     try testing.expect(contains(result.stderr, "no local D1 database at"));
     try testing.expect(contains(result.stderr, d1_file_name));
-    try testing.expect(contains(result.stderr, "wrangler d1 execute DB --local"));
+    try testing.expect(contains(result.stderr, "wrangler d1 execute"));
     try fixture.expectNoLeftovers();
 }
 
