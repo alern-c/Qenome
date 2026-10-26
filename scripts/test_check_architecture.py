@@ -38,6 +38,7 @@ CANONICAL_FILES = {
         'const db = @import("db.zig");\n'
         'const result = @import("result.zig");\n'
         'const cli_args = @import("cli/args.zig");\n'
+        'const cli_d1 = @import("cli/d1.zig");\n'
         'const cli_control = @import("cli/control.zig");\n'
         'const cli_comparison = @import("cli/comparison.zig");\n'
         'const cli_query = @import("cli/query.zig");\n'
@@ -60,6 +61,7 @@ CANONICAL_FILES = {
         'const std = @import("std");\n'
         'const builtin = @import("builtin");\n'
     ),
+    "src/cli/d1.zig": 'const std = @import("std");\n',
     "src/cli/comparison.zig": (
         'const std = @import("std");\n'
         'const db = @import("../db.zig");\n'
@@ -92,6 +94,7 @@ CANONICAL_FILES = {
         'const builtin = @import("builtin");\n'
         'const result = @import("../result.zig");\n'
         'const cli_args = @import("args.zig");\n'
+        'const cli_d1 = @import("d1.zig");\n'
         'const cli_comparison = @import("comparison.zig");\n'
         'const cli_timing = @import("timing.zig");\n'
     ),
@@ -102,6 +105,7 @@ CANONICAL_FILES = {
         'const sqlite = @import("../sqlite.zig");\n'
         'const cli_comparison = @import("comparison.zig");\n'
         'const cli_control = @import("control.zig");\n'
+        'const cli_d1 = @import("d1.zig");\n'
     ),
 }
 
@@ -154,7 +158,7 @@ def expect_rejected(name, code, output, rule, mention=None):
 def main():
     code, output = case(None)
     expect_clean("the smallest approved tree passes", code, output)
-    expect("the whole tree is checked", "(14 files checked" in output, output.strip())
+    expect("the whole tree is checked", "(15 files checked" in output, output.strip())
 
     code, output = case(lambda root: os.remove(os.path.join(root, "src/cli/tests.zig")))
     expect_rejected("a missing test file fails", code, output, "missing-file", "src/cli/tests.zig")

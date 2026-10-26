@@ -9,8 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `--d1 <BINDING>` compares the local database of a D1 binding from `wrangler.toml`, `wrangler.jsonc`, or `wrangler.json` instead of a `--db` path. It finds `<config directory>/.wrangler/state/v3/d1/miniflare-D1DatabaseObject/<id>.sqlite` from `preview_database_id` or `database_id`, the file that local wrangler commands write. `--config <PATH>` names the config; otherwise it is searched in the current directory. The rule was checked against local databases written by wrangler 3.114.17 and 4.152.0.
+- `--d1` stops with status 4 before comparing when it cannot choose exactly one database: no config, more than one config, an unknown or duplicated binding, a binding without an id, or a local file that does not exist yet. Nothing is written to stdout, and the reason is on stderr.
+- Every `--d1` comparison reports that the bundled SQLite is 3.51.2 while D1's local engine is 3.53.4, and that the times come from the local copy rather than production D1. `--format json` adds a `d1` object; `schema_version` stays 1. `--db` output is unchanged.
 - `README.md` and `README.ja.md` have a Quick start that creates the test database, builds Qenome, and runs three examples: an index that removes the full scan (`improved`), an index the SELECT cannot use (`no-effect`), and a SELECT whose rows cannot be compared (`incomparable`, exit status 4). Each command ends with the result it has to report.
-- `scripts/check_quick_start.py` runs the Quick start commands from `README.md` as written, compares each result with its `# expect:` marker, and checks that `README.ja.md` holds the same commands. `python3 scripts/check_all.py` and the quality workflow run it on every commit, so the README and the program cannot drift apart.
+- `scripts/check_quick_start.py` runs the Quick start commands from `README.md` as written, compares each result with its `# expect:` marker, and checks that `README.ja.md` holds the same commands. `python3 scripts/check_all.py` and the quality workflow run it on every commit, so the README and the program cannot drift apart. The stages print a skip on Windows, where the Quick start commands do not run.
 - The fixture has a third case, `testdata/cases/incomparable.sql` and its candidate index, for a SELECT whose rows cannot be compared.
 
 ### Changed

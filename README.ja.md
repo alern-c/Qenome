@@ -114,13 +114,16 @@ qenome app.db select.sql index.sql
 qenome app.db select.sql index.sql --bind 1:int:1234
 qenome --db app.db --select select.sql --index-sql index.sql --format kv
 qenome app.db select.sql index.sql --format json
+qenome --d1 DB select.sql index.sql
 ```
 
-パスは DB・SELECT ファイル・CREATE INDEX ファイルの順に埋まり、`--db` / `--select` / `--index-sql` でも指定できます（混在可）。位置指定のパスは、まだ指定されていない最初の役割に埋まります。`--` の後は `-` で始まるパスとして扱います。
+パスは DB・SELECT ファイル・CREATE INDEX ファイルの順に埋まり、`--db` / `--select` / `--index-sql` でも指定できます（混在可）。位置指定のパスは、まだ指定されていない最初の役割に埋まります。`--d1` のときは、位置指定の2つのパスが SELECT と CREATE INDEX の役割に入ります。`--` の後は `-` で始まるパスとして扱います。
 
 `select.sql` には読み取り専用の SELECT を1本、`index.sql` には候補の `CREATE INDEX` を1本書きます。複数文・書込・その他の文は拒否します。
 
-- `--db <PATH>`: 対象の SQLite データベース（必須、1回だけ）
+- `--db <PATH>`: 対象の SQLite データベース（必須、1回だけ。`--d1` とは併用しない）
+- `--d1 <BINDING>`: wrangler 設定の `d1_databases` にあるこのバインディングのローカル D1 データベースを `--db` の代わりに使う。「D1 のローカルデータベース」を参照
+- `--config <PATH>`: `--d1` が読む wrangler 設定（既定はカレントディレクトリの `wrangler.toml` / `wrangler.jsonc` / `wrangler.json`）
 - `--select <FILE>`: 比較する SELECT を1本書いたファイル（必須、1回だけ）
 - `--index-sql <FILE>`: 候補の CREATE INDEX を1本書いたファイル（必須、1回だけ）
 - `--bind <N>:<TYPE>[:<VALUE>]`: SELECT のパラメータ N に渡す型付きの値。繰り返し指定できる。N は SQLite のパラメータ番号で、名前付きパラメータは最初に現れたときの番号を共有し、`?NNN` は NNN を使う。TYPE は int / real / text / null（null は値を取らない）。1 からパラメータ数までの各番号をちょうど1回ずつ指定する必要があり、パラメータの無い SELECT に `--bind` は付けられない。値は引数の残り全体なので、text には `:` を含められる
@@ -142,6 +145,34 @@ Linux と macOS では、このディレクトリを所有者だけがアクセ�
 
 時間の判定は終了コードを変えません。
 
+### D1 のローカルデータベース
+
+`--d1 <BINDING>` は、`--db` で指定したファイルの代わりに Cloudflare D1 のローカルコピーを比較します。wrangler 設定のトップレベルの `d1_databases` を読み、バインディング名からそのコピーを探します。
+
+- 設定はカレントディレクトリの `wrangler.toml` / `wrangler.jsonc` / `wrangler.json`。`--config <PATH>` を付けるとその1ファイルを使う。JSONC のコメント（`//` と `/* */`）と末尾カンマを許す
+- データベース id は `preview_database_id` があればそれを、無ければ `database_id` を使う（wrangler のローカル開発と同じ選び方）
+- ファイルは `<設定ファイルのディレクトリ>/.wrangler/state/v3/d1/miniflare-D1DatabaseObject/<id>.sqlite`。`<id>` は miniflare がデータベース id から導出する識別子。この規則は wrangler 3.114.17 と 4.152.0 が書いたローカル DB で確認した
+
+```sh
+qenome --d1 DB select.sql index.sql
+qenome --d1 DB select.sql index.sql --config packages/api/wrangler.toml
+```
+
+1つに決められないときは比較せず、理由を stderr に出し、stdout を空のまま終了コード 4 で止まります。
+
+- カレントディレクトリに設定ファイルが無い（`--config` を付けるか、wrangler プロジェクトで実行する）
+- 設定ファイルが複数あり、設定自体が曖昧
+- バインディング名がトップレベルの `d1_databases` に無い、または複数ある
+- バインディングに `database_id` も `preview_database_id` も無い
+- ローカルの `.sqlite` がまだ無い。プロジェクトで `npx wrangler d1 execute DB --local --command "SELECT 1"` を実行するか、`npx wrangler dev` でデータベースを1回使って作る
+
+`--d1` の比較では、どの形式でも次の2点を出します。
+
+- 比較に使う同梱 SQLite は 3.51.2 で、D1 のローカルエンジンは SQLite 3.53.4。版が違うため計画と時間が変わりうる。D1 は `select sqlite_version()` を拒否するため、3.53.4 は wrangler のローカルエンジンに埋め込まれた版文字列から確認した値
+- 時間はこのローカルコピーで測ったもので、本番 D1 の速さを保証しない
+
+`[env.<name>]` ごとの設定と独自の保存先（`--persist-to`）は読みません。
+
 ## 出力形式
 
 ### human（既定）
@@ -151,14 +182,15 @@ human は判断に必要なものを出します。
 - Summary: 結果の行が一致したか、時間の判定とその理由、計画が変わったか、時間の中央値とラウンド数、容量の増分、デバッグビルドのときはその注意
 - baseline と variant の左右比較表: 行数、フルスキャン行数、VMステップ数、0 でないときはソート回数と autoindex 行数、計測したときは p25 / p75 の時間、データベースファイルのバイト数
 - 両方のコピーの実行計画。`kind` / `covering` / `automatic` は SQLite の文言から読んだヒント
+- `--d1` のときは D1 ブロック: バインディング、設定ファイル、データベース id、ローカルファイル、SQLite の版の違い、本番 D1 についての注意
 
 行が一致しない・比較できない・行の順序が変わったときは、説明と片方だけの件数を足します。例の行は `--show-rows` のときだけ出し、隠しているときはそのフラグで再実行するよう案内します。`--show-binds` を付けるとバインド値も出します。
 
-入力パス、SQLite と Zig の版、ビルド種別、OS とアーキテクチャ、作業ディレクトリ、計時条件は kv と json にだけ出ます。
+入力パス、SQLite と Zig の版、ビルド種別、OS とアーキテクチャ、作業ディレクトリ、計時条件は kv と json にだけ出ます。`--d1` のときは、human も上記の D1 ブロックを出します。
 
 ### kv
 
-kv は全項目を1行1項目の `key: value` で出し、スクリプトとログに向きます。human が出さない入力、SQLite と Zig の版、ビルド種別、OS とアーキテクチャ、作業ディレクトリ、計時条件も含みます。`baseline-only-row` / `variant-only-row` は `--show-rows` のときだけ出ます。
+kv は全項目を1行1項目の `key: value` で出し、スクリプトとログに向きます。human が出さない入力、SQLite と Zig の版、ビルド種別、OS とアーキテクチャ、作業ディレクトリ、計時条件も含みます。`--d1` のときは `d1-binding` / `d1-config` / `d1-database-id` / `d1-local-database` / `d1-sqlite-version` / `d1-sqlite-version-note` / `d1-caution` を加えます。`baseline-only-row` / `variant-only-row` は `--show-rows` のときだけ出ます。
 
 ### json
 
@@ -203,6 +235,7 @@ fi
 | `timing` | `rounds`、`variant_faster_rounds`、`ratio`、`baseline` / `variant` の `median_ns` / `p25_ns` / `p75_ns` / `min_ns` / `max_ns`。計時しなければ `null`、baseline の median が 0 なら `ratio` は `null` |
 | `size_bytes` | `baseline` / `variant` / `increase`（データベース全体のバイト数。索引単体ではない） |
 | `inputs` | `database` / `select` / `index_sql` のパス |
+| `d1` | `--d1` のときだけ出る: `binding` / `config` / `database_id` / `local_database` / `sqlite_version`（D1 側の 3.53.4） / `sqlite_version_note` / `caution` |
 | `environment` | `qenome_version`（`--version` と同じ、`build.zig.zon` の版） / `sqlite_version` / `sqlite_source_id` / `zig_version` / `build_mode` / `os` / `arch` / `work_dir_parent` |
 | `measurement` | 計時条件（`runs_per_copy`（各コピーの計測ラウンド数。計時しないときは 0）/ `warmup` / `order` / `scope` / `cache`） |
 | `binds` | `number` / `type`。text は `text_bytes` も持つ。`--show-binds` を付けたときだけ値が `value` に入る |
@@ -220,7 +253,7 @@ fi
 | 1 | 入力を拒否した（読めないファイル、不正・拒否された SQL、バインドの不一致、索引の作成失敗） |
 | 2 | 引数の誤り |
 | 3 | 結果が一致しない |
-| 4 | 結果を比較できない |
+| 4 | 結果を比較できない、または `--d1` がローカルデータベースを特定できない（設定が無い・曖昧・ローカルファイルが未作成） |
 | 5 | 比較のあとの後片付けに失敗した（0 のときだけ置き換え、それ以外のコードはそのまま） |
 | 124 | 時間上限に達した（`--timeout-ms`） |
 | 129 / 130 / 143 | `SIGHUP` / `SIGINT` / `SIGTERM` による中断（POSIX） |
@@ -235,6 +268,7 @@ fi
 - 容量はデータベース全体の増分であり、索引単体のサイズではない
 - 複数文・書込・危険な DDL は拒否する
 - 正常・失敗・中断のどの経路でも、接続と一時ファイルを後片付けする
+- D1 のデータベースファイルを推測しない。バインディングがちょうど1つのファイルに決まらないときは止まる
 
 ## 開発時の検査
 
