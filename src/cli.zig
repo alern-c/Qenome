@@ -364,6 +364,11 @@ fn reportParseError(stderr: *Io.Writer, err: ParseError, offending: ?[:0]const u
             try result_rows.writeText(stderr, arg);
             try stderr.writeAll("; paths are the database, the SELECT file and the CREATE INDEX file, at most 3 (see --help)\n");
         },
+        error.TooManyD1Paths => {
+            try stderr.writeAll("error: unexpected argument ");
+            try result_rows.writeText(stderr, arg);
+            try stderr.writeAll("; with --d1 the paths are the SELECT file and the CREATE INDEX file, at most 2 (see --help)\n");
+        },
         error.EmptyPath => try stderr.writeAll("error: a path cannot be empty (see --help)\n"),
         error.UnexpectedValue => {
             const end = std.mem.indexOfScalar(u8, arg, '=') orelse arg.len;

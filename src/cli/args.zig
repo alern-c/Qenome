@@ -63,6 +63,7 @@ pub const ParseError = error{
     UnexpectedValue,
     UnknownOption,
     TooManyPaths,
+    TooManyD1Paths,
     EmptyPath,
     InvalidBindFormat,
     InvalidTimeout,
@@ -82,6 +83,7 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
     var args: Args = .{};
     const rest = if (argv.len > 1) argv[1..] else argv[0..0];
     var version_requested = false;
+    var d1_requested = false;
     for (rest) |arg| {
         if (std.mem.eql(u8, arg, "--")) break;
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
@@ -90,6 +92,7 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
             return args;
         }
         if (std.mem.eql(u8, arg, "--version")) version_requested = true;
+        if (std.mem.eql(u8, arg, "--d1") or std.mem.startsWith(u8, arg, "--d1=")) d1_requested = true;
     }
     if (version_requested) {
         args.version = true;
@@ -110,7 +113,7 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
             continue;
         }
         if (positional_only) {
-            try assignPositional(&args, arg);
+            try assignPositional(&args, arg, d1_requested);
             continue;
         }
         const inline_value = splitInline(arg);
@@ -159,7 +162,7 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
         } else if (arg.len != 0 and arg[0] == '-') {
             return error.UnknownOption;
         } else {
-            try assignPositional(&args, arg);
+            try assignPositional(&args, arg, d1_requested);
         }
     }
     offending.* = null;
@@ -192,9 +195,9 @@ fn splitInline(arg: [:0]const u8) ?Inline {
     return .{ .name = arg[0..at], .value = arg[at + 1 ..] };
 }
 
-fn assignPositional(args: *Args, value: [:0]const u8) ParseError!void {
+fn assignPositional(args: *Args, value: [:0]const u8, d1_requested: bool) ParseError!void {
     if (value.len == 0) return error.EmptyPath;
-    if (args.db == null and args.d1 == null) {
+    if (!d1_requested and args.db == null) {
         args.db = value;
         return;
     }
@@ -206,7 +209,7 @@ fn assignPositional(args: *Args, value: [:0]const u8) ParseError!void {
         args.index_sql = value;
         return;
     }
-    return error.TooManyPaths;
+    return if (d1_requested) error.TooManyD1Paths else error.TooManyPaths;
 }
 
 fn optionValue(argv: []const [:0]const u8, index: *usize, inline_value: ?Inline) ParseError![:0]const u8 {
@@ -432,6 +435,8 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\  qenome --d1 DB select.sql index.sql
         \\
         \\The same paths can be given as --db, --select and --index-sql.
+        \\With --d1, the two positional paths fill the SELECT and CREATE INDEX
+        \\roles, whatever the order of the paths and the option.
         \\
         \\--d1 reads the top-level d1_databases bindings of a wrangler config and
         \\uses preview_database_id (database_id when it is not set) to find
@@ -507,6 +512,7 @@ pub fn parseErrorMessage(err: ParseError) []const u8 {
         error.UnexpectedValue => "an option that takes no value was given one (see --help)",
         error.UnknownOption => "unknown option (see --help)",
         error.TooManyPaths => "too many paths (see --help)",
+        error.TooManyD1Paths => "--d1 takes two paths, the SELECT file and the CREATE INDEX file (see --help)",
         error.EmptyPath => "a path cannot be empty (see --help)",
         error.InvalidBindFormat => "--bind expects <N>:<TYPE>[:<VALUE>], where N is the parameter number and TYPE is int, real, text or null; e.g. --bind 1:int:1234, --bind 2:text:ok, --bind 3:null",
         error.InvalidTimeout => "--timeout-ms expects a non-negative integer",
@@ -1020,12 +1026,89 @@ test "--d1 leaves the positional paths to SELECT and CREATE INDEX" {
     try testing.expectEqualStrings("i.sql", args.index_sql.?);
 }
 
+test "--d1 makes the positional paths fill SELECT and CREATE INDEX in any order" {
+    const cases = [_][]const [:0]const u8{
+        &.{ "Qenome", "s.sql", "i.sql", "--d1", "DB" },
+        &.{ "Qenome", "--d1", "DB", "s.sql", "i.sql" },
+        &.{ "Qenome", "--d1=DB", "s.sql", "i.sql" },
+        &.{ "Qenome", "s.sql", "i.sql", "--d1=DB" },
+        &.{ "Qenome", "s.sql", "--d1", "DB", "i.sql" },
+        &.{ "Qenome", "--d1", "DB", "--", "s.sql", "i.sql" },
+    };
+    for (cases) |argv| {
+        const args = try parseArgs(testing.allocator, argv);
+        defer testing.allocator.free(args.binds);
+        try testing.expect(args.db == null);
+        try testing.expectEqualStrings("DB", args.d1.?);
+        try testing.expectEqualStrings("s.sql", args.select.?);
+        try testing.expectEqualStrings("i.sql", args.index_sql.?);
+    }
+}
+
+test "a third path with --d1 is a usage error" {
+    const cases = [_][]const [:0]const u8{
+        &.{ "Qenome", "x.sql", "s.sql", "i.sql", "--d1", "DB" },
+        &.{ "Qenome", "--d1", "DB", "x.sql", "s.sql", "i.sql" },
+    };
+    for (cases) |argv| {
+        var offending: ?[:0]const u8 = null;
+        try testing.expectError(error.TooManyD1Paths, parseArgsReporting(testing.allocator, argv, &offending));
+        try testing.expectEqualStrings("i.sql", offending.?);
+    }
+    const message = parseErrorMessage(error.TooManyD1Paths);
+    try testing.expect(std.mem.indexOf(u8, message, "SELECT file") != null);
+    try testing.expect(std.mem.indexOf(u8, message, "CREATE INDEX file") != null);
+}
+
+test "an explicit --db with --d1 is a conflict in any order" {
+    const cases = [_][]const [:0]const u8{
+        &.{ "Qenome", "--db", "x.db", "--d1", "DB", "s.sql", "i.sql" },
+        &.{ "Qenome", "--d1", "DB", "--db", "x.db", "s.sql", "i.sql" },
+        &.{ "Qenome", "x.db", "--db", "y.db", "--d1", "DB" },
+    };
+    for (cases) |argv| {
+        var offending: ?[:0]const u8 = null;
+        try testing.expectError(error.ConflictingDatabase, parseArgsReporting(testing.allocator, argv, &offending));
+        try testing.expectEqualStrings("--d1", offending.?);
+    }
+}
+
+test "a value that looks like --d1 does not choose the D1 roles" {
+    const args = try parseArgs(testing.allocator, &.{ "Qenome", "--select=--d1", "d.db", "i.sql" });
+    defer testing.allocator.free(args.binds);
+    try testing.expect(args.d1 == null);
+    try testing.expectEqualStrings("d.db", args.db.?);
+    try testing.expectEqualStrings("--d1", args.select.?);
+    try testing.expectEqualStrings("i.sql", args.index_sql.?);
+}
+
+test "a --d1 taken as the next option is still a missing value" {
+    const cases = [_][]const [:0]const u8{
+        &.{ "Qenome", "--select", "--d1", "s.sql" },
+        &.{ "Qenome", "--db", "--d1", "s.sql" },
+    };
+    for (cases) |argv| {
+        var offending: ?[:0]const u8 = null;
+        try testing.expectError(error.MissingValue, parseArgsReporting(testing.allocator, argv, &offending));
+        try testing.expect(offending.?[0] == '-');
+    }
+}
+
+test "a --d1 after the double dash is a path" {
+    const args = try parseArgs(testing.allocator, &.{ "Qenome", "--", "--d1", "s.sql" });
+    defer testing.allocator.free(args.binds);
+    try testing.expect(args.d1 == null);
+    try testing.expectEqualStrings("--d1", args.db.?);
+    try testing.expectEqualStrings("s.sql", args.select.?);
+}
+
 test "the usage shows the D1 synopsis" {
     var buffer: [8192]u8 = undefined;
     var writer = Io.Writer.fixed(&buffer);
     try usage(&writer);
     try testing.expect(std.mem.indexOf(u8, writer.buffered(), "--d1 <BINDING>") != null);
     try testing.expect(std.mem.indexOf(u8, writer.buffered(), "3.53.4") != null);
+    try testing.expect(std.mem.indexOf(u8, writer.buffered(), "whatever the order") != null);
 }
 
 test "common file errors are shown in plain English" {

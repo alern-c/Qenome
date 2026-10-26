@@ -2205,6 +2205,25 @@ test "d1 finds the config in the current directory" {
     try fixture.expectNoLeftovers();
 }
 
+test "d1 accepts the positional paths before --d1" {
+    var fixture = try D1Fixture.init(testing.allocator, "wrangler.toml", d1_toml, true);
+    defer fixture.deinit(testing.allocator);
+
+    var stdout_buffer: [32768]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = callRun(testing.allocator, &.{
+        "Qenome",   fixture.select_path, fixture.index_path, "--d1", "DB",
+        "--config", fixture.config_path, "--format",         "kv",   "--runs",
+        "0",
+    }, fixture.work_parent, &stdout_buffer, &stderr_buffer);
+
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+    try testing.expect(contains(result.stdout, "d1-binding: DB\n"));
+    try testing.expect(contains(result.stdout, "result: match"));
+    try fixture.expectNoLeftovers();
+}
+
 test "d1 stops with status 4 when no wrangler config is present" {
     var dir = try Fixture.init();
     defer dir.deinit();
