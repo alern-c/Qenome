@@ -1,0 +1,50 @@
+Qenome
+======
+
+Qenome is licensed under the Apache License, Version 2.0; see LICENSE for the
+full text. This file records the other components shipped in this repository
+and the notices they keep. It does not change their licenses.
+
+
+SQLite 3.53.4 (vendor/sqlite3/sqlite3.c and sqlite3.h)
+------------------------------------------------------
+Public domain. The author disclaims copyright to this source code:
+  https://sqlite.org/copyright.html
+Source: https://sqlite.org/2026/sqlite-amalgamation-3530400.zip
+Only the amalgamation is vendored; the SQLite shell and the extension header
+from that zip are not. vendor/sqlite3/PROVENANCE.txt records the hashes.
+
+
+Row-count patch (vendor/sqlite3/patches/0001-row-counts-plain.patch)
+--------------------------------------------------------------------
+Distributed by : workerd, https://github.com/cloudflare/workerd
+Path           : patches/sqlite/0001-row-counts-plain.patch
+Commit         : ddfde6c8f3d611e31cdca8c17ca8e31eafda077b (2026-08-21)
+Fetched from   : https://raw.githubusercontent.com/cloudflare/workerd/ddfde6c8f3d611e31cdca8c17ca8e31eafda077b/patches/sqlite/0001-row-counts-plain.patch
+SHA-256        : ffafcb374b0f433964fec75d79cb5e690aa3fbe8c0df3d0a9413001deda3951c
+License        : Apache License, Version 2.0
+                 https://github.com/cloudflare/workerd/blob/ddfde6c8f3d611e31cdca8c17ca8e31eafda077b/LICENSE
+Copyright      : the patch file carries no separate copyright line, so no
+                 holder is asserted here beyond the license above.
+
+The file is stored unmodified. scripts/apply_sqlite_row_counts_patch.py applies
+it to the SQLite 3.53.4 amalgamation, and the result is what Qenome compiles:
+vendor/sqlite3/sqlite3.c and sqlite3.h. The script refuses a patch or an
+amalgamation whose hash differs from the recorded ones.
+
+The patch adds two prepared-statement counters to sqlite3_stmt_status():
+  LIBSQL_STMTSTATUS_ROWS_READ      = 1025   rows read
+  LIBSQL_STMTSTATUS_ROWS_WRITTEN   = 1026   rows written
+
+
+libSQL counters
+---------------
+The patch's own comments call the counters a "libSQL extension", and their
+names keep the LIBSQL_ prefix:
+  https://github.com/tursodatabase/libsql
+  License: MIT License, Copyright 2023 the sqld authors
+  https://github.com/tursodatabase/libsql/blob/main/LICENSE.md
+
+Which of the two upstreams the file text was copied from cannot be told from
+the patch itself, so both are recorded: workerd distributes it, and the counters
+it adds come from libSQL.

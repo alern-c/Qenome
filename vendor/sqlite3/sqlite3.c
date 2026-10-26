@@ -9621,6 +9621,14 @@ SQLITE_API int sqlite3_stmt_status(sqlite3_stmt*, int op,int resetFlg);
 ** is ignored when the opcode is SQLITE_STMTSTATUS_MEMUSED.
 ** </dd>
 ** </dl>
+**
+** [[LIBSQL_STMTSTATUS_ROWS_READ]]
+** [[LIBSQL_STMTSTATUS_ROWS_WRITTEN]] 
+** <dt>LIBSQL_STMTSTATUS_ROWS_READ<br>
+** LIBSQL_STMTSTATUS_ROWS_WRITTEN</dt>
+** <dd>^LIBSQL_STMTSTATUS_ROWS_READ is the number of rows read when executing
+** this statement. LIBSQL_STMTSTATUS_ROWS_WRITTEN value is the number of
+** rows written.
 */
 #define SQLITE_STMTSTATUS_FULLSCAN_STEP     1
 #define SQLITE_STMTSTATUS_SORT              2
@@ -9631,6 +9639,10 @@ SQLITE_API int sqlite3_stmt_status(sqlite3_stmt*, int op,int resetFlg);
 #define SQLITE_STMTSTATUS_FILTER_MISS       7
 #define SQLITE_STMTSTATUS_FILTER_HIT        8
 #define SQLITE_STMTSTATUS_MEMUSED           99
+
+#define LIBSQL_STMTSTATUS_BASE              1024
+#define LIBSQL_STMTSTATUS_ROWS_READ         LIBSQL_STMTSTATUS_BASE + 1
+#define LIBSQL_STMTSTATUS_ROWS_WRITTEN      LIBSQL_STMTSTATUS_BASE + 2
 
 /*
 ** CAPI3REF: Custom Page Cache Object
@@ -24782,6 +24794,7 @@ struct Vdbe {
   yDbMask btreeMask;      /* Bitmask of db->aDb[] entries referenced */
   yDbMask lockMask;       /* Subset of btreeMask that requires a lock */
   u32 aCounter[9];        /* Counters used by sqlite3_stmt_status() */
+  u32 aLibsqlCounter[3];  /* libSQL extension: Counters used by sqlite3_stmt_status()*/
   char *zSql;             /* Text of the SQL statement that generated this */
 #ifdef SQLITE_ENABLE_NORMALIZE
   char *zNormSql;         /* Normalization of the associated SQL statement */
@@ -95796,7 +95809,7 @@ SQLITE_API int sqlite3_stmt_status(sqlite3_stmt *pStmt, int op, int resetFlag){
   u32 v;
 #ifdef SQLITE_ENABLE_API_ARMOR
   if( !pStmt
-   || (op!=SQLITE_STMTSTATUS_MEMUSED && (op<0||op>=ArraySize(pVdbe->aCounter)))
+   || (op!=SQLITE_STMTSTATUS_MEMUSED && (op<0||(op>=ArraySize(pVdbe->aCounter)&&op<LIBSQL_STMTSTATUS_BASE)))
   ){
     (void)SQLITE_MISUSE_BKPT;
     return 0;
@@ -95813,6 +95826,9 @@ SQLITE_API int sqlite3_stmt_status(sqlite3_stmt *pStmt, int op, int resetFlag){
     db->pnBytesFreed = 0;
     db->lookaside.pEnd = db->lookaside.pTrueEnd;
     sqlite3_mutex_leave(db->mutex);
+  }else if( op>=LIBSQL_STMTSTATUS_BASE ){
+    v = pVdbe->aLibsqlCounter[op - LIBSQL_STMTSTATUS_BASE];
+    if( resetFlag ) pVdbe->aLibsqlCounter[op - LIBSQL_STMTSTATUS_BASE] = 0;
   }else{
     v = pVdbe->aCounter[op];
     if( resetFlag ) pVdbe->aCounter[op] = 0;
@@ -100412,6 +100428,7 @@ case OP_Count: {         /* out2 */
   }else{
     nEntry = 0;  /* Not needed.  Only used to silence a warning. */
     rc = sqlite3BtreeCount(db, pCrsr, &nEntry);
+    p->aLibsqlCounter[LIBSQL_STMTSTATUS_ROWS_READ - LIBSQL_STMTSTATUS_BASE] += nEntry;
     if( rc ) goto abort_due_to_error;
   }
   pOut = out2Prerelease(p, pOp);
@@ -101577,6 +101594,7 @@ case OP_SeekGT: {       /* jump0, in3, group, ncycle */
       goto seek_not_found;
     }
   }
+  p->aLibsqlCounter[LIBSQL_STMTSTATUS_ROWS_READ - LIBSQL_STMTSTATUS_BASE]++;
 #ifdef SQLITE_TEST
   sqlite3_search_count++;
 #endif
@@ -102147,6 +102165,7 @@ notExistsWithKey:
   pC->deferredMoveto = 0;
   VdbeBranchTaken(res!=0,2);
   pC->seekResult = res;
+  p->aLibsqlCounter[LIBSQL_STMTSTATUS_ROWS_READ - LIBSQL_STMTSTATUS_BASE]++;
   if( res!=0 ){
     assert( rc==SQLITE_OK );
     if( pOp->p2==0 ){
@@ -102404,6 +102423,7 @@ case OP_Insert: {
 #endif
 
   assert( (pOp->p5 & OPFLAG_LASTROWID)==0 || (pOp->p5 & OPFLAG_NCHANGE)!=0 );
+  if (!pC->isEphemeral) p->aLibsqlCounter[LIBSQL_STMTSTATUS_ROWS_WRITTEN - LIBSQL_STMTSTATUS_BASE]++;
   if( pOp->p5 & OPFLAG_NCHANGE ){
     p->nChange++;
     if( pOp->p5 & OPFLAG_LASTROWID ) db->lastRowid = x.nKey;
@@ -102597,6 +102617,7 @@ case OP_Delete: {
 
   /* Invoke the update-hook if required. */
   if( opflags & OPFLAG_NCHANGE ){
+    if (!pC->isEphemeral) p->aLibsqlCounter[LIBSQL_STMTSTATUS_ROWS_WRITTEN - LIBSQL_STMTSTATUS_BASE]++;
     p->nChange++;
     if( db->xUpdateCallback && ALWAYS(pTab!=0) && HasRowid(pTab) ){
       db->xUpdateCallback(db->pUpdateArg, SQLITE_DELETE, zDb, pTab->zName,
@@ -102884,6 +102905,7 @@ case OP_Last: {              /* jump0, ncycle */
   pC->deferredMoveto = 0;
   pC->cacheStatus = CACHE_STALE;
   if( rc ) goto abort_due_to_error;
+  p->aLibsqlCounter[LIBSQL_STMTSTATUS_ROWS_READ - LIBSQL_STMTSTATUS_BASE]++;
   if( pOp->p2>0 ){
     VdbeBranchTaken(res!=0,2);
     if( res ) goto jump_to_p2;
@@ -103003,6 +103025,7 @@ case OP_Rewind: {        /* jump0, ncycle */
   }
   if( rc ) goto abort_due_to_error;
   pC->nullRow = (u8)res;
+  p->aLibsqlCounter[LIBSQL_STMTSTATUS_ROWS_READ - LIBSQL_STMTSTATUS_BASE]++;
   if( pOp->p2>0 ){
     VdbeBranchTaken(res!=0,2);
     if( res ) goto jump_to_p2;
@@ -103134,6 +103157,7 @@ next_tail:
   if( rc==SQLITE_OK ){
     pC->nullRow = 0;
     p->aCounter[pOp->p5]++;
+    p->aLibsqlCounter[LIBSQL_STMTSTATUS_ROWS_READ - LIBSQL_STMTSTATUS_BASE]++;
 #ifdef SQLITE_TEST
     sqlite3_search_count++;
 #endif
@@ -103185,6 +103209,7 @@ case OP_IdxInsert: {        /* in2 */
   pIn2 = &aMem[pOp->p2];
   assert( (pIn2->flags & MEM_Blob) || (pOp->p5 & OPFLAG_PREFORMAT) );
   if( pOp->p5 & OPFLAG_NCHANGE ) p->nChange++;
+  if (!pC->isEphemeral) p->aLibsqlCounter[LIBSQL_STMTSTATUS_ROWS_WRITTEN - LIBSQL_STMTSTATUS_BASE]++;
   assert( pC->eCurType==CURTYPE_BTREE );
   assert( pC->isTable==0 );
   rc = ExpandBlob(pIn2);
@@ -103591,6 +103616,7 @@ case OP_Clear: {
   rc = sqlite3BtreeClearTable(db->aDb[pOp->p2].pBt, (u32)pOp->p1, &nChange);
   if( pOp->p3 ){
     p->nChange += nChange;
+    p->aLibsqlCounter[LIBSQL_STMTSTATUS_ROWS_WRITTEN - LIBSQL_STMTSTATUS_BASE] += nChange;
     if( pOp->p3>0 ){
       assert( memIsValid(&aMem[pOp->p3]) );
       memAboutToChange(p, &aMem[pOp->p3]);
@@ -105238,6 +105264,7 @@ case OP_VNext: {   /* jump, ncycle */
   rc = pModule->xNext(pCur->uc.pVCur);
   sqlite3VtabImportErrmsg(p, pVtab);
   if( rc ) goto abort_due_to_error;
+  p->aLibsqlCounter[LIBSQL_STMTSTATUS_ROWS_READ - LIBSQL_STMTSTATUS_BASE]++;
   res = pModule->xEof(pCur->uc.pVCur);
   VdbeBranchTaken(!res,2);
   if( !res ){
@@ -105360,6 +105387,7 @@ case OP_VUpdate: {
         p->errorAction = ((pOp->p5==OE_Replace) ? OE_Abort : pOp->p5);
       }
     }else{
+      p->aLibsqlCounter[LIBSQL_STMTSTATUS_ROWS_WRITTEN - LIBSQL_STMTSTATUS_BASE]++;
       p->nChange++;
     }
     if( rc ) goto abort_due_to_error;
