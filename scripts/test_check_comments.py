@@ -413,6 +413,74 @@ def main():
         "a shell comment line fails", code, output, "scripts/tool.sh:", "a comment line"
     )
 
+    code, output = case(create("docs/demo.tape", "Output demo.gif\nSet FontSize 18\n"))
+    expect_clean("a tape file without a comment line passes", code, output)
+
+    code, output = case(create("docs/demo.tape", "Output demo.gif\n# note\n"))
+    expect_rejected(
+        "a tape comment line fails", code, output, "docs/demo.tape:2:", "a comment line"
+    )
+
+    code, output = case(create("examples/d1-toml/wrangler.toml", 'name = "sample"\n'))
+    expect_clean("a TOML file without # passes", code, output)
+
+    code, output = case(create("examples/d1-toml/wrangler.toml", '# note\nname = "sample"\n'))
+    expect_rejected(
+        "a TOML # fails",
+        code,
+        output,
+        "examples/d1-toml/wrangler.toml:1:",
+        "a TOML # character at column 1",
+    )
+
+    code, output = case(create("examples/d1-toml/wrangler.toml", 'name = "a # b"\n'))
+    expect_rejected(
+        "a TOML # inside a value fails",
+        code,
+        output,
+        "examples/d1-toml/wrangler.toml:",
+        "a TOML # character at column 11",
+    )
+
+    code, output = case(create("examples/d1-jsonc/wrangler.jsonc", '{\n  "name": "sample"\n}\n'))
+    expect_clean("a JSONC file without a marker passes", code, output)
+
+    code, output = case(
+        create("examples/d1-jsonc/wrangler.jsonc", '{\n  // note\n  "name": "sample"\n}\n')
+    )
+    expect_rejected(
+        "a JSONC // fails",
+        code,
+        output,
+        "examples/d1-jsonc/wrangler.jsonc:2:",
+        "a JSONC // at column 3",
+    )
+
+    code, output = case(
+        create("examples/d1-jsonc/wrangler.jsonc", '{\n  /* note */\n  "name": "sample"\n}\n')
+    )
+    expect_rejected(
+        "a JSONC /* fails",
+        code,
+        output,
+        "examples/d1-jsonc/wrangler.jsonc:2:",
+        "a JSONC /* at column 3",
+    )
+
+    code, output = case(
+        create("examples/d1-jsonc/wrangler.jsonc", '{\n  "url": "https://example.com"\n}\n')
+    )
+    expect_rejected(
+        "a JSONC // inside a value fails",
+        code,
+        output,
+        "examples/d1-jsonc/wrangler.jsonc:",
+        "a JSONC // at column 17",
+    )
+
+    code, output = case(create("docs/demo.gif", "GIF89a\n"))
+    expect_clean("an excluded GIF passes", code, output)
+
     code, output = case(append("README.md", "# note\n"))
     expect_clean("an excluded document passes", code, output)
 
