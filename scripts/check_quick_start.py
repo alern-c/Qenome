@@ -16,7 +16,7 @@ FENCE = re.compile(r"^```(.*)$")
 HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*$")
 EXPECT = re.compile(r"^(.+?)\s+#\s*expect:\s*(.+)$")
 RESULT_ROW = re.compile(r"^\s+result rows\s+(\S+)")
-TIME_VERDICT = re.compile(r"^\s+time verdict\s+([A-Za-z][A-Za-z-]*)")
+VERDICT = re.compile(r"^\s+verdict\s+([A-Za-z][A-Za-z-]*)")
 REQUIRED_RESULTS = (
     {"result": "match", "verdict": "improved", "exit": 0},
     {"result": "match", "verdict": "no-effect", "exit": 0},
@@ -184,7 +184,7 @@ def summarised(summary):
         found = RESULT_ROW.match(line)
         if found is not None and result is None:
             result = found.group(1).lower()
-        found = TIME_VERDICT.match(line)
+        found = VERDICT.match(line)
         if found is not None and verdict is None:
             verdict = found.group(1).lower()
     return result, verdict
@@ -228,7 +228,7 @@ def execute(root, step, violations):
     if result is None:
         problems.append('the output has no "result rows" line in the Summary')
     if verdict is None:
-        problems.append('the output has no "time verdict" line in the Summary')
+        problems.append('the output has no "verdict" line in the Summary')
     for key, observed in (("result", result), ("verdict", verdict)):
         if observed is not None and step.expected[key] != observed:
             problems.append(

@@ -3,9 +3,9 @@
 [English](README.md) | 日本語
 
 Qenome は、ローカル SQLite の SELECT 1本に対して、候補の `CREATE INDEX` を1本試したときの変化を比較する CLI です。
-データベースを読み取り専用で開いて隔離コピーを作り、索引の前後で結果・実行計画・時間・容量の増分を示します。元のデータベースは変更しません。
+データベースを読み取り専用で開いて隔離コピーを作り、索引の前後で結果・読んだ行数・書いた行数・実行計画・時間・容量の増分を示します。元のデータベースは変更しません。
 
-![D1 のサンプルプロジェクトで qenome --d1 DEMO_DB select.sql index.sql --runs 40 を実行するターミナル。結果の行が一致し、時間の判定が improved で、D1 ブロックに SQLite の版と注意が出ている](docs/demo.gif)
+![D1 のサンプルプロジェクトで qenome --d1 DEMO_DB select.sql index.sql --runs 40 を実行するターミナル。結果の行が一致し、判定が improved で、D1 ブロックに SQLite の版と注意が出ている](docs/demo.gif)
 
 この録画は [`examples/d1-toml`](#サンプルプロジェクトを試す) のもの。サンプルは手元でコマンド2本で再現できます。
 
@@ -91,19 +91,19 @@ zig build
 
 3つの例は `zig-out/bin/qenome` を実行します。各コマンドの末尾には、その例が返すべき結果（Summary の `result` と `verdict`、終了コード）を書いてあります。`python3 scripts/check_all.py` と CI の quality ワークフローは、これらの行を書いてあるとおりに実行するので、README とプログラムのずれは見つかります。`--runs 40` は、負荷のあるマシンでも中央値を安定させるための指定です（既定は `10`）。
 
-全走査をなくす索引: 候補の索引で `SCAN events` が `SEARCH events USING INDEX ix_events_customer_id (customer_id=?)` に変わり、両方のコピーが同じ100行を返します。
+全走査をなくす索引: 候補の索引で `SCAN events` が `SEARCH events USING INDEX ix_events_customer_id (customer_id=?)` に変わり、読んだ行数が 200,000 から 101 に減り、両方のコピーが同じ100行を返します。
 
 ```sh
 ./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/improved.sql testdata/cases/improved.index.sql --bind 1:int:1234 --runs 40  # expect: result=match verdict=improved exit=0
 ```
 
-効果のない索引: SELECT が列を `lower()` で包むため、SQLite は `status` の索引を使えません。計画・件数・中央値は変わりません。
+効果のない索引: SELECT が列を `lower()` で包むため、SQLite は `status` の索引を使えません。計画・読んだ行数・書いた行数は変わりません。
 
 ```sh
 ./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/no-effect.sql testdata/cases/no-effect.index.sql --bind 1:text:ok --runs 40  # expect: result=match verdict=no-effect exit=0
 ```
 
-比較できない SELECT: `ORDER BY random()` は実行するたびに別の行を選ぶため、Qenome は行が一致したと報告せず、比較できないと報告します。この例では SELECT を計測しません。ここでの終了コード 4 は期待どおりの結果で、エラーではありません。
+比較できない SELECT: `ORDER BY random()` は実行するたびに別の行を選ぶため、Qenome は行が一致したと報告せず、比較できないと報告します。この例では SELECT を計測も判定もしません。ここでの終了コード 4 は期待どおりの結果で、エラーではありません。
 
 ```sh
 ./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/incomparable.sql testdata/cases/incomparable.index.sql  # expect: result=incomparable verdict=not-judged exit=4
@@ -131,7 +131,7 @@ qenome --d1 DB select.sql index.sql
 - `--select <FILE>`: 比較する SELECT を1本書いたファイル（必須、1回だけ）
 - `--index-sql <FILE>`: 候補の CREATE INDEX を1本書いたファイル（必須、1回だけ）
 - `--bind <N>:<TYPE>[:<VALUE>]`: SELECT のパラメータ N に渡す型付きの値。繰り返し指定できる。N は SQLite のパラメータ番号で、名前付きパラメータは最初に現れたときの番号を共有し、`?NNN` は NNN を使う。TYPE は int / real / text / null（null は値を取らない）。1 からパラメータ数までの各番号をちょうど1回ずつ指定する必要があり、パラメータの無い SELECT に `--bind` は付けられない。値は引数の残り全体なので、text には `:` を含められる
-- `--runs <N>`: 結果が一致したあとの計測ラウンド数。各ラウンドは各コピーで SELECT を1回計測する。既定は 10、0 で計測しない、最大 1000。1秒を超える計測は進捗を stderr に出す
+- `--runs <N>`: 結果が一致したあとの計測ラウンド数。各ラウンドは各コピーで SELECT を1回計測する。既定は 10、0 で計測しないが読んだ行数と判定は残る、最大 1000。1秒を超える計測は進捗を stderr に出す
 - `--timeout-ms <MS>`: 索引作成と SELECT 1回あたりの制限時間。既定は 30000、0 で無効。1回の実行は全体で、データベースのコピーに加えて `(3 + 2 × runs)` 回分の制限時間までかかることがある
 - `--format <human|kv|json>`: 出力形式（既定 human）。「出力形式」を参照
 - `--show-binds`: バインド値を出す。付けない場合、human はバインドを出さず、kv と json は番号・型・テキストの長さだけを出し、値をログに残さない
@@ -143,11 +143,13 @@ qenome --d1 DB select.sql index.sql
 
 Qenome はデータベースを読み取り専用で開き、SQLite の backup API を使って、Linux と macOS では `$TMPDIR`（既定は `/tmp`）、Windows では `%TMP%`、`%TEMP%`、`%USERPROFILE%` のうち設定されている最初の場所の下にある非公開ディレクトリへコピーします。このコピーが baseline で、2つ目のコピーが variant になり、候補の索引は variant にだけ作ります。SELECT は両方のコピーで実行し、結果の行を多重集合として比較します（同じ行が同じ回数だけ現れること）。行の順序は参考情報として示し、一致判定には含めません。
 
-結果が一致し、`--runs` が 0 でないとき、SELECT をもう一度両方のコピーで計測します。各コピーには、行の比較に使った計測しないウォームアップが1回あります。計測ラウンドは baseline→variant と variant→baseline を交互に繰り返します（ABBA）。1ラウンドは reset 文から `SQLITE_DONE` までの `sqlite3_step` を、割り込みの確認を含めて計測します。列の読み取り、prepare、bind、計画の取得は計測しません。各コピーは書き込み直後の接続とページキャッシュを再利用するため、キャッシュはウォームです。非公開ディレクトリは、結果にかかわらず終了前に削除します。
+読んだ行数と書いた行数は、この最初の1回の実行から取るので追加のコストはなく、`--runs 0` でも残ります。結果が一致し、`--runs` が 0 でないとき、SELECT をもう一度両方のコピーで参考値として計測します。各コピーには、行の比較に使った計測しないウォームアップが1回あります。計測ラウンドは baseline→variant と variant→baseline を交互に繰り返します（ABBA）。1ラウンドは reset 文から `SQLITE_DONE` までの `sqlite3_step` を、割り込みの確認を含めて計測します。列の読み取り、prepare、bind、計画の取得は計測しません。各コピーは書き込み直後の接続とページキャッシュを再利用するため、キャッシュはウォームです。非公開ディレクトリは、結果にかかわらず終了前に削除します。
 
 Linux と macOS では、このディレクトリを所有者だけがアクセスできる権限（`0700`）で作ります。Windows にはこれに相当する指定がないため、一時ディレクトリのアクセス制御を引き継ぎ、保護はその場所がそのユーザー専用であることに依存します。Qenome は Windows では Ctrl+C と Ctrl+Break、Linux と macOS では SIGINT・SIGTERM・SIGHUP を受けたときに後片付けしますが、コンソールを閉じる・プロセスを強制終了するといった強制的な終了では、コピーが残ることがあります。
 
-時間の判定は終了コードを変えません。
+判定は読んだ行数から決まり、終了コードを変えません。
+
+読んだ行数と書いた行数は、ローカル D1 と同じ数え方です。Qenome は同梱 SQLite を `workerd` の行数カウントのパッチ付きでビルドしており、ローカル D1 データベースが報告するのと同じカウンタを使います。本番 D1 の課金額や本番データベースの行数とは一致しません。どちらのカウンタも 32 ビットで、それぞれの回数が 1回の実行で 4,294,967,295 を超えると一周して小さい値に戻るため、その場合は巻き戻った値を報告し、判定もその値で比較します。パッチの出どころは `NOTICE`、当て直す手順は `vendor/sqlite3/PROVENANCE.txt` に記録しています。
 
 ### D1 のローカルデータベース
 
@@ -188,7 +190,7 @@ npx wrangler@4.152.0 d1 execute DEMO_DB --local --file schema.sql
 qenome --d1 DEMO_DB select.sql index.sql --runs 40
 ```
 
-1行目が `.wrangler/` にローカルのデータベースを作り、20万行を投入します。2行目が `select.sql` と `index.sql` の候補索引を比較し、`result rows` が `match`、`time verdict` が `improved`、実行計画が `SCAN events` から `SEARCH events USING INDEX ix_events_customer_id (customer_id=?)` に変わり、D1 ブロックに SQLite の版と注意が出ます。終了コードは 0 です。
+1行目が `.wrangler/` にローカルのデータベースを作り、20万行を投入します。2行目が `select.sql` と `index.sql` の候補索引を比較し、`result rows` が `match`、`verdict` が `improved`、実行計画が `SCAN events` から `SEARCH events USING INDEX ix_events_customer_id (customer_id=?)` に変わり、D1 ブロックに SQLite の版と注意が出ます。終了コードは 0 です。
 
 `schema.sql` は `events` を作り直すので、いつでも再実行できます。デプロイはしません。`qenome` は PATH 上のものを使う想定で、[ソースからビルド](#ソースからビルド) の直後は `./zig-out/bin/qenome` です。`4.152.0` はサンプルを確認した wrangler の版です。
 
@@ -198,8 +200,8 @@ qenome --d1 DEMO_DB select.sql index.sql --runs 40
 
 human は判断に必要なものを出します。
 
-- Summary: 結果の行が一致したか、時間の判定とその理由、計画が変わったか、時間の中央値とラウンド数、容量の増分、デバッグビルドのときはその注意
-- baseline と variant の左右比較表: 行数、フルスキャン行数、VMステップ数、0 でないときはソート回数と autoindex 行数、計測したときは p25 / p75 の時間、データベースファイルのバイト数
+- Summary: 結果の行が一致したか、コピーごとの読んだ行数と書いた行数、判定とその理由、計画が変わったか、時間の中央値とラウンド数、容量の増分、デバッグビルドのときはその注意
+- baseline と variant の左右比較表: 読んだ行数、書いた行数、結果の行数、フルスキャン行数、VMステップ数、0 でないときはソート回数と autoindex 行数、計測したときは p25 / p75 の時間、データベースファイルのバイト数
 - 両方のコピーの実行計画。`kind` / `covering` / `automatic` は SQLite の文言から読んだヒント
 - `--d1` のときは D1 ブロック: バインディング、設定ファイル、データベース id、ローカルファイル、SQLite の版の違い、本番 D1 についての注意
 
@@ -219,10 +221,12 @@ json は、比較が終わったときに stdout へ JSON オブジェクトを1
 
 | `verdict` | 意味 |
 | --- | --- |
-| `improved` | 仕事量が減り、中央値が 20% を超えて下がり、全ラウンドで速い |
-| `no-effect` | 計画と件数が同じで、中央値の差が 20% 以内 |
-| `needs-check` | 上記以外。`verdict_reasons` に理由が入る |
-| `not-judged` | 結果が不一致・比較不能、または `--runs 0`。`verdict_reasons` に理由が入る |
+| `improved` | 結果が一致し、variant の読んだ行数が減った |
+| `no-effect` | 結果が一致し、variant の読んだ行数が変わらない |
+| `needs-check` | 結果は一致するが、variant の読んだ行数か書いた行数が増えた。`verdict_reasons` に理由が入る |
+| `not-judged` | 結果が不一致・比較不能。`verdict_reasons` に理由が入る |
+
+判定は読んだ行数と書いた行数（ローカル D1 と同じ数え方）で決まります。時間は参考値なので、`--runs 0` でも判定は出ます。
 
 `verdict` だけを読む例:
 
@@ -242,15 +246,15 @@ fi
 
 | キー | 内容 |
 | --- | --- |
-| `schema_version` | 形式の版（現在 1） |
+| `schema_version` | 形式の版（現在 2。1 は時間判定の版） |
 | `exit_code` | 比較結果に対応する終了コード（0 / 3 / 4）。一致したあとの後片付けに失敗した場合は、JSON を書いた後にプロセスが 5 で終わる |
-| `verdict` / `verdict_reasons` | 時間判定とその理由（`improved` / `no-effect` / `needs-check` / `not-judged`） |
+| `verdict` / `verdict_reasons` | 読んだ行数による判定とその理由（`improved` / `no-effect` / `needs-check` / `not-judged`） |
 | `result` | 結果行の比較（`match` / `mismatch` / `incomparable`） |
 | `row_order` | 行順（`same` / `differs` / `not-applicable`）。一致判定には含めず、`match` のときだけ `same` / `differs` になる参考情報 |
 | `result_reasons` | 比較できない理由。各要素は `text` と `hint`（無いときは `null`） |
 | `row_differences` | `baseline_only` / `variant_only` の件数。`baseline_only_examples` / `variant_only_examples` は配列のままで、既定は空。`--show-rows` で最大 5 件の例の行が入る |
 | `plan_changed` | 実行計画が baseline と variant で変わったか |
-| `baseline` / `variant` | それぞれの `rows`、`plan`（`id` / `parent` / `kind` / `covering` / `automatic` / `detail`）、`counters`（`fullscan_steps` / `vm_steps` / `sort_ops` / `autoindex_rows`） |
+| `baseline` / `variant` | それぞれの `rows`、`plan`（`id` / `parent` / `kind` / `covering` / `automatic` / `detail`）、`counters`（`rows_read` / `rows_written` / `fullscan_steps` / `vm_steps` / `sort_ops` / `autoindex_rows`） |
 | `timing` | `rounds`、`variant_faster_rounds`、`ratio`、`baseline` / `variant` の `median_ns` / `p25_ns` / `p75_ns` / `min_ns` / `max_ns`。計時しなければ `null`、baseline の median が 0 なら `ratio` は `null` |
 | `size_bytes` | `baseline` / `variant` / `increase`（データベース全体のバイト数。索引単体ではない） |
 | `inputs` | `database` / `select` / `index_sql` のパス |
@@ -283,7 +287,7 @@ fi
 
 - 元のデータベースを変更しない（読み取り専用で開く）
 - 比較できない結果を「一致」「成功」として報告しない
-- 時間だけで改善と判定しない（計画と件数も合わせて見る）
+- 改善かどうかは読んだ行数で判定し、時間では判定しない（読んだ行数が減らない SELECT は改善ではない）
 - 容量はデータベース全体の増分であり、索引単体のサイズではない
 - 複数文・書込・危険な DDL は拒否する
 - 正常・失敗・中断のどの経路でも、接続と一時ファイルを後片付けする
@@ -304,3 +308,5 @@ CI の quality ワークフローも同じスクリプトを呼びます。Zig �
 ## ライセンス
 
 Qenome は Apache License 2.0 で公開しています。全文は [LICENSE](LICENSE) を参照してください。
+
+同梱の SQLite amalgamation はパブリックドメインのままで、`vendor/sqlite3/patches` の行数カウントのパッチは独自の帰属表示を保ちます。どちらも [NOTICE](NOTICE) に記録しています。

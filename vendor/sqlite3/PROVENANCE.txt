@@ -20,10 +20,14 @@ Official published SHA3-256 for sqlite3.c of version 3.53.4 (release log):
   https://sqlite.org/releaselog/3_53_4.html
   SHA3-256 for sqlite3.c: 67f423e9ebbbdc473cbc4772c872ee6b89f31fde4ed0279a5c25d5f65c043a16
 
-Measured SHA3-256 (python3 hashlib.sha3_256 and `openssl dgst -sha3-256` agree):
+Measured SHA3-256 of the published files, before the row-count patch
+(python3 hashlib.sha3_256 and `openssl dgst -sha3-256` agree):
   sqlite3.c : 67f423e9ebbbdc473cbc4772c872ee6b89f31fde4ed0279a5c25d5f65c043a16  (matches the official value above)
   sqlite3.h : 89d0de498b1012938bb78dc18b68fea52e26f7f7b6db6347d126a2e58b86a05c
   zip       : 628a44cfe82c66aed1ccbbe85a562d2e33ebe64b3288981ed76285612227934e
+The vendored sqlite3.c / sqlite3.h are these files with the patch below applied,
+so they no longer match these values; their SHA-256 is recorded under "Patched
+file hashes" below.
 
 Where the official value comes from:
 - sqlite.org publishes SHA3-256 hashes for the *current* release on
@@ -42,14 +46,111 @@ How to re-verify
       sqlite-amalgamation-3530400/sqlite3.c sqlite-amalgamation-3530400/sqlite3.h -d /tmp/sqlite-check
   openssl dgst -sha3-256 /tmp/sqlite-check/sqlite3.c   # compare with the official value above
   openssl dgst -sha3-256 /tmp/sqlite-check/sqlite3.h
+  python3 scripts/apply_sqlite_row_counts_patch.py \
+      --source /tmp/sqlite-check --output /tmp/sqlite-patched
+  # compare /tmp/sqlite-patched/* with vendor/sqlite3 (SHA-256 under "Patched
+  # file hashes" below), or simply diff them.
 
 License / origin
 ----------------
 Public domain ("SQLite Blessing"): https://sqlite.org/copyright.html
 The amalgamation is the official build product of the SQLite source at the
-check-in above. Do not edit these files by hand. To update the pinned release,
-repeat the steps above and record the new release, hashes, and source id here
-plus the constants in src/sqlite.zig.
+check-in above. Do not edit these files by hand. The only change Qenome makes to
+them is the row-count patch below, applied by
+scripts/apply_sqlite_row_counts_patch.py. To update the pinned release, repeat
+the steps above, re-apply the patch, and record the new release, hashes, and
+source id here plus the constants in src/sqlite.zig.
+
+Row-count patch
+---------------
+Qenome reports how many rows each copy read and wrote. Those counters are not
+part of SQLite 3.53.4, so the amalgamation is built with Cloudflare's patch from
+workerd, which is the same counter a local D1 database reports.
+
+Patch file     : patches/0001-row-counts-plain.patch (stored unmodified)
+Upstream       : https://github.com/cloudflare/workerd
+Upstream path  : patches/sqlite/0001-row-counts-plain.patch
+Upstream commit: ddfde6c8f3d611e31cdca8c17ca8e31eafda077b (2026-08-21)
+Fetched (UTC)  : 2026-10-26T15:18:00Z
+Fetched from   : https://raw.githubusercontent.com/cloudflare/workerd/ddfde6c8f3d611e31cdca8c17ca8e31eafda077b/patches/sqlite/0001-row-counts-plain.patch
+SHA-256        : ffafcb374b0f433964fec75d79cb5e690aa3fbe8c0df3d0a9413001deda3951c
+License        : Apache-2.0 (workerd); the counters are the libSQL extension,
+                 MIT (Copyright 2023 the sqld authors). See NOTICE at the
+                 repository root.
+
+What it changes
+---------------
+It adds two counters to sqlite3_stmt_status():
+  LIBSQL_STMTSTATUS_BASE          = 1024
+  LIBSQL_STMTSTATUS_ROWS_READ     = 1025  (OP_Count, OP_Seek*, OP_NotExists,
+                                           OP_SeekRowid, OP_Last, OP_Rewind,
+                                           OP_Next, OP_VNext)
+  LIBSQL_STMTSTATUS_ROWS_WRITTEN  = 1026  (OP_Insert, OP_IdxInsert, OP_Delete,
+                                           OP_Clear, OP_VUpdate, skipping
+                                           ephemeral cursors)
+The storage is the new `u32 aLibsqlCounter[3]` field in Vdbe.
+
+Applied hunks and the one amalgamation difference
+-------------------------------------------------
+The patch is written against the plain source, so its six file sections carry
+`sqlite-src-pristine/src/<file>` paths. Four of them concern the vendored files;
+the fifth, `src/shell.c.in`, is dropped because the shell is not vendored:
+
+  src/vdbe.c        -> sqlite3.c  12 hunks added a counter step
+  src/vdbeInt.h     -> sqlite3.c   1 hunk adds the array field
+  src/vdbeapi.c     -> sqlite3.c   2 hunks (bounds check, read/write branch)
+  src/sqlite.h.in   -> sqlite3.c and sqlite3.h  (2 hunks add the constants)
+  src/shell.c.in    -> not vendored
+
+With zero fuzz, 14 of the 15 applied hunks match the amalgamation exactly. The
+remaining one, the SQLITE_ENABLE_API_ARMOR bounds check in sqlite3_stmt_status,
+has the plain source line
+
+  int sqlite3_stmt_status(sqlite3_stmt *pStmt, int op, int resetFlag){
+
+as its first context line, while the amalgamation generator
+(tool/mksqlite3c.tcl, `set line SQLITE_API`) writes
+
+  SQLITE_API int sqlite3_stmt_status(sqlite3_stmt *pStmt, int op, int resetFlag){
+
+so the context line differs by that decoration. The script accepts this single
+line as a declared substitute and still requires every other line of every hunk
+to match; it fails loudly on any other difference, on a line that matches twice,
+and on a patch or input whose hash differs from the ones recorded here. No line
+of the patch is skipped, and the changed lines are exactly the patch's.
+
+How to re-apply
+---------------
+  curl -O https://sqlite.org/2026/sqlite-amalgamation-3530400.zip
+  unzip -j sqlite-amalgamation-3530400.zip \
+      sqlite-amalgamation-3530400/sqlite3.c sqlite-amalgamation-3530400/sqlite3.h -d /tmp/sqlite-pristine
+  python3 scripts/apply_sqlite_row_counts_patch.py \
+      --source /tmp/sqlite-pristine --output vendor/sqlite3
+
+The script checks the SHA3-256 of both inputs against the published ones above,
+prints the SHA-256 of the two outputs, and needs only python3 (no patch command),
+so it runs on Linux, macOS, and Windows. CI does not run it; it is the recipe for
+updating the vendored SQLite.
+
+Patched file hashes (SHA-256, after the patch)
+---------------------------------------------
+  sqlite3.c : ce050329ef7d8337ca050787a4c154d07561206967e54e4c01cbc3804cab56ef
+  sqlite3.h : 1cef3e2dc82f1b5b603bcd6f8fe2434d421369b8c98ef9549a182294270eea6d
+
+Calling sqlite3_stmt_status
+---------------------------
+The counters live in an array of three u32 next to the statement's other
+counters, and the patch only bounds-checks the opcode when
+SQLITE_ENABLE_API_ARMOR is compiled in, which this build does not. Pass only
+LIBSQL_STMTSTATUS_ROWS_READ and LIBSQL_STMTSTATUS_ROWS_WRITTEN (the constants in
+src/sqlite.zig); any other value of 1024 or above reads past the array.
+
+The array holds u32 values and the patch does not widen them, so each counter
+counts modulo 4294967296 and wraps silently past that point. src/db.zig reports
+the value it reads, without wrap detection, so a statement that reads more than
+4294967295 rows in one execution reports a wrapped number; a cross join reaches
+that with rows in the millions and --timeout-ms 0. The older counters
+(vm_steps, fullscan_steps) wrap the same way and were never detected either.
 
 Compile flags (kept in sync with build.zig)
 -------------------------------------------

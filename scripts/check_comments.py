@@ -10,11 +10,13 @@ EXCLUDED_FILES = [
     "CHANGELOG.md",
     "CLAUDE.md",
     "LICENSE",
+    "NOTICE",
     "README.md",
     "README.ja.md",
     "docs/demo.gif",
     "testdata/README.md",
     "vendor/sqlite3/PROVENANCE.txt",
+    "vendor/sqlite3/patches/0001-row-counts-plain.patch",
     "vendor/sqlite3/sqlite3.c",
     "vendor/sqlite3/sqlite3.h",
 ]

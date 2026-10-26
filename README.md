@@ -2,9 +2,9 @@
 
 English | [日本語](README.ja.md)
 
-Qenome is a CLI that compares one read-only `SELECT` on a local SQLite database before and after one candidate `CREATE INDEX`. It opens the database read-only, copies it into an isolated snapshot, and reports what changed: the result rows, the query plan, the time, and the size increase. The original database is never modified.
+Qenome is a CLI that compares one read-only `SELECT` on a local SQLite database before and after one candidate `CREATE INDEX`. It opens the database read-only, copies it into an isolated snapshot, and reports what changed: the result rows, the rows each copy read and wrote, the query plan, the time, and the size increase. The original database is never modified.
 
-![The D1 sample project: qenome --d1 DEMO_DB select.sql index.sql --runs 40 reports matching rows, an improved time verdict, and the D1 block with the SQLite versions and the caution](docs/demo.gif)
+![The D1 sample project: qenome --d1 DEMO_DB select.sql index.sql --runs 40 reports matching rows, an improved verdict, and the D1 block with the SQLite versions and the caution](docs/demo.gif)
 
 The recording comes from [`examples/d1-toml`](#try-the-sample-project), and the sample runs on your machine with two commands.
 
@@ -90,19 +90,19 @@ zig build
 
 The three examples run `zig-out/bin/qenome`. Each command ends with the result it has to report: `result` and `verdict` from the Summary, and the exit status. `python3 scripts/check_all.py` and the quality workflow run these lines as written, so the README and the program stay in step. `--runs 40` keeps the medians steady on a busy machine; the default is `10`.
 
-An index that removes the full scan. The candidate index turns `SCAN events` into `SEARCH events USING INDEX ix_events_customer_id (customer_id=?)`, and both copies return the same 100 rows.
+An index that removes the full scan. The candidate index turns `SCAN events` into `SEARCH events USING INDEX ix_events_customer_id (customer_id=?)`, the rows read fall from 200,000 to 101, and both copies return the same 100 rows.
 
 ```sh
 ./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/improved.sql testdata/cases/improved.index.sql --bind 1:int:1234 --runs 40  # expect: result=match verdict=improved exit=0
 ```
 
-An index that cannot help. The SELECT wraps the column in `lower()`, so SQLite cannot use the index on `status`, and the plan, the counters, and the medians stay the same.
+An index that cannot help. The SELECT wraps the column in `lower()`, so SQLite cannot use the index on `status`, and the plan, the rows read, and the rows written stay the same.
 
 ```sh
 ./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/no-effect.sql testdata/cases/no-effect.index.sql --bind 1:text:ok --runs 40  # expect: result=match verdict=no-effect exit=0
 ```
 
-A SELECT whose rows cannot be compared. `ORDER BY random()` picks other rows on every run, so Qenome reports the rows as incomparable instead of claiming that they match, and it does not time the SELECT. The exit status 4 is the expected result here, not an error.
+A SELECT whose rows cannot be compared. `ORDER BY random()` picks other rows on every run, so Qenome reports the rows as incomparable instead of claiming that they match, and it does not judge the comparison. The exit status 4 is the expected result here, not an error.
 
 ```sh
 ./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/incomparable.sql testdata/cases/incomparable.index.sql  # expect: result=incomparable verdict=not-judged exit=4
@@ -130,7 +130,7 @@ The three paths fill the roles in this order: database, SELECT file, CREATE INDE
 - `--select <FILE>`: a file holding the one `SELECT` to compare (required, once)
 - `--index-sql <FILE>`: a file holding the one candidate `CREATE INDEX` (required, once)
 - `--bind <N>:<TYPE>[:<VALUE>]`: a typed value bound to parameter `N`; repeatable. `N` is SQLite's parameter number: named parameters share the number of their first appearance, and `?NNN` uses `NNN`. `TYPE` is `int`, `real`, `text`, or `null` (null takes no value). Every number in `1..parameter count` must be given exactly once, and a `SELECT` without parameters takes no `--bind`. The value is the rest of the argument, so text may contain `:`.
-- `--runs <N>`: timed rounds after the results match; each round times the `SELECT` once per copy. The default is `10`; `0` skips the timing; the maximum is `1000`. A timing that takes longer than a second reports its progress on stderr.
+- `--runs <N>`: timed rounds after the results match; each round times the `SELECT` once per copy. The default is `10`; `0` skips the timing but keeps the row counts and the verdict; the maximum is `1000`. A timing that takes longer than a second reports its progress on stderr.
 - `--timeout-ms <MS>`: time limit for building the index and for each `SELECT` run; the default is `30000`; `0` disables the limit. The whole run can therefore take up to the database copy plus `(3 + 2 × runs)` time limits.
 - `--format <human|kv|json>`: output format (default `human`). See [Output formats](#output-formats).
 - `--show-binds`: print the bind values. Without it, `human` leaves the binds out, and `kv` and `json` print only their numbers, types, and text lengths, so the values stay out of logs.
@@ -142,11 +142,13 @@ Options that take a value can also be written as `--db=app.db`.
 
 Qenome opens the database read-only and copies it, through SQLite's backup API, into a private directory under `$TMPDIR` (default `/tmp`) on Linux and macOS, or under the first of `%TMP%`, `%TEMP%`, and `%USERPROFILE%` that is set on Windows. The copy is the baseline; a second copy becomes the variant, and the candidate index is built only on the variant. The `SELECT` runs on both copies, and the result rows are compared as a multiset: each distinct row must appear the same number of times. Row order is reported as a reference and is not part of the match.
 
-When the rows match and `--runs` is not `0`, the `SELECT` is timed again on both copies. Each copy gets one warm-up run whose rows were compared and that is not timed. The timed rounds alternate baseline-variant and variant-baseline (ABBA). A round times `sqlite3_step` from the reset statement to `SQLITE_DONE`, including the interrupt checks; it does not read columns and does not time prepare, bind, or the plan read. The cache is warm, since each copy reuses its connection and page cache after its file was just written. The private directory is removed before exit, whatever the result.
+The rows read and the rows written come from that first run on each copy, so they cost no extra work and stay available with `--runs 0`. When the rows match and `--runs` is not `0`, the `SELECT` is timed again as a reference. Each copy gets one warm-up run whose rows were compared and that is not timed. The timed rounds alternate baseline-variant and variant-baseline (ABBA). A round times `sqlite3_step` from the reset statement to `SQLITE_DONE`, including the interrupt checks; it does not read columns and does not time prepare, bind, or the plan read. The cache is warm, since each copy reuses its connection and page cache after its file was just written. The private directory is removed before exit, whatever the result.
 
 On Linux and macOS the directory is created so that only its owner can access it (`0700`). Windows has no equivalent setting, so the directory inherits the access control of the temporary folder, and its protection depends on that folder being private to the user. Qenome removes the directory when it receives Ctrl+C or Ctrl+Break on Windows, and SIGINT, SIGTERM, or SIGHUP on Linux and macOS. A forced termination, such as closing the console window or killing the process, can leave the copies behind.
 
-The time verdict never changes the exit status.
+The verdict comes from the rows read, and it never changes the exit status.
+
+Rows read and rows written are counted the way a local D1 counts them: Qenome builds the bundled SQLite with Cloudflare's row-count patch from `workerd`, the counters a local D1 database reports. They are not the rows that production D1 bills, and they say nothing about a deployed database. Both counters are 32-bit: each wraps past 4,294,967,295 of its own count, so a SELECT that goes past that in one run reports a wrapped number, and the verdict compares the numbers as they were read. `NOTICE` records where the patch comes from, and `vendor/sqlite3/PROVENANCE.txt` records how to apply it again.
 
 ### D1 local databases
 
@@ -187,7 +189,7 @@ npx wrangler@4.152.0 d1 execute DEMO_DB --local --file schema.sql
 qenome --d1 DEMO_DB select.sql index.sql --runs 40
 ```
 
-The first command writes the local database into `.wrangler/` and loads 200,000 rows. The second compares `select.sql` with the candidate index in `index.sql`: `result rows` is `match`, `time verdict` is `improved`, the plan changes from `SCAN events` to `SEARCH events USING INDEX ix_events_customer_id (customer_id=?)`, and the D1 block reports the SQLite versions and the caution. The exit status is 0.
+The first command writes the local database into `.wrangler/` and loads 200,000 rows. The second compares `select.sql` with the candidate index in `index.sql`: `result rows` is `match`, `verdict` is `improved`, the plan changes from `SCAN events` to `SEARCH events USING INDEX ix_events_customer_id (customer_id=?)`, and the D1 block reports the SQLite versions and the caution. The exit status is 0.
 
 `schema.sql` recreates `events`, so it can be run again at any time. Nothing is deployed. The commands use `qenome` from `PATH`; right after [From source](#from-source) it is `./zig-out/bin/qenome`. `4.152.0` is the wrangler version the sample was checked with.
 
@@ -197,8 +199,8 @@ The first command writes the local database into `.wrangler/` and loads 200,000 
 
 `--format human` prints what a decision needs:
 
-- a Summary: whether the result rows match, the time verdict with its reasons, whether the plan changed, the median times and rounds, the size increase, and a note when the build is a debug build;
-- a side-by-side table of baseline and variant: rows, full-scan steps, VM steps, sort operations and autoindex rows when they are not zero, the p25 and p75 times when timed, and the database file bytes;
+- a Summary: whether the result rows match, how many rows each copy read and wrote, the verdict with its reasons, whether the plan changed, the median times and rounds, the size increase, and a note when the build is a debug build;
+- a side-by-side table of baseline and variant: rows read, rows written, result rows, full-scan steps, VM steps, sort operations and autoindex rows when they are not zero, the p25 and p75 times when timed, and the database file bytes;
 - the query plan for both copies, with `kind`, `covering`, and `automatic` as hints read from SQLite's wording;
 - with `--d1`, a D1 block: the binding, the config, the database id, the local file, the SQLite version difference, and the caution about production D1.
 
@@ -218,10 +220,12 @@ The verdict is in the top-level `verdict` field:
 
 | `verdict` | Meaning |
 | --- | --- |
-| `improved` | Less work, a median more than 20% lower, and faster in every round |
-| `no-effect` | The same plan and counters, with medians within 20% |
-| `needs-check` | Anything else; `verdict_reasons` holds the reasons |
-| `not-judged` | The rows differ or cannot be compared, or `--runs` is 0; `verdict_reasons` holds the reasons |
+| `improved` | The rows match, and the variant reads fewer rows |
+| `no-effect` | The rows match, and the variant reads the same number of rows |
+| `needs-check` | The rows match, but the variant reads or writes more rows; `verdict_reasons` holds the reasons |
+| `not-judged` | The rows differ or cannot be compared; `verdict_reasons` holds the reasons |
+
+The verdict uses the rows read and the rows written, counted the way a local D1 counts them. The times are a reference only, so `--runs 0` keeps the verdict.
 
 Print only the verdict:
 
@@ -241,15 +245,15 @@ Main keys:
 
 | Key | Contents |
 | --- | --- |
-| `schema_version` | Version of the output format (currently `1`) |
+| `schema_version` | Version of the output format (currently `2`; `1` was the time verdict) |
 | `exit_code` | Exit status for the comparison (`0`, `3`, or `4`). If cleanup fails after a match, the JSON is written first and the process exits with `5` instead of `0` |
-| `verdict` / `verdict_reasons` | Time verdict and its reasons (`improved` / `no-effect` / `needs-check` / `not-judged`) |
+| `verdict` / `verdict_reasons` | Verdict from the rows read and its reasons (`improved` / `no-effect` / `needs-check` / `not-judged`) |
 | `result` | Result row comparison (`match` / `mismatch` / `incomparable`) |
 | `row_order` | Row order (`same` / `differs` / `not-applicable`). Reference only and not part of the match; `same` or `differs` only when `result` is `match` |
 | `result_reasons` | Why the rows cannot be compared. Each element has `text` and `hint` (`null` when there is none) |
 | `row_differences` | `baseline_only` and `variant_only` counts. `baseline_only_examples` and `variant_only_examples` are arrays; they stay empty by default, and `--show-rows` fills them with up to 5 example rows |
 | `plan_changed` | Whether the query plan differs between baseline and variant |
-| `baseline` / `variant` | `rows`; `plan` (`id`, `parent`, `kind`, `covering`, `automatic`, `detail`); `counters` (`fullscan_steps`, `vm_steps`, `sort_ops`, `autoindex_rows`) |
+| `baseline` / `variant` | `rows`; `plan` (`id`, `parent`, `kind`, `covering`, `automatic`, `detail`); `counters` (`rows_read`, `rows_written`, `fullscan_steps`, `vm_steps`, `sort_ops`, `autoindex_rows`) |
 | `timing` | `rounds`, `variant_faster_rounds`, `ratio`, and `baseline` / `variant` with `median_ns`, `p25_ns`, `p75_ns`, `min_ns`, `max_ns`. `null` when not timed; `ratio` is `null` when the baseline median is `0` |
 | `size_bytes` | `baseline`, `variant`, and `increase` (the whole database file, not the index alone) |
 | `inputs` | `database`, `select`, and `index_sql` paths |
@@ -282,7 +286,7 @@ Main keys:
 
 - Do not change the original database (open it read-only).
 - Never report a result that cannot be compared as a match or a success.
-- Never judge an improvement by time alone; check the plan and the counters as well.
+- Judge from the rows read, not from the time: a SELECT that reads no fewer rows is not an improvement.
 - The size is the increase of the whole database file, not the size of the index alone.
 - Reject multiple statements, writes, and dangerous DDL.
 - Clean up connections and temporary files on success, failure, and interruption.
@@ -303,3 +307,5 @@ The codebase carries no comments: explanations live in the README, and the check
 ## License
 
 Qenome is licensed under the Apache License 2.0. See [LICENSE](LICENSE) for the full text.
+
+The bundled SQLite amalgamation stays in the public domain, and the row-count patch in `vendor/sqlite3/patches` keeps its own notices. See [NOTICE](NOTICE) for both.

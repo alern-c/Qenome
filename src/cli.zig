@@ -36,8 +36,8 @@ const sqliteVersion = cli_query.sqliteVersion;
 const sqliteSourceId = cli_query.sqliteSourceId;
 const decide = cli_comparison.decide;
 const timeRuns = cli_timing.timeRuns;
-const judgeTime = cli_timing.judgeTime;
-const TimeReport = cli_report.TimeReport;
+const judgeRows = cli_timing.judgeRows;
+const Report = cli_report.Report;
 const Header = cli_report.Header;
 const writeReport = cli_report.writeReport;
 const installSignalHandlers = cli_control.installSignalHandlers;
@@ -241,17 +241,17 @@ fn runChecked(
         .limit_or_offset = db.mentionsLimitOrOffset(inputs.select_sql),
     });
 
-    var report: TimeReport = .{ .judgement = .{ .verdict = .not_judged } };
+    var report: Report = .{ .judgement = .{ .verdict = .not_judged } };
     if (outcome.verdict == .mismatch) {
-        report.judgement.add("the result rows do not match, so the SELECT is not timed");
+        report.judgement.add("the result rows do not match, so the row counts are not judged");
     } else if (outcome.verdict == .incomparable) {
-        report.judgement.add("the result rows cannot be compared, so the SELECT is not timed");
-    } else if (inputs.runs == 0) {
-        report.judgement.add("--runs 0 skips the timing");
+        report.judgement.add("the result rows cannot be compared, so the row counts are not judged");
     } else {
-        const timing = timeRuns(io, arena, &baseline, &variant, .{ .runs = inputs.runs, .timeout_ms = inputs.timeout_ms, .progress_interval_ns = inputs.progress_interval_ns }, &control, stderr, &failure) orelse return failure;
-        report.timing = timing.summary();
-        report.judgement = judgeTime(before, after, report.timing.?);
+        report.judgement = judgeRows(before, after);
+        if (inputs.runs != 0) {
+            const timing = timeRuns(io, arena, &baseline, &variant, .{ .runs = inputs.runs, .timeout_ms = inputs.timeout_ms, .progress_interval_ns = inputs.progress_interval_ns }, &control, stderr, &failure) orelse return failure;
+            report.timing = timing.summary();
+        }
     }
     report.sizes = .{
         .baseline = fileSize(io, inputs.baseline_path, .baseline, stderr) orelse return .rejected,

@@ -406,9 +406,10 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\                       run, 0 disables it (default 30000); a run can
         \\                       wait up to the copy plus (3 + 2 x runs) limits
         \\  --runs <N>           timed rounds after a match, each timing the SELECT
-        \\                       once per copy; 0 skips the timing (default 10,
-        \\                       at most 1000); a timing that takes longer
-        \\                       than a second reports its progress on stderr
+        \\                       once per copy; 0 skips the timing but keeps the
+        \\                       row counts and the verdict (default 10, at most
+        \\                       1000); a timing that takes longer than a second
+        \\                       reports its progress on stderr
         \\  --format <FORMAT>    human (default), kv or json
         \\  --show-binds         print the bind values: human lists them in the
         \\                       summary, and kv and json add them after the
@@ -464,9 +465,10 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\output (stdout, written once after every run; empty when an input is
         \\rejected, the time limit is reached, or the run is interrupted):
         \\  The default (--format human) aims at a decision: a summary (whether
-        \\  the result rows match, the time verdict, whether the plan changed,
-        \\  the times and rounds, and the size increase), the counters and
-        \\  times of both copies side by side, and the query plans. A
+        \\  the result rows match, the rows read and written on each copy, the
+        \\  verdict, whether the plan changed, the times and rounds, and the
+        \\  size increase), the counters and times of both copies side by side,
+        \\  and the query plans. A
         \\  difference, a comparison that is not possible, or rows in another
         \\  order adds the explanation and the one-sided counts. The example
         \\  rows are printed only with --show-rows; otherwise human says to
@@ -478,7 +480,7 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\  directory, and the timing conditions below, which the human
         \\  output leaves out. Example row values appear only with --show-rows.
         \\  The json format prints one JSON object and a trailing newline:
-        \\  schema_version, the time verdict and its reasons, the result
+        \\  schema_version, the verdict and its reasons, the result
         \\  comparison with its reasons, the counts, and example rows only
         \\  when --show-rows is set (the arrays are empty otherwise), both
         \\  plans and counters, the times and sizes, the inputs, versions,
@@ -495,13 +497,16 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\  and is not part of the result: rows may change order without
         \\  ORDER BY or among equal ORDER BY keys, and ORDER BY itself is not
         \\  checked.
-        \\  Time verdict: improved (less work, a median more than 20% lower, and
-        \\  faster in every round), no-effect (the same plan and counters, and
-        \\  medians within 20%), needs-check (anything else, with the reasons), or
-        \\  not-judged (the rows differ or cannot be compared, or --runs 0). The
-        \\  verdict never changes the exit status. Plan labels (kind, covering,
-        \\  automatic) are hints read from SQLite's wording; the detail text is
-        \\  what SQLite reported.
+        \\  Verdict, from the rows read: improved (the rows match and the variant
+        \\  reads fewer rows), no-effect (the rows match and both copies read the
+        \\  same number of rows), needs-check (the rows match but the variant reads
+        \\  or writes more, with the reasons), or not-judged (the rows differ or
+        \\  cannot be compared, with the reasons; --runs 0 is still judged). The
+        \\  rows read and rows written are the counts a local D1 reports, not the
+        \\  rows a D1 database bills, and they are 32-bit counters that wrap past
+        \\  4294967295. The times are a reference only and never change the verdict
+        \\  or the exit status. Plan labels (kind, covering, automatic) are hints
+        \\  read from SQLite's wording; the detail text is what SQLite reported.
         \\
     );
 }

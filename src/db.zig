@@ -551,6 +551,8 @@ pub fn classifyDetail(detail: []const u8) PlanLabel {
 }
 
 pub const Counters = struct {
+    rows_read: u32,
+    rows_written: u32,
     fullscan_steps: u32,
     vm_steps: u32,
     sort_ops: u32,
@@ -559,6 +561,8 @@ pub const Counters = struct {
 
 pub fn statementCounters(statement: *sqlite.sqlite3_stmt) Counters {
     return .{
+        .rows_read = readCounter(statement, sqlite.LIBSQL_STMTSTATUS_ROWS_READ),
+        .rows_written = readCounter(statement, sqlite.LIBSQL_STMTSTATUS_ROWS_WRITTEN),
         .fullscan_steps = readCounter(statement, sqlite.SQLITE_STMTSTATUS_FULLSCAN_STEP),
         .vm_steps = readCounter(statement, sqlite.SQLITE_STMTSTATUS_VM_STEP),
         .sort_ops = readCounter(statement, sqlite.SQLITE_STMTSTATUS_SORT),
@@ -2036,4 +2040,77 @@ test "limit scan skips strings, comments, quoted identifiers, and bind names" {
         "SELECT a FROM t LIMIT 1 OFFSET@o",
     };
     for (with) |sql| try testing.expect(mentionsLimitOrOffset(sql));
+}
+
+fn runWriteCounters(path: [:0]const u8, sql: [:0]const u8) !Counters {
+    var handle: ?*sqlite.sqlite3 = null;
+    if (sqlite.sqlite3_open_v2(path, &handle, sqlite.SQLITE_OPEN_READWRITE | sqlite.SQLITE_OPEN_CREATE, null) != sqlite.SQLITE_OK) return error.TestFixtureFailed;
+    defer _ = sqlite.sqlite3_close(handle);
+    var statement: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(handle, sql.ptr, -1, &statement, null) != sqlite.SQLITE_OK) return error.TestFixtureFailed;
+    defer _ = sqlite.sqlite3_finalize(statement);
+    while (true) switch (sqlite.sqlite3_step(statement)) {
+        sqlite.SQLITE_DONE => return statementCounters(statement.?),
+        else => return error.TestFixtureFailed,
+    };
+}
+
+const wide_schema: [:0]const u8 =
+    \\CREATE TABLE t(a INTEGER, b TEXT);
+    \\WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 100000)
+    \\INSERT INTO t SELECT x, 'v' || (x % 500) FROM c;
+;
+
+const wide_indexed_schema: [:0]const u8 =
+    \\CREATE TABLE t(a INTEGER, b TEXT);
+    \\WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 100000)
+    \\INSERT INTO t SELECT x, 'v' || (x % 500) FROM c;
+    \\CREATE INDEX idx_b ON t(b);
+;
+
+test "rows read falls from 100000 on a full scan to 201 with one seek and 200 index steps" {
+    var plain = try Fixture.initWithSchema(testing.allocator, wide_schema);
+    defer plain.deinit();
+    var indexed = try Fixture.initWithSchema(testing.allocator, wide_indexed_schema);
+    defer indexed.deinit();
+
+    const binds = [_]BindArg{.{ .number = 1, .value = .{ .text = "v1" } }};
+    var scan_db: Db = .{};
+    try scan_db.openReadOnly(plain.path);
+    defer scan_db.close() catch unreachable;
+    var search_db: Db = .{};
+    try search_db.openReadOnly(indexed.path);
+    defer search_db.close() catch unreachable;
+
+    const scan = try runCounters(&scan_db, "SELECT a FROM t WHERE b = ?1", &binds);
+    const search = try runCounters(&search_db, "SELECT a FROM t WHERE b = ?1", &binds);
+    try testing.expectEqual(@as(u32, 100_000), scan.rows_read);
+    try testing.expectEqual(@as(u32, 201), search.rows_read);
+    try testing.expectEqual(@as(u32, 99_999), scan.fullscan_steps);
+    try testing.expectEqual(@as(u32, 0), search.fullscan_steps);
+    try testing.expectEqual(@as(u32, 0), scan.rows_written);
+    try testing.expectEqual(@as(u32, 0), search.rows_written);
+}
+
+test "rows written counts one per table row and one more per secondary index" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "flat.db", .data = "" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "indexed.db", .data = "" });
+    const flat_path = try tmp.dir.realPathFileAlloc(testing.io, "flat.db", testing.allocator);
+    defer testing.allocator.free(flat_path);
+    const index_path = try tmp.dir.realPathFileAlloc(testing.io, "indexed.db", testing.allocator);
+    defer testing.allocator.free(index_path);
+
+    const flat_writer = try openTestWriter(flat_path, "CREATE TABLE t(a INTEGER);");
+    try testing.expectEqual(sqlite.SQLITE_OK, sqlite.sqlite3_close(flat_writer));
+    const index_writer = try openTestWriter(index_path, "CREATE TABLE t(a INTEGER); CREATE INDEX ix_a ON t(a);");
+    try testing.expectEqual(sqlite.SQLITE_OK, sqlite.sqlite3_close(index_writer));
+
+    const insert_thousand =
+        \\WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 1000)
+        \\INSERT INTO t SELECT x FROM c;
+    ;
+    try testing.expectEqual(@as(u32, 1000), (try runWriteCounters(flat_path, insert_thousand)).rows_written);
+    try testing.expectEqual(@as(u32, 2000), (try runWriteCounters(index_path, insert_thousand)).rows_written);
 }
