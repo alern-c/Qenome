@@ -14,13 +14,17 @@ Qenome は、索引をマージする前に、その索引がクエリの役に�
 
 ## インストール
 
-### npx
+### npm
+
+Linux と macOS の x64 と arm64 では、次で実行できます。
 
 ```sh
 npx qenome --version
 ```
 
-D1 のプロジェクトでは、このコマンドで Qenome を実行します。`npx` はパッケージを取得し、グローバルにはインストールしません。バイナリが `PATH` に無いときは、下の例の `qenome` を `npx qenome` に置き換えてください。npm パッケージは別の変更で追加します。`npx qenome` が解決できるようになるまでは、[ソースからビルド](#ソースからビルド)して `zig-out/bin/qenome` を使ってください。
+D1 のプロジェクトでは、このコマンドで Qenome を実行します。`npx` はパッケージを取得し、グローバルにはインストールしません。バイナリが `PATH` に無いときは、下の例の `qenome` を `npx qenome` に置き換えてください。`npm install --global qenome` でも同じコマンドが入ります。
+
+入るのは小さなランチャーと、そのマシン向けのバイナリ1つです（`@qenome/linux-x64`、`@qenome/linux-arm64`、`@qenome/darwin-x64`、`@qenome/darwin-arm64` のいずれか）。版は `build.zig.zon` の `.version` で、組み立てと公開の手順は [docs/npm.md](docs/npm.md) にあります。Windows は npm の対象外なので、下のビルド済みバイナリを使ってください。
 
 ### ビルド済みバイナリ（GitHub Releases）
 

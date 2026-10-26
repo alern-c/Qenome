@@ -14,13 +14,17 @@ The recording comes from [`examples/d1-toml`](#try-the-sample-project), and the 
 
 ## Installation
 
-### npx
+### npm
+
+On Linux and macOS, for x64 and arm64:
 
 ```sh
 npx qenome --version
 ```
 
-A D1 project runs Qenome this way. `npx` fetches the package and does not add a global binary. Use `npx qenome` in place of `qenome` in the examples when the binary is not on your `PATH`. The npm package is added in a separate change. Until `npx qenome` resolves, use [From source](#from-source) and call `zig-out/bin/qenome`.
+A D1 project runs Qenome this way. `npx` fetches the package and does not add a global binary. Use `npx qenome` in place of `qenome` in the examples when the binary is not on your `PATH`. `npm install --global qenome` installs the same command.
+
+The package is a small launcher plus one optional binary for the machine you are on (`@qenome/linux-x64`, `@qenome/linux-arm64`, `@qenome/darwin-x64`, or `@qenome/darwin-arm64`). The version is `.version` in `build.zig.zon`, and [docs/npm.md](docs/npm.md) covers how the packages are built and published. Windows is not an npm target: use the prebuilt binaries below.
 
 ### Prebuilt binaries (GitHub Releases)
 

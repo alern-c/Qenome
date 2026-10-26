@@ -27,6 +27,10 @@ python3 scripts/check_all.py
 - コードにコメントは書きません。説明は `README.md` / `README.ja.md` に書きます。規則の正本は `scripts/check_comments.py`、自己テストは `scripts/test_check_comments.py` です。
 - `check_comments.py` は tracked の全ファイルを「コメントを検査する」か「除外する」に分類します。新しい種類のファイルを足すときは、検査対象として扱えるか `EXCLUDED_FILES` に入れるかを決めてください。未分類のまま置くと検査が失敗します。
 
+## npm
+
+npm の版は `build.zig.zon` の `.version` だけを変える。`npm/*/package.json` の `version` は `0.0.0`、`private` は `true` のままにする。公開用ツリーは `python3 scripts/stage_npm.py` が `dist/npm/` に作る。手順は `docs/npm.md`。
+
 ## CLAUDE.md
 
 `CLAUDE.md` はこのファイルへの相対 symlink です。内容は `AGENTS.md` にだけ書いてください。

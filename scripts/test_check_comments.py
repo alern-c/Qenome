@@ -497,7 +497,59 @@ def main():
     expect_clean("an untracked file is not checked", code, output)
 
     code, output = case(create("data.json", "{}\n"))
-    expect_rejected("an unclassified file fails", code, output, "unclassified-file", "data.json")
+    expect_clean("a JSON file without a comment passes", code, output)
+
+    code, output = case(create("data.json", '{\n  "url": "https://example.com/*"\n}\n'))
+    expect_clean("a JSON string with // and /* passes", code, output)
+
+    code, output = case(create("data.json", '{\n  // note\n  "name": "sample"\n}\n'))
+    expect_rejected(
+        "a JSON line comment fails",
+        code,
+        output,
+        "data.json:2:",
+        "a JSON line comment",
+    )
+
+    code, output = case(create("data.json", '{ "name": "sample" /* note */ }\n'))
+    expect_rejected(
+        "a JSON block comment fails",
+        code,
+        output,
+        "data.json:1:",
+        "a JSON block comment",
+    )
+
+    code, output = case(
+        create("bin/tool.js", '#!/usr/bin/env node\nconst url = "https://example.com/*";\n')
+    )
+    expect_clean("a JavaScript shebang and a string pass", code, output)
+
+    code, output = case(
+        create("bin/tool.js", "#!/usr/bin/env node\nconst value = `\nhttps://example.com\n`;\n")
+    )
+    expect_clean("a JavaScript template string passes", code, output)
+
+    code, output = case(create("bin/tool.js", "#!/usr/bin/env node\n// note\n"))
+    expect_rejected(
+        "a JavaScript line comment fails",
+        code,
+        output,
+        "bin/tool.js:2:",
+        "a JavaScript line comment",
+    )
+
+    code, output = case(create("bin/tool.js", "const value = 1; /* note */\n"))
+    expect_rejected(
+        "a JavaScript block comment fails",
+        code,
+        output,
+        "bin/tool.js:1:",
+        "a JavaScript block comment",
+    )
+
+    code, output = case(create("data.txt", "{}\n"))
+    expect_rejected("an unclassified file fails", code, output, "unclassified-file", "data.txt")
 
     code, output = case(create("notes.md", "# note\n"))
     expect_rejected(

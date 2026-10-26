@@ -1,0 +1,75 @@
+name: npm
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Zig (resolved from build.zig.zon)
+        uses: mlugg/setup-zig@v2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          package-manager-cache: false
+
+      - name: Cross-compile, pack, and dry-run every package
+        run: python3 scripts/stage_npm.py --pack
+
+      - name: Upload the packed tarballs
+        uses: actions/upload-artifact@v7
+        with:
+          name: npm-tarballs
+          path: dist/npm/*.tgz
+          if-no-files-found: error
+
+  smoke:
+    needs: pack
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+          - os: macos-latest
+            target: darwin-arm64
+          - os: macos-15-intel
+            target: darwin-x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          package-manager-cache: false
+
+      - name: Download the packed tarballs
+        uses: actions/download-artifact@v8
+        with:
+          name: npm-tarballs
+          path: dist/npm
+
+      - name: Install the tarballs and run npx qenome --version
+        env:
+          QENOME_SMOKE_TARGET: ${{ matrix.target }}
+        run: python3 scripts/smoke_npm.py
