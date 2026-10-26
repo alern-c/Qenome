@@ -2,44 +2,44 @@ SQLite amalgamation vendored for Qenome
 =======================================
 
 Product        : SQLite amalgamation (C source: sqlite3.c + sqlite3.h)
-Version        : 3.51.2
-Version number : 3051002 (SQLITE_VERSION_NUMBER)
-Source ID      : 2026-01-09 17:27:48 b270f8339eb13b504d0b2ba154ebca966b7dde08e40c3ed7d559749818cb2075
-Release date   : 2026-01-09
+Version        : 3.53.4
+Version number : 3053004 (SQLITE_VERSION_NUMBER)
+Source ID      : 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc
+Release date   : 2026-07-24
 Vendored files : sqlite3.c, sqlite3.h. The zip also contains shell.c and
                  sqlite3ext.h; they are not vendored.
-Fetched (UTC)  : 2026-10-10T16:05:33Z
-Fetched from   : https://sqlite.org/2026/sqlite-amalgamation-3510200.zip
-Zip size       : 2,875,832 bytes
+Fetched (UTC)  : 2026-10-26T05:36:31Z
+Fetched from   : https://sqlite.org/2026/sqlite-amalgamation-3530400.zip
+Zip size       : 2,946,650 bytes
 Fetch method   : `curl` from this repository's agent session (D-102 = option 1:
                  only the official sqlite.org distribution)
 
 Verification
 ------------
-Official published SHA3-256 for sqlite3.c of version 3.51.2 (release log):
-  https://sqlite.org/releaselog/3_51_2.html
-  SHA3-256 for sqlite3.c: 733b3fcc6cccb1e334424b9b91a9d68b618385b76ebfcbb106690bd3a9e61367
+Official published SHA3-256 for sqlite3.c of version 3.53.4 (release log):
+  https://sqlite.org/releaselog/3_53_4.html
+  SHA3-256 for sqlite3.c: 67f423e9ebbbdc473cbc4772c872ee6b89f31fde4ed0279a5c25d5f65c043a16
 
 Measured SHA3-256 (python3 hashlib.sha3_256 and `openssl dgst -sha3-256` agree):
-  sqlite3.c : 733b3fcc6cccb1e334424b9b91a9d68b618385b76ebfcbb106690bd3a9e61367  (matches the official value above)
-  sqlite3.h : 8365bfda03f0ee17635c5117503ac9f34723a95e885b2aea1fb913bb679cf832
-  zip       : 9a9dd4eef7a97809bfacd84a7db5080a5c0eff7aaf1fc1aca20a6dc9a0c26f96
+  sqlite3.c : 67f423e9ebbbdc473cbc4772c872ee6b89f31fde4ed0279a5c25d5f65c043a16  (matches the official value above)
+  sqlite3.h : 89d0de498b1012938bb78dc18b68fea52e26f7f7b6db6347d126a2e58b86a05c
+  zip       : 628a44cfe82c66aed1ccbbe85a562d2e33ebe64b3288981ed76285612227934e
 
 Where the official value comes from:
 - sqlite.org publishes SHA3-256 hashes for the *current* release on
-  https://sqlite.org/download.html. For past releases it publishes the hash of
-  the amalgamated sqlite3.c in the release log instead. The zip-level hash of
-  3.51.2 is not published by sqlite.org.
+  https://sqlite.org/download.html. For releases that are no longer current it
+  publishes the hash of the amalgamated sqlite3.c in the release log instead.
+  The zip-level hash of 3.53.4 is not published by sqlite.org.
 - The SQLITE_SOURCE_ID in the vendored sqlite3.c / sqlite3.h matches the value
   in the same release log entry and the check-in shown on
-  https://sqlite.org/chronology.html (b270f8339e, 2026-01-09).
+  https://sqlite.org/chronology.html (bf7c7f30, 2026-07-24).
 
 How to re-verify
 ----------------
-  curl -O https://sqlite.org/2026/sqlite-amalgamation-3510200.zip
-  openssl dgst -sha3-256 sqlite-amalgamation-3510200.zip
-  unzip -j sqlite-amalgamation-3510200.zip \
-      sqlite-amalgamation-3510200/sqlite3.c sqlite-amalgamation-3510200/sqlite3.h -d /tmp/sqlite-check
+  curl -O https://sqlite.org/2026/sqlite-amalgamation-3530400.zip
+  openssl dgst -sha3-256 sqlite-amalgamation-3530400.zip
+  unzip -j sqlite-amalgamation-3530400.zip \
+      sqlite-amalgamation-3530400/sqlite3.c sqlite-amalgamation-3530400/sqlite3.h -d /tmp/sqlite-check
   openssl dgst -sha3-256 /tmp/sqlite-check/sqlite3.c   # compare with the official value above
   openssl dgst -sha3-256 /tmp/sqlite-check/sqlite3.h
 
@@ -60,7 +60,7 @@ Compile flags (kept in sync with build.zig)
                                 trapping. Zig compiles C with overflow
                                 checks, but SQLite's code assumes wrapping
                                 (for example the aggregate step counter at
-                                sqlite3.c:103146, which backs the deprecated
+                                sqlite3.c:104523, which backs the deprecated
                                 sqlite3_aggregate_count()). Without this
                                 flag an aggregate stepped more than 2^31
                                 times aborts the process (SIGABRT, exit 134)
@@ -73,5 +73,5 @@ Compile flags (kept in sync with build.zig)
                                 working plan/TODO.
 
 Note: the version string of the SQLite CLI installed on the development machine
-(3.51.2 ... cbalt1) is a different build product; the vendored amalgamation
-reports the source id above.
+(3.51.2 ... cbalt1) is a different build product and is older than this
+amalgamation; the vendored amalgamation reports the source id above.

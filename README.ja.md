@@ -172,7 +172,7 @@ qenome --d1 DB select.sql index.sql --config packages/api/wrangler.toml
 
 `--d1` の比較では、どの形式でも次の2点を出します。
 
-- 比較に使う同梱 SQLite は 3.51.2 で、D1 のローカルエンジンは SQLite 3.53.4。版が違うため計画と時間が変わりうる。D1 は `select sqlite_version()` を拒否するため、3.53.4 は wrangler のローカルエンジンに埋め込まれた版文字列から確認した値
+- 比較に使う同梱 SQLite は 3.53.4 で、D1 のローカルエンジンが動かすのも同じ版。ただしビルドのコンパイルオプションが違うため、計画と時間が変わりうる。D1 は `select sqlite_version()` を拒否するため、3.53.4 は wrangler のローカルエンジンに埋め込まれた版文字列から確認した値
 - 時間はこのローカルコピーで測ったもので、本番 D1 の速さを保証しない
 
 `[env.<name>]` ごとの設定と独自の保存先（`--persist-to`）は読みません。

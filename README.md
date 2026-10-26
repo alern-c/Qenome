@@ -171,7 +171,7 @@ Qenome stops with status 4, prints the reason on stderr, and writes nothing to s
 
 Every `--d1` comparison prints two facts in all formats:
 
-- the bundled SQLite used for the comparison is 3.51.2, while D1's local engine runs SQLite 3.53.4, so plans and times can differ. D1 rejects `select sqlite_version()`, so 3.53.4 comes from the version string in wrangler's local engine;
+- the bundled SQLite used for the comparison is 3.53.4, the same version D1's local engine runs, but the two builds use different compile options, so plans and times can differ. D1 rejects `select sqlite_version()`, so 3.53.4 comes from the version string in wrangler's local engine;
 - the times are measured on the local copy, not on production D1, and do not promise the speed of a deployed database.
 
 Sections for other environments (`[env.<name>]`) and custom persist paths (`--persist-to`) are not read.

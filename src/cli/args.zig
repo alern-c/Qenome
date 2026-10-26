@@ -444,9 +444,10 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\the file that wrangler dev and wrangler d1 execute --local create. It
         \\stops with status 4 when the config or the binding cannot be chosen, or
         \\when that file does not exist yet. The comparison uses the bundled
-        \\SQLite 3.51.2 while D1 runs SQLite 3.53.4, so plans and times can
-        \\differ, and the times come from this local copy, not from production
-        \\D1.
+        \\SQLite 3.53.4, the same version the local D1 engine runs, but the
+        \\two builds use different compile options, so plans and times can
+        \\differ, and the times come from this local copy, not from
+        \\production D1.
         \\
         \\exit status: 0 result rows match, 1 rejected, 2 usage error,
         \\3 result rows differ, 4 results cannot be compared or --d1 cannot

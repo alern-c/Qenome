@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The bundled SQLite amalgamation is now 3.53.4, the same version D1's local engine runs, so `--db` and `--d1` compare on the same SQLite version. The README, the usage message, and `vendor/sqlite3/PROVENANCE.txt` name the new version.
+
 ## [0.3.2] - 2026-10-26
 
 ### Added
