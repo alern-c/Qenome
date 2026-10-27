@@ -7,7 +7,7 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 CHECKER = os.path.join(HERE, "check_comments.py")
 
-FAILURES = []
+FAILURES: list[str] = []
 
 CANONICAL_FILES = {
     ".gitattributes": "*.c linguist-vendored\n",
@@ -441,6 +441,26 @@ def main():
         "examples/d1-toml/wrangler.toml:",
         "a TOML # character at column 11",
     )
+
+    code, output = case(
+        create("pyproject.toml", '[project]\nname = "sample"\nrequires-python = ">=3.10"\n')
+    )
+    expect_clean("a pyproject.toml without # passes", code, output)
+
+    code, output = case(create("pyproject.toml", '# note\n[project]\nname = "sample"\n'))
+    expect_rejected(
+        "a pyproject.toml # fails",
+        code,
+        output,
+        "pyproject.toml:1:",
+        "a TOML # character at column 1",
+    )
+
+    code, output = case(create("uv.lock", "# note\nversion = 1\n"))
+    expect_clean("an excluded uv.lock passes", code, output)
+
+    code, output = case(create(".python-version", "# note\n3.12\n"))
+    expect_clean("an excluded .python-version passes", code, output)
 
     code, output = case(create("examples/d1-jsonc/wrangler.jsonc", '{\n  "name": "sample"\n}\n'))
     expect_clean("a JSONC file without a marker passes", code, output)
