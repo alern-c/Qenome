@@ -124,7 +124,7 @@ D1 のスキーマを変えるエージェントは、`CREATE INDEX` を残す�
 
 ## クイックスタート
 
-この手順では、テスト用データベースを作り、Qenome をビルドし、3つの例を実行します。コマンドはリポジトリのルートで、ブロックごとに Linux か macOS で実行してください。必要なものは Zig 0.17.0（「ソースからビルド」を参照）と `sqlite3` コマンドラインツールです。`sqlite3` は SQL ファイルを新しいデータベースへ読み込みます。
+この手順では、テスト用データベースを作り、Qenome をビルドし、4つの例を実行します。コマンドはリポジトリのルートで、ブロックごとに Linux か macOS で実行してください。必要なものは Zig 0.17.0（「ソースからビルド」を参照）と `sqlite3` コマンドラインツールです。`sqlite3` は SQL ファイルを新しいデータベースへ読み込みます。
 
 `testdata/schema.sql` と `testdata/seed.sql` からテスト用データベースを作ります。`verify.sql` は17項目それぞれについて `ok` を1行出力し、期待値と違う値があればその時点で失敗します。
 
@@ -142,7 +142,7 @@ Qenome をビルドします。
 zig build
 ```
 
-3つの例は `zig-out/bin/qenome` を実行します。各コマンドの末尾には、その例が返すべき結果（Summary の `result` と `verdict`、終了コード）を書いてあります。`python3 scripts/check_all.py` と CI の quality ワークフローは、これらの行を書いてあるとおりに実行するので、README とプログラムのずれは見つかります。`--runs 40` は、負荷のあるマシンでも中央値を安定させるための指定です（既定は `10`）。
+4つの例は `zig-out/bin/qenome` を実行します。各コマンドの末尾には、その例が返すべき結果（Summary の `result` と `verdict`、batch では `recommended`、終了コード）を書いてあります。`python3 scripts/check_all.py` と CI の quality ワークフローは、これらの行を書いてあるとおりに実行するので、README とプログラムのずれは見つかります。`--runs 40` は、負荷のあるマシンでも中央値を安定させるための指定です（既定は `10`）。
 
 全走査をなくす索引: 候補の索引で `SCAN events` が `SEARCH events USING INDEX ix_events_customer_id (customer_id=?)` に変わり、読んだ行数が 200,000 から 101 に減り、両方のコピーが同じ100行を返します。
 
@@ -162,6 +162,12 @@ zig build
 ./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/incomparable.sql testdata/cases/incomparable.index.sql  # expect: result=incomparable verdict=not-judged exit=4
 ```
 
+batch は、複数のクエリと複数の候補索引を1回の実行で比べます。`testdata/batch.json` は改善する例と効果のない例を、2つの候補索引それぞれと組み合わせます。Qenome は組ごとに1行を出し、不一致がなく改善した候補をおすすめするので、`cases/improved.index.sql` だけが資格を得ます。「まとめて比べる（--batch）」を参照してください。
+
+```sh
+./zig-out/bin/qenome testdata/generated/qenome-fixture.db --batch testdata/batch.json  # expect: recommended=cases/improved.index.sql exit=0
+```
+
 データベースの作成はおよそ1秒、計測する例はそれぞれ数秒で終わります。fixture・クエリ・期待する計画と件数は `testdata/README.md` に記録しています。
 
 ## 使い方
@@ -172,6 +178,7 @@ qenome app.db select.sql index.sql --bind 1:int:1234
 qenome --db app.db --select select.sql --index-sql index.sql --format kv
 qenome app.db select.sql index.sql --format json
 qenome --d1 DB select.sql index.sql
+qenome app.db --batch batch.json
 ```
 
 パスは DB・SELECT ファイル・CREATE INDEX ファイルの順に埋まり、`--db` / `--select` / `--index-sql` でも指定できます（混在可）。位置指定のパスは、まだ指定されていない最初の役割に埋まります。`--d1` のときは、位置指定の2つのパスが SELECT と CREATE INDEX の役割に入ります。`--` の後は `-` で始まるパスとして扱います。
@@ -183,6 +190,7 @@ qenome --d1 DB select.sql index.sql
 - `--config <PATH>`: `--d1` が読む wrangler 設定（既定はカレントディレクトリの `wrangler.toml` / `wrangler.jsonc` / `wrangler.json`）
 - `--select <FILE>`: 比較する SELECT を1本書いたファイル（必須、1回だけ）
 - `--index-sql <FILE>`: 候補の CREATE INDEX を1本書いたファイル（必須、1回だけ）
+- `--batch <FILE>`: JSON のマニフェストにある全 SELECT を、全候補 CREATE INDEX と1回の実行で比べる。「まとめて比べる（--batch）」を参照。`--select` / `--index-sql` / `--bind` / 位置指定の SELECT・INDEX、`--runs`、`--format kv` とは併用できない
 - `--bind <N>:<TYPE>[:<VALUE>]`: SELECT のパラメータ N に渡す型付きの値。繰り返し指定できる。N は SQLite のパラメータ番号で、名前付きパラメータは最初に現れたときの番号を共有し、`?NNN` は NNN を使う。TYPE は int / real / text / null（null は値を取らない）。1 からパラメータ数までの各番号をちょうど1回ずつ指定する必要があり、パラメータの無い SELECT に `--bind` は付けられない。値は引数の残り全体なので、text には `:` を含められる
 - `--runs <N>`: 結果が一致したあとの計測ラウンド数。各ラウンドは各コピーで SELECT を1回計測する。既定は 10、0 で計測しないが読んだ行数と判定は残る、最大 1000。1秒を超える計測は進捗を stderr に出す
 - `--timeout-ms <MS>`: 索引作成と SELECT 1回あたりの制限時間。既定は 30000、0 で無効。1回の実行は全体で、データベースのコピーに加えて `(3 + 4 × runs)` 回分の制限時間に加え、最大3つの診断文それぞれの制限時間までかかることがある
@@ -247,6 +255,46 @@ qenome --d1 DEMO_DB select.sql index.sql --runs 40
 
 `schema.sql` は `events` を作り直すので、いつでも再実行できます。デプロイはしません。`qenome` は PATH 上のものを使う想定で、[ソースからビルド](#ソースからビルド) の直後は `./zig-out/bin/qenome` です。`4.152.0` はサンプルを確認した wrangler の版です。
 
+### まとめて比べる（--batch）
+
+`--batch manifest.json` は、マニフェストにある全 SELECT を、全候補 `CREATE INDEX` と比べます。マニフェストは2つの配列を持つ JSON オブジェクトです。
+
+```json
+{
+  "queries": [
+    { "select": "queries/orders.sql", "binds": ["1:int:1234"] },
+    { "select": "queries/recent.sql" }
+  ],
+  "candidates": [
+    { "index_sql": "candidates/a.sql" },
+    { "index_sql": "candidates/b.sql" }
+  ]
+}
+```
+
+- `queries` と `candidates` はそれぞれ1〜100件。マニフェストは1 MiBまで。
+- 同じパスを `queries` の中で2回、または `candidates` の中で2回書くことはできない。
+- `select` と `index_sql` はファイルのパス。カレントディレクトリではなく、マニフェストのディレクトリを基準に解決する。各ファイルは読み取り専用の SELECT 1本、または `CREATE INDEX` 1本で、1 MiBまで。
+- `binds` は任意で、`--bind` と同じ `N:TYPE:VALUE` 形式。パスとバインド値は NUL バイトを含まない JSON 文字列にする。
+- `select` と `index_sql` の文字列は、書いたとおりに報告へ出す。
+
+Qenome はデータベースを1回コピーし、何かを実行する前に全 SELECT と全候補を検査します。そのあと候補をマニフェスト順に処理し、候補ごとに baseline をもう一度コピーして、そのコピーにだけ索引を作り、全クエリを両方のコピーで実行します。baseline の SELECT は候補ごとに実行し直します。
+
+索引を作れなかった候補は記録して次へ進みます。
+
+| 状態 | 意味 | 終了コードへの寄与 |
+| `index_rejected` | SQLite が `CREATE INDEX` を拒否した（例: 重複する行への UNIQUE 制約） | `1` |
+| `index_timeout` | 索引作成が `--timeout-ms` に達した | `124` |
+| `variant_timeout` | variant 側の SELECT が `--timeout-ms` に達した。そのクエリは判定せず、ほかのクエリの結果は残す | `124` |
+
+全体に影響する失敗では、報告を書く前に止まり、stdout は空のままです。baseline の SELECT の失敗・時間切れ、シグナル、variant / baseline の接続の失敗、一時コピーの作成・削除の失敗、ディスク不足などの保存の失敗が該当します。候補単位の失敗は `error:` 行にはしません。
+
+報告を書けた場合、終了コードは、結果の不一致 `3`、索引の作成失敗 `1`、候補の時間切れ `124`、比較不能 `4`、`0` のうち一番重いものです。後片付けの失敗は `0` のときだけ `5` に置き換えます。そのため batch は、報告を書きながら `1` や `124` で終わることがあります。どちらかは stdout で見分けます。
+
+human 出力は候補の表、`Recommendation:`、クエリと候補の判定表を出します。おすすめは、不一致・比較不能・`needs-check`・時間切れがなく、改善が1件以上ある候補のうち、改善したクエリが最も多いものです。同じなら容量の増分が小さい順、次にマニフェスト順です。`--format json` では [docs/json.md](docs/json.md) に書いた `batch_schema_version` 1 のオブジェクトを出します。
+
+索引作成・SELECT 1回・診断文1回は、それぞれ `--timeout-ms` の制限時間を持ちます。batch は全体で、データベースのコピー1回に加えて、候補ごとに索引作成1回とクエリごとの SELECT 2回、さらに最大3つの診断文それぞれの制限時間までかかることがあります。`--show-binds` と `--show-rows` は各比較オブジェクトに適用します。
+
 ## 出力形式
 
 ### human（既定）
@@ -268,7 +316,7 @@ kv は全項目を1行1項目の `key: value` で出し、スクリプトとロ�
 
 ### json
 
-json は、比較が終わったときに stdout へ JSON オブジェクトを1個だけ（末尾改行付きで）出します。フィールド（次のコア変更で予約している名前を含む）は [docs/json.md](docs/json.md) が仕様です。入力拒否・時間上限・中断のときは stdout を空のままにします。`--format json` のとき、stderr は JSON オブジェクト1個です（`schema_version`、`exit_code`、`error` の `code` / `message` / `hint`）。`human` と `kv` はテキストの `error:` 行のままです。
+json は、比較が終わったときに stdout へ JSON オブジェクトを1個だけ（末尾改行付きで）出します。`--batch` のときは、上記で説明した別の `batch_schema_version` 1 のオブジェクトを出します（「まとめて比べる（--batch）」と [docs/json.md](docs/json.md) を参照）。フィールド（次のコア変更で予約している名前を含む）は [docs/json.md](docs/json.md) が仕様です。入力拒否・時間上限・中断のときは stdout を空のままにします。`--format json` のとき、stderr は JSON オブジェクト1個です（`schema_version`、`exit_code`、`error` の `code` / `message` / `hint`）。`human` と `kv` はテキストの `error:` 行のままです。
 
 判定はトップレベルの `verdict` で読めます。
 
@@ -337,6 +385,8 @@ fi
 | 129 / 130 / 143 | `SIGHUP` / `SIGINT` / `SIGTERM` による中断（POSIX） |
 
 `--format json` は比較結果を `exit_code` に 0 / 3 / 4 で出します。JSON を書いた後にプロセスが 5 で終わることはあります。
+
+`--batch` の報告は、終了コード `1` や `124` で書かれることがあります。stdout が batch のオブジェクトなら実行は最後まで進み、失敗は報告の中にあります。stdout が空なら実行は途中で止まり、stderr にエラーオブジェクトがあります。
 
 ## 守るルール
 

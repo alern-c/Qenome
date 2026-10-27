@@ -12,6 +12,7 @@ const cli_workspace = @import("cli/workspace.zig");
 const cli_timing = @import("cli/timing.zig");
 const cli_report = @import("cli/report.zig");
 const cli_pair = @import("cli/pair.zig");
+const cli_batch = @import("cli/batch.zig");
 
 pub const max_sql_bytes = cli_args.max_sql_bytes;
 pub const SqlFileError = cli_args.SqlFileError;
@@ -126,7 +127,7 @@ fn runCaptured(
     var missing_buffer: [cli_args.required_option_count][]const u8 = undefined;
     const missing = cli_args.missingRequired(args, &missing_buffer);
     if (missing.len != 0) {
-        return missingArguments(stderr, missing, missing.len == cli_args.required_option_count);
+        return missingArguments(stderr, args, missing);
     }
 
     var d1: ?cli_d1.Resolved = null;
@@ -150,6 +151,34 @@ fn runCaptured(
             },
         }
     } else args.db.?;
+
+    if (args.batch) |batch_path| {
+        var cleanup_failed = false;
+        const code = blk: {
+            const loaded = cli_batch.load(io, arena, batch_path, stderr) orelse break :blk ExitCode.rejected;
+            if (signalPending()) break :blk reportInterrupted(stderr);
+            const parent_path = tempParentPath(temp_parent);
+            var work = WorkDir.create(io, arena, parent_path) catch |err| {
+                stderr.print("error: cannot create a temporary directory under '{s}': {s}\n", .{ parent_path, fileErrorMessage(err) }) catch {};
+                break :blk ExitCode.rejected;
+            };
+            defer work.remove(io, stderr, &cleanup_failed);
+            if (prepareCopies(io, database_path, &work, stderr, &cleanup_failed)) |failure| break :blk failure;
+            break :blk cli_batch.run(io, arena, allocator, .{
+                .database_path = database_path,
+                .baseline_path = work.baseline_path,
+                .variant_path = work.variant_path,
+                .d1 = d1,
+                .timeout_ms = args.timeout_ms,
+                .show_binds = args.show_binds,
+                .show_rows = args.show_rows,
+                .format = args.format,
+                .work_parent = parent_path,
+            }, loaded, stdout, stderr, &cleanup_failed, &work);
+        };
+        return finalExitCode(code, cleanup_failed);
+    }
+
     const select_path = args.select.?;
     const index_path = args.index_sql.?;
 
@@ -365,12 +394,23 @@ fn reportParseError(stderr: *Io.Writer, err: ParseError, offending: ?[:0]const u
             const end = std.mem.indexOfScalar(u8, arg, '=') orelse arg.len;
             try stderr.print("error: {s} does not take a value (see --help)\n", .{arg[0..end]});
         },
+        error.BatchTakesOnlyDatabasePath => {
+            try stderr.writeAll("error: --batch takes only the database path; put the SELECT and CREATE INDEX files in the manifest (see --help)\n");
+        },
+        error.BatchRejectsBind => try stderr.writeAll("error: --batch does not take --bind; put the binds in the manifest (see --help)\n"),
+        error.BatchRejectsRuns => try stderr.writeAll("error: --batch does not run the timing; remove --runs (see --help)\n"),
+        error.BatchRejectsKv => try stderr.writeAll("error: --batch supports --format human or --format json, not kv (see --help)\n"),
         else => try stderr.print("error: {s}\n", .{parseErrorMessage(err)}),
     }
 }
 
-fn missingArguments(stderr: *Io.Writer, missing: []const []const u8, show_usage: bool) ExitCode {
-    if (show_usage) stderr.print("{s}\n{s}\n", .{ cli_args.usage_line, cli_args.d1_usage_line }) catch {};
+fn missingArguments(stderr: *Io.Writer, args: cli_args.Args, missing: []const []const u8) ExitCode {
+    if (args.batch != null) {
+        const line = if (args.d1 != null) cli_args.d1_batch_usage_line else cli_args.batch_usage_line;
+        stderr.print("{s}\n", .{line}) catch {};
+    } else if (missing.len == cli_args.required_option_count) {
+        stderr.print("{s}\n{s}\n", .{ cli_args.usage_line, cli_args.d1_usage_line }) catch {};
+    }
     stderr.writeAll("error: missing: ") catch {};
     for (missing, 0..) |name, position| {
         if (position != 0) stderr.writeAll(", ") catch {};
@@ -399,7 +439,7 @@ test "the compatibility re-exports keep the public names and signatures" {
     try testing.expectEqualStrings("s", parsed.select.?);
     try testing.expectEqualStrings("i", parsed.index_sql.?);
 
-    var buffer: [8192]u8 = undefined;
+    var buffer: [32768]u8 = undefined;
     var writer = Io.Writer.fixed(&buffer);
     try usage(&writer);
     try testing.expect(std.mem.startsWith(u8, writer.buffered(), "usage: qenome"));

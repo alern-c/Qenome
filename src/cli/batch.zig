@@ -1,0 +1,1068 @@
+const std = @import("std");
+const Io = std.Io;
+const db = @import("../db.zig");
+const result_rows = @import("../result.zig");
+const sqlite = @import("../sqlite.zig");
+const cli_args = @import("args.zig");
+const cli_comparison = @import("comparison.zig");
+const cli_control = @import("control.zig");
+const cli_d1 = @import("d1.zig");
+const cli_pair = @import("pair.zig");
+const cli_query = @import("query.zig");
+const cli_report = @import("report.zig");
+const cli_workspace = @import("workspace.zig");
+
+const ExitCode = cli_control.ExitCode;
+const WorkDir = cli_workspace.WorkDir;
+const QuerySession = cli_query.QuerySession;
+const Measurement = cli_comparison.Measurement;
+
+const batch_schema_version: u8 = 1;
+const max_entries = 100;
+
+pub const Query = struct {
+    label: []const u8,
+    path: [:0]const u8,
+    sql: [:0]const u8,
+    binds: []const db.BindArg,
+};
+
+pub const Candidate = struct {
+    label: []const u8,
+    path: [:0]const u8,
+    sql: [:0]const u8,
+};
+
+pub const Loaded = struct {
+    queries: []const Query,
+    candidates: []const Candidate,
+};
+
+pub const Inputs = struct {
+    database_path: [:0]const u8,
+    baseline_path: [:0]const u8,
+    variant_path: [:0]const u8,
+    d1: ?cli_d1.Resolved = null,
+    timeout_ms: u64,
+    show_binds: bool = false,
+    show_rows: bool = false,
+    format: cli_args.Format = .human,
+    work_parent: []const u8,
+};
+
+const CandidateStatus = enum {
+    compared,
+    index_rejected,
+    index_timeout,
+};
+
+const ResultStatus = enum {
+    compared,
+    variant_timeout,
+};
+
+const CandidateSummary = struct {
+    candidate: []const u8,
+    status: CandidateStatus = .compared,
+    failure_code: []const u8 = "",
+    failure_message: []const u8 = "",
+    improved: u64 = 0,
+    no_effect: u64 = 0,
+    needs_check: u64 = 0,
+    mismatch: u64 = 0,
+    incomparable: u64 = 0,
+    timeout: u64 = 0,
+    size_increase: i128 = 0,
+};
+
+const RowsRead = struct {
+    baseline: u64,
+    variant: u64,
+};
+
+const ResultEntry = struct {
+    query: []const u8,
+    candidate: []const u8,
+    status: ResultStatus,
+    outcome: ?cli_comparison.Verdict = null,
+    judgement: cli_comparison.RowVerdict = .not_judged,
+    rows: ?RowsRead = null,
+    comparison: []const u8 = "",
+};
+
+pub fn load(io: Io, arena: std.mem.Allocator, path: [:0]const u8, stderr: *Io.Writer) ?Loaded {
+    const data = cli_args.readSqlFile(io, arena, path) catch |err| {
+        switch (err) {
+            error.SqlFileTooLarge => return invalidManifest(stderr, path, "the file is larger than 1 MiB", .{}),
+            error.SqlFileContainsNul => return invalidManifest(stderr, path, "it contains a NUL byte", .{}),
+            else => {
+                stderr.print("error: cannot read the batch manifest '{s}': {s}\n", .{ path, cli_args.fileErrorMessage(err) }) catch {};
+                return null;
+            },
+        }
+    };
+
+    const root_value = std.json.parseFromSliceLeaky(std.json.Value, arena, data, .{}) catch {
+        return invalidManifest(stderr, path, "it is not valid JSON", .{});
+    };
+    const root = switch (root_value) {
+        .object => |object| object,
+        else => return invalidManifest(stderr, path, "it must be a JSON object", .{}),
+    };
+    if (root.count() != 2 or root.get("queries") == null or root.get("candidates") == null) {
+        return invalidManifest(stderr, path, "it must have exactly the keys queries and candidates", .{});
+    }
+
+    const manifest_dir = std.fs.path.dirname(path) orelse ".";
+
+    var queries: std.ArrayList(Query) = .empty;
+    var candidates: std.ArrayList(Candidate) = .empty;
+
+    const query_values = switch (root.get("queries").?) {
+        .array => |array| array.items,
+        else => return invalidManifest(stderr, path, "queries must be an array", .{}),
+    };
+    if (query_values.len < 1 or query_values.len > max_entries) {
+        return invalidManifest(stderr, path, "queries must hold 1 to {d} entries", .{max_entries});
+    }
+    for (query_values, 0..) |query_value, index| {
+        const query_object = switch (query_value) {
+            .object => |object| object,
+            else => return invalidManifest(stderr, path, "query {d} must be an object", .{index + 1}),
+        };
+        if (query_object.get("select") == null or query_object.count() < 1 or query_object.count() > 2) {
+            return invalidManifest(stderr, path, "query {d} must have select and optional binds", .{index + 1});
+        }
+        var query_keys = query_object.iterator();
+        while (query_keys.next()) |entry| {
+            if (!std.mem.eql(u8, entry.key_ptr.*, "select") and !std.mem.eql(u8, entry.key_ptr.*, "binds")) {
+                return invalidManifest(stderr, path, "query {d} must have select and optional binds", .{index + 1});
+            }
+        }
+        const label = switch (query_object.get("select").?) {
+            .string => |text| text,
+            else => return invalidManifest(stderr, path, "query {d} select must be a string", .{index + 1}),
+        };
+        if (label.len == 0 or std.mem.indexOfScalar(u8, label, 0) != null) {
+            return invalidManifest(stderr, path, "query {d} select must be a non-empty path", .{index + 1});
+        }
+        for (queries.items) |existing| {
+            if (std.mem.eql(u8, existing.label, label)) {
+                return invalidManifest(stderr, path, "the select path '{s}' appears more than once", .{label});
+            }
+        }
+
+        var binds: std.ArrayList(db.BindArg) = .empty;
+        if (query_object.get("binds")) |binds_value| {
+            const bind_values = switch (binds_value) {
+                .array => |array| array.items,
+                else => return invalidManifest(stderr, path, "query {d} binds must be an array", .{index + 1}),
+            };
+            for (bind_values, 0..) |bind_value, bind_index| {
+                const text = switch (bind_value) {
+                    .string => |text| text,
+                    else => return invalidManifest(stderr, path, "query {d} bind {d} must be a string", .{ index + 1, bind_index + 1 }),
+                };
+                if (std.mem.indexOfScalar(u8, text, 0) != null) {
+                    return invalidManifest(stderr, path, "query {d} bind {d} contains a NUL byte", .{ index + 1, bind_index + 1 });
+                }
+                const raw = arena.dupeSentinel(u8, text, 0) catch return outOfMemory(stderr);
+                const bind = cli_args.parseBind(raw) catch |err| {
+                    return invalidManifest(stderr, path, "query {d} bind {d}: {s}", .{ index + 1, bind_index + 1, cli_args.parseErrorMessage(err) });
+                };
+                binds.append(arena, bind) catch return outOfMemory(stderr);
+            }
+        }
+
+        const resolved = resolvePath(arena, manifest_dir, label) orelse return outOfMemory(stderr);
+        queries.append(arena, .{ .label = label, .path = resolved, .sql = undefined, .binds = binds.items }) catch return outOfMemory(stderr);
+    }
+
+    const candidate_values = switch (root.get("candidates").?) {
+        .array => |array| array.items,
+        else => return invalidManifest(stderr, path, "candidates must be an array", .{}),
+    };
+    if (candidate_values.len < 1 or candidate_values.len > max_entries) {
+        return invalidManifest(stderr, path, "candidates must hold 1 to {d} entries", .{max_entries});
+    }
+    for (candidate_values, 0..) |candidate_value, index| {
+        const candidate_object = switch (candidate_value) {
+            .object => |object| object,
+            else => return invalidManifest(stderr, path, "candidate {d} must be an object", .{index + 1}),
+        };
+        if (candidate_object.count() != 1 or candidate_object.get("index_sql") == null) {
+            return invalidManifest(stderr, path, "candidate {d} must have only index_sql", .{index + 1});
+        }
+        const label = switch (candidate_object.get("index_sql").?) {
+            .string => |text| text,
+            else => return invalidManifest(stderr, path, "candidate {d} index_sql must be a string", .{index + 1}),
+        };
+        if (label.len == 0 or std.mem.indexOfScalar(u8, label, 0) != null) {
+            return invalidManifest(stderr, path, "candidate {d} index_sql must be a non-empty path", .{index + 1});
+        }
+        for (candidates.items) |existing| {
+            if (std.mem.eql(u8, existing.label, label)) {
+                return invalidManifest(stderr, path, "the index_sql path '{s}' appears more than once", .{label});
+            }
+        }
+        const resolved = resolvePath(arena, manifest_dir, label) orelse return outOfMemory(stderr);
+        candidates.append(arena, .{ .label = label, .path = resolved, .sql = undefined }) catch return outOfMemory(stderr);
+    }
+
+    for (queries.items) |*query| {
+        query.sql = readSqlFile(io, arena, query.path, query.label, .query, stderr) orelse return null;
+    }
+    for (candidates.items) |*candidate| {
+        candidate.sql = readSqlFile(io, arena, candidate.path, candidate.label, .candidate, stderr) orelse return null;
+    }
+
+    return .{
+        .queries = queries.items,
+        .candidates = candidates.items,
+    };
+}
+
+const SqlRole = enum { query, candidate };
+
+fn readSqlFile(
+    io: Io,
+    arena: std.mem.Allocator,
+    path: [:0]const u8,
+    label: []const u8,
+    role: SqlRole,
+    stderr: *Io.Writer,
+) ?[:0]const u8 {
+    return cli_args.readSqlFile(io, arena, path) catch |err| {
+        switch (role) {
+            .query => stderr.print("error: cannot read the batch SQL file '{s}' for the batch query '{s}': {s}\n", .{ path, label, cli_args.fileErrorMessage(err) }) catch {},
+            .candidate => stderr.print("error: cannot read the batch SQL file '{s}' for the batch candidate '{s}': {s}\n", .{ path, label, cli_args.fileErrorMessage(err) }) catch {},
+        }
+        return null;
+    };
+}
+
+fn resolvePath(arena: std.mem.Allocator, manifest_dir: []const u8, value: []const u8) ?[:0]const u8 {
+    const resolved = std.fs.path.resolveAlloc(arena, &.{ manifest_dir, value }) catch return null;
+    return arena.dupeSentinel(u8, resolved, 0) catch null;
+}
+
+fn invalidManifest(stderr: *Io.Writer, path: []const u8, comptime format: []const u8, args: anytype) ?Loaded {
+    stderr.print("error: the batch manifest '{s}' is not valid: ", .{path}) catch {};
+    stderr.print(format, args) catch {};
+    stderr.writeByte('\n') catch {};
+    return null;
+}
+
+fn outOfMemory(stderr: *Io.Writer) ?Loaded {
+    stderr.writeAll("error: out of memory\n") catch {};
+    return null;
+}
+
+pub fn run(
+    io: Io,
+    arena: std.mem.Allocator,
+    allocator: std.mem.Allocator,
+    inputs: Inputs,
+    loaded: Loaded,
+    stdout: *Io.Writer,
+    stderr: *Io.Writer,
+    cleanup_failed: *bool,
+    work: *const WorkDir,
+) ExitCode {
+    if (cli_control.signalPending()) return cli_control.reportInterrupted(stderr);
+
+    var baseline: QuerySession = .{};
+    var baseline_done = false;
+    defer if (!baseline_done) baseline.deinit(.baseline, stderr, cleanup_failed);
+    var baseline_failure: ExitCode = .rejected;
+    {
+        var capture: [2048]u8 = undefined;
+        var sink = Io.Writer.fixed(&capture);
+        if (!baseline.openDatabase(inputs.baseline_path, .baseline, &sink, &baseline_failure)) {
+            reportCaptured(stderr, "error: the batch baseline: ", sink.buffered());
+            return baseline_failure;
+        }
+    }
+
+    for (loaded.queries) |*query| {
+        if (!prepareQuery(&baseline, query, stderr)) return .rejected;
+    }
+
+    const tables = arena.alloc([]const u8, loaded.candidates.len) catch {
+        stderr.writeAll("error: out of memory\n") catch {};
+        return .rejected;
+    };
+    for (loaded.candidates, 0..) |*candidate, index| {
+        if (cli_control.signalPending()) return cli_control.reportInterrupted(stderr);
+        if (!checkCandidate(&baseline, candidate, stderr)) return .rejected;
+        tables[index] = baseline.database.indexTarget(arena, candidate.sql) catch {
+            stderr.writeAll("error: out of memory\n") catch {};
+            return .rejected;
+        };
+    }
+
+    var control = db.StepControl.init(io, inputs.timeout_ms, cli_control.cancelFlag());
+    for (loaded.queries) |*query| {
+        if (!prepareQuery(&baseline, query, stderr)) return .rejected;
+        _ = baseline.run(&control, null) catch |err| {
+            return baselineStepFailure(err, &baseline, &control, query.label, stderr);
+        };
+    }
+
+    const baseline_size = batchFileSize(io, inputs.baseline_path, null, stderr) orelse return .rejected;
+
+    const summaries = arena.alloc(CandidateSummary, loaded.candidates.len) catch {
+        stderr.writeAll("error: out of memory\n") catch {};
+        return .rejected;
+    };
+    var results: std.ArrayList(ResultEntry) = .empty;
+
+    for (loaded.candidates, 0..) |*candidate, index| {
+        if (cli_control.signalPending()) return cli_control.reportInterrupted(stderr);
+
+        var summary: CandidateSummary = .{ .candidate = candidate.label };
+
+        if (!resetVariant(io, arena, inputs.baseline_path, inputs.variant_path, candidate.label, stderr)) return .rejected;
+
+        var detail: db.SnapshotDetail = .{};
+        var candidate_failed = false;
+        work.applyCandidate(candidate.sql, &control, &detail) catch |err| switch (err) {
+            error.Timeout => {
+                summary.status = .index_timeout;
+                summary.failure_code = "index_timeout";
+                summary.failure_message = failureMessage(arena, "the CREATE INDEX did not finish within {d} ms", .{inputs.timeout_ms});
+                candidate_failed = true;
+            },
+            error.Interrupted => return cli_control.reportInterrupted(stderr),
+            error.ApplyFailed => {
+                if (detail.error_code == sqlite.SQLITE_CONSTRAINT or detail.error_code == sqlite.SQLITE_ERROR) {
+                    summary.status = .index_rejected;
+                    summary.failure_code = "index_rejected";
+                    summary.failure_message = truncateUtf8(arena, if (detail.len != 0) detail.text() else "SQLite rejected the CREATE INDEX");
+                    candidate_failed = true;
+                } else {
+                    const reason = if (detail.len != 0) detail.text() else @errorName(err);
+                    stderr.print("error: the batch candidate '{s}': the index could not be created: {s}\n", .{ candidate.label, reason }) catch {};
+                    return .rejected;
+                }
+            },
+            else => {
+                const reason = if (detail.len != 0) detail.text() else @errorName(err);
+                stderr.print("error: the batch candidate '{s}': the index could not be created: {s}\n", .{ candidate.label, reason }) catch {};
+                return .rejected;
+            },
+        };
+
+        if (candidate_failed) {
+            if (!cleanupVariant(io, arena, inputs.variant_path, candidate.label, stderr)) return .rejected;
+            summaries[index] = summary;
+            continue;
+        }
+
+        const variant_size = batchFileSize(io, inputs.variant_path, candidate.label, stderr) orelse return .rejected;
+        summary.size_increase = @as(i128, variant_size) - @as(i128, baseline_size);
+
+        const warnings = baseline.database.tableWarnings(arena, tables[index], &control) catch |err| {
+            switch (err) {
+                error.Timeout => {
+                    stderr.print("error: the batch diagnostics for candidate '{s}' exceeded the time limit of {d} ms\n", .{ candidate.label, inputs.timeout_ms }) catch {};
+                    return .timeout;
+                },
+                error.Interrupted => return cli_control.reportInterrupted(stderr),
+                else => {
+                    stderr.print("error: the batch diagnostics for candidate '{s}' failed: {s}\n", .{ candidate.label, baseline.message() }) catch {};
+                    return .rejected;
+                },
+            }
+        };
+
+        var variant: QuerySession = .{};
+        var variant_done = false;
+        defer if (!variant_done) variant.deinit(.variant, stderr, cleanup_failed);
+        var open_failure: ExitCode = .rejected;
+        {
+            var capture: [4096]u8 = undefined;
+            var sink = Io.Writer.fixed(&capture);
+            if (!variant.openDatabase(inputs.variant_path, .variant, &sink, &open_failure)) {
+                var prefix_buffer: [512]u8 = undefined;
+                const prefix = std.fmt.bufPrint(&prefix_buffer, "error: the batch variant for candidate '{s}': ", .{candidate.label}) catch "error: the batch variant: ";
+                reportCaptured(stderr, prefix, sink.buffered());
+                return open_failure;
+            }
+        }
+
+        for (loaded.queries) |*query| {
+            if (cli_control.signalPending()) return cli_control.reportInterrupted(stderr);
+            if (!prepareQuery(&baseline, query, stderr)) return .rejected;
+
+            var child_state = std.heap.ArenaAllocator.init(allocator);
+            defer child_state.deinit();
+            const child = child_state.allocator();
+
+            var rows: cli_pair.RowBuffers = undefined;
+            rows.init(child);
+            defer rows.deinit();
+
+            const keep_rows = !baseline.clues().alwaysIncomparable();
+            const before = switch (measureBaseline(child, &baseline, query, &control, if (keep_rows) &rows.baseline else null, stderr)) {
+                .measured => |value| value,
+                .failed => |code| return code,
+            };
+
+            if (!prepareVariant(&variant, query, candidate, stderr)) return .rejected;
+            const after: Measurement = switch (measureVariant(child, &variant, query, candidate, &control, if (keep_rows) &rows.variant else null, stderr)) {
+                .measured => |value| value,
+                .timeout => {
+                    summary.timeout += 1;
+                    results.append(arena, .{
+                        .query = query.label,
+                        .candidate = candidate.label,
+                        .status = .variant_timeout,
+                    }) catch return outOfMemoryCode(stderr);
+                    continue;
+                },
+                .failed => |code| return code,
+            };
+
+            const outcome = cli_comparison.decide(child, before, after, &rows.baseline, &rows.variant, .{
+                .clues = db.Clues.merge(baseline.clues(), variant.clues()),
+                .limit_or_offset = db.mentionsLimitOrOffset(query.sql),
+            });
+
+            var report: cli_report.Report = .{ .judgement = .{ .verdict = .not_judged } };
+            switch (outcome.verdict) {
+                .mismatch => {
+                    report.judgement.add("the result rows do not match, so the row counts are not judged");
+                    summary.mismatch += 1;
+                },
+                .incomparable => {
+                    report.judgement.add("the result rows cannot be compared, so the row counts are not judged");
+                    summary.incomparable += 1;
+                },
+                .match => {
+                    report.judgement = cli_comparison.judgeRows(before, after);
+                    switch (report.judgement.verdict) {
+                        .improved => summary.improved += 1,
+                        .no_effect => summary.no_effect += 1,
+                        .needs_check => summary.needs_check += 1,
+                        .not_judged => {},
+                    }
+                },
+            }
+            report.warnings = .{ .no_analyze_stats = warnings.no_analyze_stats, .data_too_small = warnings.data_too_small };
+            report.sizes = .{ .baseline = baseline_size, .variant = variant_size };
+
+            const header: cli_report.Header = .{
+                .database_path = inputs.database_path,
+                .select_path = query.label,
+                .index_path = candidate.label,
+                .work_parent = inputs.work_parent,
+                .sqlite_version = cli_query.sqliteVersion(),
+                .sqlite_source_id = cli_query.sqliteSourceId(),
+                .binds = query.binds,
+                .show_binds = inputs.show_binds,
+                .show_rows = inputs.show_rows,
+                .exit_code = comparisonExitCode(outcome.verdict),
+                .d1 = inputs.d1,
+            };
+            var rendered: Io.Writer.Allocating = .init(child);
+            cli_report.writeJsonTo(&rendered.writer, child, header, before, after, outcome, report, .minified) catch return reportFailure(stderr);
+            const comparison = arena.dupe(u8, rendered.written()) catch return outOfMemoryCode(stderr);
+            results.append(arena, .{
+                .query = query.label,
+                .candidate = candidate.label,
+                .status = .compared,
+                .outcome = outcome.verdict,
+                .judgement = report.judgement.verdict,
+                .rows = .{ .baseline = before.counters.rows_read, .variant = after.counters.rows_read },
+                .comparison = comparison,
+            }) catch return outOfMemoryCode(stderr);
+        }
+
+        var close_capture: [2048]u8 = undefined;
+        var close_sink = Io.Writer.fixed(&close_capture);
+        var ignored_cleanup = false;
+        variant.finalize();
+        variant.close(.variant, &close_sink, &ignored_cleanup);
+        variant_done = true;
+        if (variant.opened) {
+            var prefix_buffer: [512]u8 = undefined;
+            const prefix = std.fmt.bufPrint(&prefix_buffer, "error: the batch variant for candidate '{s}': ", .{candidate.label}) catch "error: the batch variant: ";
+            reportCaptured(stderr, prefix, close_sink.buffered());
+            return .rejected;
+        }
+
+        if (!cleanupVariant(io, arena, inputs.variant_path, candidate.label, stderr)) return .rejected;
+        summaries[index] = summary;
+    }
+
+    var close_capture: [2048]u8 = undefined;
+    var close_sink = Io.Writer.fixed(&close_capture);
+    var ignored_cleanup = false;
+    baseline.finalize();
+    baseline.close(.baseline, &close_sink, &ignored_cleanup);
+    baseline_done = true;
+    if (baseline.opened) {
+        reportCaptured(stderr, "error: the batch baseline: ", close_sink.buffered());
+        return .rejected;
+    }
+
+    const order = summaryOrder(arena, summaries) catch return outOfMemoryCode(stderr);
+    const recommended = recommendedIndex(summaries, order);
+    const code = batchExitCode(summaries, results.items);
+
+    switch (inputs.format) {
+        .json => writeBatchJson(stdout, allocator, summaries, order, results.items, recommended, code) catch |err| {
+            return reportWriteFailure(err, stderr);
+        },
+        .human => writeBatchHuman(stdout, inputs, loaded.queries.len, summaries, order, results.items, recommended) catch |err| {
+            return reportWriteFailure(err, stderr);
+        },
+        .kv => unreachable,
+    }
+    return code;
+}
+
+fn prepareQuery(session: *QuerySession, query: *const Query, stderr: *Io.Writer) bool {
+    var capture: [4096]u8 = undefined;
+    var sink = Io.Writer.fixed(&capture);
+    var failure: ExitCode = .rejected;
+    if (session.prepare(query.sql, query.binds, .baseline, "", &sink, &failure)) return true;
+    var prefix_buffer: [512]u8 = undefined;
+    const prefix = std.fmt.bufPrint(&prefix_buffer, "error: the batch query '{s}': ", .{query.label}) catch "error: the batch query: ";
+    reportCaptured(stderr, prefix, sink.buffered());
+    return false;
+}
+
+fn prepareVariant(session: *QuerySession, query: *const Query, candidate: *const Candidate, stderr: *Io.Writer) bool {
+    var capture: [4096]u8 = undefined;
+    var sink = Io.Writer.fixed(&capture);
+    var failure: ExitCode = .rejected;
+    if (session.prepare(query.sql, query.binds, .variant, "", &sink, &failure)) return true;
+    var prefix_buffer: [768]u8 = undefined;
+    const prefix = std.fmt.bufPrint(&prefix_buffer, "error: the batch variant for query '{s}' and candidate '{s}': ", .{ query.label, candidate.label }) catch "error: the batch variant: ";
+    reportCaptured(stderr, prefix, sink.buffered());
+    return false;
+}
+
+fn checkCandidate(session: *QuerySession, candidate: *const Candidate, stderr: *Io.Writer) bool {
+    var capture: [2048]u8 = undefined;
+    var sink = Io.Writer.fixed(&capture);
+    if (session.checkCreateIndex(candidate.sql, &sink)) return true;
+    var prefix_buffer: [512]u8 = undefined;
+    const prefix = std.fmt.bufPrint(&prefix_buffer, "error: the batch candidate '{s}': ", .{candidate.label}) catch "error: the batch candidate: ";
+    reportCaptured(stderr, prefix, sink.buffered());
+    return false;
+}
+
+fn reportCaptured(stderr: *Io.Writer, prefix: []const u8, captured: []const u8) void {
+    var text = std.mem.trimEnd(u8, captured, "\n");
+    if (std.mem.startsWith(u8, text, "error: ")) text = text["error: ".len..];
+    if (text.len == 0) text = "the input was rejected";
+    stderr.print("{s}{s}\n", .{ prefix, text }) catch {};
+}
+
+const StepResult = union(enum) {
+    measured: Measurement,
+    failed: ExitCode,
+};
+
+const VariantResult = union(enum) {
+    measured: Measurement,
+    timeout,
+    failed: ExitCode,
+};
+
+fn measureBaseline(
+    arena: std.mem.Allocator,
+    session: *QuerySession,
+    query: *const Query,
+    control: *db.StepControl,
+    rows_out: ?*result_rows.RowCollector,
+    stderr: *Io.Writer,
+) StepResult {
+    const plan = session.database.explainPlan(arena, query.sql, query.binds) catch |err| {
+        const detail = if (err == error.ExplainFailed and session.database.errorCode() != sqlite.SQLITE_OK)
+            session.message()
+        else
+            @errorName(err);
+        stderr.print("error: the batch query '{s}': the query plan could not be read: {s}\n", .{ query.label, detail }) catch {};
+        return .{ .failed = .rejected };
+    };
+    const rows = session.run(control, rows_out) catch |err| {
+        return .{ .failed = baselineStepFailure(err, session, control, query.label, stderr) };
+    };
+    return .{ .measured = .{
+        .rows = rows,
+        .plan = plan,
+        .counters = session.counters(),
+        .columns = session.columnCount(),
+    } };
+}
+
+fn measureVariant(
+    arena: std.mem.Allocator,
+    session: *QuerySession,
+    query: *const Query,
+    candidate: *const Candidate,
+    control: *db.StepControl,
+    rows_out: ?*result_rows.RowCollector,
+    stderr: *Io.Writer,
+) VariantResult {
+    const plan = session.database.explainPlan(arena, query.sql, query.binds) catch |err| {
+        const detail = if (err == error.ExplainFailed and session.database.errorCode() != sqlite.SQLITE_OK)
+            session.message()
+        else
+            @errorName(err);
+        stderr.print("error: the batch variant for query '{s}' and candidate '{s}': the query plan could not be read: {s}\n", .{ query.label, candidate.label, detail }) catch {};
+        return .{ .failed = .rejected };
+    };
+    const rows = session.run(control, rows_out) catch |err| switch (err) {
+        error.Timeout => return .timeout,
+        error.Interrupted => return .{ .failed = cli_control.reportInterrupted(stderr) },
+        error.StepFailed => {
+            stderr.print("error: the batch variant for query '{s}' and candidate '{s}': the SELECT failed: {s}\n", .{ query.label, candidate.label, session.message() }) catch {};
+            return .{ .failed = .rejected };
+        },
+    };
+    return .{ .measured = .{
+        .rows = rows,
+        .plan = plan,
+        .counters = session.counters(),
+        .columns = session.columnCount(),
+    } };
+}
+
+fn baselineStepFailure(err: db.StepError, session: *QuerySession, control: *db.StepControl, label: []const u8, stderr: *Io.Writer) ExitCode {
+    return switch (err) {
+        error.Timeout => blk: {
+            stderr.print("error: the batch baseline SELECT for query '{s}' exceeded the time limit of {d} ms\n", .{ label, control.timeout_ms }) catch {};
+            break :blk .timeout;
+        },
+        error.Interrupted => cli_control.reportInterrupted(stderr),
+        error.StepFailed => blk: {
+            stderr.print("error: the batch baseline SELECT for query '{s}' failed: {s}\n", .{ label, session.message() }) catch {};
+            break :blk .rejected;
+        },
+    };
+}
+
+fn resetVariant(
+    io: Io,
+    arena: std.mem.Allocator,
+    baseline_path: [:0]const u8,
+    variant_path: [:0]const u8,
+    label: []const u8,
+    stderr: *Io.Writer,
+) bool {
+    if (!cleanupVariant(io, arena, variant_path, label, stderr)) return false;
+    Io.Dir.cwd().copyFile(baseline_path, Io.Dir.cwd(), variant_path, io, .{}) catch |err| {
+        stderr.print("error: the batch candidate '{s}': cannot copy the baseline to the variant: {s}\n", .{ label, @errorName(err) }) catch {};
+        return false;
+    };
+    return true;
+}
+
+fn cleanupVariant(io: Io, arena: std.mem.Allocator, variant_path: [:0]const u8, label: []const u8, stderr: *Io.Writer) bool {
+    if (!deleteIfExists(io, variant_path, label, stderr)) return false;
+    const journal = std.fmt.allocPrintSentinel(arena, "{s}-journal", .{variant_path}, 0) catch {
+        stderr.writeAll("error: out of memory\n") catch {};
+        return false;
+    };
+    return deleteIfExists(io, journal, label, stderr);
+}
+
+fn deleteIfExists(io: Io, path: []const u8, label: []const u8, stderr: *Io.Writer) bool {
+    Io.Dir.cwd().deleteFile(io, path) catch |err| switch (err) {
+        error.FileNotFound => return true,
+        else => {
+            stderr.print("error: the batch candidate '{s}': the variant could not be removed: {s}\n", .{ label, @errorName(err) }) catch {};
+            return false;
+        },
+    };
+    return true;
+}
+
+fn batchFileSize(io: Io, path: [:0]const u8, candidate: ?[]const u8, stderr: *Io.Writer) ?u64 {
+    const stat = Io.Dir.cwd().statFile(io, path, .{}) catch |err| {
+        if (candidate) |label| {
+            stderr.print("error: the batch candidate '{s}': cannot read the size of the variant: {s}\n", .{ label, @errorName(err) }) catch {};
+        } else {
+            stderr.print("error: the batch baseline: cannot read the size of the baseline: {s}\n", .{@errorName(err)}) catch {};
+        }
+        return null;
+    };
+    return stat.size;
+}
+
+fn truncateUtf8(arena: std.mem.Allocator, text: []const u8) []const u8 {
+    var buffer: [512]u8 = undefined;
+    const length = cli_control.copyUtf8(&buffer, text);
+    return arena.dupe(u8, buffer[0..length]) catch "";
+}
+
+fn failureMessage(arena: std.mem.Allocator, comptime format: []const u8, args: anytype) []const u8 {
+    return std.fmt.allocPrint(arena, format, args) catch "";
+}
+
+fn comparisonExitCode(verdict: cli_comparison.Verdict) u8 {
+    return switch (verdict) {
+        .match => 0,
+        .mismatch => 3,
+        .incomparable => 4,
+    };
+}
+
+fn isEligible(summary: CandidateSummary) bool {
+    return summary.status == .compared and
+        summary.mismatch == 0 and
+        summary.incomparable == 0 and
+        summary.needs_check == 0 and
+        summary.timeout == 0 and
+        summary.improved >= 1;
+}
+
+fn eligibleLessThan(summaries: []const CandidateSummary, a: usize, b: usize) bool {
+    const left = summaries[a];
+    const right = summaries[b];
+    if (left.improved != right.improved) return left.improved > right.improved;
+    if (left.size_increase != right.size_increase) return left.size_increase < right.size_increase;
+    return a < b;
+}
+
+fn summaryOrder(arena: std.mem.Allocator, summaries: []const CandidateSummary) ![]usize {
+    var order: std.ArrayList(usize) = .empty;
+    var eligible: std.ArrayList(usize) = .empty;
+    for (summaries, 0..) |summary, index| {
+        if (isEligible(summary)) try eligible.append(arena, index);
+    }
+    std.mem.sort(usize, eligible.items, @as([]const CandidateSummary, summaries), eligibleLessThan);
+    for (eligible.items) |index| try order.append(arena, index);
+    for (summaries, 0..) |summary, index| {
+        if (summary.status == .compared and !isEligible(summary)) try order.append(arena, index);
+    }
+    for (summaries, 0..) |summary, index| {
+        if (summary.status != .compared) try order.append(arena, index);
+    }
+    return order.items;
+}
+
+fn recommendedIndex(summaries: []const CandidateSummary, order: []const usize) ?usize {
+    for (order) |index| {
+        if (isEligible(summaries[index])) return index;
+    }
+    return null;
+}
+
+fn batchExitCode(summaries: []const CandidateSummary, results: []const ResultEntry) ExitCode {
+    var mismatch = false;
+    var incomparable = false;
+    var timeout = false;
+    for (results) |result| {
+        switch (result.status) {
+            .variant_timeout => timeout = true,
+            .compared => switch (result.outcome orelse .match) {
+                .mismatch => mismatch = true,
+                .incomparable => incomparable = true,
+                .match => {},
+            },
+        }
+    }
+    for (summaries) |summary| {
+        switch (summary.status) {
+            .index_timeout => timeout = true,
+            .index_rejected, .compared => {},
+        }
+    }
+    if (mismatch) return .mismatch;
+    for (summaries) |summary| {
+        if (summary.status == .index_rejected) return .rejected;
+    }
+    if (timeout) return .timeout;
+    if (incomparable) return .incomparable;
+    return .ok;
+}
+
+fn writeBatchJson(
+    stdout: *Io.Writer,
+    allocator: std.mem.Allocator,
+    summaries: []const CandidateSummary,
+    order: []const usize,
+    results: []const ResultEntry,
+    recommended: ?usize,
+    code: ExitCode,
+) !void {
+    var out: Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    var json: std.json.Stringify = .{
+        .writer = &out.writer,
+        .options = .{ .whitespace = .indent_2, .escape_unicode = true },
+    };
+    try json.beginObject();
+    try json.objectField("batch_schema_version");
+    try json.write(batch_schema_version);
+    try json.objectField("exit_code");
+    try json.write(@as(u8, @intCast(@backingInt(code))));
+    try json.objectField("recommended");
+    if (recommended) |index| {
+        try cli_report.writeJsonText(&json, allocator, summaries[index].candidate);
+    } else {
+        try json.write(null);
+    }
+    try json.objectField("summary");
+    try json.beginArray();
+    for (order) |index| {
+        const summary = summaries[index];
+        const compared = summary.status == .compared;
+        try json.beginObject();
+        try json.objectField("candidate");
+        try cli_report.writeJsonText(&json, allocator, summary.candidate);
+        try json.objectField("status");
+        try json.write(@tagName(summary.status));
+        try json.objectField("failure");
+        if (compared) {
+            try json.write(null);
+        } else {
+            try json.beginObject();
+            try json.objectField("code");
+            try json.write(summary.failure_code);
+            try json.objectField("message");
+            try cli_report.writeJsonText(&json, allocator, summary.failure_message);
+            try json.endObject();
+        }
+        try json.objectField("improved");
+        try writeOptionalCount(&json, compared, summary.improved);
+        try json.objectField("no_effect");
+        try writeOptionalCount(&json, compared, summary.no_effect);
+        try json.objectField("needs_check");
+        try writeOptionalCount(&json, compared, summary.needs_check);
+        try json.objectField("mismatch");
+        try writeOptionalCount(&json, compared, summary.mismatch);
+        try json.objectField("incomparable");
+        try writeOptionalCount(&json, compared, summary.incomparable);
+        try json.objectField("timeout");
+        try writeOptionalCount(&json, compared, summary.timeout);
+        try json.objectField("size_increase");
+        if (compared) try json.write(summary.size_increase) else try json.write(null);
+        try json.endObject();
+    }
+    try json.endArray();
+    try json.objectField("results");
+    try json.beginArray();
+    for (results) |result| {
+        try json.beginObject();
+        try json.objectField("query");
+        try cli_report.writeJsonText(&json, allocator, result.query);
+        try json.objectField("candidate");
+        try cli_report.writeJsonText(&json, allocator, result.candidate);
+        try json.objectField("status");
+        try json.write(@tagName(result.status));
+        try json.objectField("comparison");
+        if (result.comparison.len == 0) {
+            try json.write(null);
+        } else {
+            try json.print("{s}", .{result.comparison});
+        }
+        try json.endObject();
+    }
+    try json.endArray();
+    try json.endObject();
+    try out.writer.writeByte('\n');
+    try stdout.writeAll(out.written());
+}
+
+fn writeOptionalCount(json: *std.json.Stringify, compared: bool, value: u64) !void {
+    if (compared) try json.write(value) else try json.write(null);
+}
+
+fn writeBatchHuman(
+    stdout: *Io.Writer,
+    inputs: Inputs,
+    query_count: usize,
+    summaries: []const CandidateSummary,
+    order: []const usize,
+    results: []const ResultEntry,
+    recommended: ?usize,
+) !void {
+    var candidate_width: usize = "candidate".len;
+    for (summaries) |summary| candidate_width = @max(candidate_width, summary.candidate.len);
+    var query_width: usize = "query".len;
+    for (results) |result| query_width = @max(query_width, result.query.len);
+    var result_candidate_width: usize = "candidate".len;
+    for (results) |result| result_candidate_width = @max(result_candidate_width, result.candidate.len);
+
+    try stdout.print(
+        "batch: {d} {s}, {d} {s}\ndatabase: {s}\nsqlite: {s}\nwork-dir-parent: {s}\n\n",
+        .{ query_count, word(query_count, "query", "queries"), summaries.len, word(summaries.len, "candidate", "candidates"), inputs.database_path, cli_query.sqliteVersion(), inputs.work_parent },
+    );
+    try stdout.writeAll("Summary\n  ");
+    try writeCell(stdout, "candidate", candidate_width);
+    for ([_][]const u8{ "status", "improved", "no-effect", "needs-check", "mismatch", "incomparable", "timeout", "size increase" }) |header| {
+        try stdout.writeAll("  ");
+        try writeCell(stdout, header, 12);
+    }
+    try stdout.writeByte('\n');
+    for (order) |index| {
+        const summary = summaries[index];
+        try stdout.writeAll("  ");
+        try writeCell(stdout, summary.candidate, candidate_width);
+        try stdout.writeAll("  ");
+        try writeCell(stdout, @tagName(summary.status), 12);
+        if (summary.status == .compared) {
+            var buffers: [6][32]u8 = undefined;
+            const counts = [_]u64{ summary.improved, summary.no_effect, summary.needs_check, summary.mismatch, summary.incomparable, summary.timeout };
+            for (counts, 0..) |count, position| {
+                const text = std.fmt.bufPrint(&buffers[position], "{d}", .{count}) catch "?";
+                try stdout.writeAll("  ");
+                try writeCell(stdout, text, 12);
+            }
+            var size_buffer: [48]u8 = undefined;
+            const size = sizeText(&size_buffer, summary.size_increase);
+            try stdout.writeAll("  ");
+            try writeCell(stdout, size, 12);
+        } else {
+            for (0..7) |_| {
+                try stdout.writeAll("  ");
+                try writeCell(stdout, "-", 12);
+            }
+        }
+        try stdout.writeByte('\n');
+    }
+
+    try stdout.writeAll("\nRecommendation: ");
+    if (recommended) |index| {
+        try stdout.writeAll(summaries[index].candidate);
+    } else {
+        try stdout.writeAll("none");
+    }
+    try stdout.writeByte('\n');
+
+    try stdout.writeAll("\nResults\n  ");
+    try writeCell(stdout, "query", query_width);
+    try stdout.writeAll("  ");
+    try writeCell(stdout, "candidate", result_candidate_width);
+    for ([_][]const u8{ "result", "verdict", "rows read" }) |header| {
+        try stdout.writeAll("  ");
+        try writeCell(stdout, header, 12);
+    }
+    try stdout.writeByte('\n');
+    for (results) |result| {
+        try stdout.writeAll("  ");
+        try writeCell(stdout, result.query, query_width);
+        try stdout.writeAll("  ");
+        try writeCell(stdout, result.candidate, result_candidate_width);
+        try stdout.writeAll("  ");
+        if (result.status == .variant_timeout) {
+            try writeCell(stdout, "-", 12);
+            try stdout.writeAll("  ");
+            try writeCell(stdout, "timeout", 12);
+            try stdout.writeAll("  ");
+            try writeCell(stdout, "-", 12);
+        } else {
+            try writeCell(stdout, resultText(result.outcome orelse .match), 12);
+            try stdout.writeAll("  ");
+            try writeCell(stdout, result.judgement.text(), 12);
+            try stdout.writeAll("  ");
+            var buffer: [64]u8 = undefined;
+            if (result.rows) |rows| {
+                const text = std.fmt.bufPrint(&buffer, "{d} -> {d}", .{ rows.baseline, rows.variant }) catch "?";
+                try writeCell(stdout, text, 12);
+            } else {
+                try writeCell(stdout, "-", 12);
+            }
+        }
+        try stdout.writeByte('\n');
+    }
+
+    var failures_printed = false;
+    for (order) |index| {
+        const summary = summaries[index];
+        if (summary.status == .compared) continue;
+        if (!failures_printed) {
+            try stdout.writeAll("\nRejected candidates\n");
+            failures_printed = true;
+        }
+        try stdout.print("  {s}: {s}: {s}\n", .{ summary.candidate, @tagName(summary.status), summary.failure_message });
+    }
+}
+
+fn word(count: usize, singular: []const u8, plural: []const u8) []const u8 {
+    return if (count == 1) singular else plural;
+}
+
+fn writeCell(writer: *Io.Writer, text: []const u8, width: usize) !void {
+    try writer.writeAll(text);
+    if (text.len < width) try writer.splatByteAll(' ', width - text.len);
+}
+
+fn sizeText(buffer: []u8, increase: i128) []const u8 {
+    if (increase > -1024 and increase < 1024) {
+        return std.fmt.bufPrint(buffer, "{d} B", .{increase}) catch "";
+    }
+    if (increase > -1024 * 1024 and increase < 1024 * 1024) {
+        const kib = @as(f64, @floatFromInt(increase)) / 1024.0;
+        return std.fmt.bufPrint(buffer, "{d:.1} KiB", .{kib}) catch "";
+    }
+    const mib = @as(f64, @floatFromInt(increase)) / (1024.0 * 1024.0);
+    return std.fmt.bufPrint(buffer, "{d:.2} MiB", .{mib}) catch "";
+}
+
+fn resultText(verdict: cli_comparison.Verdict) []const u8 {
+    return switch (verdict) {
+        .match => "match",
+        .mismatch => "mismatch",
+        .incomparable => "incomparable",
+    };
+}
+
+fn outOfMemoryCode(stderr: *Io.Writer) ExitCode {
+    stderr.writeAll("error: out of memory\n") catch {};
+    return .rejected;
+}
+
+fn reportFailure(stderr: *Io.Writer) ExitCode {
+    stderr.writeAll("error: the report could not be written\n") catch {};
+    return .rejected;
+}
+
+fn reportWriteFailure(err: anyerror, stderr: *Io.Writer) ExitCode {
+    return switch (err) {
+        error.OutOfMemory => outOfMemoryCode(stderr),
+        else => reportFailure(stderr),
+    };
+}
+
+const testing = std.testing;
+
+test "a variant timeout is a candidate failure without an error line" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "variant.db", .data = "" });
+    const variant_path = try tmp.dir.realPathFileAlloc(testing.io, "variant.db", testing.allocator);
+    defer testing.allocator.free(variant_path);
+    try db.createTestDatabase(variant_path,
+        \\CREATE TABLE t(a INTEGER);
+        \\INSERT INTO t VALUES (1), (2);
+    );
+
+    const sql = "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 20000000) SELECT count(*) FROM c";
+    var stderr_buffer: [256]u8 = undefined;
+    var stderr = Io.Writer.fixed(&stderr_buffer);
+    var failure: ExitCode = .ok;
+    var cleanup_failed = false;
+    var session: QuerySession = .{};
+    defer session.deinit(.variant, &stderr, &cleanup_failed);
+    if (!session.open(variant_path, sql, &.{}, .variant, "", &stderr, &failure)) return error.OpenFailed;
+
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    var control = db.StepControl.init(testing.io, 1, cli_control.cancelFlag());
+    const query: Query = .{ .label = "q.sql", .path = "", .sql = sql, .binds = &.{} };
+    const candidate: Candidate = .{ .label = "c.sql", .path = "", .sql = "" };
+    const result = measureVariant(arena_state.allocator(), &session, &query, &candidate, &control, null, &stderr);
+    switch (result) {
+        .timeout => {},
+        else => return error.ExpectedVariantTimeout,
+    }
+    try testing.expectEqualStrings("", stderr.buffered());
+}

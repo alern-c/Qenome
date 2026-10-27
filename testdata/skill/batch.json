@@ -1,0 +1,9 @@
+{
+  "queries": [
+    { "select": "select.sql", "binds": ["1:int:1"] }
+  ],
+  "candidates": [
+    { "index_sql": "index.sql" },
+    { "index_sql": "index-status.sql" }
+  ]
+}

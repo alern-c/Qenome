@@ -46,6 +46,7 @@ CANONICAL_FILES = {
         'const cli_timing = @import("cli/timing.zig");\n'
         'const cli_report = @import("cli/report.zig");\n'
         'const cli_pair = @import("cli/pair.zig");\n'
+        'const cli_batch = @import("cli/batch.zig");\n'
         "\n"
         "pub fn run() void {}\n"
         "\n"
@@ -111,6 +112,20 @@ CANONICAL_FILES = {
         'const cli_timing = @import("timing.zig");\n'
         'const cli_workspace = @import("workspace.zig");\n'
     ),
+    "src/cli/batch.zig": (
+        'const std = @import("std");\n'
+        'const db = @import("../db.zig");\n'
+        'const result = @import("../result.zig");\n'
+        'const sqlite = @import("../sqlite.zig");\n'
+        'const cli_args = @import("args.zig");\n'
+        'const cli_comparison = @import("comparison.zig");\n'
+        'const cli_control = @import("control.zig");\n'
+        'const cli_d1 = @import("d1.zig");\n'
+        'const cli_pair = @import("pair.zig");\n'
+        'const cli_query = @import("query.zig");\n'
+        'const cli_report = @import("report.zig");\n'
+        'const cli_workspace = @import("workspace.zig");\n'
+    ),
     "src/cli/tests.zig": (
         'const std = @import("std");\n'
         'const cli = @import("../cli.zig");\n'
@@ -171,7 +186,7 @@ def expect_rejected(name, code, output, rule, mention=None):
 def main():
     code, output = case(None)
     expect_clean("the smallest approved tree passes", code, output)
-    expect("the whole tree is checked", "(16 files checked" in output, output.strip())
+    expect("the whole tree is checked", "(17 files checked" in output, output.strip())
 
     code, output = case(lambda root: os.remove(os.path.join(root, "src/cli/tests.zig")))
     expect_rejected("a missing test file fails", code, output, "missing-file", "src/cli/tests.zig")

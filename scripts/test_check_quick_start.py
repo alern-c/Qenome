@@ -18,6 +18,8 @@ COMMANDS = (
     "# expect: result=match verdict=no-effect exit=0",
     "./tools/qenome result=incomparable verdict=not-judged code=4  "
     "# expect: result=incomparable verdict=not-judged exit=4",
+    "./tools/qenome --batch batch.json recommended=cases/improved.index.sql  "
+    "# expect: recommended=cases/improved.index.sql exit=0",
 )
 
 FAKE_QENOME = (
@@ -26,12 +28,14 @@ FAKE_QENOME = (
     "verdict=improved\n"
     "code=0\n"
     "summary=1\n"
+    "recommended=none\n"
     'for arg in "$@"; do\n'
     '  case "$arg" in\n'
     "    result=*) result=${arg#result=} ;;\n"
     "    verdict=*) verdict=${arg#verdict=} ;;\n"
     "    code=*) code=${arg#code=} ;;\n"
     "    summary=*) summary=${arg#summary=} ;;\n"
+    "    recommended=*) recommended=${arg#recommended=} ;;\n"
     "  esac\n"
     "done\n"
     'if [ "$summary" = 0 ]; then\n'
@@ -42,6 +46,7 @@ FAKE_QENOME = (
     'printf "  result rows   %s (the same rows on both copies)\\n" "$result"\n'
     'printf "  verdict       %s: for the test\\n" "$verdict"\n'
     'printf "  time          median 1.00 ms -> 2.00 ms (2.000x)\\n"\n'
+    'printf "\\nRecommendation: %s\\n" "$recommended"\n'
     'printf "\\nPlan\\n"\n'
     'exit "$code"\n'
 )
@@ -200,7 +205,7 @@ def main():
 
     code, output = case()
     expect_clean("the canonical tree passes", code, output)
-    expect("the canonical tree counts the commands", "3 commands checked" in output, output.strip())
+    expect("the canonical tree counts the commands", "4 commands checked" in output, output.strip())
     expect("the canonical tree shows each verdict", "verdict=no-effect" in output, output.strip())
     expect("the canonical tree reports the root", "root=" in output, output.strip())
 
@@ -223,6 +228,15 @@ def main():
         )
     )
     expect_rejected("an exit status that differs fails", code, output, "the exit status differs")
+
+    code, output = case(
+        patch(
+            "README.md",
+            "# expect: recommended=cases/improved.index.sql exit=0",
+            "# expect: recommended=cases/no-effect.index.sql exit=0",
+        )
+    )
+    expect_rejected("a recommendation that differs fails", code, output, "the recommendation differs")
 
     code, output = case(
         patch("README.md", "# expect: result=incomparable", "# expect: result=mismatch")
