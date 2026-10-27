@@ -4,7 +4,7 @@
 
 # Qenome
 
-**索引をマージする前に、その索引がクエリの役に立つかを調べる CLI。**
+**インデックスをマージする前に、そのインデックスがクエリの役に立つかを調べる CLI。**
 
 [![npm の版](https://img.shields.io/npm/v/qenome?style=flat-square)](https://www.npmjs.com/package/qenome)
 [![ライセンス: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square)](LICENSE)
@@ -22,7 +22,7 @@
 
 ## 特徴
 
-- **元のデータベースは変更しません。** 読み取り専用で開き、サンドボックスのコピーで比較するので、役に立たない候補の索引はマージの前に捨てられます。
+- **元のデータベースは変更しません。** 読み取り専用で開き、サンドボックスのコピーで比較するので、役に立たない候補のインデックスはマージの前に捨てられます。
 - **判定は時間ではなく、読んだ行数。** 読んだ行数と書いた行数は、ローカル D1 と同じ数え方（workerd のパッチ）。`--runs 0` でも判定は残り、計時だけを省きます。
 - **結果の行も照合します。** 2つのコピーが同じ行を同じ回数返すかを多重集合として比べ、一致しない・比較できない結果は合格にせず報告します。
 - **ローカル D1 のバインディングだけで試せます。** `--d1 <BINDING>` が wrangler の設定からローカルデータベースを探し、`--config` で設定ファイルを指定できます。
@@ -126,7 +126,7 @@ zig build
 
 ## ローカル D1 を調べる
 
-データベースがローカルの Cloudflare D1 で、索引をマージする前に判定が欲しいときに使います。必要なものは、`npx` のための Node.js、wrangler のプロジェクト、`SELECT` を1本入れたファイル、`CREATE INDEX` を1本入れたファイルです。
+データベースがローカルの Cloudflare D1 で、インデックスをマージする前に判定が欲しいときに使います。必要なものは、`npx` のための Node.js、wrangler のプロジェクト、`SELECT` を1本入れたファイル、`CREATE INDEX` を1本入れたファイルです。
 
 ローカルのデータベースがまだ無いときは、一度だけ作ります。`DB` は `d1_databases` のバインディング名です。
 
@@ -154,13 +154,13 @@ D1 のスキーマを変えるエージェントは、`CREATE INDEX` を残す�
 
 ## なぜ他の方法ではないのか
 
-**EXPLAIN QUERY PLAN。** 計画は、SQLite が索引に触るつもりかを示します。データのコピーに対して `SELECT` を実行しないので、結果の行が変わったか、何行読み書きしたか、データベースファイルがどれだけ増えたかは出ません。Qenome は両方のサンドボックスコピーで文を実行し、ローカル D1 と同じ数え方（workerd のパッチ）で数えます。
+**EXPLAIN QUERY PLAN。** 計画は、SQLite がインデックスに触るつもりかを示します。データのコピーに対して `SELECT` を実行しないので、結果の行が変わったか、何行読み書きしたか、データベースファイルがどれだけ増えたかは出ません。Qenome は両方のサンドボックスコピーで文を実行し、ローカル D1 と同じ数え方（workerd のパッチ）で数えます。
 
-**`wrangler d1 execute --local`。** ローカルの wrangler は、呼び出し全体の所要時間を1つ出せます。その時間は実行のたびに動き、候補の索引をコピー上に作って現在のスキーマと比較することはしません。Qenome は元のデータベースを変えず、行数で索引を判定します。時間はその判定の横に置く参考値です。
+**`wrangler d1 execute --local`。** ローカルの wrangler は、呼び出し全体の所要時間を1つ出せます。その時間は実行のたびに動き、候補のインデックスをコピー上に作って現在のスキーマと比較することはしません。Qenome は元のデータベースを変えず、行数でインデックスを判定します。時間はその判定の横に置く参考値です。
 
 **本番 D1 のメトリクス。** この数値は、まだ本番 D1 と照合していません。Qenome が測るのはローカルのデータベースだけです。
 
-**索引を入れてアプリを見る。** それは出荷するデータベースへ索引を書き込みます。Qenome はサンドボックスのコピーで試すので、役に立たない候補はマージの前に捨てられます。
+**インデックスを入れてアプリを見る。** それは出荷するデータベースへインデックスを書き込みます。Qenome はサンドボックスのコピーで試すので、役に立たない候補はマージの前に捨てられます。
 
 ## クイックスタート
 
@@ -184,13 +184,13 @@ zig build
 
 3つの例は `zig-out/bin/qenome` を実行します。各コマンドの末尾には、その例が返すべき結果（Summary の `result` と `verdict`、終了コード）を書いてあります。`python3 scripts/check_all.py` と CI の quality ワークフローは、これらの行を書いてあるとおりに実行するので、README とプログラムのずれは見つかります。`--runs 40` は、負荷のあるマシンでも中央値を安定させるための指定です（既定は `10`）。
 
-全走査をなくす索引: 候補の索引で `SCAN events` が `SEARCH events USING INDEX ix_events_customer_id (customer_id=?)` に変わり、読んだ行数が 200,000 から 101 に減り、両方のコピーが同じ100行を返します。
+全走査をなくすインデックス: 候補のインデックスで `SCAN events` が `SEARCH events USING INDEX ix_events_customer_id (customer_id=?)` に変わり、読んだ行数が 200,000 から 101 に減り、両方のコピーが同じ100行を返します。
 
 ```sh
 ./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/improved.sql testdata/cases/improved.index.sql --bind 1:int:1234 --runs 40  # expect: result=match verdict=improved exit=0
 ```
 
-効果のない索引: SELECT が列を `lower()` で包むため、SQLite は `status` の索引を使えません。計画・読んだ行数・書いた行数は変わりません。
+効果のないインデックス: SELECT が列を `lower()` で包むため、SQLite は `status` のインデックスを使えません。計画・読んだ行数・書いた行数は変わりません。
 
 ```sh
 ./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/no-effect.sql testdata/cases/no-effect.index.sql --bind 1:text:ok --runs 40  # expect: result=match verdict=no-effect exit=0
@@ -225,7 +225,7 @@ qenome --d1 DB select.sql index.sql
 - `--index-sql <FILE>`: 候補の CREATE INDEX を1本書いたファイル（必須、1回だけ）
 - `--bind <N>:<TYPE>[:<VALUE>]`: SELECT のパラメータ N に渡す型付きの値。繰り返し指定できる。N は SQLite のパラメータ番号で、名前付きパラメータは最初に現れたときの番号を共有し、`?NNN` は NNN を使う。TYPE は int / real / text / null（null は値を取らない）。1 からパラメータ数までの各番号をちょうど1回ずつ指定する必要があり、パラメータの無い SELECT に `--bind` は付けられない。値は引数の残り全体なので、text には `:` を含められる
 - `--runs <N>`: 結果が一致したあとの計測ラウンド数。各ラウンドは各コピーで SELECT を1回計測する。既定は 10、0 で計測しないが読んだ行数と判定は残る、最大 1000。1秒を超える計測は進捗を stderr に出す
-- `--timeout-ms <MS>`: 索引作成と SELECT 1回あたりの制限時間。既定は 30000、0 で無効。1回の実行は全体で、データベースのコピーに加えて `(3 + 4 × runs)` 回分の制限時間に加え、最大3つの診断文それぞれの制限時間までかかることがある
+- `--timeout-ms <MS>`: インデックス作成と SELECT 1回あたりの制限時間。既定は 30000、0 で無効。1回の実行は全体で、データベースのコピーに加えて `(3 + 4 × runs)` 回分の制限時間に加え、最大3つの診断文それぞれの制限時間までかかることがある
 - `--format <human|kv|json>`: 出力形式（既定 human）。「出力形式」を参照
 - `--show-binds`: バインド値を出す。付けない場合、human はバインドを出さず、kv と json は番号・型・テキストの長さだけを出し、値をログに残さない
 - `--show-rows`: 片方のコピーだけが返した例の行を出す。付けない場合、どの形式も件数だけを出して行の値をログに残さない。human はこのフラグで再実行するよう案内する
@@ -234,7 +234,7 @@ qenome --d1 DB select.sql index.sql
 
 値を取るオプションは `--db=app.db` のように `=` でも書けます。
 
-Qenome はデータベースを読み取り専用で開き、SQLite の backup API を使って、Linux と macOS では `$TMPDIR`（既定は `/tmp`）、Windows では `%TMP%`、`%TEMP%`、`%USERPROFILE%` のうち設定されている最初の場所の下にある非公開ディレクトリへコピーします。このコピーが baseline で、2つ目のコピーが variant になり、候補の索引は variant にだけ作ります。SELECT は両方のコピーで実行し、結果の行を多重集合として比較します（同じ行が同じ回数だけ現れること）。行の順序は参考情報として示し、一致判定には含めません。
+Qenome はデータベースを読み取り専用で開き、SQLite の backup API を使って、Linux と macOS では `$TMPDIR`（既定は `/tmp`）、Windows では `%TMP%`、`%TEMP%`、`%USERPROFILE%` のうち設定されている最初の場所の下にある非公開ディレクトリへコピーします。このコピーが baseline で、2つ目のコピーが variant になり、候補のインデックスは variant にだけ作ります。SELECT は両方のコピーで実行し、結果の行を多重集合として比較します（同じ行が同じ回数だけ現れること）。行の順序は参考情報として示し、一致判定には含めません。
 
 読んだ行数と書いた行数は、この最初の1回の実行から取るので追加のコストはなく、`--runs 0` でも残ります。結果が一致し、`--runs` が 0 でないとき、SELECT をもう一度両方のコピーで参考値として計測します。各コピーには、行の比較に使った計測しないウォームアップが1回あります。計測ラウンドは baseline→variant と variant→baseline を交互に繰り返します（ABBA）。1ラウンドは reset 文から `SQLITE_DONE` までの `sqlite3_step` を、割り込みの確認を含めて計測します。列の読み取り、prepare、bind、計画の取得は計測しません。各コピーは書き込み直後の接続とページキャッシュを再利用するため、キャッシュはウォームです。非公開ディレクトリは、結果にかかわらず終了前に削除します。
 
@@ -283,7 +283,7 @@ npx wrangler@4.152.0 d1 execute DEMO_DB --local --file schema.sql
 qenome --d1 DEMO_DB select.sql index.sql --runs 40
 ```
 
-1行目が `.wrangler/` にローカルのデータベースを作り、20万行を投入します。2行目が `select.sql` と `index.sql` の候補索引を比較し、`result rows` が `match`、`verdict` が `improved`、実行計画が `SCAN events` から `SEARCH events USING INDEX ix_events_customer_id (customer_id=?)` に変わり、D1 ブロックに SQLite の版と注意が出ます。終了コードは 0 です。
+1行目が `.wrangler/` にローカルのデータベースを作り、20万行を投入します。2行目が `select.sql` と `index.sql` の候補のインデックスを比較し、`result rows` が `match`、`verdict` が `improved`、実行計画が `SCAN events` から `SEARCH events USING INDEX ix_events_customer_id (customer_id=?)` に変わり、D1 ブロックに SQLite の版と注意が出ます。終了コードは 0 です。
 
 `schema.sql` は `events` を作り直すので、いつでも再実行できます。デプロイはしません。`qenome` は PATH 上のものを使う想定で、[ソースからビルド](#ソースからビルド) の直後は `./zig-out/bin/qenome` です。`4.152.0` はサンプルを確認した wrangler の版です。
 
@@ -352,7 +352,7 @@ fi
 | `plan_changed` | 実行計画が baseline と variant で変わったか |
 | `baseline` / `variant` | それぞれの `rows`、`plan`（`id` / `parent` / `kind` / `covering` / `automatic` / `detail`）、`counters`（`rows_read` / `rows_written` / `fullscan_steps` / `vm_steps` / `sort_ops` / `autoindex_rows`） |
 | `timing` | `rounds`、`variant_faster_rounds`、`ratio`、`baseline` / `variant` の `median_ns` / `p25_ns` / `p75_ns` / `min_ns` / `max_ns`。計時しなければ `null`、baseline の median が 0 なら `ratio` は `null`。`noise_band`、`confidence_interval`、`median_difference_ns`、`effect`、`unavailable_reason` は下記の時間統計 |
-| `size_bytes` | `baseline` / `variant` / `increase`（データベース全体のバイト数。索引単体ではない） |
+| `size_bytes` | `baseline` / `variant` / `increase`（データベース全体のバイト数。インデックス単体ではない） |
 | `inputs` | `database` / `select` / `index_sql` のパス |
 | `d1` | `--d1` のときだけ出る: `binding` / `config` / `database_id` / `local_database` / `sqlite_version`（D1 側の 3.53.4） / `sqlite_version_note` / `caution` |
 | `environment` | `qenome_version`（`--version` と同じ、`build.zig.zon` の版） / `sqlite_version` / `sqlite_source_id` / `zig_version` / `build_mode` / `os` / `arch` / `work_dir_parent` |
@@ -373,7 +373,7 @@ fi
 | コード | 意味 |
 | --- | --- |
 | 0 | 結果が一致した |
-| 1 | 入力を拒否した（読めないファイル、不正・拒否された SQL、バインドの不一致、索引の作成失敗） |
+| 1 | 入力を拒否した（読めないファイル、不正・拒否された SQL、バインドの不一致、インデックスの作成失敗） |
 | 2 | 引数の誤り |
 | 3 | 結果が一致しない |
 | 4 | 結果を比較できない、または `--d1` がローカルデータベースをちょうど1つに決められない（設定が無い、設定が複数、設定が読めない・不正、バインディングが不明か重複、database id が無い、ローカルファイルが未作成、ローカルファイルを開けない） |
@@ -388,7 +388,7 @@ fi
 - 元のデータベースを変更しない（読み取り専用で開く）
 - 比較できない結果を「一致」「成功」として報告しない
 - 改善かどうかは読んだ行数で判定し、時間では判定しない（読んだ行数が減らない SELECT は改善ではない）
-- 容量はデータベース全体の増分であり、索引単体のサイズではない
+- 容量はデータベース全体の増分であり、インデックス単体のサイズではない
 - 複数文・書込・危険な DDL は拒否する
 - 正常・失敗・中断のどの経路でも、接続と一時ファイルを後片付けする
 - D1 のデータベースファイルを推測しない。バインディングがちょうど1つのファイルに決まらないときは止まる
@@ -422,7 +422,7 @@ Qenome は Apache License 2.0 で公開しています。全文は [LICENSE](LIC
 
 6回未満は `too-few-rounds`（5回の最大有限区間は93.75%、6回は96.875%）、計測時間に0があれば `zero-duration`、差が全同値なら時計分解能を精度と取り違えないよう `no-observed-variation` として区間を null にし、effect は `insufficient-samples` です。区間が0を含むか、差の中央値の絶対値が A/A幅以下なら `no-difference`。それ以外が `faster` / `slower` です。これは補助説明で行数判定・終了コードには影響しません。A/Aを先に測る順序、キャッシュ、負荷のドリフト、時間依存、少数標本があるため、実機や本番で95%を厳密保証するものではありません。
 
-`warnings` は非計時・比較不能でも配列として出し、human/kvにも同じcode/messageを表示します。`no_analyze_stats` は候補索引の対象テーブルに、baseline上で空でない sqlite_stat1 エントリがない場合。別表の統計では解消しません。鮮度・完全性は確認せず、部分索引の統計だけでも存在扱いです。`data_too_small` はその表の `SELECT 1 ... LIMIT 1000` が1000件未満の場合。1000件到達は「1000件以上」であり、正確な件数ではありません。結果件数・読取行数・統計推定値は使いません。1000は代表性を保証しない目安です。
+`warnings` は非計時・比較不能でも配列として出し、human/kvにも同じcode/messageを表示します。`no_analyze_stats` は候補のインデックスの対象テーブルに、baseline上で空でない sqlite_stat1 エントリがない場合。別表の統計では解消しません。鮮度・完全性は確認せず、部分インデックスの統計だけでも存在扱いです。`data_too_small` はその表の `SELECT 1 ... LIMIT 1000` が1000件未満の場合。1000件到達は「1000件以上」であり、正確な件数ではありません。結果件数・読取行数・統計推定値は使いません。1000は代表性を保証しない目安です。
 
 診断は計時後にコピーだけを読み、ANALYZE/PRAGMA optimizeを実行しません。追加実行・診断を既存rows_read/rows_writtenへ混入させません。警告は判定を止めず終了コードも変えません。診断の失敗・時間上限・中断は既存のエラー処理に従います。
 
