@@ -16,6 +16,7 @@ EXCLUDED_FILES = [
     "README.ja.md",
     "docs/demo.gif",
     "docs/json.md",
+    "docs/logo.svg",
     "docs/npm.md",
     "docs/qenome-error.schema.json",
     "docs/qenome-report.schema.json",

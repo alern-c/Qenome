@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-labelledby="qenome-title">
+  <title id="qenome-title">Qenome</title>
+  <defs>
+    <linearGradient id="qenome-badge" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#14b8a6"/>
+      <stop offset="1" stop-color="#0f766e"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="url(#qenome-badge)"/>
+  <rect x="5.5" y="5.5" width="117" height="117" rx="26.5" fill="none" stroke="#ffffff" stroke-opacity="0.28" stroke-width="1.5"/>
+  <path d="M 64 18 C 32 29.5 32 29.5 64 41 C 96 52.5 96 52.5 64 64 C 32 75.5 32 75.5 64 87 C 96 98.5 96 98.5 64 110" fill="none" stroke="#ffffff" stroke-opacity="0.55" stroke-width="6" stroke-linecap="round"/>
+  <line x1="50.15" y1="23.1" x2="77.85" y2="23.1" stroke="#ffffff" stroke-opacity="0.55" stroke-width="4" stroke-linecap="round"/>
+  <line x1="44.16" y1="33.3" x2="83.84" y2="33.3" stroke="#ffffff" stroke-opacity="0.55" stroke-width="4" stroke-linecap="round"/>
+  <line x1="56.80" y1="43.6" x2="71.20" y2="43.6" stroke="#ffffff" stroke-opacity="0.55" stroke-width="4" stroke-linecap="round"/>
+  <line x1="42.54" y1="53.8" x2="85.46" y2="53.8" stroke="#f59e0b" stroke-width="7" stroke-linecap="round"/>
+  <line x1="40.54" y1="74.2" x2="87.46" y2="74.2" stroke="#ffffff" stroke-opacity="0.55" stroke-width="4" stroke-linecap="round"/>
+  <line x1="56.80" y1="84.4" x2="71.20" y2="84.4" stroke="#ffffff" stroke-opacity="0.55" stroke-width="4" stroke-linecap="round"/>
+  <line x1="44.16" y1="94.7" x2="83.84" y2="94.7" stroke="#ffffff" stroke-opacity="0.55" stroke-width="4" stroke-linecap="round"/>
+  <line x1="50.15" y1="104.9" x2="77.85" y2="104.9" stroke="#ffffff" stroke-opacity="0.55" stroke-width="4" stroke-linecap="round"/>
+  <path d="M 64 18 C 96 29.5 96 29.5 64 41 C 32 52.5 32 52.5 64 64 C 96 75.5 96 75.5 64 87 C 32 98.5 32 98.5 64 110" fill="none" stroke="#ffffff" stroke-width="6" stroke-linecap="round"/>
+</svg>

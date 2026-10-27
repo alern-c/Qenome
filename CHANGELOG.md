@@ -14,12 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The output reports the rows each copy read and wrote: `rows read` and `rows written` in the human summary and table, `rows-read` and `rows-written` in `kv`, and `counters.rows_read` and `counters.rows_written` in `json`. They use the counts of a local D1: the vendored SQLite is built with Cloudflare's row-count patch from `workerd`, which is kept unmodified in `vendor/sqlite3/patches` together with the script that applies it. `NOTICE` records where the patch and SQLite come from and which licenses they keep.
 - Regression tests fix the counts: a full scan of 100,000 rows becomes 201 reads through the candidate index, an `INSERT` of 1,000 rows counts 1,000 writes and 2,000 with one secondary index, and a comparison leaves the source database and its `-wal` file byte for byte unchanged.
+- `docs/logo.svg` is the project logo: a two-twist DNA double helix, with one amber base pair marking a single change, hand-written with no external font or image. It is excluded from the comment check as an image asset.
 
 ### Changed
 
 - The verdict now follows the rows read instead of the time: `improved` when the rows match and the variant reads fewer rows, `no-effect` when it reads the same number, `needs-check` when it reads or writes more (with the reasons), and `not-judged` when the rows differ or cannot be compared. The times stay in the output as a reference and no longer change the verdict, so `--runs 0` keeps the verdict and only skips the timing.
 - `--format json` reports `schema_version` 2: `verdict` means the rows read now, and `counters` has `rows_read` and `rows_written`. The human summary prints `verdict` where it printed `time verdict`, and `kv` prints `verdict` and `verdict-reason` instead of `time-verdict` and `time-verdict-reason`.
 - The bundled SQLite amalgamation is now 3.53.4, the same version D1's local engine runs, so `--db` and `--d1` compare on the same SQLite version. The README, the usage message, and `vendor/sqlite3/PROVENANCE.txt` name the new version.
+- `README.md` and `README.ja.md` open with a centered header (logo, tagline, npm, license, and CI badges, language switch, and demo GIF), followed by a short feature list and a contents list. The checksum commands, the JSON main keys and string escaping, and the timing evidence fold into `<details>` without changing their text. Existing headings and the Quick start commands are unchanged.
 
 ## [0.3.2] - 2026-10-26
 
