@@ -6,6 +6,7 @@ import sys
 import tokenize
 
 EXCLUDED_FILES = [
+    ".python-version",
     "AGENTS.md",
     "CHANGELOG.md",
     "CLAUDE.md",
@@ -20,6 +21,7 @@ EXCLUDED_FILES = [
     "docs/qenome-report.schema.json",
     "skills/qenome/SKILL.md",
     "testdata/README.md",
+    "uv.lock",
     "vendor/sqlite3/PROVENANCE.txt",
     "vendor/sqlite3/patches/0001-row-counts-plain.patch",
     "vendor/sqlite3/sqlite3.c",

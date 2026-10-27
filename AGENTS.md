@@ -19,7 +19,7 @@ Zig の版は `build.zig.zon` の `minimum_zig_version`（現在 0.17.0）に固
 python3 scripts/check_all.py
 ```
 
-最初に失敗した段階で止まり、`check_all: failed at "<段階名>" with exit code N` を出します。どこから実行してもリポジトリのルートで動きます。段階は Zig 版の照合、`zig fmt --check .`、ビルド、テスト、アーキテクチャ検査、コメント検査です。
+最初に失敗した段階で止まり、`check_all: failed at "<段階名>" with exit code N` を出します。どこから実行してもリポジトリのルートで動きます。段階は Zig 版の照合、`zig fmt --check .`、ビルド、テスト、Python の版の表示、ruff、mypy、アーキテクチャ検査の自己テスト、アーキテクチャ検査、コメント検査の自己テスト、コメント検査、npm 公開ツリーのテスト、Quick start 検査の自己テスト、README の Quick start の実行です。ruff と mypy は `uv run --locked` で実行するため、この検査には uv 0.13.1 以上が必要です。必要な版の正本は `pyproject.toml` の `[tool.uv]` の `required-version` です。CI も `.github/workflows/quality.yml` で 0.13.1 を固定しているので、版を上げるときはこの下限もそろえてください。
 
 ## ルールの正本
 

@@ -21,5 +21,8 @@ testdata/skill/app.db
 
 .wrangler/
 
+.venv/
 __pycache__/
 *.pyc
+.ruff_cache/
+.mypy_cache/

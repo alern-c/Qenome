@@ -10,7 +10,7 @@ sys.path.insert(0, HERE)
 import stage_npm
 
 ROOT = stage_npm.repo_root()
-FAILURES = []
+FAILURES: list[str] = []
 
 
 def expect(name, condition, detail):

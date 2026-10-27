@@ -7,7 +7,7 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 CHECKER = os.path.join(HERE, "check_architecture.py")
 
-FAILURES = []
+FAILURES: list[str] = []
 
 CANONICAL_FILES = {
     "build.zig": '// the module is built as @import("Qenome")\n',

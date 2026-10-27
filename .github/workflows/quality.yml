@@ -18,6 +18,12 @@ jobs:
       - name: Set up Zig (resolved from build.zig.zon)
         uses: mlugg/setup-zig@v2
 
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.3.2
+        with:
+          version: "0.13.1"
+          python-version: "3.12"
+
       - name: Run every quality check
         run: python3 scripts/check_all.py
 
