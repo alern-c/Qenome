@@ -162,7 +162,7 @@ zig build
 ./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/incomparable.sql testdata/cases/incomparable.index.sql  # expect: result=incomparable verdict=not-judged exit=4
 ```
 
-batch は、複数のクエリと複数の候補索引を1回の実行で比べます。`testdata/batch.json` は改善する例と効果のない例を、2つの候補索引それぞれと組み合わせます。Qenome は組ごとに1行を出し、不一致がなく改善した候補をおすすめするので、`cases/improved.index.sql` だけが資格を得ます。「まとめて比べる（--batch）」を参照してください。
+batch は、複数のクエリと複数の候補のインデックスを1回の実行で比べます。`testdata/batch.json` は改善する例と効果のない例を、2つの候補のインデックスそれぞれと組み合わせます。Qenome は組ごとに1行を出し、不一致がなく改善した候補をおすすめするので、`cases/improved.index.sql` だけが資格を得ます。「まとめて比べる（--batch）」を参照してください。
 
 ```sh
 ./zig-out/bin/qenome testdata/generated/qenome-fixture.db --batch testdata/batch.json  # expect: recommended=cases/improved.index.sql exit=0
@@ -278,22 +278,22 @@ qenome --d1 DEMO_DB select.sql index.sql --runs 40
 - `binds` は任意で、`--bind` と同じ `N:TYPE:VALUE` 形式。パスとバインド値は NUL バイトを含まない JSON 文字列にする。
 - `select` と `index_sql` の文字列は、書いたとおりに報告へ出す。
 
-Qenome はデータベースを1回コピーし、何かを実行する前に全 SELECT と全候補を検査します。そのあと候補をマニフェスト順に処理し、候補ごとに baseline をもう一度コピーして、そのコピーにだけ索引を作り、全クエリを両方のコピーで実行します。baseline の SELECT は候補ごとに実行し直します。
+Qenome はデータベースを1回コピーし、何かを実行する前に全 SELECT と全候補を検査します。そのあと候補をマニフェスト順に処理し、候補ごとに baseline をもう一度コピーして、そのコピーにだけインデックスを作り、全クエリを両方のコピーで実行します。baseline の SELECT は候補ごとに実行し直します。
 
-索引を作れなかった候補は記録して次へ進みます。
+インデックスを作れなかった候補は記録して次へ進みます。
 
 | 状態 | 意味 | 終了コードへの寄与 |
 | `index_rejected` | SQLite が `CREATE INDEX` を拒否した（例: 重複する行への UNIQUE 制約） | `1` |
-| `index_timeout` | 索引作成が `--timeout-ms` に達した | `124` |
+| `index_timeout` | インデックスの作成が `--timeout-ms` に達した | `124` |
 | `variant_timeout` | variant 側の SELECT が `--timeout-ms` に達した。そのクエリは判定せず、ほかのクエリの結果は残す | `124` |
 
 全体に影響する失敗では、報告を書く前に止まり、stdout は空のままです。baseline の SELECT の失敗・時間切れ、シグナル、variant / baseline の接続の失敗、一時コピーの作成・削除の失敗、ディスク不足などの保存の失敗が該当します。候補単位の失敗は `error:` 行にはしません。
 
-報告を書けた場合、終了コードは、結果の不一致 `3`、索引の作成失敗 `1`、候補の時間切れ `124`、比較不能 `4`、`0` のうち一番重いものです。後片付けの失敗は `0` のときだけ `5` に置き換えます。そのため batch は、報告を書きながら `1` や `124` で終わることがあります。どちらかは stdout で見分けます。
+報告を書けた場合、終了コードは、結果の不一致 `3`、インデックスの作成失敗 `1`、候補の時間切れ `124`、比較不能 `4`、`0` のうち一番重いものです。後片付けの失敗は `0` のときだけ `5` に置き換えます。そのため batch は、報告を書きながら `1` や `124` で終わることがあります。どちらかは stdout で見分けます。
 
 human 出力は候補の表、`Recommendation:`、クエリと候補の判定表を出します。おすすめは、不一致・比較不能・`needs-check`・時間切れがなく、改善が1件以上ある候補のうち、改善したクエリが最も多いものです。同じなら容量の増分が小さい順、次にマニフェスト順です。`--format json` では [docs/json.md](docs/json.md) に書いた `batch_schema_version` 1 のオブジェクトを出します。
 
-索引作成・SELECT 1回・診断文1回は、それぞれ `--timeout-ms` の制限時間を持ちます。batch は全体で、データベースのコピー1回と、候補ループの前に全クエリの baseline SELECT を1回ずつ実行する分に加えて、候補ごとに索引作成1回とクエリごとの SELECT 2回、さらに最大3つの診断文それぞれの制限時間までかかることがあります。`--show-binds` と `--show-rows` は各比較オブジェクトに適用します。
+インデックスの作成・SELECT 1回・診断文1回は、それぞれ `--timeout-ms` の制限時間を持ちます。batch は全体で、データベースのコピー1回と、候補ループの前に全クエリの baseline SELECT を1回ずつ実行する分に加えて、候補ごとにインデックスの作成1回とクエリごとの SELECT 2回、さらに最大3つの診断文それぞれの制限時間までかかることがあります。`--show-binds` と `--show-rows` は各比較オブジェクトに適用します。
 
 ## 出力形式
 
