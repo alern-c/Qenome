@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/logo.svg" width="96" height="96" alt="Qenome のロゴ。表の行の上に虫めがね">
+<img src="docs/logo.svg" width="96" height="96" alt="Qenome のロゴ。虫めがねの中の DNA 二重らせんと、1か所だけ色の違う塩基対">
 
 # Qenome
 

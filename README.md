@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/logo.svg" width="96" height="96" alt="Qenome logo: a magnifier over table rows">
+<img src="docs/logo.svg" width="96" height="96" alt="Qenome logo: a DNA double helix in a magnifier, with one amber base pair marking a single change">
 
 # Qenome
 
