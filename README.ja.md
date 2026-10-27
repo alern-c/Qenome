@@ -1,16 +1,51 @@
+<div align="center">
+
+<img src="docs/logo.svg" width="96" height="96" alt="Qenome のロゴ。表の行の上に虫めがね">
+
 # Qenome
+
+**索引をマージする前に、その索引がクエリの役に立つかを調べる CLI。**
+
+[![npm の版](https://img.shields.io/npm/v/qenome?style=flat-square)](https://www.npmjs.com/package/qenome)
+[![ライセンス: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square)](LICENSE)
+[![品質検査](https://github.com/alern-c/Qenome/actions/workflows/quality.yml/badge.svg)](https://github.com/alern-c/Qenome/actions/workflows/quality.yml)
 
 [English](README.md) | 日本語
 
-Qenome は、索引をマージする前に、その索引がクエリの役に立つかを調べる CLI です。読み取り専用の `SELECT` を1本と、候補の `CREATE INDEX` を1本渡します。ローカルの SQLite ファイル、またはローカルの Cloudflare D1（`--d1 <BINDING>` と `--config`）をサンドボックスのコピーにして比較します。元のデータベースは変更しません。
+<img src="docs/demo.gif" width="860" alt="D1 のサンプルプロジェクトで qenome --d1 DEMO_DB select.sql index.sql --runs 40 を実行するターミナル。結果の行が一致し、判定が improved で、D1 ブロックに SQLite の版と注意が出ている">
 
-判定は、ローカル D1 と同じ数え方（workerd のパッチ）で出した読んだ行数・書いた行数と、結果の行・実行計画・時間・容量の増分です。この数値は、まだ本番 D1 と照合していません。
+</div>
+
+<p align="center"><sub>この録画は <a href="#サンプルプロジェクトを試す"><code>examples/d1-toml</code></a> のもの。サンプルは手元でコマンド2本で再現できます。</sub></p>
+
+読み取り専用の `SELECT` を1本と、候補の `CREATE INDEX` を1本渡します。ローカルの SQLite ファイル、またはローカルの Cloudflare D1（`--d1 <BINDING>` と `--config`）をサンドボックスのコピーにして比較します。元のデータベースは変更しません。
+
+## 特徴
+
+- **元のデータベースは変更しません。** 読み取り専用で開き、サンドボックスのコピーで比較するので、役に立たない候補の索引はマージの前に捨てられます。
+- **判定は時間ではなく、読んだ行数。** 読んだ行数と書いた行数は、ローカル D1 と同じ数え方（workerd のパッチ）。`--runs 0` でも判定は残り、計時だけを省きます。
+- **結果の行も照合します。** 2つのコピーが同じ行を同じ回数返すかを多重集合として比べ、一致しない・比較できない結果は合格にせず報告します。
+- **ローカル D1 のバインディングだけで試せます。** `--d1 <BINDING>` が wrangler の設定からローカルデータベースを探し、`--config` で設定ファイルを指定できます。
+- **AI エージェントと CI 向けの JSON。** `--format json` は `schema_version` 2 のレポートを出し、終了コードが一致・不一致・比較不能を分けます。
+- **判定の根拠も同じレポートに。** 実行計画、時間の中央値、データベース全体の容量の増分、助言の警告を出します。
+
+> この数値は、まだ本番 D1 と照合していません。Qenome が測るのはローカルのデータベースだけです。
+
+## 目次
+
+- [特徴](#特徴)
+- [インストール](#インストール)
+- [ローカル D1 を調べる](#ローカル-d1-を調べる)
+- [AI エージェントと使う](#ai-エージェントと使う)
+- [なぜ他の方法ではないのか](#なぜ他の方法ではないのか)
+- [クイックスタート](#クイックスタート)
+- [使い方](#使い方)
+- [出力形式](#出力形式)
+- [守るルール](#守るルール)
+- [開発時の検査](#開発時の検査)
+- [ライセンス](#ライセンス)
 
 この README だけで、D1 の開発者またはその AI エージェントは、数分でローカル D1 の判定を取れます。[ローカル D1 を調べる](#ローカル-d1-を調べる)と [AI エージェントと使う](#ai-エージェントと使う)を見てください。
-
-![D1 のサンプルプロジェクトで qenome --d1 DEMO_DB select.sql index.sql --runs 40 を実行するターミナル。結果の行が一致し、判定が improved で、D1 ブロックに SQLite の版と注意が出ている](docs/demo.gif)
-
-この録画は [`examples/d1-toml`](#サンプルプロジェクトを試す) のもの。サンプルは手元でコマンド2本で再現できます。
 
 ## インストール
 
@@ -40,6 +75,9 @@ D1 のプロジェクトでは、このコマンドで Qenome を実行します
 
 実行する前にダウンロードを検証します。次の例では、`0.3.2` とファイル名を、ダウンロードした版とアセットに置き換えてください。
 
+<details>
+<summary>Linux・macOS・Windows のチェックサム確認コマンドを表示</summary>
+
 Linux:
 
 ```sh
@@ -60,6 +98,8 @@ Get-FileHash .\qenome-0.3.2-x86_64-windows.exe -Algorithm SHA256
 ```
 
 `Get-FileHash` のハッシュが、`SHA256SUMS` の該当行と同じであることを確認してください（大文字・小文字は問いません）。
+
+</details>
 
 次に実行権限を付けて実行します（Linux・macOS）。
 
@@ -295,6 +335,9 @@ if qenome app.db select.sql index.sql --format json | jq -e '.result == "match" 
 fi
 ```
 
+<details>
+<summary>主なキーと文字列のエスケープ規則</summary>
+
 主なキー:
 
 | キー | 内容 |
@@ -322,6 +365,8 @@ fi
 - `binds` は kv と同じ秘匿方針です。`--show-binds` が無いときは値を出さず、番号・型・テキストの長さだけを出します。real の非有限値（`inf` / `-inf`）は JSON 数値にできないため、文字列で出します。
 - `row_differences` の件数（`baseline_only` / `variant_only`）は常に出します。例の配列キーも残しますが、既定では空です。行の値を入れるのは `--show-rows` を付けたときだけです。human と kv も同じフラグで、既定では件数だけを出します。human は例を隠しているとき、`--show-rows` で見られると書きます。
 - `row_order` は参考情報で、結果の一致判定には含めません。
+
+</details>
 
 ### 終了コード
 
@@ -368,6 +413,9 @@ Qenome は Apache License 2.0 で公開しています。全文は [LICENSE](LIC
 
 ### 時間のぶれ・信頼区間・警告
 
+<details>
+<summary>時間のぶれ・信頼区間・警告の詳細</summary>
+
 各ラウンドは baseline を2回実行する A/A のあと、baseline/variant を AB・BA 交互に計時します。比較済みの実行が warmup で、A/A は追加実行です。`noise_band.threshold_ns` は A/A の絶対時間差の経験的95パーセンタイル（nearest rank: ceil(0.95*n)）です。標本数は `pairs`。統計的に校正した有意差閾値ではなく、観測された差が0でも真のばらつき0は意味しません。
 
 `median_difference_ns` はラウンドごとの variant−baseline の差の中央値です。2つの中央値の差ではありません。既存 ratio は variant中央値/baseline中央値のままです。`confidence_interval` は独立同分布の連続な差を仮定する二項分布の順位区間で、将来の単発時間の範囲ではありません。要求水準 `level` は0.95、保守的な理論被覆率が `coverage`。再標本化はしません。式と根拠は [英語版](README.md#timing-evidence-and-advisory-warnings) を参照してください。
@@ -377,3 +425,5 @@ Qenome は Apache License 2.0 で公開しています。全文は [LICENSE](LIC
 `warnings` は非計時・比較不能でも配列として出し、human/kvにも同じcode/messageを表示します。`no_analyze_stats` は候補索引の対象テーブルに、baseline上で空でない sqlite_stat1 エントリがない場合。別表の統計では解消しません。鮮度・完全性は確認せず、部分索引の統計だけでも存在扱いです。`data_too_small` はその表の `SELECT 1 ... LIMIT 1000` が1000件未満の場合。1000件到達は「1000件以上」であり、正確な件数ではありません。結果件数・読取行数・統計推定値は使いません。1000は代表性を保証しない目安です。
 
 診断は計時後にコピーだけを読み、ANALYZE/PRAGMA optimizeを実行しません。追加実行・診断を既存rows_read/rows_writtenへ混入させません。警告は判定を止めず終了コードも変えません。診断の失敗・時間上限・中断は既存のエラー処理に従います。
+
+</details>
