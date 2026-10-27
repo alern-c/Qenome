@@ -116,6 +116,75 @@ fn print(arena: std.mem.Allocator, comptime format: []const u8, name: []const u8
     return std.fmt.allocPrint(arena, format, .{name}) catch format;
 }
 
+pub const RowVerdict = enum {
+    improved,
+    no_effect,
+    needs_check,
+    not_judged,
+
+    pub fn text(self: RowVerdict) []const u8 {
+        return switch (self) {
+            .improved => "improved",
+            .no_effect => "no-effect",
+            .needs_check => "needs-check",
+            .not_judged => "not-judged",
+        };
+    }
+};
+
+pub const Judgement = struct {
+    verdict: RowVerdict,
+    reasons: [max_reasons][]const u8 = undefined,
+    reason_count: usize = 0,
+
+    const max_reasons = 3;
+
+    pub fn add(self: *Judgement, reason: []const u8) void {
+        if (self.reason_count == max_reasons) return;
+        self.reasons[self.reason_count] = reason;
+        self.reason_count += 1;
+    }
+};
+
+pub fn judgeRows(before: Measurement, after: Measurement) Judgement {
+    var judgement: Judgement = .{ .verdict = .needs_check };
+    const baseline = before.counters;
+    const variant = after.counters;
+    if (variant.rows_read > baseline.rows_read) {
+        judgement.add("the rows match, but the variant reads more rows than the baseline");
+        return judgement;
+    }
+    if (variant.rows_written > baseline.rows_written) {
+        judgement.add(if (variant.rows_read == baseline.rows_read)
+            "the rows match and both copies read the same number of rows, but the variant writes more rows"
+        else
+            "the rows match and the variant reads fewer rows, but the variant writes more rows");
+        return judgement;
+    }
+    if (variant.rows_read == baseline.rows_read) {
+        judgement.verdict = .no_effect;
+        return judgement;
+    }
+    judgement.verdict = .improved;
+    return judgement;
+}
+
+pub fn samePlan(before: db.Plan, after: db.Plan) bool {
+    if (before.rows.len != after.rows.len) return false;
+    for (before.rows, after.rows) |b, a| {
+        if (!std.mem.eql(u8, b.detail, a.detail)) return false;
+        if (parentLine(before, b.parent) != parentLine(after, a.parent)) return false;
+    }
+    return true;
+}
+
+pub fn parentLine(plan: db.Plan, parent: i64) ?usize {
+    for (plan.rows, 0..) |row, line| {
+        if (row.id == parent) return line;
+    }
+    return null;
+}
+
 const testing = std.testing;
 
 test "order-dependent hints follow the kind of function" {
@@ -128,4 +197,52 @@ test "order-dependent hints follow the kind of function" {
     try testing.expect(std.mem.indexOf(u8, avg, "baseline-only-row") == null);
     try testing.expect(std.mem.startsWith(u8, orderHint(arena, "lag"), "end the ORDER BY in OVER (...) of lag() with a unique column"));
     try testing.expect(std.mem.startsWith(u8, orderHint(arena, "json_group_array"), "add ORDER BY inside json_group_array(...)"));
+}
+
+const scan_line = [_]db.PlanRow{.{ .id = 2, .parent = 0, .label = .{ .kind = .scan }, .detail = "SCAN t" }};
+const search_line = [_]db.PlanRow{.{ .id = 3, .parent = 0, .label = .{ .kind = .search }, .detail = "SEARCH t USING INDEX idx_a (a=?)" }};
+
+fn testMeasurement(rows_read: u32, rows_written: u32) Measurement {
+    return .{
+        .rows = 1,
+        .plan = .{ .rows = @constCast(&scan_line) },
+        .counters = .{ .rows_read = rows_read, .rows_written = rows_written, .fullscan_steps = 0, .vm_steps = 0, .sort_ops = 0, .autoindex_rows = 0 },
+        .columns = 1,
+    };
+}
+
+fn expectJudgement(expected: RowVerdict, reason: ?[]const u8, judgement: Judgement) !void {
+    try testing.expectEqual(expected, judgement.verdict);
+    if (reason) |text| {
+        try testing.expectEqual(@as(usize, 1), judgement.reason_count);
+        try testing.expect(std.mem.indexOf(u8, judgement.reasons[0], text) != null);
+    } else {
+        try testing.expectEqual(@as(usize, 0), judgement.reason_count);
+    }
+}
+
+test "judgeRows a variant that reads fewer rows is improved" {
+    try expectJudgement(.improved, null, judgeRows(testMeasurement(100_000, 0), testMeasurement(201, 0)));
+    try expectJudgement(.improved, null, judgeRows(testMeasurement(201, 4), testMeasurement(1, 0)));
+}
+
+test "judgeRows the same read count is no-effect whatever the times" {
+    try expectJudgement(.no_effect, null, judgeRows(testMeasurement(1000, 0), testMeasurement(1000, 0)));
+    try expectJudgement(.no_effect, null, judgeRows(testMeasurement(1000, 7), testMeasurement(1000, 2)));
+}
+
+test "judgeRows reading more rows is needs-check" {
+    try expectJudgement(.needs_check, "reads more rows", judgeRows(testMeasurement(1000, 0), testMeasurement(1001, 0)));
+}
+
+test "judgeRows more rows written is needs-check" {
+    try expectJudgement(.needs_check, "but the variant writes more", judgeRows(testMeasurement(1000, 0), testMeasurement(10, 1)));
+    try expectJudgement(.needs_check, "the variant writes more", judgeRows(testMeasurement(1000, 5), testMeasurement(1000, 6)));
+}
+
+test "judgeRows ignores the plan and the times" {
+    const before = testMeasurement(1000, 0);
+    var after = testMeasurement(10, 0);
+    after.plan = .{ .rows = @constCast(&search_line) };
+    try expectJudgement(.improved, null, judgeRows(before, after));
 }
