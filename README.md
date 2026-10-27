@@ -328,6 +328,7 @@ Qenome copies the database once, checks every SELECT and every candidate before 
 A candidate that cannot be built is recorded and the batch continues:
 
 | Status | Meaning | Exit contribution |
+| --- | --- | --- |
 | `index_rejected` | SQLite rejected the `CREATE INDEX` (for example a UNIQUE constraint on duplicate rows) | `1` |
 | `index_timeout` | the index build reached `--timeout-ms` | `124` |
 | `variant_timeout` | a variant SELECT reached `--timeout-ms`; that query is not judged, the others stay | `124` |

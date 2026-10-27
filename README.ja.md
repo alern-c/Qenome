@@ -328,6 +328,7 @@ Qenome はデータベースを1回コピーし、何かを実行する前に全
 インデックスを作れなかった候補は記録して次へ進みます。
 
 | 状態 | 意味 | 終了コードへの寄与 |
+| --- | --- | --- |
 | `index_rejected` | SQLite が `CREATE INDEX` を拒否した（例: 重複する行への UNIQUE 制約） | `1` |
 | `index_timeout` | インデックスの作成が `--timeout-ms` に達した | `124` |
 | `variant_timeout` | variant 側の SELECT が `--timeout-ms` に達した。そのクエリは判定せず、ほかのクエリの結果は残す | `124` |
