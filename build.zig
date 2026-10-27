@@ -17,7 +17,7 @@ pub fn build(b: *std.Build) void {
     mod.addOptions("build_options", build_options);
 
     mod.addCSourceFiles(.{
-        .files = &.{"vendor/sqlite3/sqlite3.c"},
+        .files = &.{ "vendor/sqlite3/sqlite3.c", "vendor/sqlite3/sqlite3expert.c" },
         .flags = &.{
             "-DSQLITE_THREADSAFE=0",
             "-DSQLITE_OMIT_LOAD_EXTENSION",

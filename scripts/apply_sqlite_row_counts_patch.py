@@ -19,7 +19,7 @@ TARGETS = {
 }
 SKIPPED = {
     "sqlite-src-pristine/src/shell.c.in": (
-        "the shell is not vendored; sqlite3.c and sqlite3.h are the whole build"
+        "the shell is not vendored; it is not part of the build"
     ),
 }
 DECORATED = {

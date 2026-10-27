@@ -1,13 +1,15 @@
 SQLite amalgamation vendored for Qenome
 =======================================
 
-Product        : SQLite amalgamation (C source: sqlite3.c + sqlite3.h)
+Product        : SQLite amalgamation (C source: sqlite3.c + sqlite3.h) and the
+                 sqlite3expert extension (ext/expert: sqlite3expert.c + .h)
 Version        : 3.53.4
 Version number : 3053004 (SQLITE_VERSION_NUMBER)
 Source ID      : 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc
 Release date   : 2026-07-24
-Vendored files : sqlite3.c, sqlite3.h. The zip also contains shell.c and
-                 sqlite3ext.h; they are not vendored.
+Vendored files : sqlite3.c, sqlite3.h, sqlite3expert.c, sqlite3expert.h. The
+                 zip also contains shell.c and sqlite3ext.h; the shell and the
+                 extension header are not vendored.
 Fetched (UTC)  : 2026-10-26T05:36:31Z
 Fetched from   : https://sqlite.org/2026/sqlite-amalgamation-3530400.zip
 Zip size       : 2,946,650 bytes
@@ -60,6 +62,70 @@ them is the row-count patch below, applied by
 scripts/apply_sqlite_row_counts_patch.py. To update the pinned release, repeat
 the steps above, re-apply the patch, and record the new release, hashes, and
 source id here plus the constants in src/sqlite.zig.
+
+sqlite3expert (vendor/sqlite3/sqlite3expert.c and sqlite3expert.h)
+-------------------------------------------------------------------
+Qenome --suggest runs SQLite's one-index advisor. These two files are part of
+the SQLite source tree (ext/expert/) at the same check-in as the amalgamation
+above; they are not part of the amalgamation zip and are stored unmodified.
+
+Fetched (UTC)  : 2026-10-27T17:02:11Z
+Fetched from   : https://sqlite.org/src/raw?ci=bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc&filename=ext/expert/sqlite3expert.c
+                 and the same URL with filename=ext/expert/sqlite3expert.h
+Check-in       : bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc
+                 (2026-07-24, the SQLITE_SOURCE_ID pinned above)
+Fossil manifest: https://sqlite.org/src/raw/bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc
+                 has the F cards
+                   F ext/expert/sqlite3expert.c 546010043fbec93544f762de5161b3d553165859e6bd853c4b85c05f93484260
+                   F ext/expert/sqlite3expert.h ca81efc2679a92373a13a3e76a6138d0310e32be53d6c3bfaedabd158ea8969b
+Artifact ID    : sqlite3expert.c 546010043fbec93544f762de5161b3d553165859e6bd853c4b85c05f93484260
+                 sqlite3expert.h ca81efc2679a92373a13a3e76a6138d0310e32be53d6c3bfaedabd158ea8969b
+                 (the F-card value; in this repository it equals the SHA3-256
+                 of the file bytes, and /src/raw/<artifact-id> prints them)
+SHA3-256       : sqlite3expert.c 546010043fbec93544f762de5161b3d553165859e6bd853c4b85c05f93484260
+                 sqlite3expert.h ca81efc2679a92373a13a3e76a6138d0310e32be53d6c3bfaedabd158ea8969b
+SHA-256        : sqlite3expert.c e4a43ce024798071e9b436918e9ab12c30e0fe4a691a7967ae0a78d1267b976f
+                 sqlite3expert.h 9b8aa403e9c6e77ab2049434b02a5901ee687fb78b247aa6557500455294bc77
+Size (bytes)   : 63,761 / 7,138
+License        : public domain ("SQLite Blessing"):
+                 https://sqlite.org/copyright.html
+
+How to re-verify
+----------------
+  curl -o /tmp/sqlite3expert.c 'https://sqlite.org/src/raw?ci=bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc&filename=ext/expert/sqlite3expert.c'
+  curl -o /tmp/sqlite3expert.h 'https://sqlite.org/src/raw?ci=bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc&filename=ext/expert/sqlite3expert.h'
+  openssl dgst -sha3-256 /tmp/sqlite3expert.c /tmp/sqlite3expert.h
+  shasum -a 256 /tmp/sqlite3expert.c /tmp/sqlite3expert.h
+  # or: curl https://sqlite.org/src/raw/<artifact-id> and compare the bytes
+
+Updating
+--------
+The expert files carry no version check of their own, and nothing compares them
+with sqlite.zig's pinned_source_id at run time. When the pinned SQLite changes,
+fetch both files from the new check-in, update this section, and rebuild. A pair
+that does not match the check-in build is not detected automatically; this
+record and the build are the check.
+
+Guard in Qenome
+---------------
+--suggest does not trust the expert with an arbitrary schema. Before the
+expert runs, src/cli/suggest.zig checks every sqlite_schema row: it must be one
+plain CREATE TABLE / INDEX / UNIQUE INDEX / VIEW / TRIGGER / VIRTUAL TABLE
+statement and must not use the expert virtual table. While the expert runs, a
+sqlite3_auto_extension initializer guards the connections it opens: it denies
+SQLITE_ATTACH and SQLITE_DETACH, allows only the index_list and index_xinfo
+PRAGMAs, and sets SQLITE_LIMIT_ATTACHED to 0. After sqlite3_expert_new the
+expert installs its own authorizer on its analysis copy (dbv); the attached
+database limit stays in force there. The guard is cancelled after
+sqlite3_expert_destroy, and a registration failure stops the run before the
+expert is called.
+
+When SQLite or these expert files are updated, re-read
+ext/expert/sqlite3expert.c for new PRAGMA use, ATTACH / DETACH, VACUUM INTO, or
+other file access, and update the allowlist and the preflight together. The
+preflight is the primary defence; the guard is the second layer. The guard is
+an authorizer deny list plus a PRAGMA allow list, so a future SQLite that adds
+another way to touch a file needs a review here.
 
 Row-count patch
 ---------------

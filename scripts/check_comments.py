@@ -26,6 +26,8 @@ EXCLUDED_FILES = [
     "vendor/sqlite3/patches/0001-row-counts-plain.patch",
     "vendor/sqlite3/sqlite3.c",
     "vendor/sqlite3/sqlite3.h",
+    "vendor/sqlite3/sqlite3expert.c",
+    "vendor/sqlite3/sqlite3expert.h",
 ]
 
 KINDS_BY_SUFFIX = {

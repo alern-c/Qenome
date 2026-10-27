@@ -6,13 +6,18 @@ full text. This file records the other components shipped in this repository
 and the notices they keep. It does not change their licenses.
 
 
-SQLite 3.53.4 (vendor/sqlite3/sqlite3.c and sqlite3.h)
-------------------------------------------------------
+SQLite 3.53.4 (vendor/sqlite3/sqlite3.c, sqlite3.h, sqlite3expert.c, sqlite3expert.h)
+----------------------------------------------------------------------------------
 Public domain. The author disclaims copyright to this source code:
   https://sqlite.org/copyright.html
-Source: https://sqlite.org/2026/sqlite-amalgamation-3530400.zip
-Only the amalgamation is vendored; the SQLite shell and the extension header
-from that zip are not. vendor/sqlite3/PROVENANCE.txt records the hashes.
+Amalgamation: https://sqlite.org/2026/sqlite-amalgamation-3530400.zip
+Expert (ext/expert, same check-in bf7c7f30):
+  https://sqlite.org/src/raw?ci=bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc&filename=ext/expert/sqlite3expert.c
+  (sqlite3expert.h uses the same URL with that file name)
+The amalgamation, the expert source, and the row-count patch below are vendored;
+the SQLite shell and the extension header from the zip are not.
+vendor/sqlite3/PROVENANCE.txt records the hashes, the check-in, and the
+artifact IDs.
 
 
 Row-count patch (vendor/sqlite3/patches/0001-row-counts-plain.patch)
