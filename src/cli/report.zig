@@ -70,7 +70,7 @@ fn writeHumanEvidence(stdout: *Io.Writer, report: Report) Io.Writer.Error!void {
 pub const Report = struct {
     timing: ?cli_timing.TimeSummary = null,
     sizes: Sizes = .{},
-    judgement: cli_timing.Judgement,
+    judgement: cli_comparison.Judgement,
     warnings: Warnings = .{},
 };
 
@@ -314,7 +314,7 @@ pub fn writeJsonReport(
     try json.objectField("row_differences");
     try writeJsonRowDifferences(&json, allocator, outcome.comparison, header.show_rows);
     try json.objectField("plan_changed");
-    try json.write(!cli_timing.samePlan(before.plan, after.plan));
+    try json.write(!cli_comparison.samePlan(before.plan, after.plan));
     try json.objectField("baseline");
     try writeJsonMeasurement(&json, allocator, before);
     try json.objectField("variant");
@@ -734,7 +734,7 @@ fn writeOverview(
         try writeWrapped(stdout, reason, value_column + 2, value_column + 2);
         try stdout.writeByte('\n');
     }
-    try writeField(stdout, "query plan", if (cli_timing.samePlan(before.plan, after.plan))
+    try writeField(stdout, "query plan", if (cli_comparison.samePlan(before.plan, after.plan))
         "the same on both copies"
     else
         "changed on the variant");
@@ -875,7 +875,7 @@ fn planDepth(plan: Plan, row: PlanRow) usize {
     var depth: usize = 0;
     var parent = row.parent;
     while (depth < plan.rows.len) {
-        const line = cli_timing.parentLine(plan, parent) orelse break;
+        const line = cli_comparison.parentLine(plan, parent) orelse break;
         depth += 1;
         parent = plan.rows[line].parent;
     }
