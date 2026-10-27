@@ -180,7 +180,8 @@ def build(source_dir, patch_path):
                 + pristine
                 + ", expected "
                 + PRISTINE_SHA3_256[name]
-                + " (SQLite 3.53.4 as published by sqlite.org; the patch is already applied, or the file is another release)"
+                + " (SQLite 3.53.4 as published by sqlite.org; the patch is already applied,"
+                + " or the file is another release)"
             )
         lines = data.decode("utf-8", "surrogateescape").split("\n")
         files[name] = "\n".join(apply_hunks(lines, per_target[name], name)).encode(

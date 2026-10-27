@@ -69,6 +69,14 @@ def main():
         ("Test", command(["zig", "build", "test", "--summary", "all"])),
         ("Show the Python version", command([sys.executable, "--version"])),
         (
+            "Check the Python code with ruff",
+            command(["uv", "run", "--locked", "--group", "dev", "ruff", "check", "."]),
+        ),
+        (
+            "Type-check the Python code with mypy",
+            command(["uv", "run", "--locked", "--group", "dev", "mypy"]),
+        ),
+        (
             "Test the architecture checker",
             command([sys.executable, "scripts/test_check_architecture.py"]),
         ),

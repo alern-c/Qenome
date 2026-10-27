@@ -196,7 +196,8 @@ def command_argv(command, binary):
 def self_test():
     text = (
         "```sh\n"
-        "npx qenome a --format json  # qenome-ci: run exit=0 stdout=report verdict=improved fields=schema_version,verdict\n"
+        "npx qenome a --format json  # qenome-ci: run exit=0 stdout=report"
+        " verdict=improved fields=schema_version,verdict\n"
         "npx qenome --d1 DB a b --format json  # qenome-ci: pending TODO(core): warnings are not emitted yet\n"
         "```\n"
     )
@@ -241,7 +242,9 @@ def self_test():
         },
         4,
         "",
-        '{"schema_version": 2, "exit_code": 4, "error": {"code": "d1_config_not_found", "message": "no wrangler config", "hint": "Pass --config"}}\n',
+        '{"schema_version": 2, "exit_code": 4,'
+        ' "error": {"code": "d1_config_not_found",'
+        ' "message": "no wrangler config", "hint": "Pass --config"}}\n',
     )
     if failure:
         return "a matching error was rejected: " + "; ".join(failure)
@@ -326,6 +329,7 @@ def main(argv):
         if problem is not None:
             problems.append(label + ": " + problem)
             continue
+        assert argv_run is not None
         try:
             done = subprocess.run(
                 argv_run,

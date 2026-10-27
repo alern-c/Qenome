@@ -19,7 +19,7 @@ Zig の版は `build.zig.zon` の `minimum_zig_version`（現在 0.17.0）に固
 python3 scripts/check_all.py
 ```
 
-最初に失敗した段階で止まり、`check_all: failed at "<段階名>" with exit code N` を出します。どこから実行してもリポジトリのルートで動きます。段階は Zig 版の照合、`zig fmt --check .`、ビルド、テスト、アーキテクチャ検査、コメント検査です。
+最初に失敗した段階で止まり、`check_all: failed at "<段階名>" with exit code N` を出します。どこから実行してもリポジトリのルートで動きます。段階は Zig 版の照合、`zig fmt --check .`、ビルド、テスト、ruff、mypy、アーキテクチャ検査、コメント検査です。ruff と mypy は `uv run --locked` で実行するため、この検査には uv が必要です。
 
 ## ルールの正本
 

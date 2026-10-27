@@ -9,7 +9,7 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 CHECKER = os.path.join(HERE, "check_quick_start.py")
 
-FAILURES = []
+FAILURES: list[str] = []
 
 COMMANDS = (
     "./tools/qenome result=match verdict=improved code=0  "
