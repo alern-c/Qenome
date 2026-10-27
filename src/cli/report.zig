@@ -28,10 +28,50 @@ pub const Sizes = struct {
     variant: u64 = 0,
 };
 
+pub const Warnings = struct {
+    no_analyze_stats: bool = false,
+    data_too_small: bool = false,
+};
+
+const warning_codes = [_][]const u8{ "no_analyze_stats", "data_too_small" };
+const warning_messages = [_][]const u8{
+    "The candidate index table has no non-empty sqlite_stat1 entry. Test an ANALYZE'd copy with representative data; this check does not run ANALYZE.",
+    "The candidate index table has fewer than 1000 rows. This heuristic does not establish representative performance; test with more representative data.",
+};
+
+fn writeWarnings(stdout: *Io.Writer, warnings: Warnings) Io.Writer.Error!void {
+    const enabled = [_]bool{ warnings.no_analyze_stats, warnings.data_too_small };
+    for (enabled, warning_codes, warning_messages) |active, code, message| {
+        if (active) try stdout.print("warning: {s}: {s}\n", .{ code, message });
+    }
+}
+
+fn writeTimeEvidence(stdout: *Io.Writer, evidence: cli_timing.Evidence) Io.Writer.Error!void {
+    try stdout.print("time-effect: {s} (reference only)\ntime-median-difference-ns: {d} (variant - baseline, paired rounds)\ntime-noise-band-ns: {d} (baseline A/A absolute difference p95; {d} pairs; empirical)\n", .{ cli_timing.effectText(evidence.effect), evidence.median_difference_ns, evidence.noise_band.threshold_ns, evidence.noise_band.pairs });
+    if (evidence.confidence_interval) |ci| {
+        try stdout.print("time-confidence-interval-ns: [{d}, {d}] (paired median difference; nominal 95%, binomial coverage {d:.6}; assumes independent identically distributed rounds)\n", .{ ci.lower_ns, ci.upper_ns, ci.coverage });
+    } else {
+        try stdout.print("time-confidence-interval-ns: unavailable ({s})\n", .{evidence.unavailable_reason orelse "unavailable"});
+    }
+}
+
+fn writeHumanEvidence(stdout: *Io.Writer, report: Report) Io.Writer.Error!void {
+    var buffer: [4096]u8 = undefined;
+    var text = Io.Writer.fixed(&buffer);
+    if (report.timing) |timing| try writeTimeEvidence(&text, timing.evidence);
+    try writeWarnings(&text, report.warnings);
+    var lines = std.mem.tokenizeScalar(u8, text.buffered(), '\n');
+    while (lines.next()) |line| {
+        try writeWrapped(stdout, line, 0, 2);
+        try stdout.writeByte('\n');
+    }
+}
+
 pub const Report = struct {
     timing: ?cli_timing.TimeSummary = null,
     sizes: Sizes = .{},
     judgement: cli_timing.Judgement,
+    warnings: Warnings = .{},
 };
 
 pub const Error = Io.Writer.Error || std.mem.Allocator.Error;
@@ -135,8 +175,10 @@ pub fn writeFacts(stdout: *Io.Writer, header: Header, report: Report) Io.Writer.
             const ratio = @as(f64, @floatFromInt(timing.variant.median)) / @as(f64, @floatFromInt(timing.baseline.median));
             try stdout.print("time-ratio: {d:.3} (variant median / baseline median)\n", .{ratio});
         }
+        try writeTimeEvidence(stdout, timing.evidence);
         try stdout.print("variant-faster-rounds: {d}/{d}\n", .{ timing.variant_faster_rounds, timing.rounds });
     }
+    try writeWarnings(stdout, report.warnings);
     const sizes = report.sizes;
     try stdout.print(
         \\db-bytes-baseline: {d} (the snapshot file)
@@ -151,7 +193,7 @@ pub fn writeFacts(stdout: *Io.Writer, header: Header, report: Report) Io.Writer.
 }
 
 const measure_warmup = "1 per copy (the run whose rows were compared, not timed)";
-const measure_order = "rounds alternate baseline-variant and variant-baseline (ABBA)";
+const measure_order = "each round: baseline-baseline A/A, then alternating baseline-variant or variant-baseline (ABBA)";
 const measure_scope = "sqlite3_step from the reset statement to SQLITE_DONE with the interrupt checks; columns are not read; prepare, bind, and the plan read are not timed";
 const measure_cache = "warm; each copy reuses its connection and page cache, and its file was just written";
 
@@ -283,6 +325,14 @@ pub fn writeJsonReport(
     } else {
         try json.write(null);
     }
+    try json.objectField("warnings");
+    try json.beginArray();
+    const enabled = [_]bool{ report.warnings.no_analyze_stats, report.warnings.data_too_small };
+    for (enabled, warning_codes, warning_messages) |active, code, message| {
+        if (!active) continue;
+        try json.write(.{ .code = code, .message = message });
+    }
+    try json.endArray();
     try json.objectField("size_bytes");
     try json.beginObject();
     try json.objectField("baseline");
@@ -460,6 +510,16 @@ fn writeJsonTiming(json: *std.json.Stringify, timing: cli_timing.TimeSummary) Er
     try json.beginObject();
     try json.objectField("rounds");
     try json.write(timing.rounds);
+    try json.objectField("noise_band");
+    try json.write(timing.evidence.noise_band);
+    try json.objectField("confidence_interval");
+    try json.write(timing.evidence.confidence_interval);
+    try json.objectField("median_difference_ns");
+    try json.write(timing.evidence.median_difference_ns);
+    try json.objectField("effect");
+    try json.write(cli_timing.effectText(timing.evidence.effect));
+    try json.objectField("unavailable_reason");
+    try json.write(timing.evidence.unavailable_reason);
     try json.objectField("variant_faster_rounds");
     try json.write(timing.variant_faster_rounds);
     try json.objectField("ratio");
@@ -693,6 +753,7 @@ fn writeOverview(
         try text.writeAll("not measured (0 rounds; reference only)");
     }
     try writeField(stdout, "time", text.buffered());
+    try writeHumanEvidence(stdout, report);
 
     text = Io.Writer.fixed(&buffer);
     const increase = @as(i128, report.sizes.variant) - @as(i128, report.sizes.baseline);
@@ -1085,6 +1146,10 @@ test "the human summary puts the conclusion first and the copies side by side" {
         \\  query plan    changed on the variant
         \\  time          median 4.33 ms -> 37.29 us (0.009x); the variant was faster in
         \\                10 of 10 rounds (reference only)
+        \\time-effect: insufficient-samples (reference only)
+        \\time-median-difference-ns: 0 (variant - baseline, paired rounds)
+        \\time-noise-band-ns: 0 (baseline A/A absolute difference p95; 0 pairs; empirical)
+        \\time-confidence-interval-ns: unavailable (too-few-rounds)
         \\  db size       +2,170,880 bytes (+2.07 MiB; the whole database file, not the
         \\                index alone)
         \\
@@ -1392,7 +1457,7 @@ test "the kv summary keeps every line of the single-format summary" {
         \\bind: 2:text (6 bytes)
         \\measure-runs: 10 per copy
         \\measure-warmup: 1 per copy (the run whose rows were compared, not timed)
-        \\measure-order: rounds alternate baseline-variant and variant-baseline (ABBA)
+        \\measure-order: each round: baseline-baseline A/A, then alternating baseline-variant or variant-baseline (ABBA)
         \\measure-scope: sqlite3_step from the reset statement to SQLITE_DONE with the interrupt checks; columns are not read; prepare, bind, and the plan read are not timed
         \\measure-cache: warm; each copy reuses its connection and page cache, and its file was just written
         \\work-dir-parent: /tmp
@@ -1401,6 +1466,10 @@ test "the kv summary keeps every line of the single-format summary" {
         \\time-baseline-ns: median=4331750 p25=4158324 p75=4364397 min=4098250 max=4465958 (median 4.33 ms)
         \\time-variant-ns: median=37292 p25=33198 p75=40417 min=28583 max=71583 (median 37.29 us)
         \\time-ratio: 0.009 (variant median / baseline median)
+        \\time-effect: insufficient-samples (reference only)
+        \\time-median-difference-ns: 0 (variant - baseline, paired rounds)
+        \\time-noise-band-ns: 0 (baseline A/A absolute difference p95; 0 pairs; empirical)
+        \\time-confidence-interval-ns: unavailable (too-few-rounds)
         \\variant-faster-rounds: 10/10
         \\db-bytes-baseline: 5087232 (the snapshot file)
         \\db-bytes-variant: 7258112 (the snapshot file with the candidate index)

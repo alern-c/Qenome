@@ -97,6 +97,19 @@ pub const CheckError = error{
     StatementNotCreateIndex,
 };
 
+fn diagnosticStepError(rc: c_int, control: *StepControl) StepError {
+    if (rc == sqlite.SQLITE_INTERRUPT) if (control.reason) |reason| return switch (reason) {
+        .timeout => error.Timeout,
+        .signal => error.Interrupted,
+    };
+    return error.StepFailed;
+}
+
+pub const TableWarnings = struct {
+    no_analyze_stats: bool = false,
+    data_too_small: bool = false,
+};
+
 pub const Clues = struct {
     nondeterministic_function: ?[]const u8 = null,
     schema_table: ?[]const u8 = null,
@@ -147,7 +160,13 @@ fn findName(list: []const []const u8, name: []const u8) ?[]const u8 {
 
 const max_observed_actions = 64;
 
+const IndexTarget = struct {
+    allocator: std.mem.Allocator,
+    table: ?[]const u8 = null,
+};
+
 pub const Db = struct {
+    index_target: ?*IndexTarget = null,
     handle: ?*sqlite.sqlite3 = null,
     mode: Mode = .internal,
     seen_create_index: bool = false,
@@ -331,6 +350,48 @@ pub const Db = struct {
         return .{ .rows = try rows.toOwnedSlice(allocator) };
     }
 
+    pub fn indexTarget(self: *Db, allocator: std.mem.Allocator, sql: [:0]const u8) ![]const u8 {
+        var capture: IndexTarget = .{ .allocator = allocator };
+        self.index_target = &capture;
+        defer self.index_target = null;
+        errdefer if (capture.table) |table| allocator.free(table);
+        try self.checkCreateIndex(sql);
+        return capture.table orelse error.OutOfMemory;
+    }
+
+    pub fn tableWarnings(self: *Db, allocator: std.mem.Allocator, table: []const u8, control: *StepControl) !TableWarnings {
+        const has_stat1 = try self.diagnosticInt("SELECT count(*) FROM main.sqlite_schema WHERE type = 'table' AND name = 'sqlite_stat1'", &.{}, control) != 0;
+        const has_stats = has_stat1 and try self.diagnosticInt("SELECT count(*) FROM main.sqlite_stat1 WHERE tbl = ?1 COLLATE NOCASE AND length(trim(stat)) > 0", &.{.{ .number = 1, .value = .{ .text = table } }}, control) != 0;
+        var query: Io.Writer.Allocating = .init(allocator);
+        defer query.deinit();
+        try query.writer.writeAll("SELECT count(*) FROM (SELECT 1 FROM main.\"");
+        for (table) |byte| {
+            try query.writer.writeByte(byte);
+            if (byte == '"') try query.writer.writeByte(byte);
+        }
+        try query.writer.writeAll("\" LIMIT 1000)");
+        const sql = try allocator.dupeSentinel(u8, query.written(), 0);
+        defer allocator.free(sql);
+        const rows = try self.diagnosticInt(sql, &.{}, control);
+        return .{ .no_analyze_stats = !has_stats, .data_too_small = rows < 1000 };
+    }
+
+    fn diagnosticInt(self: *Db, sql: [:0]const u8, binds: []const BindArg, control: *StepControl) !i64 {
+        const previous = self.enterMode(.user_select);
+        const saved = self.clues;
+        defer self.mode = previous;
+        defer self.clues = saved;
+        const statement = try self.prepareSingle(sql) orelse return error.StepFailed;
+        defer _ = sqlite.sqlite3_finalize(statement);
+        try bindAll(statement, binds);
+        control.start();
+        sqlite.sqlite3_progress_handler(self.connection(), progress_opcodes, progressHandler, control);
+        defer sqlite.sqlite3_progress_handler(self.connection(), 0, null, null);
+        const rc = sqlite.sqlite3_step(statement);
+        if (rc != sqlite.SQLITE_ROW) return diagnosticStepError(rc, control);
+        return sqlite.sqlite3_column_int64(statement, 0);
+    }
+
     pub fn message(self: *const Db) []const u8 {
         return std.mem.span(sqlite.sqlite3_errmsg(self.connection()));
     }
@@ -420,7 +481,7 @@ pub const Db = struct {
         }
     }
 
-    fn allows(self: *Db, action_code: c_int, arg1: ?[*:0]const u8, arg3: ?[*:0]const u8) bool {
+    fn allows(self: *Db, action_code: c_int, arg1: ?[*:0]const u8, arg2: ?[*:0]const u8, arg3: ?[*:0]const u8) bool {
         switch (self.mode) {
             .internal => return action_code == sqlite.SQLITE_PRAGMA,
             .user_select => return switch (action_code) {
@@ -434,6 +495,9 @@ pub const Db = struct {
             .user_ddl => switch (action_code) {
                 sqlite.SQLITE_CREATE_INDEX => {
                     self.seen_create_index = true;
+                    if (self.index_target) |capture| {
+                        if (capture.table == null) capture.table = capture.allocator.dupe(u8, std.mem.span(arg2 orelse "")) catch null;
+                    }
                     const name = std.mem.span(arg1 orelse "");
                     self.candidate_index_len = if (name.len <= self.candidate_index.len) name.len else 0;
                     @memcpy(self.candidate_index[0..self.candidate_index_len], name[0..self.candidate_index_len]);
@@ -697,7 +761,7 @@ fn authorizer(
 ) callconv(.c) c_int {
     const self: *Db = @ptrCast(@alignCast(user_data orelse return sqlite.SQLITE_DENY));
     self.record(action_code);
-    if (!self.allows(action_code, arg1, arg3)) return sqlite.SQLITE_DENY;
+    if (!self.allows(action_code, arg1, arg2, arg3)) return sqlite.SQLITE_DENY;
     if (self.mode == .user_select) self.noteClues(action_code, arg1, arg2, arg4);
     return sqlite.SQLITE_OK;
 }
@@ -2113,4 +2177,27 @@ test "rows written counts one per table row and one more per secondary index" {
     ;
     try testing.expectEqual(@as(u32, 1000), (try runWriteCounters(flat_path, insert_thousand)).rows_written);
     try testing.expectEqual(@as(u32, 2000), (try runWriteCounters(index_path, insert_thousand)).rows_written);
+}
+
+test "table warning checks target stats and actual bounded cardinality" {
+    const schema =
+        \\CREATE TABLE t(a INTEGER);
+        \\CREATE TABLE other(a INTEGER);
+        \\INSERT INTO other VALUES(1);
+        \\ANALYZE other;
+        \\WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c WHERE x<1000) INSERT INTO t SELECT x FROM c;
+    ;
+    var fixture = try Fixture.initWithSchema(testing.allocator, schema);
+    defer fixture.deinit();
+    var database: Db = .{};
+    try database.openReadOnly(fixture.path);
+    defer database.close() catch unreachable;
+    var cancel = std.atomic.Value(bool).init(false);
+    var control = StepControl.init(testing.io, 30000, &cancel);
+    const warnings = try database.tableWarnings(testing.allocator, "t", &control);
+    try testing.expect(warnings.no_analyze_stats);
+    try testing.expect(!warnings.data_too_small);
+    const other = try database.tableWarnings(testing.allocator, "other", &control);
+    try testing.expect(!other.no_analyze_stats);
+    try testing.expect(other.data_too_small);
 }
