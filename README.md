@@ -124,7 +124,7 @@ Point the agent at that file. `--format json` is the machine-readable report, sp
 
 ## Quick start
 
-This walkthrough creates the test database, builds Qenome, and runs four examples. Run the commands from the repository root, one block at a time, on Linux or macOS. They need Zig 0.17.0 (see [From source](#from-source)) and the `sqlite3` command-line tool, which loads the SQL files into the new database.
+This walkthrough creates the test database, builds Qenome, and runs five examples. Run the commands from the repository root, one block at a time, on Linux or macOS. They need Zig 0.17.0 (see [From source](#from-source)) and the `sqlite3` command-line tool, which loads the SQL files into the new database.
 
 Create the test database from `testdata/schema.sql` and `testdata/seed.sql`. `verify.sql` prints one `ok` line for each of its 17 checks, and fails the load when a value is not the expected one.
 
@@ -142,7 +142,7 @@ Build Qenome:
 zig build
 ```
 
-The four examples run `zig-out/bin/qenome`. Each command ends with the result it has to report: `result` and `verdict` from the Summary (or `recommended` for a batch), and the exit status. `python3 scripts/check_all.py` and the quality workflow run these lines as written, so the README and the program stay in step. `--runs 40` keeps the medians steady on a busy machine; the default is `10`.
+The five examples run `zig-out/bin/qenome`. Each command ends with the result it has to report: `result` and `verdict` from the Summary (or `recommended` for a batch), and the exit status. `python3 scripts/check_all.py` and the quality workflow run these lines as written, so the README and the program stay in step. `--runs 40` keeps the medians steady on a busy machine; the default is `10`.
 
 An index that removes the full scan. The candidate index turns `SCAN events` into `SEARCH events USING INDEX ix_events_customer_id (customer_id=?)`, the rows read fall from 200,000 to 101, and both copies return the same 100 rows.
 
@@ -168,6 +168,12 @@ A batch compares several queries with several candidate indexes in one run. `tes
 ./zig-out/bin/qenome testdata/generated/qenome-fixture.db --batch testdata/batch.json  # expect: recommended=cases/improved.index.sql exit=0
 ```
 
+A proposed index, without an index file. `--suggest` asks SQLite which index would help the SELECT, and Qenome compares that proposal with the same batch machinery. The proposal is labelled `suggested:1` and becomes the recommendation when it helps. See [Suggesting candidate indexes](#suggesting-candidate-indexes).
+
+```sh
+./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/improved.sql --bind 1:int:1234 --suggest  # expect: recommended=suggested:1 exit=0
+```
+
 The first database build takes about a second, and each timed example a few seconds. `testdata/README.md` records the fixture, the queries, and their expected plan and counters.
 
 ## Usage
@@ -179,6 +185,8 @@ qenome --db app.db --select select.sql --index-sql index.sql --format kv
 qenome app.db select.sql index.sql --format json
 qenome --d1 DB select.sql index.sql
 qenome app.db --batch batch.json
+qenome app.db select.sql --suggest
+qenome app.db --batch batch.json --suggest
 ```
 
 The three paths fill the roles in this order: database, SELECT file, CREATE INDEX file. Each role can also be given with `--db`, `--select`, or `--index-sql`, and the two forms can be mixed; a positional path fills the first role that is still empty. With `--d1`, the two positional paths fill the SELECT and CREATE INDEX roles. After `--`, every argument is treated as a path, including paths that start with `-`.
@@ -191,6 +199,7 @@ The three paths fill the roles in this order: database, SELECT file, CREATE INDE
 - `--select <FILE>`: a file holding the one `SELECT` to compare (required, once)
 - `--index-sql <FILE>`: a file holding the one candidate `CREATE INDEX` (required, once)
 - `--batch <FILE>`: compare every SELECT in a JSON manifest with every candidate `CREATE INDEX` in one run; see [Batch comparisons](#batch-comparisons). It cannot be combined with `--select`, `--index-sql`, `--bind`, positional SELECT or INDEX paths, `--runs`, or `--format kv`
+- `--suggest`: ask SQLite's expert for candidate indexes instead of naming one, and compare the proposals. With `--batch`, the manifest may omit `candidates`. It cannot be combined with `--runs`, `--format kv`, or an index file (`--index-sql` or a third positional path). See [Suggesting candidate indexes](#suggesting-candidate-indexes)
 - `--bind <N>:<TYPE>[:<VALUE>]`: a typed value bound to parameter `N`; repeatable. `N` is SQLite's parameter number: named parameters share the number of their first appearance, and `?NNN` uses `NNN`. `TYPE` is `int`, `real`, `text`, or `null` (null takes no value). Every number in `1..parameter count` must be given exactly once, and a `SELECT` without parameters takes no `--bind`. The value is the rest of the argument, so text may contain `:`.
 - `--runs <N>`: timed rounds after the results match; each round adds two baseline A/A executions and times the `SELECT` once per copy. The default is `10`; `0` skips the timing but keeps the row counts and the verdict; the maximum is `1000`. A timing that takes longer than a second reports its progress on stderr.
 - `--timeout-ms <MS>`: time limit for building the index and for each `SELECT` run; the default is `30000`; `0` disables the limit. The comparison and timing can take the database copy plus `(3 + 4 × runs)` time limits, with up to three additional bounded diagnostic statements each using the same timeout.
@@ -272,7 +281,7 @@ The first command writes the local database into `.wrangler/` and loads 200,000 
 }
 ```
 
-- `queries` and `candidates` each hold 1 to 100 entries. The manifest is at most 1 MiB.
+- `queries` holds 1 to 100 entries. `candidates` holds 1 to 100 entries, or may be omitted (or `[]`) when `--suggest` adds the proposals.
 - The same path cannot appear twice in `queries`, and it cannot appear twice in `candidates`.
 - `select` and `index_sql` are paths to files. They are resolved from the manifest's directory, not from the current directory. Each file holds one read-only SELECT or one `CREATE INDEX`, and is at most 1 MiB.
 - `binds` is optional and uses the same `N:TYPE:VALUE` syntax as `--bind`. Every path and bind must be a JSON string without a NUL byte.
@@ -294,6 +303,33 @@ When the report is written, the exit status is the heaviest of a result mismatch
 The `human` output has a table of candidates, a `Recommendation:`, and a table of query and candidate verdicts. The recommendation is the candidate with the most improved queries among those with no mismatch, no incomparable result, no `needs-check`, no timeout, and at least one improvement. Ties go to the smaller size increase, then to manifest order. With `--format json` the output is the `batch_schema_version` 1 object described in [docs/json.md](docs/json.md).
 
 Each index build, each SELECT run, and each diagnostic statement has its own `--timeout-ms` limit. A batch can take one database copy, one baseline SELECT run per query before the candidate loop, and then, for every candidate, one index build and two SELECT runs per query plus up to three diagnostic statements, each with its own time limit. `--show-binds` and `--show-rows` apply to every comparison object.
+
+### Suggesting candidate indexes
+
+`--suggest` has SQLite's expert (sqlite3expert, built from the vendored SQLite source) propose candidate indexes, then compares them with the same batch machinery. You do not need an index file.
+
+```sh
+qenome app.db select.sql --suggest
+qenome --d1 DB select.sql --suggest --bind 1:int:1234
+qenome app.db --batch batch.json --suggest
+```
+
+With one SELECT file, the SELECT becomes one batch query and `--bind` applies to it. With `--batch`, the proposals join the manifest candidates, which may be omitted or empty. `--suggest` does not take `--runs`, `--format kv`, or an index file.
+
+Qenome opens a second read-only connection to the baseline copy and sets the expert sampling to `0`, so the expert reads the schema only. Every checked SELECT is passed to it. Before the expert starts, every `sqlite_schema` row is checked: each must be one statement and start with `CREATE TABLE`, `CREATE INDEX`, `CREATE UNIQUE INDEX`, `CREATE VIEW`, `CREATE TRIGGER`, or `CREATE VIRTUAL TABLE`, and none may use the `expert` virtual table. A database that fails this check is rejected with `suggest_schema_rejected` (exit `1`, empty stdout), even when the manifest has candidates. While the expert runs, a temporary guard is installed on the connections it opens: `ATTACH` and `DETACH` are denied, only the `index_list` and `index_xinfo` PRAGMAs are allowed, and the attached-database limit is `0`. After the expert object is created, the expert installs its own authorizer on its analysis copy; the attached-database limit stays in force there. Qenome removes the guard after the expert is destroyed. If the guard cannot be installed, Qenome stops before calling the expert. Together they keep a crafted schema from creating or changing another database file. The `CREATE INDEX` statements in its report are split with SQLite's own statement parser, so a `;` inside a quoted name does not split one. Each proposal passes the same check as a manifest candidate and is dropped with a `suggestion_rejected` warning when it fails. Labels are `suggested:1`, `suggested:2`, …; at most 20 proposals are compared, and at most 100 candidates with the manifest entries.
+
+The output is the batch report. Each `summary` entry adds `source` (`manifest` or `suggested`) and `index_sql_text`, and the top-level `warnings` array lists what was dropped or could not be done:
+
+| Warning `code` | Meaning |
+| `suggest_query_skipped` | SQLite could not analyze one SELECT; the other SELECTs continue |
+| `suggestion_rejected` | A proposal failed the `CREATE INDEX` check |
+| `suggestions_truncated` | The 20 or 100 limit dropped the tail of the proposals |
+| `no_suggestions` | SQLite proposed nothing; the manifest candidates were compared |
+| `suggest_failed` | The expert could not start or analyze; the manifest candidates were compared |
+
+When nothing can be compared, the run stops with exit `1`, empty stdout, and error code `no_candidates`. A proposal weighs the same as a manifest candidate in the exit status and in the recommendation. The proposals are a starting point, not a verdict: the result rows, the rows read, and the exit status still come from the real comparison.
+
+Use `--suggest` to find candidates. For a CI gate, compare a named index without `--suggest`, so that a change in SQLite's advice cannot change the build. The batch report keeps `batch_schema_version` `1`; `source`, `index_sql_text`, and `warnings` are additions.
 
 ## Output formats
 
