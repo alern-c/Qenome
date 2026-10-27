@@ -1,16 +1,53 @@
+<div align="center">
+
+<img src="docs/logo.svg" width="96" height="96" alt="Qenome logo: a two-twist DNA double helix, with one amber base pair marking a single change">
+
 # Qenome
+
+**Check whether a candidate index helps a query before you merge it.**
+
+[![npm version](https://img.shields.io/npm/v/qenome?style=flat-square)](https://www.npmjs.com/package/qenome)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square)](LICENSE)
+[![Quality workflow](https://github.com/alern-c/Qenome/actions/workflows/quality.yml/badge.svg)](https://github.com/alern-c/Qenome/actions/workflows/quality.yml)
 
 English | [日本語](README.ja.md)
 
-Qenome checks whether a candidate index helps a query before you merge it. Give it one read-only `SELECT` and one `CREATE INDEX`. It copies a local SQLite file, or a local Cloudflare D1 database (`--d1 <BINDING>`, `--config`), into sandbox snapshots and compares them. The original database is never modified.
+<img src="docs/demo.gif" width="860" alt="The D1 sample project: qenome --d1 DEMO_DB select.sql index.sql --runs 40 reports matching rows, an improved verdict, and the D1 block with the SQLite versions and the caution">
 
-The verdict uses the same counting as local D1 (workerd patch): rows read and rows written, together with the result rows, the query plan, the time, and the size increase. The numbers have not yet been checked against production D1.
+</div>
+
+<p align="center"><sub>The recording comes from <a href="#try-the-sample-project"><code>examples/d1-toml</code></a>; the sample runs on your machine with two commands.</sub></p>
+
+Give it one read-only `SELECT` and one `CREATE INDEX`. It copies a local SQLite file, or a local Cloudflare D1 database (`--d1 <BINDING>`, `--config`), into sandbox snapshots and compares them. The original database is never modified.
+
+## Features
+
+- **Your database stays untouched.** Qenome opens the original read-only and compares sandbox copies, so a candidate index that does not help can be dropped before the merge.
+- **The verdict comes from the rows read, not the time.** Rows read and rows written use the same counting as local D1 (workerd patch); `--runs 0` keeps the verdict and skips the timing.
+- **The result rows are checked too.** Both copies must return the same rows as a multiset; a mismatch or an incomparable result is reported instead of a pass.
+- **A local D1 binding is enough.** `--d1 <BINDING>` finds the local database from a wrangler config, and `--config` names the config.
+- **Compare many queries in one run.** `--batch <FILE>` pairs every SELECT in a JSON manifest with every candidate `CREATE INDEX` and reports each pair; see [Batch comparisons](#batch-comparisons).
+- **JSON for AI agents and CI.** `--format json` gives the report with `schema_version` 2, and the exit status separates a match, a mismatch, and an incomparable result.
+- **The evidence stays next to the verdict.** The query plan, the median times, the size increase of the whole database, and advisory warnings are in the report.
+
+> The row numbers have not yet been checked against production D1. Qenome measures the local database only.
+
+## Contents
+
+- [Features](#features)
+- [Installation](#installation)
+- [Check a local D1](#check-a-local-d1)
+- [Use with AI agents](#use-with-ai-agents)
+- [Why not ...](#why-not-)
+- [Quick start](#quick-start)
+- [Usage](#usage)
+- [Batch comparisons](#batch-comparisons)
+- [Output formats](#output-formats)
+- [Rules](#rules)
+- [Development checks](#development-checks)
+- [License](#license)
 
 From this README, a D1 developer or their AI agent can get that verdict on a local D1 in a few minutes. See [Check a local D1](#check-a-local-d1) and [Use with AI agents](#use-with-ai-agents).
-
-![The D1 sample project: qenome --d1 DEMO_DB select.sql index.sql --runs 40 reports matching rows, an improved verdict, and the D1 block with the SQLite versions and the caution](docs/demo.gif)
-
-The recording comes from [`examples/d1-toml`](#try-the-sample-project), and the sample runs on your machine with two commands.
 
 ## Installation
 
@@ -40,6 +77,9 @@ The release page lists the assets that were built; pick the one whose `<arch>` a
 
 Verify the download before running it. Replace `0.3.2` and the file name in these examples with the version and asset you downloaded.
 
+<details>
+<summary>Show the checksum commands for Linux, macOS, and Windows</summary>
+
 Linux:
 
 ```sh
@@ -60,6 +100,8 @@ Get-FileHash .\qenome-0.3.2-x86_64-windows.exe -Algorithm SHA256
 ```
 
 `Get-FileHash` must print the same SHA-256 hash as the line from `SHA256SUMS` (uppercase letters are fine).
+
+</details>
 
 Then give the binary execute permission (Linux and macOS) and run it:
 
@@ -280,9 +322,13 @@ The first command writes the local database into `.wrangler/` and loads 200,000 
 
 Qenome copies the database once, checks every SELECT and every candidate before it runs anything, then visits the candidates in manifest order. For each candidate it copies the baseline again, builds the index on that copy only, and runs every query on both copies. The baseline SELECT is run again for each candidate.
 
+<details>
+<summary>Batch statuses, failures, and exit status</summary>
+
 A candidate that cannot be built is recorded and the batch continues:
 
 | Status | Meaning | Exit contribution |
+| --- | --- | --- |
 | `index_rejected` | SQLite rejected the `CREATE INDEX` (for example a UNIQUE constraint on duplicate rows) | `1` |
 | `index_timeout` | the index build reached `--timeout-ms` | `124` |
 | `variant_timeout` | a variant SELECT reached `--timeout-ms`; that query is not judged, the others stay | `124` |
@@ -294,6 +340,8 @@ When the report is written, the exit status is the heaviest of a result mismatch
 The `human` output has a table of candidates, a `Recommendation:`, and a table of query and candidate verdicts. The recommendation is the candidate with the most improved queries among those with no mismatch, no incomparable result, no `needs-check`, no timeout, and at least one improvement. Ties go to the smaller size increase, then to manifest order. With `--format json` the output is the `batch_schema_version` 1 object described in [docs/json.md](docs/json.md).
 
 Each index build, each SELECT run, and each diagnostic statement has its own `--timeout-ms` limit. A batch can take one database copy, one baseline SELECT run per query before the candidate loop, and then, for every candidate, one index build and two SELECT runs per query plus up to three diagnostic statements, each with its own time limit. `--show-binds` and `--show-rows` apply to every comparison object.
+
+</details>
 
 ## Output formats
 
@@ -343,6 +391,9 @@ if qenome app.db select.sql index.sql --format json | jq -e '.result == "match" 
 fi
 ```
 
+<details>
+<summary>Main keys and string escaping</summary>
+
 Main keys:
 
 | Key | Contents |
@@ -371,6 +422,8 @@ Main keys:
 - `row_differences` always has both counts. The example array keys are always present but empty unless `--show-rows` is set; human and kv use the same flag and print only the counts by default.
 - `row_order` is a reference, not part of the result match.
 
+</details>
+
 ### Exit status
 
 | Code | Meaning |
@@ -390,6 +443,9 @@ A `--batch` report can be written with exit `1` or `124`. If stdout is the batch
 
 ### Timing evidence and advisory warnings
 
+<details>
+<summary>Timing evidence and advisory warnings in detail</summary>
+
 Each timed round first runs the baseline SELECT twice (A/A), then runs one baseline/variant pair, alternating AB and BA. Both sessions are already warm from the compared run. A/A adds two baseline executions per round. The measured counters in the report still come only from the first compared SELECT; diagnostics and timed executions do not enter them. Warning checks run after timing, on sandbox copies only. No ANALYZE or PRAGMA optimize is run.
 
 `timing.noise_band` reports the empirical 95th percentile of absolute differences between the two baseline A/A durations, using nearest rank `ceil(0.95*n)` and reporting `pairs`. This is a heuristic noise reference, not a confidence bound or a significance threshold with a calibrated false-positive rate. No observed A/A spread does not prove zero underlying variation.
@@ -399,6 +455,8 @@ Each timed round first runs the baseline SELECT twice (A/A), then runs one basel
 The interval is `null` with `unavailable_reason` `too-few-rounds` below six rounds (the widest finite interval has coverage 93.75% at n=5 and 96.875% at n=6), `zero-duration` when any timed duration is zero, or conservatively `no-observed-variation` when all paired differences are equal. These cases give `effect: insufficient-samples`, not a claim of precision at the clock resolution. Otherwise `effect` is `no-difference` if the absolute value of the median paired difference is at most the A/A noise reference or the interval includes zero; it is `faster` or `slower` only when both checks allow that direction. This auxiliary label never changes `verdict` or the exit code. Fixed A/A-before-A/B ordering, cache effects, temporal dependence, load drift, and small samples limit interpretation: nominal 95% coverage is not an exact guarantee for these machine timings or for production D1.
 
 `warnings` is always an array, including with `--runs 0` or incomparable results. Its `{code, message}` entries also appear verbatim in human and kv output. `no_analyze_stats` means the candidate index's table has no non-empty `sqlite_stat1` entry in the baseline snapshot, even if other tables have statistics. This is an absence check, not a freshness/completeness check: a partial-index entry alone counts as present. `data_too_small` means a bounded `SELECT 1 ... LIMIT 1000` on that table returned fewer than 1000 rows. Reaching 1000 only establishes at least 1000 rows; statistics estimates, partial-index cardinality, SELECT result count, and rows read do not decide this warning. The threshold is a heuristic, not proof that larger data is representative. Warnings advise a representative, separately prepared copy; they do not suppress a row verdict or change exit codes. Diagnostic reads respect the existing per-statement timeout/cancellation; failures follow the existing error path.
+
+</details>
 
 ## Rules
 
