@@ -19,6 +19,7 @@ APPROVED_FILES = [
     "src/cli/report.zig",
     "src/cli/pair.zig",
     "src/cli/batch.zig",
+    "src/cli/suggest.zig",
     "src/cli/tests.zig",
 ]
 
@@ -101,7 +102,12 @@ PRODUCTION_IMPORTS = {
         "src/cli/pair.zig",
         "src/cli/query.zig",
         "src/cli/report.zig",
+        "src/cli/suggest.zig",
         "src/cli/workspace.zig",
+    ],
+    "src/cli/suggest.zig": [
+        "src/db.zig",
+        "src/sqlite.zig",
     ],
 }
 

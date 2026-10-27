@@ -10,6 +10,7 @@ const cli_d1 = @import("d1.zig");
 const cli_pair = @import("pair.zig");
 const cli_query = @import("query.zig");
 const cli_report = @import("report.zig");
+const cli_suggest = @import("suggest.zig");
 const cli_workspace = @import("workspace.zig");
 
 const ExitCode = cli_control.ExitCode;
@@ -27,15 +28,31 @@ pub const Query = struct {
     binds: []const db.BindArg,
 };
 
+pub const Source = enum {
+    manifest,
+    suggested,
+};
+
 pub const Candidate = struct {
     label: []const u8,
     path: [:0]const u8,
     sql: [:0]const u8,
+    source: Source = .manifest,
 };
 
 pub const Loaded = struct {
     queries: []const Query,
     candidates: []const Candidate,
+};
+
+const Suggested = struct {
+    candidates: []const Candidate,
+    rejected: usize,
+};
+
+const SuggestOutcome = union(enum) {
+    ready: Suggested,
+    failed: ExitCode,
 };
 
 pub const Inputs = struct {
@@ -47,6 +64,8 @@ pub const Inputs = struct {
     show_binds: bool = false,
     show_rows: bool = false,
     format: cli_args.Format = .human,
+    suggest: bool = false,
+    manifest: bool = true,
     work_parent: []const u8,
 };
 
@@ -63,6 +82,8 @@ const ResultStatus = enum {
 
 const CandidateSummary = struct {
     candidate: []const u8,
+    source: Source = .manifest,
+    index_sql_text: []const u8 = "",
     status: CandidateStatus = .compared,
     failure_code: []const u8 = "",
     failure_message: []const u8 = "",
@@ -90,7 +111,7 @@ const ResultEntry = struct {
     comparison: []const u8 = "",
 };
 
-pub fn load(io: Io, arena: std.mem.Allocator, path: [:0]const u8, stderr: *Io.Writer) ?Loaded {
+pub fn load(io: Io, arena: std.mem.Allocator, path: [:0]const u8, stderr: *Io.Writer, suggest: bool) ?Loaded {
     const data = cli_args.readSqlFile(io, arena, path) catch |err| {
         switch (err) {
             error.SqlFileTooLarge => return invalidManifest(stderr, path, "the file is larger than 1 MiB", .{}),
@@ -109,7 +130,18 @@ pub fn load(io: Io, arena: std.mem.Allocator, path: [:0]const u8, stderr: *Io.Wr
         .object => |object| object,
         else => return invalidManifest(stderr, path, "it must be a JSON object", .{}),
     };
-    if (root.count() != 2 or root.get("queries") == null or root.get("candidates") == null) {
+    if (root.get("queries") == null) {
+        if (suggest) return invalidManifest(stderr, path, "it must have the key queries", .{});
+        return invalidManifest(stderr, path, "it must have exactly the keys queries and candidates", .{});
+    }
+    var root_keys = root.iterator();
+    while (root_keys.next()) |entry| {
+        if (std.mem.eql(u8, entry.key_ptr.*, "queries")) continue;
+        if (std.mem.eql(u8, entry.key_ptr.*, "candidates")) continue;
+        if (suggest) return invalidManifest(stderr, path, "it must have only the keys queries and candidates", .{});
+        return invalidManifest(stderr, path, "it must have exactly the keys queries and candidates", .{});
+    }
+    if (!suggest and root.get("candidates") == null) {
         return invalidManifest(stderr, path, "it must have exactly the keys queries and candidates", .{});
     }
 
@@ -178,11 +210,15 @@ pub fn load(io: Io, arena: std.mem.Allocator, path: [:0]const u8, stderr: *Io.Wr
         queries.append(arena, .{ .label = label, .path = resolved, .sql = undefined, .binds = binds.items }) catch return outOfMemory(stderr);
     }
 
-    const candidate_values = switch (root.get("candidates").?) {
+    const candidate_values: []std.json.Value = if (root.get("candidates")) |value| switch (value) {
         .array => |array| array.items,
         else => return invalidManifest(stderr, path, "candidates must be an array", .{}),
-    };
-    if (candidate_values.len < 1 or candidate_values.len > max_entries) {
+    } else &.{};
+    if (suggest) {
+        if (candidate_values.len > max_entries) {
+            return invalidManifest(stderr, path, "candidates must hold 0 to {d} entries", .{max_entries});
+        }
+    } else if (candidate_values.len < 1 or candidate_values.len > max_entries) {
         return invalidManifest(stderr, path, "candidates must hold 1 to {d} entries", .{max_entries});
     }
     for (candidate_values, 0..) |candidate_value, index| {
@@ -199,6 +235,9 @@ pub fn load(io: Io, arena: std.mem.Allocator, path: [:0]const u8, stderr: *Io.Wr
         };
         if (label.len == 0 or std.mem.indexOfScalar(u8, label, 0) != null) {
             return invalidManifest(stderr, path, "candidate {d} index_sql must be a non-empty path", .{index + 1});
+        }
+        if (suggest and std.mem.startsWith(u8, label, cli_suggest.label_prefix)) {
+            return invalidManifest(stderr, path, "candidate {d} index_sql must not start with '{s}'", .{ index + 1, cli_suggest.label_prefix });
         }
         for (candidates.items) |existing| {
             if (std.mem.eql(u8, existing.label, label)) {
@@ -288,13 +327,31 @@ pub fn run(
         if (!prepareQuery(&baseline, query, stderr)) return .rejected;
     }
 
-    const tables = arena.alloc([]const u8, loaded.candidates.len) catch {
+    for (loaded.candidates) |*candidate| {
+        if (cli_control.signalPending()) return cli_control.reportInterrupted(stderr);
+        if (!checkCandidate(&baseline, candidate, stderr)) return .rejected;
+    }
+
+    var suggest_warnings: std.ArrayList(cli_suggest.Warning) = .empty;
+    var candidates: []const Candidate = loaded.candidates;
+    var suggested_rejected: usize = 0;
+    if (inputs.suggest) {
+        switch (suggestCandidates(arena, &baseline, inputs, loaded, &suggest_warnings, stderr)) {
+            .ready => |suggested| {
+                candidates = suggested.candidates;
+                suggested_rejected = suggested.rejected;
+            },
+            .failed => |code| return code,
+        }
+    }
+    if (candidates.len == 0) return reportNoCandidates(stderr, inputs.manifest, suggested_rejected);
+
+    const tables = arena.alloc([]const u8, candidates.len) catch {
         stderr.writeAll("error: out of memory\n") catch {};
         return .rejected;
     };
-    for (loaded.candidates, 0..) |*candidate, index| {
+    for (candidates, 0..) |*candidate, index| {
         if (cli_control.signalPending()) return cli_control.reportInterrupted(stderr);
-        if (!checkCandidate(&baseline, candidate, stderr)) return .rejected;
         tables[index] = baseline.database.indexTarget(arena, candidate.sql) catch {
             stderr.writeAll("error: out of memory\n") catch {};
             return .rejected;
@@ -311,16 +368,20 @@ pub fn run(
 
     const baseline_size = batchFileSize(io, inputs.baseline_path, null, stderr) orelse return .rejected;
 
-    const summaries = arena.alloc(CandidateSummary, loaded.candidates.len) catch {
+    const summaries = arena.alloc(CandidateSummary, candidates.len) catch {
         stderr.writeAll("error: out of memory\n") catch {};
         return .rejected;
     };
     var results: std.ArrayList(ResultEntry) = .empty;
 
-    for (loaded.candidates, 0..) |*candidate, index| {
+    for (candidates, 0..) |*candidate, index| {
         if (cli_control.signalPending()) return cli_control.reportInterrupted(stderr);
 
-        var summary: CandidateSummary = .{ .candidate = candidate.label };
+        var summary: CandidateSummary = .{
+            .candidate = candidate.label,
+            .source = candidate.source,
+            .index_sql_text = candidate.sql,
+        };
 
         if (!resetVariant(io, arena, inputs.baseline_path, inputs.variant_path, candidate.label, stderr)) return .rejected;
 
@@ -512,10 +573,10 @@ pub fn run(
     const code = batchExitCode(summaries, results.items);
 
     switch (inputs.format) {
-        .json => writeBatchJson(stdout, allocator, summaries, order, results.items, recommended, code) catch |err| {
+        .json => writeBatchJson(stdout, allocator, summaries, order, results.items, suggest_warnings.items, recommended, code) catch |err| {
             return reportWriteFailure(err, stderr);
         },
-        .human => writeBatchHuman(stdout, inputs, loaded.queries.len, summaries, order, results.items, recommended) catch |err| {
+        .human => writeBatchHuman(stdout, inputs, loaded.queries.len, summaries, order, results.items, suggest_warnings.items, recommended) catch |err| {
             return reportWriteFailure(err, stderr);
         },
         .kv => unreachable,
@@ -532,6 +593,97 @@ fn prepareQuery(session: *QuerySession, query: *const Query, stderr: *Io.Writer)
     const prefix = std.fmt.bufPrint(&prefix_buffer, "error: the batch query '{s}': ", .{query.label}) catch "error: the batch query: ";
     reportCaptured(stderr, prefix, sink.buffered());
     return false;
+}
+
+fn suggestCandidates(
+    arena: std.mem.Allocator,
+    baseline: *QuerySession,
+    inputs: Inputs,
+    loaded: Loaded,
+    warnings: *std.ArrayList(cli_suggest.Warning),
+    stderr: *Io.Writer,
+) SuggestOutcome {
+    var queries: std.ArrayList(cli_suggest.Query) = .empty;
+    for (loaded.queries) |query| {
+        queries.append(arena, .{ .label = query.label, .sql = query.sql }) catch return .{ .failed = outOfMemoryCode(stderr) };
+    }
+
+    const inspection = cli_suggest.inspectSchema(arena, &baseline.database) catch |err| {
+        if (err == error.OutOfMemory) return .{ .failed = outOfMemoryCode(stderr) };
+        stderr.print("error: sqlite3expert could not read the schema for --suggest: {s}\n", .{baseline.message()}) catch {};
+        return .{ .failed = .rejected };
+    };
+    switch (inspection) {
+        .ok => {},
+        .rejected => |rejection| {
+            reportSchemaRejection(stderr, rejection);
+            return .{ .failed = .rejected };
+        },
+    }
+
+    const room = max_entries - @min(loaded.candidates.len, max_entries);
+    const limit = @min(cli_suggest.max_statements, room);
+    const generated = cli_suggest.generate(arena, inputs.baseline_path, queries.items) catch return .{ .failed = outOfMemoryCode(stderr) };
+    if (cli_control.signalPending()) return .{ .failed = cli_control.reportInterrupted(stderr) };
+
+    switch (generated) {
+        .open_failed => {
+            stderr.print("error: cannot open the baseline '{s}' read-only: the file is missing, is not a database, or is locked\n", .{inputs.baseline_path}) catch {};
+            return .{ .failed = .rejected };
+        },
+        .guard_failed => |message| {
+            stderr.print("error: {s}\n", .{message}) catch {};
+            return .{ .failed = .rejected };
+        },
+        .failed => |message| {
+            if (loaded.candidates.len == 0) {
+                stderr.print("error: {s}\n", .{message}) catch {};
+                stderr.writeAll("hint: Check that the SELECTs are valid read-only queries for this database, or write a candidate CREATE INDEX yourself.\n") catch {};
+                return .{ .failed = .rejected };
+            }
+            warnings.append(arena, .{ .code = "suggest_failed", .message = message }) catch return .{ .failed = outOfMemoryCode(stderr) };
+            return .{ .ready = .{ .candidates = loaded.candidates, .rejected = 0 } };
+        },
+        .ready => |ready| {
+            for (ready.warnings) |warning| {
+                warnings.append(arena, warning) catch return .{ .failed = outOfMemoryCode(stderr) };
+            }
+            const build = cli_suggest.accept(arena, &baseline.database, ready.statements, limit) catch return .{ .failed = outOfMemoryCode(stderr) };
+            for (build.warnings) |warning| {
+                warnings.append(arena, warning) catch return .{ .failed = outOfMemoryCode(stderr) };
+            }
+            if (build.generated == 0) {
+                warnings.append(arena, .{ .code = "no_suggestions", .message = "SQLite suggested no index for these queries" }) catch return .{ .failed = outOfMemoryCode(stderr) };
+            }
+            const combined = arena.alloc(Candidate, loaded.candidates.len + build.statements.len) catch return .{ .failed = outOfMemoryCode(stderr) };
+            @memcpy(combined[0..loaded.candidates.len], loaded.candidates);
+            for (build.statements, 0..) |sql, index| {
+                const label = std.fmt.allocPrintSentinel(arena, "{s}{d}", .{ cli_suggest.label_prefix, index + 1 }, 0) catch return .{ .failed = outOfMemoryCode(stderr) };
+                combined[loaded.candidates.len + index] = .{ .label = label, .path = label, .sql = sql, .source = .suggested };
+            }
+            return .{ .ready = .{ .candidates = combined, .rejected = build.rejected } };
+        },
+    }
+}
+
+fn reportSchemaRejection(stderr: *Io.Writer, rejection: cli_suggest.SchemaRejection) void {
+    stderr.writeAll("error: --suggest: the schema entry is not allowed: ") catch {};
+    result_rows.writeText(stderr, rejection.name) catch {};
+    stderr.print(": {s}\n", .{rejection.reason}) catch {};
+}
+
+fn reportNoCandidates(stderr: *Io.Writer, manifest: bool, rejected: usize) ExitCode {
+    if (rejected == 0) {
+        stderr.writeAll("error: no candidate index to compare: SQLite suggested no index for these queries\n") catch {};
+    } else {
+        stderr.print("error: no candidate index to compare: all {d} suggested {s} were rejected\n", .{ rejected, if (rejected == 1) "index" else "indexes" }) catch {};
+    }
+    if (manifest) {
+        stderr.writeAll("hint: Check that a SELECT has a WHERE or ORDER BY clause, or add a candidate index to the manifest.\n") catch {};
+    } else {
+        stderr.writeAll("hint: Check that the SELECT has a WHERE or ORDER BY clause, or write a candidate CREATE INDEX file and compare it without --suggest.\n") catch {};
+    }
+    return .rejected;
 }
 
 fn prepareVariant(session: *QuerySession, query: *const Query, candidate: *const Candidate, stderr: *Io.Writer) bool {
@@ -793,6 +945,7 @@ fn writeBatchJson(
     summaries: []const CandidateSummary,
     order: []const usize,
     results: []const ResultEntry,
+    warnings: []const cli_suggest.Warning,
     recommended: ?usize,
     code: ExitCode,
 ) !void {
@@ -821,6 +974,10 @@ fn writeBatchJson(
         try json.beginObject();
         try json.objectField("candidate");
         try cli_report.writeJsonText(&json, allocator, summary.candidate);
+        try json.objectField("source");
+        try json.write(@tagName(summary.source));
+        try json.objectField("index_sql_text");
+        try cli_report.writeJsonText(&json, allocator, summary.index_sql_text);
         try json.objectField("status");
         try json.write(@tagName(summary.status));
         try json.objectField("failure");
@@ -870,6 +1027,17 @@ fn writeBatchJson(
         try json.endObject();
     }
     try json.endArray();
+    try json.objectField("warnings");
+    try json.beginArray();
+    for (warnings) |warning| {
+        try json.beginObject();
+        try json.objectField("code");
+        try json.write(warning.code);
+        try json.objectField("message");
+        try cli_report.writeJsonText(&json, allocator, warning.message);
+        try json.endObject();
+    }
+    try json.endArray();
     try json.endObject();
     try out.writer.writeByte('\n');
     try stdout.writeAll(out.written());
@@ -886,6 +1054,7 @@ fn writeBatchHuman(
     summaries: []const CandidateSummary,
     order: []const usize,
     results: []const ResultEntry,
+    warnings: []const cli_suggest.Warning,
     recommended: ?usize,
 ) !void {
     var candidate_width: usize = "candidate".len;
@@ -932,6 +1101,15 @@ fn writeBatchHuman(
         }
         try stdout.writeByte('\n');
     }
+
+    var suggested_printed = false;
+    for (summaries) |summary| {
+        if (summary.source != .suggested) continue;
+        try stdout.writeAll(if (suggested_printed) ", " else "\nSuggested by SQLite: ");
+        try stdout.writeAll(summary.candidate);
+        suggested_printed = true;
+    }
+    if (suggested_printed) try stdout.writeByte('\n');
 
     try stdout.writeAll("\nRecommendation: ");
     if (recommended) |index| {
@@ -987,6 +1165,10 @@ fn writeBatchHuman(
             failures_printed = true;
         }
         try stdout.print("  {s}: {s}: {s}\n", .{ summary.candidate, @tagName(summary.status), summary.failure_message });
+    }
+
+    for (warnings) |warning| {
+        try stdout.print("warning: {s}: {s}\n", .{ warning.code, warning.message });
     }
 }
 

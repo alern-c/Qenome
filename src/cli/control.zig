@@ -162,6 +162,18 @@ pub fn classifyError(message: []const u8) ErrorClass {
         }
         return .{ .code = "batch_workspace_failed", .hint = "Check the temporary directory and its permissions, then rerun." };
     }
+    if (std.mem.startsWith(u8, message, "sqlite3expert")) {
+        return .{ .code = "suggest_failed", .hint = "Check that the SELECTs are valid read-only queries, or remove --suggest and compare a candidate CREATE INDEX file." };
+    }
+    if (std.mem.startsWith(u8, message, "no candidate index to compare")) {
+        return .{ .code = "no_candidates", .hint = "Check that a SELECT has a WHERE or ORDER BY clause, or write a candidate CREATE INDEX file and compare it without --suggest." };
+    }
+    if (std.mem.indexOf(u8, message, "the schema entry is not allowed") != null) {
+        return .{ .code = "suggest_schema_rejected", .hint = "Use a database whose sqlite_schema holds only plain CREATE statements, or compare a named index without --suggest." };
+    }
+    if (std.mem.startsWith(u8, message, "--suggest ")) {
+        return .{ .code = "usage_suggest_conflict", .hint = "With --suggest, give one SELECT file or a manifest, and do not pass --runs, --format kv, or an index file." };
+    }
     if (std.mem.indexOf(u8, message, "no wrangler config") != null) {
         return .{ .code = "d1_config_not_found", .hint = "Pass --config <PATH>, or run qenome in the wrangler project directory." };
     }
@@ -545,6 +557,16 @@ test "error text maps to a stable code and a next step" {
         .{ .message = "the batch candidate 'c/a.sql': the index could not be created: disk I/O", .code = "batch_index_failed" },
         .{ .message = "the batch candidate 'c/a.sql': --index-sql: the statement is not one CREATE INDEX", .code = "batch_index_failed" },
         .{ .message = "the batch candidate 'c/a.sql': the variant could not be removed: FileBusy", .code = "batch_workspace_failed" },
+        .{ .message = "sqlite3expert could not start: out of memory", .code = "suggest_failed" },
+        .{ .message = "sqlite3expert could not analyze the queries: no such table: nope", .code = "suggest_failed" },
+        .{ .message = "no candidate index to compare: SQLite suggested no index for these queries", .code = "no_candidates" },
+        .{ .message = "no candidate index to compare: all 2 suggested indexes were rejected", .code = "no_candidates" },
+        .{ .message = "--suggest does not run the timing; remove --runs (see --help)", .code = "usage_suggest_conflict" },
+        .{ .message = "--suggest supports --format human or --format json, not kv (see --help)", .code = "usage_suggest_conflict" },
+        .{ .message = "--suggest suggests the index; remove --index-sql (see --help)", .code = "usage_suggest_conflict" },
+        .{ .message = "--suggest takes two paths, the database and the SELECT file (see --help)", .code = "usage_suggest_conflict" },
+        .{ .message = "the schema entry is not allowed: 't': it holds more than one statement", .code = "suggest_schema_rejected" },
+        .{ .message = "the schema entry is not allowed: 't': it does not start with a CREATE statement", .code = "suggest_schema_rejected" },
         .{ .message = "--d1 DB: no wrangler config in the current directory", .code = "d1_config_not_found" },
         .{ .message = "--d1 DB: more than one wrangler config in the current directory", .code = "d1_config_ambiguous" },
         .{ .message = "--d1 DB: cannot read the wrangler config 'wrangler.toml': no such file", .code = "d1_config_unreadable" },
