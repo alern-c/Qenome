@@ -25,3 +25,6 @@ select = ["E", "F"]
 python_version = "3.10"
 check_untyped_defs = false
 files = ["scripts"]
+
+[tool.uv]
+required-version = ">=0.13.1"
