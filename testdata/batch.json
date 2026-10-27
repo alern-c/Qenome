@@ -1,0 +1,10 @@
+{
+  "queries": [
+    { "select": "cases/improved.sql", "binds": ["1:int:1234"] },
+    { "select": "cases/no-effect.sql", "binds": ["1:text:ok"] }
+  ],
+  "candidates": [
+    { "index_sql": "cases/improved.index.sql" },
+    { "index_sql": "cases/no-effect.index.sql" }
+  ]
+}

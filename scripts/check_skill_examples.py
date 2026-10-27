@@ -66,9 +66,18 @@ def parse_spec(rest):
 def lookup(value, path):
     current = value
     for part in path.split("."):
-        if not isinstance(current, dict) or part not in current:
-            return None, False
-        current = current[part]
+        if isinstance(current, dict):
+            if part not in current:
+                return None, False
+            current = current[part]
+            continue
+        if isinstance(current, list) and part.isdigit():
+            index = int(part)
+            if index >= len(current):
+                return None, False
+            current = current[index]
+            continue
+        return None, False
     return current, True
 
 
@@ -84,7 +93,10 @@ def check_report(payload, spec, returncode):
     problems = []
     if not isinstance(payload, dict):
         return ["stdout JSON is not an object"]
-    if payload.get("schema_version") != 2:
+    if "batch_schema_version" in payload:
+        if payload.get("batch_schema_version") != 1:
+            problems.append("batch_schema_version is not 1")
+    elif payload.get("schema_version") != 2:
         problems.append("schema_version is not 2")
     if payload.get("exit_code") != returncode:
         problems.append(
@@ -248,6 +260,37 @@ def self_test():
     )
     if failure:
         return "a matching error was rejected: " + "; ".join(failure)
+    batch = check_output(
+        {
+            "exit": 0,
+            "stdout": "report",
+            "fields": ["batch_schema_version", "recommended", "summary.0.status"],
+            "verdict": None,
+            "result": None,
+            "error": None,
+        },
+        0,
+        '{"batch_schema_version": 1, "exit_code": 0, "recommended": "c1.sql",'
+        ' "summary": [{"status": "compared"}], "results": []}\n',
+        "",
+    )
+    if batch:
+        return "a matching batch report was rejected: " + "; ".join(batch)
+    stale_batch = check_output(
+        {
+            "exit": 0,
+            "stdout": "report",
+            "fields": ["batch_schema_version"],
+            "verdict": None,
+            "result": None,
+            "error": None,
+        },
+        0,
+        '{"batch_schema_version": 2, "exit_code": 0, "summary": [], "results": []}\n',
+        "",
+    )
+    if not stale_batch:
+        return "batch_schema_version 2 was accepted"
     argv, problem = command_argv("npx qenome --d1 DB select.sql", "/opt/qenome")
     if problem or argv != ["/opt/qenome", "--d1", "DB", "select.sql"]:
         return "npx qenome was not rewritten"

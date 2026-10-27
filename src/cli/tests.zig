@@ -90,6 +90,24 @@ const CliFixture = struct {
         return callRun(testing.allocator, argv[0 .. required.len + extra.len], self.work_parent, stdout_buffer, stderr_buffer);
     }
 
+    fn writeFile(self: *CliFixture, sub_path: []const u8, data: []const u8) !void {
+        try self.dir.tmp.dir.writeFile(testing.io, .{ .sub_path = sub_path, .data = data });
+    }
+
+    fn runBatch(self: *CliFixture, extra: []const [:0]const u8, stdout_buffer: []u8, stderr_buffer: []u8) !RunResult {
+        const manifest = try self.dir.tmp.dir.realPathFileAlloc(testing.io, "batch.json", testing.allocator);
+        defer testing.allocator.free(manifest);
+        return self.runBatchPath(manifest, extra, stdout_buffer, stderr_buffer);
+    }
+
+    fn runBatchPath(self: *CliFixture, manifest: [:0]const u8, extra: []const [:0]const u8, stdout_buffer: []u8, stderr_buffer: []u8) RunResult {
+        var argv: [26][:0]const u8 = undefined;
+        const required = [_][:0]const u8{ "Qenome", "--db", self.db_path, "--batch", manifest };
+        @memcpy(argv[0..required.len], &required);
+        @memcpy(argv[required.len..][0..extra.len], extra);
+        return callRun(testing.allocator, argv[0 .. required.len + extra.len], self.work_parent, stdout_buffer, stderr_buffer);
+    }
+
     fn expectNoLeftovers(self: *CliFixture) !void {
         var parent = try self.dir.tmp.dir.openDir(testing.io, "work", .{ .iterate = true });
         defer parent.close(testing.io);
@@ -1802,7 +1820,7 @@ test "a bind error says how many parameters the SELECT has" {
 }
 
 test "help fits in 80 columns and names the formats" {
-    var stdout_buffer: [8192]u8 = undefined;
+    var stdout_buffer: [32768]u8 = undefined;
     var stderr_buffer: [512]u8 = undefined;
     const result = callRun(testing.allocator, &.{ "Qenome", "--help" }, null, &stdout_buffer, &stderr_buffer);
     try testing.expectEqual(ExitCode.ok, result.code);
@@ -1813,7 +1831,7 @@ test "help fits in 80 columns and names the formats" {
 }
 
 test "help puts the usage, options, examples and exit status before the details" {
-    var stdout_buffer: [8192]u8 = undefined;
+    var stdout_buffer: [32768]u8 = undefined;
     var stderr_buffer: [512]u8 = undefined;
     const result = callRun(testing.allocator, &.{ "Qenome", "--help" }, null, &stdout_buffer, &stderr_buffer);
     try testing.expectEqual(ExitCode.ok, result.code);
@@ -2522,5 +2540,430 @@ test "analyzed large quoted target emits no warnings and long index names remain
     defer parsed.deinit();
     try testing.expectEqual(@as(usize, 0), (try jsonItems(parsed.value, "warnings")).len);
     try testing.expectEqualStrings("match", try jsonText(parsed.value, "result"));
+    try fixture.expectNoLeftovers();
+}
+
+const batch_happy_schema: [:0]const u8 =
+    \\CREATE TABLE t(a INTEGER, b TEXT);
+    \\INSERT INTO t VALUES (1, 'x'), (2, 'y'), (3, 'z');
+;
+
+fn initBatchHappy() !CliFixture {
+    var fixture = try CliFixture.initWithSchema("SELECT 1", "CREATE INDEX unused ON t(a)", batch_happy_schema);
+    errdefer fixture.deinit();
+    try fixture.writeFile("q1.sql", "SELECT a FROM t WHERE b = ?1;");
+    try fixture.writeFile("q2.sql", "SELECT count(*) FROM t WHERE b = 'x';");
+    try fixture.writeFile("c1.sql", "CREATE INDEX ix_b ON t(b);");
+    try fixture.writeFile("c2.sql", "CREATE INDEX ix_a ON t(a);");
+    try fixture.writeFile("batch.json",
+        \\{"queries":[{"select":"q1.sql","binds":["1:text:x"]},{"select":"q2.sql"}],
+        \\ "candidates":[{"index_sql":"c1.sql"},{"index_sql":"c2.sql"}]}
+    );
+    return fixture;
+}
+
+test "a batch compares every query with every candidate and recommends one" {
+    var fixture = try initBatchHappy();
+    defer fixture.deinit();
+
+    var stdout_buffer: [65536]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = try fixture.runBatch(&.{}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+    try testing.expect(contains(result.stdout, "batch: 2 queries, 2 candidates\n"));
+    try testing.expect(contains(result.stdout, "Recommendation: c1.sql\n"));
+    try testing.expect(contains(result.stdout, "\nResults\n"));
+    try testing.expect(contains(result.stdout, "q1.sql"));
+    try testing.expect(contains(result.stdout, "q2.sql"));
+    try testing.expect(contains(result.stdout, "c1.sql"));
+    try testing.expect(contains(result.stdout, "c2.sql"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a batch json report carries the batch contract and embeds the comparisons" {
+    var fixture = try initBatchHappy();
+    defer fixture.deinit();
+
+    var stdout_buffer: [131072]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = try fixture.runBatch(&.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    const root = parsed.value;
+    try testing.expectEqual(@as(i64, 1), try jsonInt(root, "batch_schema_version"));
+    try testing.expectEqual(@as(i64, 0), try jsonInt(root, "exit_code"));
+    try testing.expectEqualStrings("c1.sql", try jsonText(root, "recommended"));
+
+    const summary = try jsonItems(root, "summary");
+    try testing.expectEqual(@as(usize, 2), summary.len);
+    try testing.expectEqualStrings("c1.sql", try jsonText(summary[0], "candidate"));
+    try testing.expectEqualStrings("compared", try jsonText(summary[0], "status"));
+    try testing.expectEqual(@as(i64, 2), try jsonInt(summary[0], "improved"));
+    try testing.expectEqual(@as(i64, 0), try jsonInt(summary[0], "no_effect"));
+    try testing.expectEqual(@as(i64, 0), try jsonInt(summary[0], "timeout"));
+    try testing.expect((try jsonGet(summary[0], "failure")) == .null);
+    try testing.expect(try jsonInt(summary[0], "size_increase") >= 0);
+    try testing.expectEqualStrings("c2.sql", try jsonText(summary[1], "candidate"));
+    try testing.expectEqual(@as(i64, 0), try jsonInt(summary[1], "improved"));
+    try testing.expectEqual(@as(i64, 2), try jsonInt(summary[1], "no_effect"));
+
+    const results = try jsonItems(root, "results");
+    try testing.expectEqual(@as(usize, 4), results.len);
+    try testing.expectEqualStrings("q1.sql", try jsonText(results[0], "query"));
+    try testing.expectEqualStrings("c1.sql", try jsonText(results[0], "candidate"));
+    try testing.expectEqualStrings("q2.sql", try jsonText(results[1], "query"));
+    try testing.expectEqualStrings("c1.sql", try jsonText(results[1], "candidate"));
+    try testing.expectEqualStrings("q1.sql", try jsonText(results[2], "query"));
+    try testing.expectEqualStrings("c2.sql", try jsonText(results[2], "candidate"));
+    try testing.expectEqualStrings("q2.sql", try jsonText(results[3], "query"));
+    try testing.expectEqualStrings("c2.sql", try jsonText(results[3], "candidate"));
+
+    const comparison = try jsonGet(results[0], "comparison");
+    try testing.expectEqual(@as(i64, 2), try jsonInt(comparison, "schema_version"));
+    try testing.expectEqual(@as(i64, 0), try jsonInt(comparison, "exit_code"));
+    try testing.expectEqualStrings("improved", try jsonText(comparison, "verdict"));
+    const inputs = try jsonGet(comparison, "inputs");
+    try testing.expectEqualStrings("q1.sql", try jsonText(inputs, "select"));
+    try testing.expectEqualStrings("c1.sql", try jsonText(inputs, "index_sql"));
+    const measurement = try jsonGet(comparison, "measurement");
+    try testing.expectEqual(@as(i64, 0), try jsonInt(measurement, "runs_per_copy"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a rejected candidate is recorded and the batch continues" {
+    var fixture = try CliFixture.initWithSchema("SELECT 1", "CREATE INDEX unused ON t(a)",
+        \\CREATE TABLE t(a INTEGER, b TEXT);
+        \\INSERT INTO t VALUES (1, 'x'), (1, 'y'), (2, 'z');
+    );
+    defer fixture.deinit();
+    try fixture.writeFile("q1.sql", "SELECT a FROM t WHERE b = 'x';");
+    try fixture.writeFile("c1.sql", "CREATE INDEX ix_b ON t(b);");
+    try fixture.writeFile("cu.sql", "CREATE UNIQUE INDEX u_a ON t(a);");
+    try fixture.writeFile("batch.json",
+        \\{"queries":[{"select":"q1.sql"}],"candidates":[{"index_sql":"c1.sql"},{"index_sql":"cu.sql"}]}
+    );
+
+    var stdout_buffer: [131072]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = try fixture.runBatch(&.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    const root = parsed.value;
+    try testing.expectEqual(@as(i64, 1), try jsonInt(root, "exit_code"));
+    try testing.expectEqualStrings("c1.sql", try jsonText(root, "recommended"));
+
+    const summary = try jsonItems(root, "summary");
+    try testing.expectEqual(@as(usize, 2), summary.len);
+    try testing.expectEqualStrings("c1.sql", try jsonText(summary[0], "candidate"));
+    try testing.expectEqualStrings("index_rejected", try jsonText(summary[1], "status"));
+    const failure = try jsonGet(summary[1], "failure");
+    try testing.expectEqualStrings("index_rejected", try jsonText(failure, "code"));
+    try testing.expect(contains(try jsonText(failure, "message"), "UNIQUE constraint failed"));
+    try testing.expect((try jsonGet(summary[1], "improved")) == .null);
+    try testing.expect((try jsonGet(summary[1], "size_increase")) == .null);
+
+    const results = try jsonItems(root, "results");
+    try testing.expectEqual(@as(usize, 1), results.len);
+    try testing.expectEqualStrings("c1.sql", try jsonText(results[0], "candidate"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a mismatch outranks a rejected candidate in the batch exit code" {
+    var fixture = try CliFixture.initWithSchema("SELECT 1", "CREATE INDEX unused ON t(a)",
+        \\CREATE TABLE t(a INTEGER, b TEXT);
+        \\INSERT INTO t VALUES (1, 'x'), (1, 'y');
+    );
+    defer fixture.deinit();
+    try fixture.writeFile("q1.sql", "SELECT a, b FROM t GROUP BY a;");
+    try fixture.writeFile("c1.sql", "CREATE INDEX idx_ab ON t(a, b DESC);");
+    try fixture.writeFile("cu.sql", "CREATE UNIQUE INDEX u_a ON t(a);");
+    try fixture.writeFile("batch.json",
+        \\{"queries":[{"select":"q1.sql"}],"candidates":[{"index_sql":"c1.sql"},{"index_sql":"cu.sql"}]}
+    );
+
+    var stdout_buffer: [131072]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = try fixture.runBatch(&.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.mismatch, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    const root = parsed.value;
+    try testing.expectEqual(@as(i64, 3), try jsonInt(root, "exit_code"));
+    try testing.expect((try jsonGet(root, "recommended")) == .null);
+    const summary = try jsonItems(root, "summary");
+    try testing.expectEqual(@as(i64, 1), try jsonInt(summary[0], "mismatch"));
+    try testing.expectEqualStrings("index_rejected", try jsonText(summary[1], "status"));
+    const results = try jsonItems(root, "results");
+    try testing.expectEqual(@as(usize, 1), results.len);
+    const comparison = try jsonGet(results[0], "comparison");
+    try testing.expectEqualStrings("mismatch", try jsonText(comparison, "result"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a batch whose only compared result is incomparable exits 4" {
+    var fixture = try CliFixture.initWithSchema("SELECT 1", "CREATE INDEX unused ON t(a)", batch_happy_schema);
+    defer fixture.deinit();
+    try fixture.writeFile("q1.sql", "SELECT a FROM t ORDER BY random() LIMIT 1;");
+    try fixture.writeFile("c1.sql", "CREATE INDEX ix_b ON t(b);");
+    try fixture.writeFile("batch.json",
+        \\{"queries":[{"select":"q1.sql"}],"candidates":[{"index_sql":"c1.sql"}]}
+    );
+
+    var stdout_buffer: [131072]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = try fixture.runBatch(&.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.incomparable, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    const root = parsed.value;
+    try testing.expectEqual(@as(i64, 4), try jsonInt(root, "exit_code"));
+    try testing.expect((try jsonGet(root, "recommended")) == .null);
+    const summary = try jsonItems(root, "summary");
+    try testing.expectEqual(@as(i64, 1), try jsonInt(summary[0], "incomparable"));
+    const results = try jsonItems(root, "results");
+    const comparison = try jsonGet(results[0], "comparison");
+    try testing.expectEqualStrings("incomparable", try jsonText(comparison, "result"));
+    try fixture.expectNoLeftovers();
+}
+
+fn expectBatchManifestError(fixture: *CliFixture, manifest: []const u8, expected: []const u8) !void {
+    try fixture.writeFile("batch.json", manifest);
+    var stdout_buffer: [2048]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = try fixture.runBatch(&.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try expectJsonFailure(result.stderr, "batch_manifest_invalid", 1);
+    var parsed = try parseJson(result.stderr);
+    defer parsed.deinit();
+    const failure = try jsonGet(parsed.value, "error");
+    try testing.expect(contains(try jsonText(failure, "message"), expected));
+}
+
+test "a batch manifest with the wrong shape is rejected" {
+    var fixture = try CliFixture.init("SELECT 1", "CREATE INDEX i ON t(a)");
+    defer fixture.deinit();
+
+    try expectBatchManifestError(&fixture, "{\"queries\":[],\"candidates\":[]}", "queries must hold 1 to 100 entries");
+    try expectBatchManifestError(&fixture, "{\"queries\":[{\"select\":\"q1.sql\"}],\"candidates\":[]}", "candidates must hold 1 to 100 entries");
+    try expectBatchManifestError(&fixture, "{\"queries\":[{\"select\":\"q1.sql\"}],\"candidates\":[{\"index_sql\":\"c1.sql\"}],\"extra\":1}", "exactly the keys queries and candidates");
+    try expectBatchManifestError(&fixture, "{\"queries\":[{\"select\":\"q1.sql\",\"extra\":1}],\"candidates\":[{\"index_sql\":\"c1.sql\"}]}", "must have select and optional binds");
+    try expectBatchManifestError(&fixture, "{\"queries\":[{\"select\":\"q1.sql\"},{\"select\":\"q1.sql\"}],\"candidates\":[{\"index_sql\":\"c1.sql\"}]}", "appears more than once");
+    try expectBatchManifestError(&fixture, "{\"queries\":[{\"select\":\"q1.sql\"}],\"candidates\":[{\"index_sql\":\"c1.sql\"},{\"index_sql\":\"c1.sql\"}]}", "appears more than once");
+    try expectBatchManifestError(&fixture, "{\"queries\":[{\"select\":\"q1.sql\",\"binds\":[\"1\"]}],\"candidates\":[{\"index_sql\":\"c1.sql\"}]}", "--bind expects");
+    try expectBatchManifestError(&fixture, "{\"queries\":[{\"select\":\"q1.sql\",\"binds\":[\"1:text:a\\u0000b\"]}],\"candidates\":[{\"index_sql\":\"c1.sql\"}]}", "contains a NUL byte");
+    try expectBatchManifestError(&fixture, "{", "not valid JSON");
+    try expectBatchManifestError(&fixture, "{\"queries\":[{\"select\":\"q1.sql\x00\"}],\"candidates\":[{\"index_sql\":\"c1.sql\"}]}", "contains a NUL byte");
+}
+
+test "a batch manifest over 100 entries is rejected" {
+    var fixture = try CliFixture.init("SELECT 1", "CREATE INDEX i ON t(a)");
+    defer fixture.deinit();
+
+    var text: Io.Writer.Allocating = .init(testing.allocator);
+    defer text.deinit();
+    try text.writer.writeAll("{\"queries\":[");
+    for (0..101) |index| {
+        if (index != 0) try text.writer.writeByte(',');
+        try text.writer.print("{{\"select\":\"q{d}.sql\"}}", .{index});
+    }
+    try text.writer.writeAll("],\"candidates\":[{\"index_sql\":\"c1.sql\"}]}");
+    try expectBatchManifestError(&fixture, text.written(), "queries must hold 1 to 100 entries");
+}
+
+test "a missing batch SQL file stops with an empty stdout" {
+    var fixture = try CliFixture.init("SELECT 1", "CREATE INDEX i ON t(a)");
+    defer fixture.deinit();
+    try fixture.writeFile("batch.json",
+        \\{"queries":[{"select":"q1.sql"}],"candidates":[{"index_sql":"c1.sql"}]}
+    );
+
+    var stdout_buffer: [2048]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = try fixture.runBatch(&.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try expectJsonFailure(result.stderr, "batch_sql_unreadable", 1);
+    try fixture.expectNoLeftovers();
+}
+
+test "a batch preflight rejects a swapped SELECT and candidate before running" {
+    var fixture = try CliFixture.init("SELECT 1", "CREATE INDEX i ON t(a)");
+    defer fixture.deinit();
+    try fixture.writeFile("q1.sql", "CREATE INDEX ix_b ON t(b);");
+    try fixture.writeFile("c1.sql", "CREATE INDEX ix_b ON t(b);");
+    try fixture.writeFile("batch.json",
+        \\{"queries":[{"select":"q1.sql"}],"candidates":[{"index_sql":"c1.sql"}]}
+    );
+
+    var stdout_buffer: [2048]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = try fixture.runBatch(&.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try expectJsonFailure(result.stderr, "batch_baseline_failed", 1);
+    try testing.expect(contains(result.stderr, "the batch query 'q1.sql'"));
+
+    try fixture.writeFile("q1.sql", "SELECT a FROM t;");
+    try fixture.writeFile("c1.sql", "SELECT a FROM t;");
+    const second = try fixture.runBatch(&.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, second.code);
+    try testing.expectEqualStrings("", second.stdout);
+    try expectJsonFailure(second.stderr, "batch_index_failed", 1);
+    try testing.expect(contains(second.stderr, "the batch candidate 'c1.sql'"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a batch baseline timeout stops before the candidate loop" {
+    var fixture = try CliFixture.init("SELECT 1", "CREATE INDEX i ON t(a)");
+    defer fixture.deinit();
+    try fixture.writeFile("q1.sql", "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 20000000) SELECT count(*) FROM c");
+    try fixture.writeFile("c1.sql", "CREATE INDEX ix_b ON t(b);");
+    try fixture.writeFile("batch.json",
+        \\{"queries":[{"select":"q1.sql"}],"candidates":[{"index_sql":"c1.sql"}]}
+    );
+
+    var stdout_buffer: [2048]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = try fixture.runBatch(&.{ "--format", "json", "--timeout-ms", "1" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.timeout, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try expectJsonFailure(result.stderr, "batch_baseline_timeout", 124);
+    try fixture.expectNoLeftovers();
+}
+
+test "a batch index timeout is recorded without results and keeps stderr empty" {
+    var fixture = try CliFixture.initWithSchema("SELECT 1", "CREATE INDEX unused ON t(a)",
+        \\CREATE TABLE t(a INTEGER, b TEXT);
+        \\WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 300000)
+        \\INSERT INTO t SELECT x, 'v' || x FROM c;
+    );
+    defer fixture.deinit();
+    try fixture.writeFile("q1.sql", "SELECT 1;");
+    try fixture.writeFile("c1.sql", "CREATE INDEX ix_b ON t(b);");
+    try fixture.writeFile("batch.json",
+        \\{"queries":[{"select":"q1.sql"}],"candidates":[{"index_sql":"c1.sql"}]}
+    );
+
+    var stdout_buffer: [131072]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = try fixture.runBatch(&.{ "--format", "json", "--timeout-ms", "1" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.timeout, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    const root = parsed.value;
+    try testing.expectEqual(@as(i64, 1), try jsonInt(root, "batch_schema_version"));
+    try testing.expectEqual(@as(i64, 124), try jsonInt(root, "exit_code"));
+    try testing.expect((try jsonGet(root, "recommended")) == .null);
+    const summary = try jsonItems(root, "summary");
+    try testing.expectEqual(@as(usize, 1), summary.len);
+    try testing.expectEqualStrings("c1.sql", try jsonText(summary[0], "candidate"));
+    try testing.expectEqualStrings("index_timeout", try jsonText(summary[0], "status"));
+    const failure = try jsonGet(summary[0], "failure");
+    try testing.expectEqualStrings("index_timeout", try jsonText(failure, "code"));
+    try testing.expect((try jsonText(failure, "message")).len != 0);
+    try testing.expect((try jsonGet(summary[0], "improved")) == .null);
+    try testing.expect((try jsonGet(summary[0], "size_increase")) == .null);
+    try testing.expectEqual(@as(usize, 0), (try jsonItems(root, "results")).len);
+    try fixture.expectNoLeftovers();
+}
+
+test "a batch variant timeout keeps the other queries of the candidate" {
+    var fixture = try CliFixture.initWithSchema("SELECT 1", "CREATE INDEX unused ON t(a)",
+        \\CREATE TABLE t(a INTEGER PRIMARY KEY, b INTEGER, c TEXT);
+        \\WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x + 1 FROM n WHERE x < 5000)
+        \\INSERT INTO t SELECT x, x % 2, 'v' || x FROM n;
+    );
+    defer fixture.deinit();
+    try fixture.writeFile("heavy.sql", "SELECT a FROM t WHERE b >= 1 AND length(hex(zeroblob(1000000 + (a > 0)))) > 0 ORDER BY a LIMIT 1;");
+    try fixture.writeFile("light.sql", "SELECT count(*) FROM t WHERE a = 1;");
+    try fixture.writeFile("c1.sql", "CREATE INDEX ix_b ON t(b);");
+    try fixture.writeFile("batch.json",
+        \\{"queries":[{"select":"heavy.sql"},{"select":"light.sql"}],"candidates":[{"index_sql":"c1.sql"}]}
+    );
+
+    var stdout_buffer: [131072]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = try fixture.runBatch(&.{ "--format", "json", "--timeout-ms", "500" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.timeout, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    const root = parsed.value;
+    try testing.expectEqual(@as(i64, 124), try jsonInt(root, "exit_code"));
+    try testing.expect((try jsonGet(root, "recommended")) == .null);
+    const summary = try jsonItems(root, "summary");
+    try testing.expectEqual(@as(usize, 1), summary.len);
+    try testing.expectEqualStrings("compared", try jsonText(summary[0], "status"));
+    try testing.expectEqual(@as(i64, 0), try jsonInt(summary[0], "improved"));
+    try testing.expectEqual(@as(i64, 1), try jsonInt(summary[0], "no_effect"));
+    try testing.expectEqual(@as(i64, 0), try jsonInt(summary[0], "needs_check"));
+    try testing.expectEqual(@as(i64, 0), try jsonInt(summary[0], "mismatch"));
+    try testing.expectEqual(@as(i64, 1), try jsonInt(summary[0], "timeout"));
+
+    const results = try jsonItems(root, "results");
+    try testing.expectEqual(@as(usize, 2), results.len);
+    try testing.expectEqualStrings("heavy.sql", try jsonText(results[0], "query"));
+    try testing.expectEqualStrings("variant_timeout", try jsonText(results[0], "status"));
+    try testing.expect((try jsonGet(results[0], "comparison")) == .null);
+    try testing.expectEqualStrings("light.sql", try jsonText(results[1], "query"));
+    try testing.expectEqualStrings("compared", try jsonText(results[1], "status"));
+    const comparison = try jsonGet(results[1], "comparison");
+    try testing.expectEqualStrings("match", try jsonText(comparison, "result"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a rejected first candidate leaves a clean variant for the next candidate" {
+    var fixture = try CliFixture.initWithSchema("SELECT 1", "CREATE INDEX unused ON t(a)",
+        \\CREATE TABLE t(a INTEGER, b TEXT);
+        \\INSERT INTO t VALUES (1, 'x'), (1, 'y'), (2, 'z');
+    );
+    defer fixture.deinit();
+    try fixture.writeFile("q1.sql", "SELECT a FROM t WHERE b = 'x';");
+    try fixture.writeFile("cu.sql", "CREATE UNIQUE INDEX u_a ON t(a);");
+    try fixture.writeFile("c1.sql", "CREATE INDEX ix_b ON t(b);");
+    try fixture.writeFile("batch.json",
+        \\{"queries":[{"select":"q1.sql"}],"candidates":[{"index_sql":"cu.sql"},{"index_sql":"c1.sql"}]}
+    );
+
+    var stdout_buffer: [131072]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = try fixture.runBatch(&.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    const root = parsed.value;
+    try testing.expectEqual(@as(i64, 1), try jsonInt(root, "exit_code"));
+    try testing.expectEqualStrings("c1.sql", try jsonText(root, "recommended"));
+    const summary = try jsonItems(root, "summary");
+    try testing.expectEqual(@as(usize, 2), summary.len);
+    try testing.expectEqualStrings("c1.sql", try jsonText(summary[0], "candidate"));
+    try testing.expectEqualStrings("compared", try jsonText(summary[0], "status"));
+    try testing.expectEqualStrings("cu.sql", try jsonText(summary[1], "candidate"));
+    try testing.expectEqualStrings("index_rejected", try jsonText(summary[1], "status"));
+
+    const results = try jsonItems(root, "results");
+    try testing.expectEqual(@as(usize, 1), results.len);
+    try testing.expectEqualStrings("q1.sql", try jsonText(results[0], "query"));
+    try testing.expectEqualStrings("c1.sql", try jsonText(results[0], "candidate"));
+    const comparison = try jsonGet(results[0], "comparison");
+    try testing.expectEqualStrings("match", try jsonText(comparison, "result"));
+    try testing.expectEqualStrings("improved", try jsonText(comparison, "verdict"));
     try fixture.expectNoLeftovers();
 }

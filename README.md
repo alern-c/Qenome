@@ -124,7 +124,7 @@ Point the agent at that file. `--format json` is the machine-readable report, sp
 
 ## Quick start
 
-This walkthrough creates the test database, builds Qenome, and runs three examples. Run the commands from the repository root, one block at a time, on Linux or macOS. They need Zig 0.17.0 (see [From source](#from-source)) and the `sqlite3` command-line tool, which loads the SQL files into the new database.
+This walkthrough creates the test database, builds Qenome, and runs four examples. Run the commands from the repository root, one block at a time, on Linux or macOS. They need Zig 0.17.0 (see [From source](#from-source)) and the `sqlite3` command-line tool, which loads the SQL files into the new database.
 
 Create the test database from `testdata/schema.sql` and `testdata/seed.sql`. `verify.sql` prints one `ok` line for each of its 17 checks, and fails the load when a value is not the expected one.
 
@@ -142,7 +142,7 @@ Build Qenome:
 zig build
 ```
 
-The three examples run `zig-out/bin/qenome`. Each command ends with the result it has to report: `result` and `verdict` from the Summary, and the exit status. `python3 scripts/check_all.py` and the quality workflow run these lines as written, so the README and the program stay in step. `--runs 40` keeps the medians steady on a busy machine; the default is `10`.
+The four examples run `zig-out/bin/qenome`. Each command ends with the result it has to report: `result` and `verdict` from the Summary (or `recommended` for a batch), and the exit status. `python3 scripts/check_all.py` and the quality workflow run these lines as written, so the README and the program stay in step. `--runs 40` keeps the medians steady on a busy machine; the default is `10`.
 
 An index that removes the full scan. The candidate index turns `SCAN events` into `SEARCH events USING INDEX ix_events_customer_id (customer_id=?)`, the rows read fall from 200,000 to 101, and both copies return the same 100 rows.
 
@@ -162,6 +162,12 @@ A SELECT whose rows cannot be compared. `ORDER BY random()` picks other rows on 
 ./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/incomparable.sql testdata/cases/incomparable.index.sql  # expect: result=incomparable verdict=not-judged exit=4
 ```
 
+A batch compares several queries with several candidate indexes in one run. `testdata/batch.json` pairs the improved and no-effect queries with both candidate indexes. Qenome reports one row per pair and recommends the candidate that helps without a mismatch, so only `cases/improved.index.sql` qualifies. See [Batch comparisons](#batch-comparisons).
+
+```sh
+./zig-out/bin/qenome testdata/generated/qenome-fixture.db --batch testdata/batch.json  # expect: recommended=cases/improved.index.sql exit=0
+```
+
 The first database build takes about a second, and each timed example a few seconds. `testdata/README.md` records the fixture, the queries, and their expected plan and counters.
 
 ## Usage
@@ -172,6 +178,7 @@ qenome app.db select.sql index.sql --bind 1:int:1234
 qenome --db app.db --select select.sql --index-sql index.sql --format kv
 qenome app.db select.sql index.sql --format json
 qenome --d1 DB select.sql index.sql
+qenome app.db --batch batch.json
 ```
 
 The three paths fill the roles in this order: database, SELECT file, CREATE INDEX file. Each role can also be given with `--db`, `--select`, or `--index-sql`, and the two forms can be mixed; a positional path fills the first role that is still empty. With `--d1`, the two positional paths fill the SELECT and CREATE INDEX roles. After `--`, every argument is treated as a path, including paths that start with `-`.
@@ -183,6 +190,7 @@ The three paths fill the roles in this order: database, SELECT file, CREATE INDE
 - `--config <PATH>`: the wrangler config for `--d1` (default: `wrangler.toml`, `wrangler.jsonc`, or `wrangler.json` in the current directory)
 - `--select <FILE>`: a file holding the one `SELECT` to compare (required, once)
 - `--index-sql <FILE>`: a file holding the one candidate `CREATE INDEX` (required, once)
+- `--batch <FILE>`: compare every SELECT in a JSON manifest with every candidate `CREATE INDEX` in one run; see [Batch comparisons](#batch-comparisons). It cannot be combined with `--select`, `--index-sql`, `--bind`, positional SELECT or INDEX paths, `--runs`, or `--format kv`
 - `--bind <N>:<TYPE>[:<VALUE>]`: a typed value bound to parameter `N`; repeatable. `N` is SQLite's parameter number: named parameters share the number of their first appearance, and `?NNN` uses `NNN`. `TYPE` is `int`, `real`, `text`, or `null` (null takes no value). Every number in `1..parameter count` must be given exactly once, and a `SELECT` without parameters takes no `--bind`. The value is the rest of the argument, so text may contain `:`.
 - `--runs <N>`: timed rounds after the results match; each round adds two baseline A/A executions and times the `SELECT` once per copy. The default is `10`; `0` skips the timing but keeps the row counts and the verdict; the maximum is `1000`. A timing that takes longer than a second reports its progress on stderr.
 - `--timeout-ms <MS>`: time limit for building the index and for each `SELECT` run; the default is `30000`; `0` disables the limit. The comparison and timing can take the database copy plus `(3 + 4 × runs)` time limits, with up to three additional bounded diagnostic statements each using the same timeout.
@@ -247,6 +255,46 @@ The first command writes the local database into `.wrangler/` and loads 200,000 
 
 `schema.sql` recreates `events`, so it can be run again at any time. Nothing is deployed. The commands use `qenome` from `PATH`; right after [From source](#from-source) it is `./zig-out/bin/qenome`. `4.152.0` is the wrangler version the sample was checked with.
 
+### Batch comparisons
+
+`--batch manifest.json` compares every SELECT in a manifest with every candidate `CREATE INDEX`. The manifest is a JSON object with two lists:
+
+```json
+{
+  "queries": [
+    { "select": "queries/orders.sql", "binds": ["1:int:1234"] },
+    { "select": "queries/recent.sql" }
+  ],
+  "candidates": [
+    { "index_sql": "candidates/a.sql" },
+    { "index_sql": "candidates/b.sql" }
+  ]
+}
+```
+
+- `queries` and `candidates` each hold 1 to 100 entries. The manifest is at most 1 MiB.
+- The same path cannot appear twice in `queries`, and it cannot appear twice in `candidates`.
+- `select` and `index_sql` are paths to files. They are resolved from the manifest's directory, not from the current directory. Each file holds one read-only SELECT or one `CREATE INDEX`, and is at most 1 MiB.
+- `binds` is optional and uses the same `N:TYPE:VALUE` syntax as `--bind`. Every path and bind must be a JSON string without a NUL byte.
+- The `select` and `index_sql` strings are copied to the report exactly as written.
+
+Qenome copies the database once, checks every SELECT and every candidate before it runs anything, then visits the candidates in manifest order. For each candidate it copies the baseline again, builds the index on that copy only, and runs every query on both copies. The baseline SELECT is run again for each candidate.
+
+A candidate that cannot be built is recorded and the batch continues:
+
+| Status | Meaning | Exit contribution |
+| `index_rejected` | SQLite rejected the `CREATE INDEX` (for example a UNIQUE constraint on duplicate rows) | `1` |
+| `index_timeout` | the index build reached `--timeout-ms` | `124` |
+| `variant_timeout` | a variant SELECT reached `--timeout-ms`; that query is not judged, the others stay | `124` |
+
+A failure that affects the whole run stops it before any report is written and leaves stdout empty: a baseline SELECT that fails or times out, a signal, a variant or baseline connection that fails, the temporary copies that cannot be created or removed, and storage errors such as a full disk. Candidate failures are not written as `error:` lines.
+
+When the report is written, the exit status is the heaviest of a result mismatch (`3`), a rejected index (`1`), a candidate time limit (`124`), an incomparable result (`4`), and `0`. Cleanup failure replaces `0` with `5`. A batch can therefore write a report and still exit `1` or `124`; read stdout to tell the two cases apart.
+
+The `human` output has a table of candidates, a `Recommendation:`, and a table of query and candidate verdicts. The recommendation is the candidate with the most improved queries among those with no mismatch, no incomparable result, no `needs-check`, no timeout, and at least one improvement. Ties go to the smaller size increase, then to manifest order. With `--format json` the output is the `batch_schema_version` 1 object described in [docs/json.md](docs/json.md).
+
+Each index build, each SELECT run, and each diagnostic statement has its own `--timeout-ms` limit. A batch can take one database copy, one baseline SELECT run per query before the candidate loop, and then, for every candidate, one index build and two SELECT runs per query plus up to three diagnostic statements, each with its own time limit. `--show-binds` and `--show-rows` apply to every comparison object.
+
 ## Output formats
 
 ### human (default)
@@ -268,7 +316,7 @@ Input paths, the SQLite and Zig versions, the build mode, the OS and architectur
 
 ### json
 
-`--format json` prints one JSON object with a trailing newline after a comparison finishes. The fields, including names reserved for the next core change, are specified in [docs/json.md](docs/json.md). When an input is rejected, the time limit is reached, or the run is interrupted, stdout stays empty. With `--format json`, stderr is then one JSON object (`schema_version`, `exit_code`, and `error` with `code`, `message`, and `hint`). `human` and `kv` keep the text `error:` line.
+`--format json` prints one JSON object with a trailing newline after a comparison finishes. With `--batch` it prints the separate `batch_schema_version` 1 object described above (see [Batch comparisons](#batch-comparisons) and [docs/json.md](docs/json.md)). The fields, including names reserved for the next core change, are specified in [docs/json.md](docs/json.md). When an input is rejected, the time limit is reached, or the run is interrupted, stdout stays empty. With `--format json`, stderr is then one JSON object (`schema_version`, `exit_code`, and `error` with `code`, `message`, and `hint`). `human` and `kv` keep the text `error:` line.
 
 The verdict is in the top-level `verdict` field:
 
@@ -337,6 +385,8 @@ Main keys:
 | 129 / 130 / 143 | Interrupted by `SIGHUP` / `SIGINT` / `SIGTERM` (POSIX) |
 
 `--format json` reports the comparison result in `exit_code` as `0`, `3`, or `4`. The process can still exit with `5` after writing the JSON.
+
+A `--batch` report can be written with exit `1` or `124`. If stdout is the batch object, the run finished and the failures are in the report. If stdout is empty, the run stopped and stderr holds the error object.
 
 ### Timing evidence and advisory warnings
 
