@@ -22,12 +22,14 @@ pub const SnapshotError = error{
 pub const SnapshotDetail = struct {
     buffer: [256]u8 = undefined,
     len: usize = 0,
+    error_code: c_int = 0,
 
     pub fn text(self: *const SnapshotDetail) []const u8 {
         return self.buffer[0..self.len];
     }
 
     fn capture(self: *SnapshotDetail, conn: *sqlite.sqlite3) void {
+        self.error_code = sqlite.sqlite3_errcode(conn) & 0xff;
         const message_text = std.mem.span(sqlite.sqlite3_errmsg(conn));
         self.len = @min(message_text.len, self.buffer.len);
         @memcpy(self.buffer[0..self.len], message_text[0..self.len]);
@@ -213,6 +215,7 @@ pub const Db = struct {
 
     pub fn copySnapshotTo(self: *Db, dest_path: [:0]const u8, detail: *SnapshotDetail) SnapshotError!void {
         detail.len = 0;
+        detail.error_code = 0;
         var handle: ?*sqlite.sqlite3 = null;
         const flags = sqlite.SQLITE_OPEN_READWRITE | sqlite.SQLITE_OPEN_CREATE | sqlite.SQLITE_OPEN_NOFOLLOW;
         const open_rc = sqlite.sqlite3_open_v2(dest_path, &handle, flags, null);
@@ -640,6 +643,7 @@ fn readCounter(statement: *sqlite.sqlite3_stmt, op: c_int) u32 {
 
 pub fn applyCreateIndex(path: [:0]const u8, sql: [:0]const u8, control: *StepControl, detail: *SnapshotDetail) ApplyError!void {
     detail.len = 0;
+    detail.error_code = 0;
     var handle: ?*sqlite.sqlite3 = null;
     const open_rc = sqlite.sqlite3_open_v2(path, &handle, sqlite.SQLITE_OPEN_READWRITE | sqlite.SQLITE_OPEN_NOFOLLOW, null);
     const conn = handle orelse return error.OpenFailed;
@@ -1826,6 +1830,7 @@ test "applyCreateIndex rejects a unique index on duplicate rows" {
     var detail: SnapshotDetail = .{};
     try testing.expectError(error.ApplyFailed, applyCreateIndex(fixture.path, "CREATE UNIQUE INDEX u_a ON t(a)", &control, &detail));
     try testing.expect(std.mem.indexOf(u8, detail.text(), "UNIQUE constraint failed") != null);
+    try testing.expectEqual(sqlite.SQLITE_CONSTRAINT, detail.error_code);
 
     var db: Db = .{};
     try db.openReadOnly(fixture.path);
@@ -1854,6 +1859,7 @@ test "applyCreateIndex is interrupted by the cancel flag and by the time limit" 
 
     var unlimited = StepControl.init(testing.io, 0, &cancel);
     try applyCreateIndex(fixture.path, "CREATE INDEX idx_b ON t(b)", &unlimited, &detail);
+    try testing.expectEqual(@as(c_int, 0), detail.error_code);
 }
 
 test "the candidate index name is kept for the INDEXED BY message" {

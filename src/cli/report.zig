@@ -277,6 +277,8 @@ fn writeJsonD1(json: *std.json.Stringify, allocator: std.mem.Allocator, header: 
 
 const json_schema_version: u8 = 2;
 
+pub const JsonStyle = enum { indented, minified };
+
 pub fn writeJsonReport(
     stdout: *Io.Writer,
     allocator: std.mem.Allocator,
@@ -288,9 +290,27 @@ pub fn writeJsonReport(
 ) Error!void {
     var out: Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
+    try writeJsonTo(&out.writer, allocator, header, before, after, outcome, report, .indented);
+    try out.writer.writeByte('\n');
+    try stdout.writeAll(out.written());
+}
+
+pub fn writeJsonTo(
+    writer: *Io.Writer,
+    allocator: std.mem.Allocator,
+    header: Header,
+    before: cli_comparison.Measurement,
+    after: cli_comparison.Measurement,
+    outcome: cli_comparison.Outcome,
+    report: Report,
+    style: JsonStyle,
+) Error!void {
     var json: std.json.Stringify = .{
-        .writer = &out.writer,
-        .options = .{ .whitespace = .indent_2, .escape_unicode = true },
+        .writer = writer,
+        .options = .{
+            .whitespace = if (style == .indented) .indent_2 else .minified,
+            .escape_unicode = true,
+        },
     };
     try json.beginObject();
     try json.objectField("schema_version");
@@ -390,8 +410,6 @@ pub fn writeJsonReport(
     try json.objectField("binds");
     try writeJsonBinds(&json, allocator, header);
     try json.endObject();
-    try out.writer.writeByte('\n');
-    try stdout.writeAll(out.written());
 }
 
 fn resultText(verdict: cli_comparison.Verdict) []const u8 {
@@ -604,7 +622,7 @@ fn nonFiniteRealText(value: f64) []const u8 {
     return if (value > 0) "inf" else "-inf";
 }
 
-fn writeJsonText(json: *std.json.Stringify, allocator: std.mem.Allocator, value: []const u8) Error!void {
+pub fn writeJsonText(json: *std.json.Stringify, allocator: std.mem.Allocator, value: []const u8) Error!void {
     if (std.unicode.utf8ValidateSlice(value) and std.mem.indexOfScalar(u8, value, '\\') == null) {
         try json.write(value);
         return;

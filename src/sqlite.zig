@@ -28,9 +28,11 @@ pub const ExecCallback = fn (?*anyopaque, c_int, [*c][*c]u8, [*c][*c]u8) callcon
 pub const ProgressCallback = fn (?*anyopaque) callconv(.c) c_int;
 
 pub const SQLITE_OK = 0;
+pub const SQLITE_ERROR = 1;
 pub const SQLITE_BUSY = 5;
 pub const SQLITE_READONLY = 8;
 pub const SQLITE_INTERRUPT = 9;
+pub const SQLITE_CONSTRAINT = 19;
 pub const SQLITE_AUTH = 23;
 pub const SQLITE_ROW = 100;
 pub const SQLITE_DONE = 101;

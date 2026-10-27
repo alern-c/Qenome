@@ -24,13 +24,10 @@ pub const QuerySession = struct {
     statement: ?*sqlite.sqlite3_stmt = null,
     opened: bool = false,
 
-    pub fn open(
+    pub fn openDatabase(
         self: *QuerySession,
         path: [:0]const u8,
-        sql: [:0]const u8,
-        binds: []const db.BindArg,
         kind: Kind,
-        index_sql: [:0]const u8,
         stderr: *Io.Writer,
         failure: *cli_control.ExitCode,
     ) bool {
@@ -44,6 +41,19 @@ pub const QuerySession = struct {
             return false;
         };
         self.opened = true;
+        return true;
+    }
+
+    pub fn prepare(
+        self: *QuerySession,
+        sql: [:0]const u8,
+        binds: []const db.BindArg,
+        kind: Kind,
+        index_sql: [:0]const u8,
+        stderr: *Io.Writer,
+        failure: *cli_control.ExitCode,
+    ) bool {
+        self.finalize();
 
         const statement = self.database.prepareSelect(sql) catch |err| {
             switch (kind) {
@@ -75,6 +85,20 @@ pub const QuerySession = struct {
             return false;
         };
         return true;
+    }
+
+    pub fn open(
+        self: *QuerySession,
+        path: [:0]const u8,
+        sql: [:0]const u8,
+        binds: []const db.BindArg,
+        kind: Kind,
+        index_sql: [:0]const u8,
+        stderr: *Io.Writer,
+        failure: *cli_control.ExitCode,
+    ) bool {
+        if (!self.openDatabase(path, kind, stderr, failure)) return false;
+        return self.prepare(sql, binds, kind, index_sql, stderr, failure);
     }
 
     pub fn finalize(self: *QuerySession) void {
