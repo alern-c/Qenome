@@ -610,7 +610,9 @@ fn suggestCandidates(
 
     const inspection = cli_suggest.inspectSchema(arena, &baseline.database) catch |err| {
         if (err == error.OutOfMemory) return .{ .failed = outOfMemoryCode(stderr) };
-        stderr.print("error: sqlite3expert could not read the schema for --suggest: {s}\n", .{baseline.message()}) catch {};
+        stderr.writeAll("error: sqlite3expert could not read the schema for --suggest: ") catch {};
+        result_rows.writeEscapedText(stderr, baseline.message()) catch {};
+        stderr.writeByte('\n') catch {};
         return .{ .failed = .rejected };
     };
     switch (inspection) {
@@ -628,16 +630,22 @@ fn suggestCandidates(
 
     switch (generated) {
         .open_failed => {
-            stderr.print("error: cannot open the baseline '{s}' read-only: the file is missing, is not a database, or is locked\n", .{inputs.baseline_path}) catch {};
+            stderr.writeAll("error: cannot open the baseline ") catch {};
+            result_rows.writeText(stderr, inputs.baseline_path) catch {};
+            stderr.writeAll(" read-only: the file is missing, is not a database, or is locked\n") catch {};
             return .{ .failed = .rejected };
         },
         .guard_failed => |message| {
-            stderr.print("error: {s}\n", .{message}) catch {};
+            stderr.writeAll("error: ") catch {};
+            result_rows.writeEscapedText(stderr, message) catch {};
+            stderr.writeByte('\n') catch {};
             return .{ .failed = .rejected };
         },
         .failed => |message| {
             if (loaded.candidates.len == 0) {
-                stderr.print("error: {s}\n", .{message}) catch {};
+                stderr.writeAll("error: ") catch {};
+                result_rows.writeEscapedText(stderr, message) catch {};
+                stderr.writeByte('\n') catch {};
                 stderr.writeAll("hint: Check that the SELECTs are valid read-only queries for this database, or write a candidate CREATE INDEX yourself.\n") catch {};
                 return .{ .failed = .rejected };
             }
@@ -1105,11 +1113,14 @@ fn writeBatchHuman(
     var suggested_printed = false;
     for (summaries) |summary| {
         if (summary.source != .suggested) continue;
-        try stdout.writeAll(if (suggested_printed) ", " else "\nSuggested by SQLite: ");
-        try stdout.writeAll(summary.candidate);
-        suggested_printed = true;
+        if (!suggested_printed) {
+            try stdout.writeAll("\nSuggested by SQLite:\n");
+            suggested_printed = true;
+        }
+        try stdout.print("  {s}: ", .{summary.candidate});
+        try result_rows.writeEscapedText(stdout, summary.index_sql_text);
+        try stdout.writeByte('\n');
     }
-    if (suggested_printed) try stdout.writeByte('\n');
 
     try stdout.writeAll("\nRecommendation: ");
     if (recommended) |index| {
@@ -1164,11 +1175,15 @@ fn writeBatchHuman(
             try stdout.writeAll("\nRejected candidates\n");
             failures_printed = true;
         }
-        try stdout.print("  {s}: {s}: {s}\n", .{ summary.candidate, @tagName(summary.status), summary.failure_message });
+        try stdout.print("  {s}: {s}: ", .{ summary.candidate, @tagName(summary.status) });
+        try result_rows.writeEscapedText(stdout, summary.failure_message);
+        try stdout.writeByte('\n');
     }
 
     for (warnings) |warning| {
-        try stdout.print("warning: {s}: {s}\n", .{ warning.code, warning.message });
+        try stdout.print("warning: {s}: ", .{warning.code});
+        try result_rows.writeEscapedText(stdout, warning.message);
+        try stdout.writeByte('\n');
     }
 }
 

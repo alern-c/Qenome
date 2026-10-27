@@ -130,6 +130,7 @@ TEST_IMPORTS = {
         "src/cli/report.zig",
         "src/cli/pair.zig",
         "src/cli/batch.zig",
+        "src/cli/suggest.zig",
     ],
 }
 

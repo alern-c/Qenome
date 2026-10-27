@@ -6,6 +6,7 @@ const sqlite = @import("../sqlite.zig");
 const cli = @import("../cli.zig");
 const cli_comparison = @import("comparison.zig");
 const cli_control = @import("control.zig");
+const cli_suggest = @import("suggest.zig");
 
 const run = cli.run;
 const runChecked = cli.runChecked;
@@ -3027,7 +3028,8 @@ test "a one-SELECT --suggest marks the proposal in human output" {
     const result = runSuggest(&fixture, "human", &.{ "--bind", "1:text:x" }, &stdout_buffer, &stderr_buffer);
     try testing.expectEqual(ExitCode.ok, result.code);
     try testing.expectEqualStrings("", result.stderr);
-    try testing.expect(contains(result.stdout, "\nSuggested by SQLite: suggested:1\n"));
+    try testing.expect(contains(result.stdout, "\nSuggested by SQLite:\n  suggested:1: CREATE INDEX "));
+    try testing.expect(contains(result.stdout, ";\n"));
     try testing.expect(contains(result.stdout, "\nRecommendation: suggested:1\n"));
     try testing.expect(!contains(result.stdout, "warning:"));
     try fixture.expectNoLeftovers();
@@ -3253,5 +3255,99 @@ test "--suggest accepts the D1 example schema with the local D1 tables" {
     var parsed = try parseJson(result.stdout);
     defer parsed.deinit();
     try testing.expectEqualStrings("suggested:1", try jsonText(parsed.value, "recommended"));
+    try fixture.expectNoLeftovers();
+}
+
+test "--suggest escapes control characters in a human warning" {
+    var fixture = try CliFixture.initWithSchema("SELECT 1", "CREATE INDEX unused ON t(a)",
+        \\CREATE TABLE t(a INTEGER);
+        \\INSERT INTO t VALUES (1);
+        \\CREATE INDEX t_a ON t(a);
+        \\ANALYZE;
+    );
+    defer fixture.deinit();
+    try fixture.writeFile("q\x1b.sql", "SELECT * FROM sqlite_stat1;");
+    try fixture.writeFile("c.sql", "CREATE INDEX c ON t(a);");
+    try fixture.writeFile("batch.json",
+        \\{"queries":[{"select":"q\u001b.sql"}],"candidates":[{"index_sql":"c.sql"}]}
+    );
+
+    var stdout_buffer: [65536]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = try fixture.runBatch(&.{"--suggest"}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.incomparable, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    const at = std.mem.indexOf(u8, result.stdout, "warning: suggest_query_skipped:") orelse return error.MissingWarning;
+    const end = std.mem.indexOfScalarPos(u8, result.stdout, at, '\n') orelse result.stdout.len;
+    const line = result.stdout[at..end];
+    try testing.expect(contains(line, "q\\x1b.sql"));
+    try testing.expect(!contains(line, "\x1b"));
+    try fixture.expectNoLeftovers();
+}
+
+test "--suggest escapes control characters in a human schema error" {
+    const table = "bad\x1bname";
+    const schema: [:0]const u8 = "CREATE TABLE \"bad\x1bname\"(a INTEGER);\nINSERT INTO \"bad\x1bname\" VALUES (1);";
+    var fixture = try CliFixture.initWithSchema(
+        "SELECT * FROM \"bad\x1bname\" WHERE a = 1",
+        "CREATE INDEX unused ON t(a)",
+        schema,
+    );
+    defer fixture.deinit();
+    const victim = try victimPath(&fixture, "victim.db");
+    defer testing.allocator.free(victim);
+    const update = try std.fmt.allocPrintSentinel(testing.allocator, "PRAGMA writable_schema=ON; UPDATE sqlite_schema SET sql = 'CREATE TABLE \"{0s}\"(a INTEGER); ATTACH DATABASE ''{1s}'' AS v;' WHERE name = '{0s}';", .{ table, victim }, 0);
+    defer testing.allocator.free(update);
+    const writer = try db.openTestWriter(fixture.db_path, update);
+    _ = sqlite.sqlite3_close(writer);
+
+    var stdout_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = runSuggest(&fixture, "human", &.{}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try testing.expect(contains(result.stderr, "'bad\\x1bname'"));
+    try testing.expect(!contains(result.stderr, "\x1b"));
+    try expectNoFile(victim);
+    try fixture.expectNoLeftovers();
+}
+
+test "--suggest keeps the manifest candidates when the expert fails" {
+    var fixture = try initBatchHappy();
+    defer fixture.deinit();
+    cli_suggest.setTestExpertFailure("sqlite3expert could not analyze the queries: injected failure");
+    defer cli_suggest.setTestExpertFailure(null);
+
+    var stdout_buffer: [131072]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = try fixture.runBatch(&.{ "--suggest", "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    const warnings = try jsonItems(parsed.value, "warnings");
+    try testing.expectEqual(@as(usize, 1), warnings.len);
+    try testing.expectEqualStrings("suggest_failed", try jsonText(warnings[0], "code"));
+    try testing.expect(contains(try jsonText(warnings[0], "message"), "injected failure"));
+    try testing.expectEqual(@as(usize, 2), (try jsonItems(parsed.value, "summary")).len);
+    try testing.expectEqual(@as(usize, 4), (try jsonItems(parsed.value, "results")).len);
+    try fixture.expectNoLeftovers();
+}
+
+test "--suggest stops when the expert fails and no candidate remains" {
+    var fixture = try CliFixture.initWithSchema("SELECT a FROM t WHERE b = ?1;", "CREATE INDEX unused ON t(a)", batch_happy_schema);
+    defer fixture.deinit();
+    cli_suggest.setTestExpertFailure("sqlite3expert could not analyze the queries: injected failure");
+    defer cli_suggest.setTestExpertFailure(null);
+
+    var stdout_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = runSuggest(&fixture, "json", &.{ "--bind", "1:text:x" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try expectJsonFailure(result.stderr, "suggest_failed", 1);
+    try testing.expect(contains(result.stderr, "injected failure"));
     try fixture.expectNoLeftovers();
 }

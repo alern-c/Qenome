@@ -1,6 +1,14 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const db = @import("../db.zig");
 const sqlite = @import("../sqlite.zig");
+
+var test_expert_failure: ?[]const u8 = null;
+
+pub fn setTestExpertFailure(message: ?[]const u8) void {
+    comptime std.debug.assert(builtin.is_test);
+    test_expert_failure = message;
+}
 
 pub const max_statements = 20;
 
@@ -108,20 +116,28 @@ pub fn inspectSchema(arena: std.mem.Allocator, handle: *db.Db) !SchemaInspection
         if (std.mem.indexOfScalar(u8, entry.name, 0) != null) {
             return .{ .rejected = .{ .name = entry.name, .reason = "it contains a NUL byte" } };
         }
-        if (inspectSql(entry.sql)) |reason| {
+        if (try inspectSql(arena, entry.sql)) |reason| {
             return .{ .rejected = .{ .name = entry.name, .reason = reason } };
         }
     }
     return .ok;
 }
 
-pub fn inspectSql(sql: []const u8) ?[]const u8 {
+pub fn inspectSql(arena: std.mem.Allocator, sql: []const u8) std.mem.Allocator.Error!?[]const u8 {
     if (std.mem.indexOfScalar(u8, sql, 0) != null) return "it contains a NUL byte";
 
+    const probe = try arena.allocSentinel(u8, sql.len + 1, 0);
+    @memcpy(probe[0..sql.len], sql);
+    probe[sql.len] = ';';
+
+    const end = completeEnd(probe) orelse return "it is not one complete statement";
     var statement_end = sql.len;
-    if (completeEnd(sql)) |end| {
-        if (!onlyTrivia(sql[end..])) return "it holds more than one statement";
-        statement_end = end;
+    if (end <= sql.len) {
+        switch (tailKind(sql[end..])) {
+            .trivia => statement_end = end,
+            .statement => return "it holds more than one statement",
+            .unterminated_comment => return "it holds an unterminated comment",
+        }
     }
 
     const statement = std.mem.trim(u8, sql[0..statement_end], " \t\r\n\x0c");
@@ -213,6 +229,10 @@ pub fn generate(
         return .{ .guard_failed = "sqlite3expert could not be guarded" };
     }
     defer _ = sqlite.sqlite3_cancel_auto_extension(guard_entry);
+
+    if (comptime builtin.is_test) {
+        if (test_expert_failure) |message| return .{ .failed = message };
+    }
 
     var err: ?[*:0]u8 = null;
     const expert = sqlite.sqlite3_expert_new(session.handle, &err);
@@ -421,11 +441,30 @@ const Tokens = struct {
     }
 };
 
-fn onlyTrivia(text: []const u8) bool {
-    var tokens: Tokens = .{ .text = text };
-    tokens.skipTrivia();
-    return tokens.index >= text.len;
+fn tailKind(text: []const u8) Tail {
+    var index: usize = 0;
+    while (index < text.len) {
+        const byte = text[index];
+        if (isSpace(byte)) {
+            index += 1;
+            continue;
+        }
+        if (byte == '-' and index + 1 < text.len and text[index + 1] == '-') {
+            index += 2;
+            while (index < text.len and text[index] != '\n') index += 1;
+            continue;
+        }
+        if (byte == '/' and index + 1 < text.len and text[index + 1] == '*') {
+            const close = std.mem.indexOfPos(u8, text, index + 2, "*/") orelse return .unterminated_comment;
+            index = close + 2;
+            continue;
+        }
+        return .statement;
+    }
+    return .trivia;
 }
+
+const Tail = enum { trivia, statement, unterminated_comment };
 
 fn allowedCreate(statement: []const u8) bool {
     var tokens: Tokens = .{ .text = statement };
@@ -626,6 +665,10 @@ fn expectAttachAllowed() !void {
 }
 
 test "the preflight accepts the statements SQLite stores in the schema" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
     const accepted = [_][]const u8{
         "CREATE TABLE t(a)",
         "CREATE TABLE t(a INTEGER PRIMARY KEY, b TEXT NOT NULL)",
@@ -637,6 +680,10 @@ test "the preflight accepts the statements SQLite stores in the schema" {
         "CREATE VIEW v AS SELECT * FROM \"x;y\"",
         "CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT 1; END",
         "CREATE TRIGGER tr AFTER INSERT ON t BEGIN UPDATE t SET a = a; INSERT INTO t VALUES (2); END",
+        "CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT 1; SELECT 2; END",
+        "CREATE TABLE t(a) /* trailing */",
+        "CREATE TABLE t(a); /* closed */",
+        "CREATE TABLE t(a);\n-- trailing",
         "CREATE VIRTUAL TABLE t USING fts5(a)",
         "CREATE VIRTUAL TABLE using$foo USING fts5(a)",
         "CREATE VIRTUAL TABLE usingé USING fts5(a)",
@@ -647,11 +694,15 @@ test "the preflight accepts the statements SQLite stores in the schema" {
         "CREATE TABLE \"CREATE\"(a)",
     };
     for (accepted) |sql| {
-        try testing.expectEqual(@as(?[]const u8, null), inspectSql(sql));
+        try testing.expectEqual(@as(?[]const u8, null), try inspectSql(arena, sql));
     }
 }
 
 test "the preflight rejects extra statements and non CREATE rows" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
     const cases = [_]struct { sql: []const u8, reason: []const u8 }{
         .{ .sql = "CREATE TABLE t(a); ATTACH DATABASE 'x' AS v", .reason = "more than one statement" },
         .{ .sql = "CREATE TABLE t(a); VACUUM INTO 'x'", .reason = "more than one statement" },
@@ -671,9 +722,15 @@ test "the preflight rejects extra statements and non CREATE rows" {
         .{ .sql = "CREATE VIRTUAL TABLE main.t USING expert(x)", .reason = "expert module" },
         .{ .sql = "CREATE VIRTUAL TABLE IF NOT EXISTS t USING expert(x)", .reason = "expert module" },
         .{ .sql = "CREATE TABLE t(a)\x00", .reason = "NUL byte" },
+        .{ .sql = "CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT 1", .reason = "not one complete statement" },
+        .{ .sql = "CREATE TABLE t(a) /* unterminated", .reason = "not one complete statement" },
+        .{ .sql = "CREATE TABLE t(a); /* unterminated", .reason = "unterminated comment" },
+        .{ .sql = "CREATE TABLE t(a, 'x)", .reason = "not one complete statement" },
+        .{ .sql = "CREATE TABLE t([x)", .reason = "not one complete statement" },
+        .{ .sql = "CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT 1; END\x0b; ATTACH DATABASE 'x' AS v", .reason = "not one complete statement" },
     };
     for (cases) |case| {
-        const reason = inspectSql(case.sql) orelse return error.ExpectedRejection;
+        const reason = (try inspectSql(arena, case.sql)) orelse return error.ExpectedRejection;
         try testing.expect(std.mem.indexOf(u8, reason, case.reason) != null);
     }
 }
@@ -805,17 +862,66 @@ test "a normal database keeps its suggestions and leaves no guard behind" {
 }
 
 test "the preflight scans a large statement once" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
     var text: std.ArrayList(u8) = .empty;
     defer text.deinit(testing.allocator);
     try text.appendSlice(testing.allocator, "CREATE VIEW v AS SELECT '");
     for (0..20000) |_| try text.append(testing.allocator, ';');
     try text.appendSlice(testing.allocator, "' FROM t");
-    try testing.expectEqual(@as(?[]const u8, null), inspectSql(text.items));
+    try testing.expectEqual(@as(?[]const u8, null), try inspectSql(arena, text.items));
 
     var trigger: std.ArrayList(u8) = .empty;
     defer trigger.deinit(testing.allocator);
     try trigger.appendSlice(testing.allocator, "CREATE TRIGGER tr AFTER INSERT ON t BEGIN ");
     for (0..2000) |_| try trigger.appendSlice(testing.allocator, "UPDATE t SET a = a; ");
     try trigger.appendSlice(testing.allocator, "END");
-    try testing.expectEqual(@as(?[]const u8, null), inspectSql(trigger.items));
+    try testing.expectEqual(@as(?[]const u8, null), try inspectSql(arena, trigger.items));
+}
+
+fn probeSql(arena: std.mem.Allocator, sql: []const u8) ![:0]const u8 {
+    const probe = try arena.allocSentinel(u8, sql.len + 1, 0);
+    @memcpy(probe[0..sql.len], sql);
+    probe[sql.len] = ';';
+    return probe;
+}
+
+fn referenceCompleteEnd(arena: std.mem.Allocator, probe: []const u8) !?usize {
+    var index: usize = 0;
+    while (index < probe.len) : (index += 1) {
+        if (probe[index] != ';') continue;
+        const prefix = try arena.dupeSentinel(u8, probe[0 .. index + 1], 0);
+        if (sqlite.sqlite3_complete(prefix) != 0) return index + 1;
+    }
+    return null;
+}
+
+test "the statement end port agrees with sqlite3_complete" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const cases = [_][]const u8{
+        "CREATE TABLE t(a)",
+        "CREATE TABLE t(a);",
+        "CREATE TABLE t(a) /* trailing */",
+        "CREATE TABLE t(a) -- trailing",
+        "CREATE TABLE t(a); -- trailing",
+        "CREATE TABLE t(a); ATTACH DATABASE 'x' AS v",
+        "CREATE TABLE t(a);;",
+        "CREATE TABLE t(a, 'x;y')",
+        "CREATE VIEW v AS SELECT 'a;b' FROM t",
+        "CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT 1; SELECT 2; END",
+        "CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT 1; END; ATTACH DATABASE 'x' AS v",
+        "CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT 1; END\x0b; ATTACH DATABASE 'x' AS v",
+        "CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT 1",
+        "CREATE TABLE t(a) /* unterminated",
+        "CREATE TABLE t(a, 'x)",
+        "CREATE TABLE t([x)",
+    };
+    for (cases) |sql| {
+        const probe = try probeSql(arena, sql);
+        try testing.expectEqual(try referenceCompleteEnd(arena, probe), completeEnd(probe));
+    }
 }

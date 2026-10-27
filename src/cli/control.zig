@@ -120,6 +120,9 @@ const ErrorClass = struct {
 };
 
 pub fn classifyError(message: []const u8) ErrorClass {
+    if (std.mem.startsWith(u8, message, "--suggest: the schema entry is not allowed")) {
+        return .{ .code = "suggest_schema_rejected", .hint = "Use a database whose sqlite_schema holds only plain CREATE statements, or compare a named index without --suggest." };
+    }
     if (std.mem.startsWith(u8, message, "interrupted by SIGTERM")) {
         return .{ .code = "terminated", .hint = "Rerun the command. Temporary copies are removed when the signal is handled." };
     }
@@ -167,9 +170,6 @@ pub fn classifyError(message: []const u8) ErrorClass {
     }
     if (std.mem.startsWith(u8, message, "no candidate index to compare")) {
         return .{ .code = "no_candidates", .hint = "Check that a SELECT has a WHERE or ORDER BY clause, or write a candidate CREATE INDEX file and compare it without --suggest." };
-    }
-    if (std.mem.indexOf(u8, message, "the schema entry is not allowed") != null) {
-        return .{ .code = "suggest_schema_rejected", .hint = "Use a database whose sqlite_schema holds only plain CREATE statements, or compare a named index without --suggest." };
     }
     if (std.mem.startsWith(u8, message, "--suggest ")) {
         return .{ .code = "usage_suggest_conflict", .hint = "With --suggest, give one SELECT file or a manifest, and do not pass --runs, --format kv, or an index file." };
@@ -565,8 +565,9 @@ test "error text maps to a stable code and a next step" {
         .{ .message = "--suggest supports --format human or --format json, not kv (see --help)", .code = "usage_suggest_conflict" },
         .{ .message = "--suggest suggests the index; remove --index-sql (see --help)", .code = "usage_suggest_conflict" },
         .{ .message = "--suggest takes two paths, the database and the SELECT file (see --help)", .code = "usage_suggest_conflict" },
-        .{ .message = "the schema entry is not allowed: 't': it holds more than one statement", .code = "suggest_schema_rejected" },
-        .{ .message = "the schema entry is not allowed: 't': it does not start with a CREATE statement", .code = "suggest_schema_rejected" },
+        .{ .message = "--suggest: the schema entry is not allowed: 't': it holds more than one statement", .code = "suggest_schema_rejected" },
+        .{ .message = "--suggest: the schema entry is not allowed: 't': it does not start with a CREATE statement", .code = "suggest_schema_rejected" },
+        .{ .message = "--suggest: the schema entry is not allowed: 'the batch manifest': it holds more than one statement", .code = "suggest_schema_rejected" },
         .{ .message = "--d1 DB: no wrangler config in the current directory", .code = "d1_config_not_found" },
         .{ .message = "--d1 DB: more than one wrangler config in the current directory", .code = "d1_config_ambiguous" },
         .{ .message = "--d1 DB: cannot read the wrangler config 'wrangler.toml': no such file", .code = "d1_config_unreadable" },

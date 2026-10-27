@@ -120,6 +120,12 @@ database limit stays in force there. The guard is cancelled after
 sqlite3_expert_destroy, and a registration failure stops the run before the
 expert is called.
 
+The statement-end check is a port of SQLite's sqlite3_complete state machine
+(src/cli/suggest.zig, completeEnd). A differential test compares it with
+sqlite3_complete on the accepted and rejected schema cases. When SQLite is
+updated, re-run that test and update the port if the transition table or the
+tokenizer changed.
+
 When SQLite or these expert files are updated, re-read
 ext/expert/sqlite3expert.c for new PRAGMA use, ATTACH / DETACH, VACUUM INTO, or
 other file access, and update the allowlist and the preflight together. The

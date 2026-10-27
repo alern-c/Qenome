@@ -389,6 +389,7 @@ Use `--suggest` to find candidates. For a CI gate, compare a named index without
 - a Summary: whether the result rows match, how many rows each copy read and wrote, the verdict with its reasons, whether the plan changed, the median times and rounds, the size increase, and a note when the build is a debug build;
 - a side-by-side table of baseline and variant: rows read, rows written, result rows, full-scan steps, VM steps, sort operations and autoindex rows when they are not zero, the p25 and p75 times when timed, and the database file bytes;
 - the query plan for both copies, with `kind`, `covering`, and `automatic` as hints read from SQLite's wording;
+- with `--suggest`, a `Suggested by SQLite:` section that lists each proposal as `suggested:N: CREATE INDEX ...` with its SQL text, and `warning: <code>: <message>` lines after the tables for what was dropped or could not be done;
 - with `--d1`, a D1 block: the binding, the config, the database id, the local file, the SQLite version difference, and the caution about production D1.
 
 When the rows differ, cannot be compared, or come in another order, the human output adds an explanation and the one-sided counts. Example rows appear only with `--show-rows`; when they are hidden, the human output says to rerun with that flag. `--show-binds` adds the bind values.

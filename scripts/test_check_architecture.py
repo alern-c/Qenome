@@ -140,6 +140,7 @@ CANONICAL_FILES = {
         'const cli_comparison = @import("comparison.zig");\n'
         'const cli_control = @import("control.zig");\n'
         'const cli_d1 = @import("d1.zig");\n'
+        'const cli_suggest = @import("suggest.zig");\n'
     ),
 }
 
