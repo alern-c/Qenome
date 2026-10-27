@@ -36,7 +36,7 @@ On failure, read the line that starts with `{`. `human` and `kv` do not print th
 | `candidate` | string | The `index_sql` string from the manifest |
 | `status` | string | `compared`, `index_rejected`, or `index_timeout` |
 | `failure` | object or `null` | `null` for `compared`; otherwise `{ "code", "message" }`. `code` is `index_rejected` or `index_timeout` |
-| `improved`, `no_effect`, `needs_check`, `mismatch`, `incomparable` | number or `null` | How many queries ended in each outcome. They add up to the query count. `null` when the candidate was not compared |
+| `improved`, `no_effect`, `needs_check`, `mismatch`, `incomparable` | number or `null` | How many queries ended in each outcome. `improved + no_effect + needs_check + mismatch + incomparable + timeout` equals the query count. `null` when the candidate was not compared |
 | `timeout` | number or `null` | Queries whose variant SELECT reached `--timeout-ms` |
 | `size_increase` | number or `null` | Variant file size minus baseline file size, in bytes (signed). `null` when the index was not built |
 

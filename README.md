@@ -293,7 +293,7 @@ When the report is written, the exit status is the heaviest of a result mismatch
 
 The `human` output has a table of candidates, a `Recommendation:`, and a table of query and candidate verdicts. The recommendation is the candidate with the most improved queries among those with no mismatch, no incomparable result, no `needs-check`, no timeout, and at least one improvement. Ties go to the smaller size increase, then to manifest order. With `--format json` the output is the `batch_schema_version` 1 object described in [docs/json.md](docs/json.md).
 
-Each index build, each SELECT run, and each diagnostic statement has its own `--timeout-ms` limit. A batch can take one database copy plus, for every candidate, one index build and two SELECT runs per query plus up to three diagnostic statements, each with its own time limit. `--show-binds` and `--show-rows` apply to every comparison object.
+Each index build, each SELECT run, and each diagnostic statement has its own `--timeout-ms` limit. A batch can take one database copy, one baseline SELECT run per query before the candidate loop, and then, for every candidate, one index build and two SELECT runs per query plus up to three diagnostic statements, each with its own time limit. `--show-binds` and `--show-rows` apply to every comparison object.
 
 ## Output formats
 
