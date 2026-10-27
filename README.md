@@ -26,6 +26,7 @@ Give it one read-only `SELECT` and one `CREATE INDEX`. It copies a local SQLite 
 - **The verdict comes from the rows read, not the time.** Rows read and rows written use the same counting as local D1 (workerd patch); `--runs 0` keeps the verdict and skips the timing.
 - **The result rows are checked too.** Both copies must return the same rows as a multiset; a mismatch or an incomparable result is reported instead of a pass.
 - **A local D1 binding is enough.** `--d1 <BINDING>` finds the local database from a wrangler config, and `--config` names the config.
+- **Compare many queries in one run.** `--batch <FILE>` pairs every SELECT in a JSON manifest with every candidate `CREATE INDEX` and reports each pair; see [Batch comparisons](#batch-comparisons).
 - **JSON for AI agents and CI.** `--format json` gives the report with `schema_version` 2, and the exit status separates a match, a mismatch, and an incomparable result.
 - **The evidence stays next to the verdict.** The query plan, the median times, the size increase of the whole database, and advisory warnings are in the report.
 
@@ -40,6 +41,7 @@ Give it one read-only `SELECT` and one `CREATE INDEX`. It copies a local SQLite 
 - [Why not ...](#why-not-)
 - [Quick start](#quick-start)
 - [Usage](#usage)
+- [Batch comparisons](#batch-comparisons)
 - [Output formats](#output-formats)
 - [Rules](#rules)
 - [Development checks](#development-checks)
@@ -320,6 +322,9 @@ The first command writes the local database into `.wrangler/` and loads 200,000 
 
 Qenome copies the database once, checks every SELECT and every candidate before it runs anything, then visits the candidates in manifest order. For each candidate it copies the baseline again, builds the index on that copy only, and runs every query on both copies. The baseline SELECT is run again for each candidate.
 
+<details>
+<summary>Batch statuses, failures, and exit status</summary>
+
 A candidate that cannot be built is recorded and the batch continues:
 
 | Status | Meaning | Exit contribution |
@@ -334,6 +339,8 @@ When the report is written, the exit status is the heaviest of a result mismatch
 The `human` output has a table of candidates, a `Recommendation:`, and a table of query and candidate verdicts. The recommendation is the candidate with the most improved queries among those with no mismatch, no incomparable result, no `needs-check`, no timeout, and at least one improvement. Ties go to the smaller size increase, then to manifest order. With `--format json` the output is the `batch_schema_version` 1 object described in [docs/json.md](docs/json.md).
 
 Each index build, each SELECT run, and each diagnostic statement has its own `--timeout-ms` limit. A batch can take one database copy, one baseline SELECT run per query before the candidate loop, and then, for every candidate, one index build and two SELECT runs per query plus up to three diagnostic statements, each with its own time limit. `--show-binds` and `--show-rows` apply to every comparison object.
+
+</details>
 
 ## Output formats
 
