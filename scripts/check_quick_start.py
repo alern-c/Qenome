@@ -9,7 +9,7 @@ DEFAULT_ROOT = os.path.dirname(HERE)
 SOURCE = "README.md"
 TRANSLATION = "README.ja.md"
 HEADINGS = {SOURCE: "Quick start", TRANSLATION: "クイックスタート"}
-EXPECT_KEYS = ("result", "verdict", "exit")
+EXPECT_KEYS = ("result", "verdict", "exit", "recommended")
 WINDOWS_SKIP = "skipped on Windows: the Quick start commands are for Linux and macOS"
 
 FENCE = re.compile(r"^```(.*)$")
@@ -17,6 +17,7 @@ HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*$")
 EXPECT = re.compile(r"^(.+?)\s+#\s*expect:\s*(.+)$")
 RESULT_ROW = re.compile(r"^\s+result rows\s+(\S+)")
 VERDICT = re.compile(r"^\s+verdict\s+([A-Za-z][A-Za-z-]*)")
+RECOMMENDATION = re.compile(r"^Recommendation:\s*(\S+)\s*$")
 REQUIRED_RESULTS = (
     {"result": "match", "verdict": "improved", "exit": 0},
     {"result": "match", "verdict": "no-effect", "exit": 0},
@@ -114,13 +115,19 @@ def parse_expect(text):
     for token in text.split():
         key, separator, value = token.partition("=")
         if not separator or key not in EXPECT_KEYS or not value:
-            return None, "the expect marker needs result=, verdict=, and exit= tokens"
+            return None, "the expect marker needs result=, verdict=, and exit= tokens, or recommended= and exit="
         if key in values:
             return None, "the expect marker repeats " + key
         values[key] = value
-    missing = [key for key in EXPECT_KEYS if key not in values]
-    if missing:
-        return None, "the expect marker has no " + ", ".join(missing) + " token"
+    if "exit" not in values:
+        return None, "the expect marker has no exit token"
+    if "recommended" in values:
+        if "result" in values or "verdict" in values:
+            return None, "the expect marker needs either result and verdict, or recommended, not both"
+    else:
+        missing = [key for key in ("result", "verdict") if key not in values]
+        if missing:
+            return None, "the expect marker has no " + ", ".join(missing) + " token"
     if not values["exit"].isdigit():
         return None, "the expect marker needs a whole number for exit"
     values["exit"] = int(values["exit"])
@@ -177,6 +184,14 @@ def summary_lines(stdout):
     return collected
 
 
+def recommendation_line(stdout):
+    for line in stdout.splitlines():
+        found = RECOMMENDATION.match(line.strip())
+        if found is not None:
+            return found.group(1)
+    return None
+
+
 def summarised(summary):
     result = None
     verdict = None
@@ -222,6 +237,30 @@ def execute(root, step, violations):
             + details(step, done, summary_lines(done.stdout))
         )
         return False, None, None
+    if "recommended" in step.expected:
+        recommendation = recommendation_line(done.stdout)
+        problems = []
+        if recommendation is None:
+            problems.append('the output has no "Recommendation:" line')
+        elif step.expected["recommended"] != recommendation:
+            problems.append(
+                "the recommendation differs: the README expects \""
+                + str(step.expected["recommended"])
+                + '", the command reported "'
+                + recommendation
+                + '"'
+            )
+        if done.returncode != step.expected["exit"]:
+            problems.append(
+                "the exit status differs: the README expects "
+                + str(step.expected["exit"])
+                + ", the command exited "
+                + str(done.returncode)
+            )
+        if not problems:
+            return True, recommendation, None
+        violations.append(step.label() + ": " + "; ".join(problems) + "\n" + details(step, done, []))
+        return False, recommendation, None
     summary = summary_lines(done.stdout)
     result, verdict = summarised(summary)
     problems = []
@@ -256,6 +295,8 @@ def execute(root, step, violations):
 def describe_expected(expected):
     if expected is None:
         return "<no expect marker>"
+    if "recommended" in expected:
+        return "recommended=" + str(expected["recommended"]) + " exit=" + str(expected["exit"])
     return (
         "result="
         + str(expected["result"])
@@ -325,7 +366,10 @@ def run(root):
         if not ok:
             continue
         checked += 1
-        print(step.label() + ": result=" + str(result) + " verdict=" + str(verdict), flush=True)
+        if "recommended" in step.expected:
+            print(step.label() + ": recommended=" + str(result), flush=True)
+        else:
+            print(step.label() + ": result=" + str(result) + " verdict=" + str(verdict), flush=True)
     declared = [step.expected for step in english if step.expected is not None]
     if not declared:
         violations.append(

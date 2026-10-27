@@ -129,6 +129,39 @@ pub fn classifyError(message: []const u8) ErrorClass {
     if (std.mem.startsWith(u8, message, "interrupted by SIGINT")) {
         return .{ .code = "interrupted", .hint = "Rerun the command. Temporary copies are removed when the signal is handled." };
     }
+    if (std.mem.startsWith(u8, message, "cannot read the batch manifest")) {
+        return .{ .code = "batch_manifest_unreadable", .hint = "Check that the manifest path exists and is readable, then rerun." };
+    }
+    if (std.mem.indexOf(u8, message, "the batch manifest") != null) {
+        return .{ .code = "batch_manifest_invalid", .hint = "Fix the manifest: exactly queries and candidates, 1 to 100 entries each, no repeated paths, and valid N:TYPE:VALUE binds." };
+    }
+    if (std.mem.startsWith(u8, message, "cannot read the batch SQL file")) {
+        return .{ .code = "batch_sql_unreadable", .hint = "Check the SQL paths in the manifest; they are relative to the manifest file." };
+    }
+    if (std.mem.startsWith(u8, message, "--batch ")) {
+        return .{ .code = "usage_batch_conflict", .hint = "With --batch, put the SELECT, CREATE INDEX and binds in the manifest. Use --format human or json, and do not pass --runs." };
+    }
+    if (std.mem.indexOf(u8, message, "the batch baseline SELECT") != null and std.mem.indexOf(u8, message, "exceeded the time limit") != null) {
+        return .{ .code = "batch_baseline_timeout", .hint = "Raise --timeout-ms, or narrow the SELECT in the manifest." };
+    }
+    if (std.mem.indexOf(u8, message, "the batch diagnostics") != null) {
+        if (std.mem.indexOf(u8, message, "exceeded the time limit") != null) {
+            return .{ .code = "batch_variant_timeout", .hint = "Raise --timeout-ms, or simplify the candidate CREATE INDEX in the manifest." };
+        }
+        return .{ .code = "batch_variant_failed", .hint = "Read the SQLite message. The run stopped before writing the batch report; rerun after fixing it." };
+    }
+    if (std.mem.indexOf(u8, message, "the batch variant") != null) {
+        return .{ .code = "batch_variant_failed", .hint = "Read the SQLite message. The run stopped before writing the batch report; rerun after fixing it." };
+    }
+    if (std.mem.indexOf(u8, message, "the batch query") != null or std.mem.indexOf(u8, message, "the batch baseline") != null) {
+        return .{ .code = "batch_baseline_failed", .hint = "Fix the SELECT in the manifest or read the SQLite message, then rerun." };
+    }
+    if (std.mem.indexOf(u8, message, "the batch candidate") != null) {
+        if (std.mem.indexOf(u8, message, "the index could not be created") != null or std.mem.indexOf(u8, message, "--index-sql") != null) {
+            return .{ .code = "batch_index_failed", .hint = "Fix the candidate CREATE INDEX in the manifest so it applies to this database, then rerun." };
+        }
+        return .{ .code = "batch_workspace_failed", .hint = "Check the temporary directory and its permissions, then rerun." };
+    }
     if (std.mem.indexOf(u8, message, "no wrangler config") != null) {
         return .{ .code = "d1_config_not_found", .hint = "Pass --config <PATH>, or run qenome in the wrangler project directory." };
     }
@@ -423,7 +456,7 @@ fn jsonStderrDrain(w: *Io.Writer, data: []const []const u8, splat: usize) Io.Wri
     return consumed + splat * tail.len;
 }
 
-fn copyUtf8(dest: []u8, source: []const u8) usize {
+pub fn copyUtf8(dest: []u8, source: []const u8) usize {
     if (std.unicode.utf8ValidateSlice(source)) {
         var length = @min(dest.len, source.len);
         while (length > 0 and !std.unicode.utf8ValidateSlice(source[0..length])) length -= 1;
@@ -500,6 +533,18 @@ test "error text maps to a stable code and a next step" {
         .{ .message = "interrupted by SIGINT", .code = "interrupted" },
         .{ .message = "interrupted by SIGTERM", .code = "terminated" },
         .{ .message = "interrupted by SIGHUP", .code = "hangup" },
+        .{ .message = "cannot read the batch manifest 'batch.json': no such file", .code = "batch_manifest_unreadable" },
+        .{ .message = "the batch manifest 'batch.json' is not valid: it must be a JSON object", .code = "batch_manifest_invalid" },
+        .{ .message = "cannot read the batch SQL file '/tmp/a.sql' for the batch query 'q/a.sql': no such file", .code = "batch_sql_unreadable" },
+        .{ .message = "--batch takes only the database path; put the SELECT and CREATE INDEX files in the manifest (see --help)", .code = "usage_batch_conflict" },
+        .{ .message = "the batch baseline SELECT for query 'q/a.sql' exceeded the time limit of 1 ms", .code = "batch_baseline_timeout" },
+        .{ .message = "the batch baseline SELECT for query 'q/a.sql' failed: disk I/O", .code = "batch_baseline_failed" },
+        .{ .message = "the batch query 'q/a.sql': --select: the statement is not allowed here: not authorized", .code = "batch_baseline_failed" },
+        .{ .message = "the batch variant for query 'q/a.sql' and candidate 'c/a.sql': the SELECT failed: disk I/O", .code = "batch_variant_failed" },
+        .{ .message = "the batch diagnostics for candidate 'c/a.sql' exceeded the time limit of 1 ms", .code = "batch_variant_timeout" },
+        .{ .message = "the batch candidate 'c/a.sql': the index could not be created: disk I/O", .code = "batch_index_failed" },
+        .{ .message = "the batch candidate 'c/a.sql': --index-sql: the statement is not one CREATE INDEX", .code = "batch_index_failed" },
+        .{ .message = "the batch candidate 'c/a.sql': the variant could not be removed: FileBusy", .code = "batch_workspace_failed" },
         .{ .message = "--d1 DB: no wrangler config in the current directory", .code = "d1_config_not_found" },
         .{ .message = "--d1 DB: more than one wrangler config in the current directory", .code = "d1_config_ambiguous" },
         .{ .message = "--d1 DB: cannot read the wrangler config 'wrangler.toml': no such file", .code = "d1_config_unreadable" },

@@ -17,6 +17,8 @@ APPROVED_FILES = [
     "src/cli/workspace.zig",
     "src/cli/timing.zig",
     "src/cli/report.zig",
+    "src/cli/pair.zig",
+    "src/cli/batch.zig",
     "src/cli/tests.zig",
 ]
 
@@ -44,6 +46,8 @@ PRODUCTION_IMPORTS = {
         "src/cli/workspace.zig",
         "src/cli/timing.zig",
         "src/cli/report.zig",
+        "src/cli/pair.zig",
+        "src/cli/batch.zig",
     ],
     "src/cli/args.zig": ["src/db.zig"],
     "src/cli/control.zig": [],
@@ -75,6 +79,30 @@ PRODUCTION_IMPORTS = {
         "src/cli/comparison.zig",
         "src/cli/timing.zig",
     ],
+    "src/cli/pair.zig": [
+        "src/db.zig",
+        "src/result.zig",
+        "src/cli/comparison.zig",
+        "src/cli/control.zig",
+        "src/cli/d1.zig",
+        "src/cli/query.zig",
+        "src/cli/report.zig",
+        "src/cli/timing.zig",
+        "src/cli/workspace.zig",
+    ],
+    "src/cli/batch.zig": [
+        "src/db.zig",
+        "src/result.zig",
+        "src/sqlite.zig",
+        "src/cli/args.zig",
+        "src/cli/comparison.zig",
+        "src/cli/control.zig",
+        "src/cli/d1.zig",
+        "src/cli/pair.zig",
+        "src/cli/query.zig",
+        "src/cli/report.zig",
+        "src/cli/workspace.zig",
+    ],
 }
 
 TEST_ENTRY_IMPORTER = "src/cli.zig"
@@ -94,6 +122,8 @@ TEST_IMPORTS = {
         "src/cli/workspace.zig",
         "src/cli/timing.zig",
         "src/cli/report.zig",
+        "src/cli/pair.zig",
+        "src/cli/batch.zig",
     ],
 }
 

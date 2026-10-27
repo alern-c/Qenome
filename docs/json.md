@@ -1,6 +1,6 @@
 # JSON contract (schema_version 2)
 
-`--format json` is the machine-readable interface. This file is the contract for `schema_version` 2. The JSON Schema files next to it check the same shape: [qenome-report.schema.json](qenome-report.schema.json) for a finished comparison, and [qenome-error.schema.json](qenome-error.schema.json) for a failure.
+`--format json` is the machine-readable interface. This file is the contract for `schema_version` 2. The JSON Schema files next to it check the same shape: [qenome-report.schema.json](qenome-report.schema.json) for a finished comparison, [qenome-error.schema.json](qenome-error.schema.json) for a failure, and [qenome-batch.schema.json](qenome-batch.schema.json) for a `--batch` report (`batch_schema_version` 1).
 
 `schema_version` is already `2` in this tree. `1` was the time verdict. Do not treat a missing pending field as a version bump. The pending names below are part of version 2 and are reserved until the core change emits them.
 
@@ -18,6 +18,57 @@ Row counts use the same counting as local D1 (workerd patch). The numbers have n
 `progress:` lines may appear on stderr before the error object when a timing round takes longer than a second. They are not JSON. With `--runs 0` there are no progress lines.
 
 On failure, read the line that starts with `{`. `human` and `kv` do not print the error object.
+
+## Batch report (batch_schema_version 1)
+
+`--batch manifest.json` compares every SELECT in the manifest with every candidate CREATE INDEX. Its stdout object is a separate contract with `batch_schema_version` 1. The comparison objects under `results` keep `schema_version` 2 and the shape above.
+
+| Key | Type | Meaning |
+| `batch_schema_version` | number | `1` |
+| `exit_code` | number | `0`, `1`, `3`, `4`, or `124`. The process can still exit `5` after this object when cleanup fails and the code is `0` |
+| `recommended` | string or `null` | The candidate path from the manifest, or `null` when no candidate qualifies |
+| `summary` | array | One object per candidate, ordered as described below. 1 to 100 entries |
+| `results` | array | One object per compared query and candidate, ordered by candidate (manifest order) and then by query (manifest order). An `index_rejected` or `index_timeout` candidate has no entries here |
+
+### `summary` entries
+
+| Key | Type | Meaning |
+| `candidate` | string | The `index_sql` string from the manifest |
+| `status` | string | `compared`, `index_rejected`, or `index_timeout` |
+| `failure` | object or `null` | `null` for `compared`; otherwise `{ "code", "message" }`. `code` is `index_rejected` or `index_timeout` |
+| `improved`, `no_effect`, `needs_check`, `mismatch`, `incomparable` | number or `null` | How many queries ended in each outcome. `improved + no_effect + needs_check + mismatch + incomparable + timeout` equals the query count. `null` when the candidate was not compared |
+| `timeout` | number or `null` | Queries whose variant SELECT reached `--timeout-ms` |
+| `size_increase` | number or `null` | Variant file size minus baseline file size, in bytes (signed). `null` when the index was not built |
+
+A candidate qualifies for `recommended` when its status is `compared` and `mismatch`, `incomparable`, `needs_check`, and `timeout` are all `0` and `improved` is at least `1`. Qualifying candidates come first in `summary`, in this order: more `improved`, then smaller `size_increase`, then manifest order. The remaining `compared` candidates follow in manifest order, and the `index_rejected` / `index_timeout` candidates come last in manifest order.
+
+### `results` entries
+
+| Key | Type | Meaning |
+| `query` | string | The `select` string from the manifest |
+| `candidate` | string | The `index_sql` string from the manifest |
+| `status` | string | `compared` or `variant_timeout` |
+| `comparison` | object or `null` | `null` for `variant_timeout`; otherwise the schema_version 2 comparison object, with `inputs.select` and `inputs.index_sql` set to the manifest strings. The embedded object is minified |
+
+### Exit code and stderr
+
+When the report is written, the exit code is the heaviest of: result mismatch `3`, a candidate index that could not be built `1`, a candidate time limit `124`, an incomparable result `4`, and `0`. Cleanup failure replaces `0` with `5`.
+
+A batch can therefore write a report and still exit `1` or `124`. Read stdout to decide: if stdout is a batch object, the run finished and the failures are in `summary` and `results`. If stdout is empty, the run stopped before the report and stderr holds the schema_version 2 error object. Candidate failures (`index_rejected`, `index_timeout`, `variant_timeout`) are never written as `error:` lines.
+
+Batch error codes:
+
+| `code` | Exit | Next step the hint points at |
+| `usage_batch_conflict` | 2 | Put the SELECT, CREATE INDEX, and binds in the manifest; use `--format human` or `json`; do not pass `--runs` |
+| `batch_manifest_unreadable` | 1 | Check the manifest path and permissions |
+| `batch_manifest_invalid` | 1 | Fix the shape, limits, repeated paths, or binds |
+| `batch_sql_unreadable` | 1 | Check the SQL paths in the manifest; they are relative to the manifest |
+| `batch_baseline_failed` | 1 | Fix the SELECT or read the SQLite message |
+| `batch_baseline_timeout` | 124 | Raise `--timeout-ms` or narrow the SELECT |
+| `batch_variant_failed` | 1 | Read the SQLite message; the run stopped before the report |
+| `batch_variant_timeout` | 124 | Raise `--timeout-ms` or simplify the CREATE INDEX |
+| `batch_index_failed` | 1 | Fix the candidate CREATE INDEX so it applies to this database |
+| `batch_workspace_failed` | 1 | Check the temporary directory and its permissions |
 
 ## Status in this tree
 
@@ -121,7 +172,7 @@ These are the values of `ExitCode` in `src/cli/control.zig`, `--help`, and the R
 
 Exit `4` covers every `--d1` resolution failure: no config, more than one config, a config that cannot be read, a config whose suffix is not `.toml` / `.jsonc` / `.json`, a config that does not parse, a binding that is missing or duplicated, a binding with neither `database_id` nor `preview_database_id`, a local `.sqlite` file that does not exist yet, and a local file that cannot be opened. An unexpected allocator failure while resolving `--d1` is exit `1`.
 
-The comparison object's `exit_code` is `0`, `3`, or `4`. The process can still exit `5` after that object is written. Trust the process exit code. Read stderr when it is `5`.
+The comparison object's `exit_code` is `0`, `3`, or `4`. The process can still exit `5` after that object is written. Trust the process exit code. Read stderr when it is `5`. A batch object can be written with process exit `1` or `124`; stdout is empty when the run stopped before the report. See [Batch report](#batch-report-batch_schema_version-1).
 
 ## Error codes
 

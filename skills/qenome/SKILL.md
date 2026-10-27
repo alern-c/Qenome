@@ -10,7 +10,7 @@ description: >
 
 # Qenome
 
-Qenome compares one read-only `SELECT` with one candidate `CREATE INDEX` on sandbox copies. The verdict uses the same counting as local D1 (workerd patch). The numbers have not yet been checked against production D1.
+Qenome compares one read-only `SELECT` with one candidate `CREATE INDEX` on sandbox copies. With `--batch`, it compares every SELECT in a manifest with every candidate in one run. The verdict uses the same counting as local D1 (workerd patch). The numbers have not yet been checked against production D1.
 
 The contract is [docs/json.md](../../docs/json.md). This skill expects `schema_version` 2.
 
@@ -18,7 +18,7 @@ The contract is [docs/json.md](../../docs/json.md). This skill expects `schema_v
 
 Run Qenome before keeping a `CREATE INDEX` on a local D1 or a SQLite file. Run it when the user asks whether an index helps, whether a query got faster, or whether a schema change is safe to merge.
 
-Do not run it to change production, to apply SQL, or to estimate a bill. One comparison is one SELECT file and one CREATE INDEX file.
+Do not run it to change production, to apply SQL, or to estimate a bill. One comparison is one SELECT file and one CREATE INDEX file; `--batch` takes a manifest of them.
 
 ## Install and invoke
 
@@ -62,10 +62,31 @@ A SQLite file uses a path instead of `--d1`:
 npx qenome app.db select.sql index.sql --runs 0 --format json
 ```
 
+## Compare many candidates (--batch)
+
+Use `--batch` when the user has several candidate indexes or several queries. The manifest is one JSON object:
+
+```json
+{ "queries": [ { "select": "select.sql", "binds": ["1:int:1"] } ],
+  "candidates": [ { "index_sql": "index.sql" }, { "index_sql": "index2.sql" } ] }
+```
+
+- Paths are relative to the manifest, not the current directory.
+- `queries` and `candidates` take 1 to 100 entries each. A path cannot repeat inside one list.
+- `binds` uses the same `N:TYPE:VALUE` syntax as `--bind`.
+- `--batch` does not take `--select`, `--index-sql`, `--bind`, `--runs`, or `--format kv`.
+- A candidate that fails is recorded and the batch continues. A failure that affects the whole run stops with empty stdout.
+
+```sh
+npx qenome app.db --batch batch.json --format json
+npx qenome --d1 DB --batch batch.json --format json
+```
+
 ## Read the JSON
 
 State `schema_version` before you interpret fields.
 
+- If stdout is a JSON object with `batch_schema_version`, it is a batch report. Read `batch_schema_version` first; it must be `1`. Read `recommended` (`null` when no candidate qualifies), the `summary` entries, and the `results`. The `comparison` object under each result has `schema_version` 2 and the shape below.
 - If stdout is a JSON object, it is the comparison. Read `schema_version` first. If it is missing or not `2`, stop and say the output does not match this skill or `docs/json.md`. Do not guess renamed fields.
 - If stdout is empty, stderr is the error object (skip any `progress:` lines). It also has `schema_version` 2, plus `exit_code` and `error` with `code`, `message`, and `hint`. Do what `hint` says. Do not treat the failure as a verdict.
 - `exit_code` inside a comparison object is `0`, `3`, or `4`. The process can still exit `5` after writing that object. Trust the process exit code.
@@ -114,6 +135,8 @@ Tell the user the process exit code, `schema_version`, `result`, `verdict`, and 
 | 124 | The time limit fired. Raise `--timeout-ms` or narrow the SELECT. Do not treat it as a slow index |
 | 129, 130, 143 | The run was interrupted. Rerun once if the user still wants a verdict |
 
+With `--batch`, exit `1` or `124` can still have a report on stdout. If stdout is the batch object, the run finished: read `recommended`, the `summary` statuses, and the `failure` messages. If stdout is empty, the run stopped before the report and stderr holds the error object. Do not tell the user that a rejected candidate lost the other results; they are in `results`.
+
 Do not apply `index.sql` to the user's database. Qenome already tried it on a copy.
 
 ## What not to claim
@@ -140,4 +163,8 @@ npx qenome --d1 DB select.sql index.sql --runs 0 --format json  # qenome-ci: pen
 
 ```sh
 npx qenome testdata/skill/app.db testdata/skill/select.sql testdata/skill/index.sql --bind 1:int:1 --runs 6 --format json  # qenome-ci: run exit=0 stdout=report verdict=improved result=match fields=schema_version,exit_code,verdict,warnings,timing.noise_band,timing.confidence_interval,timing.median_difference_ns,timing.effect,timing.unavailable_reason
+```
+
+```sh
+npx qenome testdata/skill/app.db --batch testdata/skill/batch.json --format json  # qenome-ci: run exit=0 stdout=report fields=batch_schema_version,recommended,summary
 ```

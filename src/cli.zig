@@ -11,6 +11,8 @@ const cli_query = @import("cli/query.zig");
 const cli_workspace = @import("cli/workspace.zig");
 const cli_timing = @import("cli/timing.zig");
 const cli_report = @import("cli/report.zig");
+const cli_pair = @import("cli/pair.zig");
+const cli_batch = @import("cli/batch.zig");
 
 pub const max_sql_bytes = cli_args.max_sql_bytes;
 pub const SqlFileError = cli_args.SqlFileError;
@@ -125,7 +127,7 @@ fn runCaptured(
     var missing_buffer: [cli_args.required_option_count][]const u8 = undefined;
     const missing = cli_args.missingRequired(args, &missing_buffer);
     if (missing.len != 0) {
-        return missingArguments(stderr, missing, missing.len == cli_args.required_option_count);
+        return missingArguments(stderr, args, missing);
     }
 
     var d1: ?cli_d1.Resolved = null;
@@ -149,6 +151,34 @@ fn runCaptured(
             },
         }
     } else args.db.?;
+
+    if (args.batch) |batch_path| {
+        var cleanup_failed = false;
+        const code = blk: {
+            const loaded = cli_batch.load(io, arena, batch_path, stderr) orelse break :blk ExitCode.rejected;
+            if (signalPending()) break :blk reportInterrupted(stderr);
+            const parent_path = tempParentPath(temp_parent);
+            var work = WorkDir.create(io, arena, parent_path) catch |err| {
+                stderr.print("error: cannot create a temporary directory under '{s}': {s}\n", .{ parent_path, fileErrorMessage(err) }) catch {};
+                break :blk ExitCode.rejected;
+            };
+            defer work.remove(io, stderr, &cleanup_failed);
+            if (prepareCopies(io, database_path, &work, stderr, &cleanup_failed)) |failure| break :blk failure;
+            break :blk cli_batch.run(io, arena, allocator, .{
+                .database_path = database_path,
+                .baseline_path = work.baseline_path,
+                .variant_path = work.variant_path,
+                .d1 = d1,
+                .timeout_ms = args.timeout_ms,
+                .show_binds = args.show_binds,
+                .show_rows = args.show_rows,
+                .format = args.format,
+                .work_parent = parent_path,
+            }, loaded, stdout, stderr, &cleanup_failed, &work);
+        };
+        return finalExitCode(code, cleanup_failed);
+    }
+
     const select_path = args.select.?;
     const index_path = args.index_sql.?;
 
@@ -226,84 +256,31 @@ fn runChecked(
     cleanup_failed: *bool,
     work: *const WorkDir,
 ) ExitCode {
-    if (signalPending()) return reportInterrupted(stderr);
-
-    var failure: ExitCode = .rejected;
-    var baseline: cli_query.QuerySession = .{};
-    defer baseline.deinit(.baseline, stderr, cleanup_failed);
-    if (!baseline.open(inputs.baseline_path, inputs.select_sql, inputs.binds, .baseline, inputs.index_sql, stderr, &failure)) return failure;
-
-    if (!baseline.checkCreateIndex(inputs.index_sql, stderr)) return .rejected;
-    const candidate_table = baseline.database.indexTarget(arena, inputs.index_sql) catch {
-        stderr.writeAll("error: out of memory\n") catch {};
-        return .rejected;
+    var rows: cli_pair.RowBuffers = undefined;
+    rows.init(allocator);
+    defer rows.deinit();
+    const computed = switch (cli_pair.compute(io, arena, .{
+        .database_path = inputs.database_path,
+        .baseline_path = inputs.baseline_path,
+        .variant_path = inputs.variant_path,
+        .d1 = inputs.d1,
+        .select_path = inputs.select_path,
+        .index_path = inputs.index_path,
+        .select_sql = inputs.select_sql,
+        .index_sql = inputs.index_sql,
+        .binds = inputs.binds,
+        .timeout_ms = inputs.timeout_ms,
+        .runs = inputs.runs,
+        .work_parent = inputs.work_parent,
+        .show_binds = inputs.show_binds,
+        .show_rows = inputs.show_rows,
+        .progress_interval_ns = inputs.progress_interval_ns,
+    }, &rows, stderr, cleanup_failed, work)) {
+        .computed => |value| value,
+        .failed => |code| return code,
     };
 
-    if (signalPending()) return reportInterrupted(stderr);
-
-    var control = db.StepControl.init(io, inputs.timeout_ms, cli_control.cancelFlag());
-    var detail: db.SnapshotDetail = .{};
-    work.applyCandidate(inputs.index_sql, &control, &detail) catch |err| switch (err) {
-        error.Timeout => {
-            stderr.print("error: --index-sql exceeded the time limit of {d} ms\n", .{inputs.timeout_ms}) catch {};
-            return .timeout;
-        },
-        error.Interrupted => return reportInterrupted(stderr),
-        else => {
-            const reason = if (detail.len != 0) detail.text() else @errorName(err);
-            stderr.print("error: --index-sql: the index could not be created on the variant: {s}\n", .{reason}) catch {};
-            return .rejected;
-        },
-    };
-
-    var budget: result_rows.Budget = .{};
-    var baseline_rows = result_rows.RowCollector.init(allocator, &budget);
-    defer baseline_rows.deinit();
-    var variant_rows = result_rows.RowCollector.init(allocator, &budget);
-    defer variant_rows.deinit();
-
-    const keep_rows = !baseline.clues().alwaysIncomparable();
-    const before = measure(arena, &baseline, inputs.select_sql, inputs.binds, &control, if (keep_rows) &baseline_rows else null, .baseline, stderr, &failure) orelse return failure;
-
-    if (signalPending()) return reportInterrupted(stderr);
-
-    var variant: cli_query.QuerySession = .{};
-    defer variant.deinit(.variant, stderr, cleanup_failed);
-    if (!variant.open(inputs.variant_path, inputs.select_sql, inputs.binds, .variant, inputs.index_sql, stderr, &failure)) return failure;
-    const variant_out: ?*result_rows.RowCollector = if (keep_rows and baseline_rows.failure == null) &variant_rows else null;
-    const after = measure(arena, &variant, inputs.select_sql, inputs.binds, &control, variant_out, .variant, stderr, &failure) orelse return failure;
-
-    if (signalPending()) return reportInterrupted(stderr);
-
-    const outcome = decide(arena, before, after, &baseline_rows, &variant_rows, .{
-        .clues = db.Clues.merge(baseline.clues(), variant.clues()),
-        .limit_or_offset = db.mentionsLimitOrOffset(inputs.select_sql),
-    });
-
-    var report: Report = .{ .judgement = .{ .verdict = .not_judged } };
-    if (outcome.verdict == .mismatch) {
-        report.judgement.add("the result rows do not match, so the row counts are not judged");
-    } else if (outcome.verdict == .incomparable) {
-        report.judgement.add("the result rows cannot be compared, so the row counts are not judged");
-    } else {
-        report.judgement = judgeRows(before, after);
-        if (inputs.runs != 0) {
-            const timing = timeRuns(io, arena, &baseline, &variant, .{ .runs = inputs.runs, .timeout_ms = inputs.timeout_ms, .progress_interval_ns = inputs.progress_interval_ns }, &control, stderr, &failure) orelse return failure;
-            report.timing = timing.summary();
-        }
-    }
-    const warnings = baseline.database.tableWarnings(arena, candidate_table, &control) catch |err| {
-        return diagnosticFailure(err, &baseline, &control, stderr);
-    };
-    report.warnings = .{ .no_analyze_stats = warnings.no_analyze_stats, .data_too_small = warnings.data_too_small };
-    report.sizes = .{
-        .baseline = fileSize(io, inputs.baseline_path, .baseline, stderr) orelse return .rejected,
-        .variant = fileSize(io, inputs.variant_path, .variant, stderr) orelse return .rejected,
-    };
-
-    if (signalPending()) return reportInterrupted(stderr);
-
-    const code = resultExitCode(outcome);
+    const code = resultExitCode(computed.outcome);
     const header: cli_report.Header = .{
         .database_path = inputs.database_path,
         .select_path = inputs.select_path,
@@ -317,7 +294,7 @@ fn runChecked(
         .exit_code = @backingInt(code),
         .d1 = inputs.d1,
     };
-    writeReport(stdout, arena, inputs.format, header, before, after, outcome, report) catch |err| {
+    writeReport(stdout, arena, inputs.format, header, computed.before, computed.after, computed.outcome, computed.report) catch |err| {
         switch (err) {
             error.OutOfMemory => stderr.print("error: out of memory\n", .{}) catch {},
             else => stderr.print("error: the summary could not be written\n", .{}) catch {},
@@ -325,18 +302,6 @@ fn runChecked(
         return .rejected;
     };
     return code;
-}
-
-fn diagnosticFailure(err: anyerror, session: *cli_query.QuerySession, control: *db.StepControl, stderr: *Io.Writer) ExitCode {
-    return switch (err) {
-        error.Timeout => cli_query.reportStepFailure(error.Timeout, session, control.timeout_ms, .baseline, null, stderr),
-        error.Interrupted => reportInterrupted(stderr),
-        error.OutOfMemory => blk: {
-            stderr.writeAll("error: out of memory\n") catch {};
-            break :blk .rejected;
-        },
-        else => cli_query.reportStepFailure(error.StepFailed, session, control.timeout_ms, .baseline, null, stderr),
-    };
 }
 
 fn reportD1Failure(stderr: *Io.Writer, failure: cli_d1.Failure) Io.Writer.Error!void {
@@ -429,12 +394,23 @@ fn reportParseError(stderr: *Io.Writer, err: ParseError, offending: ?[:0]const u
             const end = std.mem.indexOfScalar(u8, arg, '=') orelse arg.len;
             try stderr.print("error: {s} does not take a value (see --help)\n", .{arg[0..end]});
         },
+        error.BatchTakesOnlyDatabasePath => {
+            try stderr.writeAll("error: --batch takes only the database path; put the SELECT and CREATE INDEX files in the manifest (see --help)\n");
+        },
+        error.BatchRejectsBind => try stderr.writeAll("error: --batch does not take --bind; put the binds in the manifest (see --help)\n"),
+        error.BatchRejectsRuns => try stderr.writeAll("error: --batch does not run the timing; remove --runs (see --help)\n"),
+        error.BatchRejectsKv => try stderr.writeAll("error: --batch supports --format human or --format json, not kv (see --help)\n"),
         else => try stderr.print("error: {s}\n", .{parseErrorMessage(err)}),
     }
 }
 
-fn missingArguments(stderr: *Io.Writer, missing: []const []const u8, show_usage: bool) ExitCode {
-    if (show_usage) stderr.print("{s}\n{s}\n", .{ cli_args.usage_line, cli_args.d1_usage_line }) catch {};
+fn missingArguments(stderr: *Io.Writer, args: cli_args.Args, missing: []const []const u8) ExitCode {
+    if (args.batch != null) {
+        const line = if (args.d1 != null) cli_args.d1_batch_usage_line else cli_args.batch_usage_line;
+        stderr.print("{s}\n", .{line}) catch {};
+    } else if (missing.len == cli_args.required_option_count) {
+        stderr.print("{s}\n{s}\n", .{ cli_args.usage_line, cli_args.d1_usage_line }) catch {};
+    }
     stderr.writeAll("error: missing: ") catch {};
     for (missing, 0..) |name, position| {
         if (position != 0) stderr.writeAll(", ") catch {};
@@ -463,7 +439,7 @@ test "the compatibility re-exports keep the public names and signatures" {
     try testing.expectEqualStrings("s", parsed.select.?);
     try testing.expectEqualStrings("i", parsed.index_sql.?);
 
-    var buffer: [8192]u8 = undefined;
+    var buffer: [32768]u8 = undefined;
     var writer = Io.Writer.fixed(&buffer);
     try usage(&writer);
     try testing.expect(std.mem.startsWith(u8, writer.buffered(), "usage: qenome"));
