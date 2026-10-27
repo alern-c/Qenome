@@ -26,12 +26,12 @@ On failure, read the line that starts with `{`. `human` and `kv` do not print th
 | `schema_version`, `exit_code`, `verdict`, `verdict_reasons` | Emitted |
 | `baseline.counters.rows_read`, `baseline.counters.rows_written`, and the same fields on `variant` | Emitted. This is the per-side row counts |
 | `timing` with `rounds`, `ratio`, and per-side `median_ns` / `p25_ns` / `p75_ns` / `min_ns` / `max_ns` | Emitted. The whole `timing` value is JSON `null` when the run is not timed (`--runs 0`, or the rows were not a match) |
-| `timing.noise_band` | Not emitted. Reserved |
-| `timing.confidence_interval` | Not emitted. Reserved |
-| `warnings` | Not emitted. Reserved. Each element will be `{ "code", "message" }` |
+| `timing.noise_band` | Emitted; method, pairs, threshold_ns |
+| `timing.confidence_interval` | Emitted as object or null; method, level, coverage, lower_ns, upper_ns |
+| `warnings` | Emitted. Each element is `{ "code", "message" }` |
 | `sqlite.bundled_version`, `sqlite.db_header_version` | Not emitted. Reserved. Until `sqlite` exists, the bundled version is `environment.sqlite_version`. With `--d1`, `d1.sqlite_version` is the local D1 engine version string (`3.53.4`) |
 
-A reader must not require a reserved field. If a reserved field appears, its outer name matches this file. Inner keys of `noise_band` and `confidence_interval` are not frozen; reconcile them with the core change before a reader depends on a key inside them.
+A reader must not require a reserved field. If a reserved field appears, its outer name matches this file. The timing evidence keys below are now defined. Only the SQLite detail fields remain reserved.
 
 ## Comparison object
 
@@ -57,7 +57,7 @@ The object is indented with two spaces and ends with a newline. A missing key th
 | `d1` | object | Present only with `--d1`: `binding`, `config`, `database_id`, `local_database`, `sqlite_version`, `sqlite_version_note`, `caution` |
 | `measurement` | object | `runs_per_copy`, `warmup`, `order`, `scope`, `cache` |
 | `binds` | array | `number`, `type`. Text also has `text_bytes`. `value` only with `--show-binds` |
-| `warnings` | array | Reserved. `{ "code": string, "message": string }`. Expected codes: `no_analyze_stats` (no ANALYZE statistics), `data_too_small` (too little data to trust the counts) |
+| `warnings` | array | Emitted. `{ "code": string, "message": string }`. Expected codes: `no_analyze_stats` (no ANALYZE statistics), `data_too_small` (too little data to trust the counts) |
 | `sqlite` | object | Reserved. `bundled_version` (string), `db_header_version` (string) |
 
 `verdict` values:
@@ -176,13 +176,18 @@ The comparison object's `exit_code` is `0`, `3`, or `4`. The process can still e
 | `terminated` | 143 | Rerun |
 | `unclassified` | the process exit code | Read the message. A new message needs a code in `classifyError` |
 
-## Reconciliation after the core change
+### Timing evidence and advisory warnings
 
-This tree already emits `schema_version` 2, top-level `verdict`, and per-side `rows_read` / `rows_written` under `baseline.counters` and `variant.counters`. The following is not implemented. When it lands, update this file, the two schema files, and the `# qenome-ci: pending` lines in [skills/qenome/SKILL.md](../skills/qenome/SKILL.md). Do not bump `schema_version` for these fields.
+Each timed round first runs the baseline SELECT twice (A/A), then runs one baseline/variant pair, alternating AB and BA. Both sessions are already warm from the compared run. A/A adds two baseline executions per round. The measured counters in the report still come only from the first compared SELECT; diagnostics and timed executions do not enter them. Warning checks run after timing, on sandbox copies only. No ANALYZE or PRAGMA optimize is run.
 
-1. `timing.noise_band`. Outer name is fixed. Inner keys are not. The verdict must keep using row counts, not this object.
-2. `timing.confidence_interval`. Same rule.
-3. `warnings`: an array of `{ "code", "message" }`. Use `no_analyze_stats` and `data_too_small` for the two planned warnings. Warnings do not change the exit code.
-4. `sqlite.bundled_version` and `sqlite.db_header_version`. `bundled_version` should match today's `environment.sqlite_version`. There is no database-header version field yet.
-5. If `rows_read` or `rows_written` move out of `counters`, change the skill example marker that requires `baseline.counters.rows_read` and `variant.counters.rows_written`.
-6. New stderr sentences need a row in `classifyError` (`src/cli/control.zig`) or they are reported as `unclassified`.
+`timing.noise_band` reports the empirical 95th percentile of absolute differences between the two baseline A/A durations, using nearest rank `ceil(0.95*n)` and reporting `pairs`. This is a heuristic noise reference, not a confidence bound or a significance threshold with a calibrated false-positive rate. No observed A/A spread does not prove zero underlying variation.
+
+`timing.median_difference_ns` is the median of the per-round differences `variant_i - baseline_i` (negative is faster), not the difference of the two medians and not a ratio. Existing `ratio` remains variant median / baseline median. `confidence_interval` uses sorted paired differences and a symmetric binomial sign interval for their population median. For zero-based endpoints `k` and `n-k-1`, choose the largest k with `P(Binomial(n,0.5) <= k) <= 0.025`; coverage is `1 - 2*P(...)`. `level` is the requested 0.95; `coverage` is the conservative binomial coverage under independent identically distributed continuous differences. This follows the [order-statistic approach described by NIST](https://www.itl.nist.gov/div898/software/dataplot/refman1/auxillar/mediancl.htm), without interpolation. It describes uncertainty in the median difference, not a future single duration. There is no resampling.
+
+The interval is `null` with `unavailable_reason` `too-few-rounds` below six rounds (the widest finite interval has coverage 93.75% at n=5 and 96.875% at n=6), `zero-duration` when any timed duration is zero, or conservatively `no-observed-variation` when all paired differences are equal. These cases give `effect: insufficient-samples`, not a claim of precision at the clock resolution. Otherwise `effect` is `no-difference` if the absolute value of the median paired difference is at most the A/A noise reference or the interval includes zero; it is `faster` or `slower` only when both checks allow that direction. This auxiliary label never changes `verdict` or the exit code. Fixed A/A-before-A/B ordering, cache effects, temporal dependence, load drift, and small samples limit interpretation: nominal 95% coverage is not an exact guarantee for these machine timings or for production D1.
+
+`warnings` is always an array, including with `--runs 0` or incomparable results. Its `{code, message}` entries also appear verbatim in human and kv output. `no_analyze_stats` means the candidate index's table has no non-empty `sqlite_stat1` entry in the baseline snapshot, even if other tables have statistics. This is an absence check, not a freshness/completeness check: a partial-index entry alone counts as present. `data_too_small` means a bounded `SELECT 1 ... LIMIT 1000` on that table returned fewer than 1000 rows. Reaching 1000 only establishes at least 1000 rows; statistics estimates, partial-index cardinality, SELECT result count, and rows read do not decide this warning. The threshold is a heuristic, not proof that larger data is representative. Warnings advise a representative, separately prepared copy; they do not suppress a row verdict or change exit codes. Diagnostic reads respect the existing per-statement timeout/cancellation; failures follow the existing error path.
+
+## Remaining reserved fields
+
+Only `sqlite.bundled_version` and `sqlite.db_header_version` remain reserved and unimplemented. Read `environment.sqlite_version` for the bundled version. The timing and warning additions above keep schema_version 2. New error messages still require a stable code in src/cli/control.zig.

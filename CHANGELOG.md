@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Timing includes measured baseline A/A noise, a nominal 95% paired median-difference sign interval with conservative binomial coverage, and explicit unavailable reasons. Timing evidence never changes the row verdict.
+- Advisory target-table warnings report missing ANALYZE statistics and fewer than 1000 rows in human, kv, and JSON, without changing verdicts or exit codes.
+
 - The output reports the rows each copy read and wrote: `rows read` and `rows written` in the human summary and table, `rows-read` and `rows-written` in `kv`, and `counters.rows_read` and `counters.rows_written` in `json`. They use the counts of a local D1: the vendored SQLite is built with Cloudflare's row-count patch from `workerd`, which is kept unmodified in `vendor/sqlite3/patches` together with the script that applies it. `NOTICE` records where the patch and SQLite come from and which licenses they keep.
 - Regression tests fix the counts: a full scan of 100,000 rows becomes 201 reads through the candidate index, an `INSERT` of 1,000 rows counts 1,000 writes and 2,000 with one secondary index, and a comparison leaves the source database and its `-wal` file byte for byte unchanged.
 

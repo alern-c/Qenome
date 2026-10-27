@@ -404,10 +404,12 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\                       count must be given exactly once
         \\  --timeout-ms <MS>    time limit for the index build and for each SELECT
         \\                       run, 0 disables it (default 30000); a run can
-        \\                       wait up to the copy plus (3 + 2 x runs) limits
+        \\                       wait up to the copy plus (3 + 4 x runs) limits
+        \\                       plus up to three diagnostic statement limits
         \\  --runs <N>           timed rounds after a match, each timing the SELECT
-        \\                       once per copy; 0 skips the timing but keeps the
-        \\                       row counts and the verdict (default 10, at most
+        \\                       once per copy plus two baseline A/A runs; 0 skips
+        \\                       the timing but keeps the row counts and verdict
+        \\                       (default 10, at most
         \\                       1000); a timing that takes longer than a second
         \\                       reports its progress on stderr
         \\  --format <FORMAT>    human (default), kv or json

@@ -234,6 +234,10 @@ fn runChecked(
     if (!baseline.open(inputs.baseline_path, inputs.select_sql, inputs.binds, .baseline, inputs.index_sql, stderr, &failure)) return failure;
 
     if (!baseline.checkCreateIndex(inputs.index_sql, stderr)) return .rejected;
+    const candidate_table = baseline.database.indexTarget(arena, inputs.index_sql) catch {
+        stderr.writeAll("error: out of memory\n") catch {};
+        return .rejected;
+    };
 
     if (signalPending()) return reportInterrupted(stderr);
 
@@ -288,6 +292,10 @@ fn runChecked(
             report.timing = timing.summary();
         }
     }
+    const warnings = baseline.database.tableWarnings(arena, candidate_table, &control) catch |err| {
+        return diagnosticFailure(err, &baseline, &control, stderr);
+    };
+    report.warnings = .{ .no_analyze_stats = warnings.no_analyze_stats, .data_too_small = warnings.data_too_small };
     report.sizes = .{
         .baseline = fileSize(io, inputs.baseline_path, .baseline, stderr) orelse return .rejected,
         .variant = fileSize(io, inputs.variant_path, .variant, stderr) orelse return .rejected,
@@ -317,6 +325,18 @@ fn runChecked(
         return .rejected;
     };
     return code;
+}
+
+fn diagnosticFailure(err: anyerror, session: *cli_query.QuerySession, control: *db.StepControl, stderr: *Io.Writer) ExitCode {
+    return switch (err) {
+        error.Timeout => cli_query.reportStepFailure(error.Timeout, session, control.timeout_ms, .baseline, null, stderr),
+        error.Interrupted => reportInterrupted(stderr),
+        error.OutOfMemory => blk: {
+            stderr.writeAll("error: out of memory\n") catch {};
+            break :blk .rejected;
+        },
+        else => cli_query.reportStepFailure(error.StepFailed, session, control.timeout_ms, .baseline, null, stderr),
+    };
 }
 
 fn reportD1Failure(stderr: *Io.Writer, failure: cli_d1.Failure) Io.Writer.Error!void {

@@ -85,11 +85,10 @@ Emitted fields an agent should read:
 | `timing` | `null` with `--runs 0`. When present, it is a reference. It does not pick the verdict |
 | `environment.sqlite_version` | Bundled SQLite until `sqlite.bundled_version` exists |
 
-Reserved, not emitted yet. Do not require them, and do not invent values:
+Timing now includes measured A/A `noise_band`, nullable `confidence_interval`, paired `median_difference_ns`, `effect`, and `unavailable_reason`. An unavailable interval or no-difference is not a row verdict. Warnings are always an array; repeat their codes/messages. See README for assumptions, sample limits, and heuristic thresholds.
 
-- `timing.noise_band`
-- `timing.confidence_interval`
-- `warnings` (array of `{code, message}`)
+Still reserved; do not require or invent:
+
 - `sqlite.bundled_version`
 - `sqlite.db_header_version`
 
@@ -140,5 +139,5 @@ npx qenome --d1 DB select.sql index.sql --runs 0 --format json  # qenome-ci: pen
 ```
 
 ```sh
-npx qenome testdata/skill/app.db testdata/skill/select.sql testdata/skill/index.sql --bind 1:int:1 --runs 0 --format json  # qenome-ci: pending TODO(core): require timing.noise_band, timing.confidence_interval, warnings, sqlite.bundled_version, and sqlite.db_header_version. schema_version stays 2. Change this marker to run when those fields are emitted.
+npx qenome testdata/skill/app.db testdata/skill/select.sql testdata/skill/index.sql --bind 1:int:1 --runs 6 --format json  # qenome-ci: run exit=0 stdout=report verdict=improved result=match fields=schema_version,exit_code,verdict,warnings,timing.noise_band,timing.confidence_interval,timing.median_difference_ns,timing.effect,timing.unavailable_reason
 ```

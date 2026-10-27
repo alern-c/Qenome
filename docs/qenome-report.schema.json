@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "qenome-report.schema.json",
   "title": "Qenome comparison report (schema_version 2)",
-  "description": "Stdout object after a comparison. Reserved fields are optional and are not emitted yet. See docs/json.md.",
+  "description": "Stdout object after a comparison. Timing evidence and warnings are emitted. SQLite detail fields remain reserved. See docs/json.md.",
   "type": "object",
   "additionalProperties": true,
   "required": [
@@ -22,7 +22,8 @@
     "inputs",
     "environment",
     "measurement",
-    "binds"
+    "binds",
+    "warnings"
   ],
   "properties": {
     "schema_version": { "const": 2 },
@@ -58,21 +59,121 @@
     "baseline": { "$ref": "#/$defs/side" },
     "variant": { "$ref": "#/$defs/side" },
     "timing": {
-      "description": "null when not timed. noise_band and confidence_interval are reserved and not emitted yet. Their inner keys are not frozen.",
+      "description": "Null when not timed. Timing evidence is reference only and does not change the row verdict.",
       "anyOf": [
-        { "type": "null" },
+        {
+          "type": "null"
+        },
         {
           "type": "object",
           "additionalProperties": true,
-          "required": ["rounds", "variant_faster_rounds", "ratio", "baseline", "variant"],
+          "required": [
+            "rounds",
+            "variant_faster_rounds",
+            "ratio",
+            "baseline",
+            "variant",
+            "noise_band",
+            "confidence_interval",
+            "median_difference_ns",
+            "effect",
+            "unavailable_reason"
+          ],
           "properties": {
-            "rounds": { "type": "integer" },
-            "variant_faster_rounds": { "type": "integer" },
-            "ratio": { "type": ["number", "null"] },
-            "baseline": { "$ref": "#/$defs/timeStats" },
-            "variant": { "$ref": "#/$defs/timeStats" },
-            "noise_band": { "type": "object", "additionalProperties": true },
-            "confidence_interval": { "type": "object", "additionalProperties": true }
+            "rounds": {
+              "type": "integer"
+            },
+            "variant_faster_rounds": {
+              "type": "integer"
+            },
+            "ratio": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "baseline": {
+              "$ref": "#/$defs/timeStats"
+            },
+            "variant": {
+              "$ref": "#/$defs/timeStats"
+            },
+            "noise_band": {
+              "type": "object",
+              "required": [
+                "method",
+                "pairs",
+                "threshold_ns"
+              ],
+              "properties": {
+                "method": {
+                  "const": "baseline-aa-absolute-difference-p95"
+                },
+                "pairs": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "threshold_ns": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "confidence_interval": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "method",
+                    "level",
+                    "coverage",
+                    "lower_ns",
+                    "upper_ns"
+                  ],
+                  "properties": {
+                    "method": {
+                      "const": "paired-sign-median"
+                    },
+                    "level": {
+                      "const": 0.95
+                    },
+                    "coverage": {
+                      "type": "number",
+                      "minimum": 0.95,
+                      "maximum": 1
+                    },
+                    "lower_ns": {
+                      "type": "number"
+                    },
+                    "upper_ns": {
+                      "type": "number"
+                    }
+                  }
+                }
+              ]
+            },
+            "median_difference_ns": {
+              "type": "number"
+            },
+            "effect": {
+              "enum": [
+                "faster",
+                "slower",
+                "no-difference",
+                "insufficient-samples"
+              ]
+            },
+            "unavailable_reason": {
+              "enum": [
+                null,
+                "too-few-rounds",
+                "zero-duration",
+                "no-observed-variation"
+              ]
+            }
           }
         }
       ]
@@ -106,7 +207,7 @@
     "measurement": { "type": "object", "additionalProperties": true },
     "binds": { "type": "array" },
     "warnings": {
-      "description": "Reserved. Not emitted yet.",
+      "description": "Always emitted; advisory checks on the candidate index table in the baseline snapshot.",
       "type": "array",
       "items": { "$ref": "#/$defs/warning" }
     },

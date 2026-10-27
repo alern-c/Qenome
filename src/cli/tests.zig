@@ -1231,7 +1231,7 @@ test "the default summary puts the conclusion first and the copies side by side"
         };
         from = at + part.len;
     }
-    for ([_][]const u8{ "Timing", "Run\n", "Result rows", "time median", "binds", "work dir", "source id", " sqlite", fixture.db_path }) |gone| {
+    for ([_][]const u8{ "Timing", "Run\n", "Result rows", "time median", "binds", "work dir", "source id", fixture.db_path }) |gone| {
         try testing.expect(!contains(result.stdout, gone));
     }
     try expectNarrow(result.stdout, &.{});
@@ -1830,7 +1830,8 @@ test "help puts the usage, options, examples and exit status before the details"
     try testing.expect(contains(result.stdout, "The same paths can be given as --db, --select and --index-sql."));
     try testing.expect(contains(result.stdout, "named parameters"));
     try testing.expect(contains(result.stdout, "share the number of their first appearance"));
-    try testing.expect(contains(result.stdout, "0 skips the timing but keeps the"));
+    try testing.expect(contains(result.stdout, "two baseline A/A runs; 0 skips"));
+    try testing.expect(contains(result.stdout, "the timing but keeps the row counts and verdict"));
     try testing.expect(contains(result.stdout, "--runs 0 is still judged"));
     try testing.expect(!contains(result.stdout, "or --runs 0"));
     try testing.expect(!contains(result.stdout, "Time verdict"));
@@ -2445,4 +2446,81 @@ test "a plain --db run prints no D1 facts in any format" {
     try testing.expectEqual(@as(i64, 2), try jsonInt(parsed.value, "schema_version"));
     try testing.expectError(error.TestUnexpectedResult, jsonGet(parsed.value, "d1"));
     try testing.expect(!contains(json.stdout, "sqlite_version_note"));
+}
+
+test "warnings describe candidate table and preserve counters verdict and exit across formats" {
+    var fixture = try CliFixture.init("SELECT a FROM t WHERE a = 1", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+    var output: [32768]u8 = undefined;
+    var errors: [1024]u8 = undefined;
+    const json_result = fixture.runFormat("json", &.{ "--runs", "0" }, &output, &errors);
+    try testing.expectEqual(ExitCode.ok, json_result.code);
+    var parsed = try parseJson(json_result.stdout);
+    defer parsed.deinit();
+    const warnings = try jsonItems(parsed.value, "warnings");
+    try testing.expectEqual(@as(usize, 2), warnings.len);
+    try testing.expectEqualStrings("no_analyze_stats", try jsonText(warnings[0], "code"));
+    try testing.expectEqualStrings("data_too_small", try jsonText(warnings[1], "code"));
+    try testing.expectEqualStrings("no-effect", try jsonText(parsed.value, "verdict"));
+    try testing.expectEqual(@as(i64, 2), try jsonInt(try jsonGet(try jsonGet(parsed.value, "baseline"), "counters"), "rows_read"));
+    for ([_][:0]const u8{ "human", "kv" }) |format| {
+        const text_result = fixture.runFormat(format, &.{ "--runs", "0" }, &output, &errors);
+        try testing.expectEqual(ExitCode.ok, text_result.code);
+        for (warnings) |warning| {
+            try testing.expect(contains(text_result.stdout, try jsonText(warning, "code")));
+            if (std.mem.eql(u8, format, "kv")) try testing.expect(contains(text_result.stdout, try jsonText(warning, "message")));
+        }
+    }
+    const timed = fixture.runFormat("json", &.{ "--runs", "6" }, &output, &errors);
+    try testing.expectEqual(ExitCode.ok, timed.code);
+    var timed_json = try parseJson(timed.stdout);
+    defer timed_json.deinit();
+    try testing.expectEqualStrings("no-effect", try jsonText(timed_json.value, "verdict"));
+    const timing = try jsonGet(timed_json.value, "timing");
+    try testing.expectEqual(@as(i64, 6), try jsonInt(try jsonGet(timing, "noise_band"), "pairs"));
+    _ = try jsonGet(timing, "confidence_interval");
+    _ = try jsonGet(timing, "effect");
+    try testing.expectEqual(@as(i64, 2), try jsonInt(try jsonGet(try jsonGet(timed_json.value, "baseline"), "counters"), "rows_read"));
+    try fixture.expectNoLeftovers();
+}
+
+test "small table warning boundary and missing target stats ignore unrelated ANALYZE" {
+    for ([_]usize{ 999, 1000 }) |rows| {
+        var buffer: [1024]u8 = undefined;
+        const schema = try std.fmt.bufPrintSentinel(&buffer, "CREATE TABLE t(a INTEGER); CREATE TABLE unrelated(a INTEGER); INSERT INTO unrelated VALUES (1); ANALYZE unrelated; WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c WHERE x<{d}) INSERT INTO t SELECT x FROM c;", .{rows}, 0);
+        var fixture = try CliFixture.initWithSchema("SELECT a FROM t WHERE a = 1", "CREATE INDEX idx_a ON t(a)", schema);
+        defer fixture.deinit();
+        var output: [32768]u8 = undefined;
+        var errors: [1024]u8 = undefined;
+        const result = fixture.runFormat("json", &.{ "--runs", "0" }, &output, &errors);
+        try testing.expectEqual(ExitCode.ok, result.code);
+        var parsed = try parseJson(result.stdout);
+        defer parsed.deinit();
+        const warnings = try jsonItems(parsed.value, "warnings");
+        try testing.expectEqual(@as(usize, if (rows == 999) 2 else 1), warnings.len);
+        try testing.expectEqualStrings("no_analyze_stats", try jsonText(warnings[0], "code"));
+        try testing.expectEqualStrings("improved", try jsonText(parsed.value, "verdict"));
+    }
+}
+
+test "analyzed large quoted target emits no warnings and long index names remain accepted" {
+    const schema =
+        \\CREATE TABLE "odd""table"(a INTEGER PRIMARY KEY) WITHOUT ROWID;
+        \\WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c WHERE x<1000) INSERT INTO "odd""table" SELECT x FROM c;
+        \\ANALYZE;
+    ;
+    const name: [300]u8 = @splat('i');
+    var sql_buffer: [512]u8 = undefined;
+    const index_sql = try std.fmt.bufPrint(&sql_buffer, "CREATE INDEX {s} ON \"odd\"\"table\"(a)", .{name});
+    var fixture = try CliFixture.initWithSchema("SELECT a FROM \"odd\"\"table\" WHERE a=1", index_sql, schema);
+    defer fixture.deinit();
+    var output: [32768]u8 = undefined;
+    var errors: [1024]u8 = undefined;
+    const result = fixture.runFormat("json", &.{ "--runs", "0" }, &output, &errors);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    try testing.expectEqual(@as(usize, 0), (try jsonItems(parsed.value, "warnings")).len);
+    try testing.expectEqualStrings("match", try jsonText(parsed.value, "result"));
+    try fixture.expectNoLeftovers();
 }

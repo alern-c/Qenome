@@ -10,13 +10,17 @@ const cli_query = @import("query.zig");
 pub const Timing = struct {
     baseline: []u64,
     variant: []u64,
+    aa_first: []u64,
+    aa_second: []u64,
 
     pub fn summary(self: Timing) TimeSummary {
         var faster: usize = 0;
         for (self.baseline, self.variant) |baseline, variant| {
             if (variant < baseline) faster += 1;
         }
+        const evidence = timingEvidence(self.baseline, self.variant, self.aa_first, self.aa_second);
         return .{
+            .evidence = evidence,
             .baseline = summarize(self.baseline),
             .variant = summarize(self.variant),
             .rounds = self.baseline.len,
@@ -44,12 +48,15 @@ pub fn timeRuns(
     const timing: Timing = .{
         .baseline = arena.alloc(u64, options.runs) catch return outOfMemory(stderr, failure),
         .variant = arena.alloc(u64, options.runs) catch return outOfMemory(stderr, failure),
+        .aa_first = arena.alloc(u64, options.runs) catch return outOfMemory(stderr, failure),
+        .aa_second = arena.alloc(u64, options.runs) catch return outOfMemory(stderr, failure),
     };
     var last_progress = Io.Clock.now(.awake, io).nanoseconds;
     var progress_works = true;
     for (0..options.runs) |round| {
         const order: [2]Side = if (round % 2 == 0) .{ .baseline, .variant } else .{ .variant, .baseline };
-        for (order) |side| {
+        for (0..4) |slot| {
+            const side: Side = if (slot < 2) .baseline else order[slot - 2];
             if (cli_control.signalPending()) {
                 failure.* = cli_control.reportInterrupted(stderr);
                 return null;
@@ -62,7 +69,7 @@ pub fn timeRuns(
                 return null;
             };
             const elapsed: u64 = @intCast(Io.Clock.now(.awake, io).nanoseconds - start);
-            if (side == .baseline) timing.baseline[round] = elapsed else timing.variant[round] = elapsed;
+            if (slot == 0) timing.aa_first[round] = elapsed else if (slot == 1) timing.aa_second[round] = elapsed else if (side == .baseline) timing.baseline[round] = elapsed else timing.variant[round] = elapsed;
         }
         const now = Io.Clock.now(.awake, io).nanoseconds;
         if (progress_works and now - last_progress >= options.progress_interval_ns) {
@@ -118,7 +125,102 @@ pub const TimeSummary = struct {
     variant: Stats,
     rounds: usize,
     variant_faster_rounds: usize,
+    evidence: Evidence = .{},
 };
+
+pub const ConfidenceInterval = struct {
+    method: []const u8 = "paired-sign-median",
+    level: f64 = 0.95,
+    coverage: f64,
+    lower_ns: f64,
+    upper_ns: f64,
+};
+
+pub const NoiseBand = struct {
+    method: []const u8 = "baseline-aa-absolute-difference-p95",
+    pairs: usize = 0,
+    threshold_ns: u64 = 0,
+};
+
+pub const TimeEffect = enum { faster, slower, no_difference, insufficient_samples };
+
+pub fn effectText(effect: TimeEffect) []const u8 {
+    return switch (effect) {
+        .faster => "faster",
+        .slower => "slower",
+        .no_difference => "no-difference",
+        .insufficient_samples => "insufficient-samples",
+    };
+}
+
+pub const Evidence = struct {
+    noise_band: NoiseBand = .{},
+    confidence_interval: ?ConfidenceInterval = null,
+    median_difference_ns: f64 = 0,
+    effect: TimeEffect = .insufficient_samples,
+    unavailable_reason: ?[]const u8 = "too-few-rounds",
+};
+
+pub fn timingEvidence(baseline: []const u64, variant: []const u64, aa_first: []const u64, aa_second: []const u64) Evidence {
+    std.debug.assert(baseline.len > 0 and baseline.len <= 1000);
+    std.debug.assert(baseline.len == variant.len and baseline.len == aa_first.len and baseline.len == aa_second.len);
+    var differences: [1000]f64 = undefined;
+    var noise: [1000]u64 = undefined;
+    for (baseline, variant, aa_first, aa_second, 0..) |b, v, first, second, i| {
+        differences[i] = @floatFromInt(@as(i128, v) - @as(i128, b));
+        noise[i] = if (first > second) first - second else second - first;
+    }
+    const n = baseline.len;
+    std.mem.sort(f64, differences[0..n], {}, std.sort.asc(f64));
+    std.mem.sort(u64, noise[0..n], {}, std.sort.asc(u64));
+    const median = if (n % 2 == 0) (differences[n / 2 - 1] + differences[n / 2]) / 2 else differences[n / 2];
+    var evidence: Evidence = .{
+        .noise_band = .{ .pairs = n, .threshold_ns = noise[(95 * n + 99) / 100 - 1] },
+        .median_difference_ns = median,
+        .confidence_interval = medianInterval(differences[0..n]),
+        .unavailable_reason = if (n < 6) "too-few-rounds" else null,
+    };
+    for (baseline, variant, aa_first, aa_second) |b, v, first, second| {
+        if (b == 0 or v == 0 or first == 0 or second == 0) {
+            evidence.confidence_interval = null;
+            evidence.unavailable_reason = "zero-duration";
+            break;
+        }
+    }
+    if (evidence.unavailable_reason == null and differences[0] == differences[n - 1]) {
+        evidence.confidence_interval = null;
+        evidence.unavailable_reason = "no-observed-variation";
+    }
+    if (evidence.confidence_interval) |interval| {
+        const threshold: f64 = @floatFromInt(evidence.noise_band.threshold_ns);
+        evidence.effect = if (@abs(median) <= threshold or (interval.lower_ns <= 0 and interval.upper_ns >= 0))
+            .no_difference
+        else if (interval.upper_ns < 0)
+            .faster
+        else
+            .slower;
+    }
+    return evidence;
+}
+
+pub fn medianInterval(sorted: []const f64) ?ConfidenceInterval {
+    const n = sorted.len;
+    if (n < 6) return null;
+    var probability = std.math.pow(f64, 0.5, @floatFromInt(n));
+    var tail: f64 = 0;
+    var selected: ?usize = null;
+    var coverage: f64 = 0;
+    for (0..n / 2) |k| {
+        const next = tail + probability;
+        if (next > 0.025) break;
+        tail = next;
+        selected = k;
+        coverage = 1 - 2 * tail;
+        probability *= @as(f64, @floatFromInt(n - k)) / @as(f64, @floatFromInt(k + 1));
+    }
+    const k = selected orelse return null;
+    return .{ .coverage = coverage, .lower_ns = sorted[k], .upper_ns = sorted[n - k - 1] };
+}
 
 pub const RowVerdict = enum {
     improved,
@@ -337,4 +439,60 @@ test "a timed run over the time limit names the copy and the run" {
     try testing.expect(!try timeFixture(&fixture, sql, 1, &.{}, null, &stderr, &failure));
     try testing.expectEqual(cli_control.ExitCode.timeout, failure);
     try testing.expectEqualStrings("error: --select exceeded the time limit of 1 ms on the baseline (timed run 1)\n", stderr.buffered());
+}
+
+test "median interval needs six observations and reports conservative coverage" {
+    try testing.expect(medianInterval(&.{ 1, 2, 3, 4, 5 }) == null);
+    const ci = medianInterval(&.{ 1, 2, 3, 4, 5, 6 }).?;
+    try testing.expectEqual(@as(f64, 1), ci.lower_ns);
+    try testing.expectEqual(@as(f64, 6), ci.upper_ns);
+    try testing.expectEqual(@as(f64, 0.96875), ci.coverage);
+    try testing.expectEqual(@as(f64, 0.95), ci.level);
+    var values: [1000]f64 = undefined;
+    for (&values, 0..) |*v, i| v.* = @floatFromInt(i);
+    const large = medianInterval(&values).?;
+    try testing.expect(large.coverage >= 0.95 and large.coverage < 0.96);
+    try testing.expect(large.lower_ns < 500 and large.upper_ns > 500);
+}
+
+test "time evidence uses paired differences and measured AA noise without mutating pairs" {
+    const b = [_]u64{ 100, 200, 300, 400, 500, 600 };
+    const v = [_]u64{ 70, 160, 250, 340, 430, 520 };
+    const aa = [_]u64{ 100, 100, 100, 100, 100, 100 };
+    const quiet = [_]u64{ 101, 101, 101, 101, 101, 101 };
+    const noisy = [_]u64{ 200, 200, 200, 200, 200, 200 };
+    const faster = timingEvidence(&b, &v, &aa, &quiet);
+    try testing.expectEqual(TimeEffect.faster, faster.effect);
+    try testing.expectEqual(@as(f64, -55), faster.median_difference_ns);
+    try testing.expectEqual(@as(u64, 1), faster.noise_band.threshold_ns);
+    try testing.expectEqual(TimeEffect.slower, timingEvidence(&v, &b, &aa, &quiet).effect);
+    try testing.expectEqual(TimeEffect.no_difference, timingEvidence(&b, &v, &aa, &noisy).effect);
+    try testing.expectEqualSlices(u64, &.{ 100, 200, 300, 400, 500, 600 }, &b);
+    const crossed = [_]u64{ 99, 202, 297, 404, 495, 606 };
+    try testing.expectEqual(TimeEffect.no_difference, timingEvidence(&b, &crossed, &aa, &quiet).effect);
+}
+
+test "time evidence handles too few samples zero duration and resolution ties" {
+    const short = timingEvidence(&.{10}, &.{5}, &.{10}, &.{11});
+    try testing.expect(short.confidence_interval == null);
+    try testing.expectEqualStrings("too-few-rounds", short.unavailable_reason.?);
+    const b = [_]u64{ 10, 20, 30, 40, 50, 60 };
+    const v = [_]u64{ 5, 15, 25, 35, 45, 55 };
+    const tied = timingEvidence(&b, &v, &b, &b);
+    try testing.expect(tied.confidence_interval == null);
+    try testing.expectEqualStrings("no-observed-variation", tied.unavailable_reason.?);
+    const zero = timingEvidence(&b, &.{ 0, 1, 2, 3, 4, 5 }, &b, &b);
+    try testing.expect(zero.confidence_interval == null);
+    try testing.expectEqualStrings("zero-duration", zero.unavailable_reason.?);
+    try testing.expectEqual(TimeEffect.insufficient_samples, zero.effect);
+}
+
+test "paired median differs from the difference of medians and AA uses nearest rank" {
+    const evidence = timingEvidence(&.{ 10, 20, 30, 40, 50, 60 }, &.{ 100, 1, 2, 3, 4, 5 }, &.{ 10, 10, 10, 10, 10, 10 }, &.{ 11, 11, 11, 11, 11, 11 });
+    try testing.expectEqual(@as(f64, -32.5), evidence.median_difference_ns);
+    var baseline: [20]u64 = @splat(100);
+    var variant: [20]u64 = undefined;
+    for (&variant, 0..) |*value, i| value.* = 100 + @as(u64, @intCast(i));
+    const ranked = timingEvidence(&baseline, &variant, &baseline, &variant);
+    try testing.expectEqual(@as(u64, 18), ranked.noise_band.threshold_ns);
 }

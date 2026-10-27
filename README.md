@@ -184,8 +184,8 @@ The three paths fill the roles in this order: database, SELECT file, CREATE INDE
 - `--select <FILE>`: a file holding the one `SELECT` to compare (required, once)
 - `--index-sql <FILE>`: a file holding the one candidate `CREATE INDEX` (required, once)
 - `--bind <N>:<TYPE>[:<VALUE>]`: a typed value bound to parameter `N`; repeatable. `N` is SQLite's parameter number: named parameters share the number of their first appearance, and `?NNN` uses `NNN`. `TYPE` is `int`, `real`, `text`, or `null` (null takes no value). Every number in `1..parameter count` must be given exactly once, and a `SELECT` without parameters takes no `--bind`. The value is the rest of the argument, so text may contain `:`.
-- `--runs <N>`: timed rounds after the results match; each round times the `SELECT` once per copy. The default is `10`; `0` skips the timing but keeps the row counts and the verdict; the maximum is `1000`. A timing that takes longer than a second reports its progress on stderr.
-- `--timeout-ms <MS>`: time limit for building the index and for each `SELECT` run; the default is `30000`; `0` disables the limit. The whole run can therefore take up to the database copy plus `(3 + 2 × runs)` time limits.
+- `--runs <N>`: timed rounds after the results match; each round adds two baseline A/A executions and times the `SELECT` once per copy. The default is `10`; `0` skips the timing but keeps the row counts and the verdict; the maximum is `1000`. A timing that takes longer than a second reports its progress on stderr.
+- `--timeout-ms <MS>`: time limit for building the index and for each `SELECT` run; the default is `30000`; `0` disables the limit. The comparison and timing can take the database copy plus `(3 + 4 × runs)` time limits, with up to three additional bounded diagnostic statements each using the same timeout.
 - `--format <human|kv|json>`: output format (default `human`). See [Output formats](#output-formats).
 - `--show-binds`: print the bind values. Without it, `human` leaves the binds out, and `kv` and `json` print only their numbers, types, and text lengths, so the values stay out of logs.
 - `--show-rows`: print the example rows that only one copy returned. Without it, every format prints only the counts, so row values stay out of logs; `human` says to rerun with this flag.
@@ -308,14 +308,14 @@ Main keys:
 | `row_differences` | `baseline_only` and `variant_only` counts. `baseline_only_examples` and `variant_only_examples` are arrays; they stay empty by default, and `--show-rows` fills them with up to 5 example rows |
 | `plan_changed` | Whether the query plan differs between baseline and variant |
 | `baseline` / `variant` | `rows`; `plan` (`id`, `parent`, `kind`, `covering`, `automatic`, `detail`); `counters` (`rows_read`, `rows_written`, `fullscan_steps`, `vm_steps`, `sort_ops`, `autoindex_rows`) |
-| `timing` | `rounds`, `variant_faster_rounds`, `ratio`, and `baseline` / `variant` with `median_ns`, `p25_ns`, `p75_ns`, `min_ns`, `max_ns`. `null` when not timed; `ratio` is `null` when the baseline median is `0`. `noise_band` and `confidence_interval` are reserved and not emitted yet |
+| `timing` | `rounds`, `variant_faster_rounds`, `ratio`, and `baseline` / `variant` with `median_ns`, `p25_ns`, `p75_ns`, `min_ns`, `max_ns`. `null` when not timed; `ratio` is `null` when the baseline median is `0`. `noise_band`, `confidence_interval`, `median_difference_ns`, `effect`, and `unavailable_reason` describe the timing evidence below |
 | `size_bytes` | `baseline`, `variant`, and `increase` (the whole database file, not the index alone) |
 | `inputs` | `database`, `select`, and `index_sql` paths |
 | `d1` | Present only with `--d1`: `binding`, `config`, `database_id`, `local_database`, `sqlite_version` (D1's 3.53.4), `sqlite_version_note`, and `caution` |
 | `environment` | `qenome_version` (the same version as `--version`, from `build.zig.zon`), `sqlite_version`, `sqlite_source_id`, `zig_version`, `build_mode`, `os`, `arch`, `work_dir_parent` |
 | `measurement` | Timing conditions: `runs_per_copy` (timed rounds per copy; `0` when not timed), `warmup`, `order`, `scope`, `cache` |
 | `binds` | `number` and `type`; text also has `text_bytes`. `value` appears only with `--show-binds` |
-| `warnings` | Reserved, not emitted yet. An array of `{code, message}` once the core change lands (`no_analyze_stats`, `data_too_small`) |
+| `warnings` | An array of `{code, message}` (`no_analyze_stats`, `data_too_small`); advisory, never changes verdict or exit |
 | `sqlite` | Reserved, not emitted yet. `bundled_version` and `db_header_version`. Until then, the bundled version is `environment.sqlite_version` |
 
 - String values write a backslash as `\\` and each byte that is not valid UTF-8 as `\xNN` (byte 0xFF becomes `\xff`), and the result is then escaped as JSON. A literal four-character `\xff` therefore becomes `\\xff` and is a different string from the byte 0xFF. To recover the original bytes, read `\\` as one backslash and `\xNN` as that byte, and leave everything else as it is. Paths, plan details, reasons, and bind text use this rule. Text values in the example rows use it too, surrounded by single quotes (for example `'\xff'`, which appears as `'\\xff'` in the JSON text); BLOBs are written as `x'00ff'`. Example values longer than 200 bytes are cut and followed by `...(N bytes)`.
@@ -337,6 +337,18 @@ Main keys:
 | 129 / 130 / 143 | Interrupted by `SIGHUP` / `SIGINT` / `SIGTERM` (POSIX) |
 
 `--format json` reports the comparison result in `exit_code` as `0`, `3`, or `4`. The process can still exit with `5` after writing the JSON.
+
+### Timing evidence and advisory warnings
+
+Each timed round first runs the baseline SELECT twice (A/A), then runs one baseline/variant pair, alternating AB and BA. Both sessions are already warm from the compared run. A/A adds two baseline executions per round. The measured counters in the report still come only from the first compared SELECT; diagnostics and timed executions do not enter them. Warning checks run after timing, on sandbox copies only. No ANALYZE or PRAGMA optimize is run.
+
+`timing.noise_band` reports the empirical 95th percentile of absolute differences between the two baseline A/A durations, using nearest rank `ceil(0.95*n)` and reporting `pairs`. This is a heuristic noise reference, not a confidence bound or a significance threshold with a calibrated false-positive rate. No observed A/A spread does not prove zero underlying variation.
+
+`timing.median_difference_ns` is the median of the per-round differences `variant_i - baseline_i` (negative is faster), not the difference of the two medians and not a ratio. Existing `ratio` remains variant median / baseline median. `confidence_interval` uses sorted paired differences and a symmetric binomial sign interval for their population median. For zero-based endpoints `k` and `n-k-1`, choose the largest k with `P(Binomial(n,0.5) <= k) <= 0.025`; coverage is `1 - 2*P(...)`. `level` is the requested 0.95; `coverage` is the conservative binomial coverage under independent identically distributed continuous differences. This follows the [order-statistic approach described by NIST](https://www.itl.nist.gov/div898/software/dataplot/refman1/auxillar/mediancl.htm), without interpolation. It describes uncertainty in the median difference, not a future single duration. There is no resampling.
+
+The interval is `null` with `unavailable_reason` `too-few-rounds` below six rounds (the widest finite interval has coverage 93.75% at n=5 and 96.875% at n=6), `zero-duration` when any timed duration is zero, or conservatively `no-observed-variation` when all paired differences are equal. These cases give `effect: insufficient-samples`, not a claim of precision at the clock resolution. Otherwise `effect` is `no-difference` if the absolute value of the median paired difference is at most the A/A noise reference or the interval includes zero; it is `faster` or `slower` only when both checks allow that direction. This auxiliary label never changes `verdict` or the exit code. Fixed A/A-before-A/B ordering, cache effects, temporal dependence, load drift, and small samples limit interpretation: nominal 95% coverage is not an exact guarantee for these machine timings or for production D1.
+
+`warnings` is always an array, including with `--runs 0` or incomparable results. Its `{code, message}` entries also appear verbatim in human and kv output. `no_analyze_stats` means the candidate index's table has no non-empty `sqlite_stat1` entry in the baseline snapshot, even if other tables have statistics. This is an absence check, not a freshness/completeness check: a partial-index entry alone counts as present. `data_too_small` means a bounded `SELECT 1 ... LIMIT 1000` on that table returned fewer than 1000 rows. Reaching 1000 only establishes at least 1000 rows; statistics estimates, partial-index cardinality, SELECT result count, and rows read do not decide this warning. The threshold is a heuristic, not proof that larger data is representative. Warnings advise a representative, separately prepared copy; they do not suppress a row verdict or change exit codes. Diagnostic reads respect the existing per-statement timeout/cancellation; failures follow the existing error path.
 
 ## Rules
 
