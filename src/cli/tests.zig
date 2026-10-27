@@ -2842,3 +2842,128 @@ test "a batch baseline timeout stops before the candidate loop" {
     try expectJsonFailure(result.stderr, "batch_baseline_timeout", 124);
     try fixture.expectNoLeftovers();
 }
+
+test "a batch index timeout is recorded without results and keeps stderr empty" {
+    var fixture = try CliFixture.initWithSchema("SELECT 1", "CREATE INDEX unused ON t(a)",
+        \\CREATE TABLE t(a INTEGER, b TEXT);
+        \\WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 300000)
+        \\INSERT INTO t SELECT x, 'v' || x FROM c;
+    );
+    defer fixture.deinit();
+    try fixture.writeFile("q1.sql", "SELECT 1;");
+    try fixture.writeFile("c1.sql", "CREATE INDEX ix_b ON t(b);");
+    try fixture.writeFile("batch.json",
+        \\{"queries":[{"select":"q1.sql"}],"candidates":[{"index_sql":"c1.sql"}]}
+    );
+
+    var stdout_buffer: [131072]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = try fixture.runBatch(&.{ "--format", "json", "--timeout-ms", "1" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.timeout, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    const root = parsed.value;
+    try testing.expectEqual(@as(i64, 1), try jsonInt(root, "batch_schema_version"));
+    try testing.expectEqual(@as(i64, 124), try jsonInt(root, "exit_code"));
+    try testing.expect((try jsonGet(root, "recommended")) == .null);
+    const summary = try jsonItems(root, "summary");
+    try testing.expectEqual(@as(usize, 1), summary.len);
+    try testing.expectEqualStrings("c1.sql", try jsonText(summary[0], "candidate"));
+    try testing.expectEqualStrings("index_timeout", try jsonText(summary[0], "status"));
+    const failure = try jsonGet(summary[0], "failure");
+    try testing.expectEqualStrings("index_timeout", try jsonText(failure, "code"));
+    try testing.expect((try jsonText(failure, "message")).len != 0);
+    try testing.expect((try jsonGet(summary[0], "improved")) == .null);
+    try testing.expect((try jsonGet(summary[0], "size_increase")) == .null);
+    try testing.expectEqual(@as(usize, 0), (try jsonItems(root, "results")).len);
+    try fixture.expectNoLeftovers();
+}
+
+test "a batch variant timeout keeps the other queries of the candidate" {
+    var fixture = try CliFixture.initWithSchema("SELECT 1", "CREATE INDEX unused ON t(a)",
+        \\CREATE TABLE t(a INTEGER PRIMARY KEY, b INTEGER, c TEXT);
+        \\WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x + 1 FROM n WHERE x < 5000)
+        \\INSERT INTO t SELECT x, x % 2, 'v' || x FROM n;
+    );
+    defer fixture.deinit();
+    try fixture.writeFile("heavy.sql", "SELECT a FROM t WHERE b >= 1 AND length(hex(zeroblob(1000000 + (a > 0)))) > 0 ORDER BY a LIMIT 1;");
+    try fixture.writeFile("light.sql", "SELECT count(*) FROM t WHERE a = 1;");
+    try fixture.writeFile("c1.sql", "CREATE INDEX ix_b ON t(b);");
+    try fixture.writeFile("batch.json",
+        \\{"queries":[{"select":"heavy.sql"},{"select":"light.sql"}],"candidates":[{"index_sql":"c1.sql"}]}
+    );
+
+    var stdout_buffer: [131072]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = try fixture.runBatch(&.{ "--format", "json", "--timeout-ms", "500" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.timeout, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    const root = parsed.value;
+    try testing.expectEqual(@as(i64, 124), try jsonInt(root, "exit_code"));
+    try testing.expect((try jsonGet(root, "recommended")) == .null);
+    const summary = try jsonItems(root, "summary");
+    try testing.expectEqual(@as(usize, 1), summary.len);
+    try testing.expectEqualStrings("compared", try jsonText(summary[0], "status"));
+    try testing.expectEqual(@as(i64, 0), try jsonInt(summary[0], "improved"));
+    try testing.expectEqual(@as(i64, 1), try jsonInt(summary[0], "no_effect"));
+    try testing.expectEqual(@as(i64, 0), try jsonInt(summary[0], "needs_check"));
+    try testing.expectEqual(@as(i64, 0), try jsonInt(summary[0], "mismatch"));
+    try testing.expectEqual(@as(i64, 1), try jsonInt(summary[0], "timeout"));
+
+    const results = try jsonItems(root, "results");
+    try testing.expectEqual(@as(usize, 2), results.len);
+    try testing.expectEqualStrings("heavy.sql", try jsonText(results[0], "query"));
+    try testing.expectEqualStrings("variant_timeout", try jsonText(results[0], "status"));
+    try testing.expect((try jsonGet(results[0], "comparison")) == .null);
+    try testing.expectEqualStrings("light.sql", try jsonText(results[1], "query"));
+    try testing.expectEqualStrings("compared", try jsonText(results[1], "status"));
+    const comparison = try jsonGet(results[1], "comparison");
+    try testing.expectEqualStrings("match", try jsonText(comparison, "result"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a rejected first candidate leaves a clean variant for the next candidate" {
+    var fixture = try CliFixture.initWithSchema("SELECT 1", "CREATE INDEX unused ON t(a)",
+        \\CREATE TABLE t(a INTEGER, b TEXT);
+        \\INSERT INTO t VALUES (1, 'x'), (1, 'y'), (2, 'z');
+    );
+    defer fixture.deinit();
+    try fixture.writeFile("q1.sql", "SELECT a FROM t WHERE b = 'x';");
+    try fixture.writeFile("cu.sql", "CREATE UNIQUE INDEX u_a ON t(a);");
+    try fixture.writeFile("c1.sql", "CREATE INDEX ix_b ON t(b);");
+    try fixture.writeFile("batch.json",
+        \\{"queries":[{"select":"q1.sql"}],"candidates":[{"index_sql":"cu.sql"},{"index_sql":"c1.sql"}]}
+    );
+
+    var stdout_buffer: [131072]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = try fixture.runBatch(&.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    const root = parsed.value;
+    try testing.expectEqual(@as(i64, 1), try jsonInt(root, "exit_code"));
+    try testing.expectEqualStrings("c1.sql", try jsonText(root, "recommended"));
+    const summary = try jsonItems(root, "summary");
+    try testing.expectEqual(@as(usize, 2), summary.len);
+    try testing.expectEqualStrings("c1.sql", try jsonText(summary[0], "candidate"));
+    try testing.expectEqualStrings("compared", try jsonText(summary[0], "status"));
+    try testing.expectEqualStrings("cu.sql", try jsonText(summary[1], "candidate"));
+    try testing.expectEqualStrings("index_rejected", try jsonText(summary[1], "status"));
+
+    const results = try jsonItems(root, "results");
+    try testing.expectEqual(@as(usize, 1), results.len);
+    try testing.expectEqualStrings("q1.sql", try jsonText(results[0], "query"));
+    try testing.expectEqualStrings("c1.sql", try jsonText(results[0], "candidate"));
+    const comparison = try jsonGet(results[0], "comparison");
+    try testing.expectEqualStrings("match", try jsonText(comparison, "result"));
+    try testing.expectEqualStrings("improved", try jsonText(comparison, "verdict"));
+    try fixture.expectNoLeftovers();
+}

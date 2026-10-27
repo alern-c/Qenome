@@ -335,7 +335,7 @@ pub fn run(
             },
             error.Interrupted => return cli_control.reportInterrupted(stderr),
             error.ApplyFailed => {
-                if (detail.error_code == sqlite.SQLITE_CONSTRAINT or detail.error_code == sqlite.SQLITE_ERROR) {
+                if (applyFailureIsCandidate(detail.error_code)) {
                     summary.status = .index_rejected;
                     summary.failure_code = "index_rejected";
                     summary.failure_message = truncateUtf8(arena, if (detail.len != 0) detail.text() else "SQLite rejected the CREATE INDEX");
@@ -705,6 +705,10 @@ fn failureMessage(arena: std.mem.Allocator, comptime format: []const u8, args: a
     return std.fmt.allocPrint(arena, format, args) catch "";
 }
 
+fn applyFailureIsCandidate(error_code: c_int) bool {
+    return error_code == sqlite.SQLITE_CONSTRAINT or error_code == sqlite.SQLITE_ERROR;
+}
+
 fn comparisonExitCode(verdict: cli_comparison.Verdict) u8 {
     return switch (verdict) {
         .match => 0,
@@ -1065,4 +1069,66 @@ test "a variant timeout is a candidate failure without an error line" {
         else => return error.ExpectedVariantTimeout,
     }
     try testing.expectEqualStrings("", stderr.buffered());
+}
+
+test "a non-constraint apply failure is fatal" {
+    try testing.expect(applyFailureIsCandidate(sqlite.SQLITE_CONSTRAINT));
+    try testing.expect(applyFailureIsCandidate(sqlite.SQLITE_ERROR));
+    const sqlite_nomem: c_int = 7;
+    const sqlite_ioerr: c_int = 10;
+    const sqlite_corrupt: c_int = 11;
+    const sqlite_full: c_int = 13;
+    for ([_]c_int{ 0, sqlite.SQLITE_BUSY, sqlite.SQLITE_READONLY, sqlite_nomem, sqlite_ioerr, sqlite_corrupt, sqlite_full }) |code| {
+        try testing.expect(!applyFailureIsCandidate(code));
+    }
+}
+
+test "summaryOrder puts eligible candidates first by improved and size" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    var summaries = [_]CandidateSummary{
+        .{ .candidate = "first.sql", .status = .compared, .improved = 1, .no_effect = 1, .size_increase = 100 },
+        .{ .candidate = "small.sql", .status = .compared, .improved = 1, .no_effect = 1, .size_increase = 50 },
+        .{ .candidate = "best.sql", .status = .compared, .improved = 2, .size_increase = 300 },
+        .{ .candidate = "plain.sql", .status = .compared, .improved = 0, .no_effect = 2, .size_increase = 10 },
+        .{ .candidate = "rejected.sql", .status = .index_rejected, .failure_code = "index_rejected" },
+        .{ .candidate = "late.sql", .status = .index_timeout, .failure_code = "index_timeout" },
+    };
+    const order = try summaryOrder(arena_state.allocator(), &summaries);
+    try testing.expectEqualSlices(usize, &.{ 2, 1, 0, 3, 4, 5 }, order);
+    try testing.expectEqual(@as(?usize, 2), recommendedIndex(&summaries, order));
+}
+
+fn batchResult(status: ResultStatus, outcome: ?cli_comparison.Verdict) ResultEntry {
+    return .{ .query = "q.sql", .candidate = "c.sql", .status = status, .outcome = outcome };
+}
+
+fn batchSummary(status: CandidateStatus) CandidateSummary {
+    return .{ .candidate = "c.sql", .status = status };
+}
+
+test "batchExitCode keeps 3 > 1 > 124 > 4 > 0" {
+    const compared = [_]CandidateSummary{batchSummary(.compared)};
+    const rejected = [_]CandidateSummary{batchSummary(.index_rejected)};
+    const index_timeout = [_]CandidateSummary{batchSummary(.index_timeout)};
+    const none = [_]ResultEntry{};
+    const match = [_]ResultEntry{batchResult(.compared, .match)};
+    const mismatch = [_]ResultEntry{batchResult(.compared, .mismatch)};
+    const incomparable = [_]ResultEntry{batchResult(.compared, .incomparable)};
+    const variant_timeout = [_]ResultEntry{batchResult(.variant_timeout, null)};
+    const everything = [_]ResultEntry{
+        batchResult(.compared, .mismatch),
+        batchResult(.compared, .incomparable),
+        batchResult(.variant_timeout, null),
+    };
+
+    try testing.expectEqual(ExitCode.ok, batchExitCode(&compared, &none));
+    try testing.expectEqual(ExitCode.ok, batchExitCode(&compared, &match));
+    try testing.expectEqual(ExitCode.incomparable, batchExitCode(&compared, &incomparable));
+    try testing.expectEqual(ExitCode.timeout, batchExitCode(&compared, &variant_timeout));
+    try testing.expectEqual(ExitCode.rejected, batchExitCode(&rejected, &none));
+    try testing.expectEqual(ExitCode.mismatch, batchExitCode(&rejected, &mismatch));
+    try testing.expectEqual(ExitCode.timeout, batchExitCode(&index_timeout, &incomparable));
+    try testing.expectEqual(ExitCode.rejected, batchExitCode(&rejected, &variant_timeout));
+    try testing.expectEqual(ExitCode.mismatch, batchExitCode(&rejected, &everything));
 }
