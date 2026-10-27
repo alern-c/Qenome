@@ -1,6 +1,6 @@
 # テストデータ（工程1: ダミーDBと期待値表）
 
-索引の効果を判定するためのダミーDBと、判定基準になる期待値の記録。この表と突き合わせて「改善した／しなかった」を判定する。
+インデックスの効果を判定するためのダミーDBと、判定基準になる期待値の記録。この表と突き合わせて「改善した／しなかった」を判定する。
 
 実データ、機密情報、実在の個人情報は含まない（`id` から決まる合成データだけ）。
 
@@ -8,7 +8,7 @@
 
 | パス | 役割 |
 |---|---|
-| `schema.sql` | `events` テーブル（索引は作らない） |
+| `schema.sql` | `events` テーブル（インデックスは作らない） |
 | `seed.sql` | 20万行の決定論的な投入（`random()` を使わない） |
 | `verify.sql` | 不変条件の検査（`sqlite3` CLI 専用） |
 | `cases/improved.sql` / `cases/improved.index.sql` | 改善する例の SELECT と候補DDL |
@@ -34,7 +34,7 @@ sqlite3 testdata/generated/qenome-fixture.db ".read testdata/verify.sql"
 - 検査で `FAIL` が出たら期待値を書き換えず、まず原因を調べる（記録どおりにならない状態を成功として扱わない）
 - この手順を2回実行し、検査の出力が完全に一致することを確認済み（2026-10-10）
 
-`verify.sql` の検査項目: 行数、`id` の最小・最大・重複なし、`customer_id` の非NULL件数・NULL件数・種類数・最小・最大・範囲外0件、`status` 3値の件数と未知値0件、`note` のNULL件数・非NULL件数、ユーザー定義索引0件。
+`verify.sql` の検査項目: 行数、`id` の最小・最大・重複なし、`customer_id` の非NULL件数・NULL件数・種類数・最小・最大・範囲外0件、`status` 3値の件数と未知値0件、`note` のNULL件数・非NULL件数、ユーザー定義インデックス0件。
 
 ## 基準版
 
@@ -55,7 +55,7 @@ sqlite3 3.51.2 2026-01-09 17:27:48 b270f8339eb13b504d0b2ba154ebca966b7dde08e40c3
 | `customer_id` | 1..2,000 を巡回。`id%997 = 0` の200行は NULL |
 | `status` | `ok` 66,666 / `warn` 66,667 / `failed` 66,667（`id%3` で決まる） |
 | `note` | `'note-'||id`。`id%5 = 0` の40,000行は NULL |
-| ユーザー定義索引 | 0件 |
+| ユーザー定義インデックス | 0件 |
 | DBサイズ（参考） | 1,242ページ・5,087,232 bytes（約4.85MiB、`page_size` は4096） |
 
 DBサイズは版によって変わりうるため検査には含めず、参考値として記録する。ファイルのバイト一致も保証しない（判定は `verify.sql` の不変条件で行う）。
@@ -67,7 +67,7 @@ DBサイズは版によって変わりうるため検査には含めず、参考
 | SELECT | `SELECT id, status, note FROM events WHERE customer_id = ?;` | `SELECT note FROM events WHERE lower(status) = ?;` |
 | 代表バインド | 型 INTEGER・値 `1234` | 型 TEXT・値 `'ok'` |
 | 候補DDL | `CREATE INDEX ix_events_customer_id ON events(customer_id);` | `CREATE INDEX ix_events_status ON events(status);` |
-| 索引が効かない理由 | — | 条件の列を `lower()` で包むため、`status` の索引を使えない |
+| インデックスが効かない理由 | — | 条件の列を `lower()` で包むため、`status` のインデックスを使えない |
 
 ### 比較できない例
 
@@ -83,11 +83,11 @@ DBサイズは版によって変わりうるため検査には含めず、参考
 
 ## 期待値表
 
-代表バインドで実行した値。索引は `baseline`（索引なし）と `variant`（候補DDLを1本だけ適用）の差で見る。
+代表バインドで実行した値。インデックスは `baseline`（インデックスなし）と `variant`（候補DDLを1本だけ適用）の差で見る。
 
 ### 改善する例
 
-| 項目 | 索引なし（baseline） | 索引あり（variant） |
+| 項目 | インデックスなし（baseline） | インデックスあり（variant） |
 |---|---|---|
 | 計画 | `SCAN events` | `SEARCH events USING INDEX ix_events_customer_id (customer_id=?)` |
 | フルスキャン行数 | 199,999 | 0 |
@@ -101,7 +101,7 @@ DBサイズは版によって変わりうるため検査には含めず、参考
 
 ### 効果のない例
 
-| 項目 | 索引なし（baseline） | 索引あり（variant） |
+| 項目 | インデックスなし（baseline） | インデックスあり（variant） |
 |---|---|---|
 | 計画 | `SCAN events` | `SCAN events`（完全一致） |
 | フルスキャン行数 | 199,999 | 199,999 |
@@ -116,12 +116,12 @@ DBサイズは版によって変わりうるため検査には含めず、参考
 
 判定の主軸は数値の絶対値ではなく、次の関係条件にする。
 
-- 改善する例: 結果が一致し、読んだ行数（`rows-read`）が索引なしより減る。計画も `SEARCH` に変わる
-- 効果のない例: 結果が一致し、読んだ行数・書いた行数が索引なしと一致する。計画・フルスキャン行数・VMステップも一致する
-- 時間（数値の正解は置かない。判定には使わず、`time-baseline-ns` / `time-variant-ns` に参考値として出す）: 改善する例は索引ありの中央値が小さく、反復しても順序が反転しない。効果のない例は両者の中央値の差が測定ノイズ帯（例: 索引なしの±20%以内）にある
+- 改善する例: 結果が一致し、読んだ行数（`rows-read`）がインデックスなしより減る。計画も `SEARCH` に変わる
+- 効果のない例: 結果が一致し、読んだ行数・書いた行数がインデックスなしと一致する。計画・フルスキャン行数・VMステップも一致する
+- 時間（数値の正解は置かない。判定には使わず、`time-baseline-ns` / `time-variant-ns` に参考値として出す）: 改善する例はインデックスありの中央値が小さく、反復しても順序が反転しない。効果のない例は両者の中央値の差が測定ノイズ帯（例: インデックスなしの±20%以内）にある
 - 読んだ行数が減らない場合: 時間が短くても「改善」と判定しない
 
-VMステップは実行形式で数ステップ変わる（改善する例の索引あり: 代表バインド 710 / リテラル 708）。上の表は代表バインドの値で揃えている。この差は関係条件には影響しない。
+VMステップは実行形式で数ステップ変わる（改善する例のインデックスあり: 代表バインド 710 / リテラル 708）。上の表は代表バインドの値で揃えている。この差は関係条件には影響しない。
 
 ## 導出コマンド
 
@@ -132,7 +132,7 @@ d=$(mktemp -d)
 cp testdata/generated/qenome-fixture.db "$d/baseline.db"
 cp testdata/generated/qenome-fixture.db "$d/improved.db"
 cp testdata/generated/qenome-fixture.db "$d/no-effect.db"
-sqlite3 "$d/improved.db" ".read testdata/cases/improved.index.sql"    # variant 側にだけ索引を足す
+sqlite3 "$d/improved.db" ".read testdata/cases/improved.index.sql"    # variant 側にだけインデックスを足す
 sqlite3 "$d/no-effect.db" ".read testdata/cases/no-effect.index.sql"
 ```
 
@@ -149,7 +149,7 @@ SQL
 
 - 計画は `EXPLAIN QUERY PLAN` の出力から `SCAN` / `SEARCH` の行を読む
 - カウンタは `.stats stmt` の `Fullscan Steps` と `Virtual Machine Steps` の**最後の値**を読む。出力に結果行が混ざるため（効果のない例は66,666行出力される）
-- 索引ありの側は `$d/improved.db` / `$d/no-effect.db` に読み替える
+- インデックスありの側は `$d/improved.db` / `$d/no-effect.db` に読み替える
 - 効果のない例は `.parameter set ?1 ok` とし、`SELECT note FROM events WHERE lower(status) = ?;` に差し替える
 
 結果の要約（改善する例）:
@@ -168,7 +168,7 @@ sqlite3 "$d/baseline.db" "SELECT count(*), count(note), sum(length(note)), min(n
 
 ## 罠
 
-- **covering index**: 効果のない例の SELECT から `note` を外す（`SELECT status FROM events WHERE lower(status) = ?;`）と、索引ありの計画は `SCAN events USING COVERING INDEX ix_events_status` に変わる。改善していないのに計画が変わるため、SELECT を変えるときは期待値を再導出する
+- **covering index**: 効果のない例の SELECT から `note` を外す（`SELECT status FROM events WHERE lower(status) = ?;`）と、インデックスありの計画は `SCAN events USING COVERING INDEX ix_events_status` に変わる。改善していないのに計画が変わるため、SELECT を変えるときは期待値を再導出する
 - **`ANALYZE` を入れない**: 統計が入ると計画が統計に依存するため、fixture では `ANALYZE` を実行しない
 - **カウンタの取得**: `.stats stmt` の出力に結果行が混ざる。`Fullscan Steps` / `Virtual Machine Steps` の最後の値を採用する
 - **版依存**: 期待値は基準版で導出した値。版が変わったら再導出する
