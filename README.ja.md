@@ -437,7 +437,7 @@ Qenome はデータベースを1回コピーし、何かを実行する前に全
 
 報告を書けた場合、終了コードは、結果の不一致 `3`、インデックスまたはマイグレーションの作成失敗 `1`、候補の時間切れ `124`、比較不能 `4`、`--migration` の退行 `6`、`0` のうち一番重いものです。後片付けの失敗は `0` のときだけ `5` に置き換えます。そのため batch は、報告を書きながら `1`・`6`・`124` で終わることがあります。どれかは stdout で見分けます。
 
-human 出力は候補の表、`Recommendation:`、クエリと候補の判定表を出します。おすすめは、不一致・比較不能・`needs-check`（`--migration` では `needs_check` が `regressed` のクエリを数える）・時間切れがなく、改善が1件以上ある候補のうち、改善したクエリが最も多いものです。variant だけで計測した `not-judged` のクエリは、それだけではおすすめの条件を外しません。同じなら容量の増分が小さい順、次に入力順（マニフェストの候補の後ろに提案）です。`--format json` では [docs/json.md](docs/json.md) に書いた `batch_schema_version` 1 のオブジェクトを出します。
+human 出力は候補の表、`Recommendation:`、クエリと候補の判定表を出します。おすすめは、不一致・比較不能・`needs-check`（`--migration` では `needs_check` が `regressed` のクエリを数える）・時間切れがなく、改善が1件以上ある候補のうち、改善したクエリが最も多いものです。variant だけで計測した `not-judged` のクエリは、それだけではおすすめの条件を外しません。同じなら `bind_dependent_partial_index` 警告のない候補が先、次に容量の増分が小さい順、次に入力順（マニフェストの候補の後ろに提案）です。警告は判定・batch の件数・終了コードを変えません。human は判定表の後に `Warnings` の節を出し、比較ごとの警告を `<クエリ> -> <候補>: <code>: <message>` の形で1行ずつ示します。パスとインデックス名はほかの警告と同じ規則で制御文字を可視化します。`--format json` では [docs/json.md](docs/json.md) に書いた `batch_schema_version` 1 のオブジェクトを出します。
 
 インデックスの作成・SELECT 1回・診断文1回は、それぞれ `--timeout-ms` の制限時間を持ちます。batch は全体で、データベースのコピー1回と、候補ループの前に全クエリの baseline SELECT を1回ずつ実行する分に加えて、候補ごとにインデックスの作成1回とクエリごとの SELECT 2回、さらに診断文（ANALYZE とサイズの警告に最大3つ、パラメータがあるクエリでは bind 依存の部分インデックス診断として計画1回・カタログ1回・使用インデックスごとに最大2文（テーブル名の取得と `PRAGMA index_list`））それぞれの制限時間までかかることがあります。`--show-binds` と `--show-rows` は各比較オブジェクトに適用します。
 
@@ -467,7 +467,7 @@ SELECT ファイルを1本だけ渡したときは、その SELECT を batch の
 
 Qenome は baseline のコピーに2つ目の読み取り専用接続を開き、expert のサンプリングを `0` に設定します。そのため expert が利用者のデータベースから読むのはスキーマだけです。検査済みの全 SELECT を expert に渡します。expert を動かす前に、`sqlite_schema` の各行を検査します。各行は1文で、`CREATE TABLE`、`CREATE INDEX`、`CREATE UNIQUE INDEX`、`CREATE VIEW`、`CREATE TRIGGER`、`CREATE VIRTUAL TABLE` のいずれかで始まり、`expert` 仮想テーブルを使わないこと。これを満たさないデータベースは `suggest_schema_rejected`（終了コード `1`、stdout 空）で拒否し、マニフェストに候補があっても続けません。expert を動かしている間は、それが開く接続に一時的なガードを付けます。`ATTACH` と `DETACH` を拒否し、`index_list` と `index_xinfo` の PRAGMA だけを許し、接続できるデータベース数の上限を `0` にします。expert のオブジェクトを作ったあと、expert は自分の解析用コピーに独自の authorizer を設定しますが、接続できるデータベース数の上限はそこでも有効です。Qenome は expert を破棄したあとにガードを外します。ガードを設定できなければ、expert を呼ばずに止まります。これらで、細工されたスキーマがほかのデータベースファイルを作成・変更するのを防ぎます。レポートの `CREATE INDEX` は SQLite 自身の文の解析器で切り出します（引用符の中の `;` では切りません）。提案はマニフェストの候補と同じ検査を通し、落ちたものは `suggestion_rejected` の warning を付けて捨てます。ラベルは `suggested:1`、`suggested:2`… で、比べる提案は最大20件、マニフェストの候補と合わせて最大100件です。
 
-出力は batch の報告です。`summary` の各候補に `source`（`manifest` / `suggested`）と `index_sql_text` が付き、トップレベルの `warnings` に、捨てたもの・できなかったことが入ります。比較単位の警告（`bind_dependent_partial_index` を含む）は各 `results[].comparison.warnings` に入り、トップレベルの `warnings` は `--suggest` 用のままです。
+出力は batch の報告です。`summary` の各候補に `source`（`manifest` / `suggested`）と `index_sql_text` が付き、トップレベルの `warnings` に、捨てたもの・できなかったことが入ります。比較単位の警告（`bind_dependent_partial_index` を含む）は各 `results[].comparison.warnings` に入り、トップレベルの `warnings` は `--suggest` 用のままです。human は比較単位の警告を、クエリと候補を添えて `Warnings` の節に出します。
 
 | warning の `code` | 意味 |
 | --- | --- |
@@ -626,7 +626,7 @@ Qenome は Apache License 2.0 で公開しています。全文は [LICENSE](LIC
 
 `warnings` は非計時・比較不能でも配列として出し、human/kvにも同じcode/messageを表示します。`no_analyze_stats` は候補のインデックスの対象テーブルに、baseline上で空でない sqlite_stat1 エントリがない場合。別表の統計では解消しません。鮮度・完全性は確認せず、部分インデックスの統計だけでも存在扱いです。`data_too_small` はその表の `SELECT 1 ... LIMIT 1000` が1000件未満の場合。1000件到達は「1000件以上」であり、正確な件数ではありません。結果件数・読取行数・統計推定値は使いません。1000は代表性を保証しない目安です。
 
-`bind_dependent_partial_index` は、variant の計画が、バインド値が部分インデックスの `WHERE` 句を満たすためにその部分インデックスを使っている場合に、そのインデックス名を出します。Qenome は variant の計画をバインド値ありで読み、次に全パラメータを `NULL` にして同じ SELECT の計画を読みます。部分インデックスが前者にあって後者にないとき、その名前を出します。`NULL` では部分インデックスの `WHERE` 句を満たすことを示せないため、この差は「バインド値のおかげで使えている」ことを意味します。別の値やパラメータの渡し方では使われなくなり、`improved` はその実行の値でだけ成り立ちます。variant の計画だけで判定できるため、variant だけで計測する `--migration` のクエリでも出します。ただし best-effort です。追加の計画やインデックスのカタログを読めないとき（時間切れ・中断を含む）は警告を出さずに比較を続け、判定・終了コード・batch の件数は変えません。batch では `results[].comparison.warnings` に入ります。
+`bind_dependent_partial_index` は、variant の計画が、バインド値が部分インデックスの `WHERE` 句を満たすためにその部分インデックスを使っている場合に、そのインデックス名を出します。Qenome は variant の計画をバインド値ありで読み、次に全パラメータを `NULL` にして同じ SELECT の計画を読みます。部分インデックスが前者にあって後者にないとき、その名前を出します。`NULL` では部分インデックスの `WHERE` 句を満たすことを示せないため、この差は「バインド値のおかげで使えている」ことを意味します。別の値やパラメータの渡し方では使われなくなり、`improved` はその実行の値でだけ成り立ちます。variant の計画だけで判定できるため、variant だけで計測する `--migration` のクエリでも出します。ただし best-effort です。追加の計画やインデックスのカタログを読めないとき（時間切れ・中断を含む）は警告を出さずに比較を続け、判定・終了コード・batch の件数は変えません。batch では `results[].comparison.warnings` に入り、human は `Warnings` の節にクエリと候補を添えて出します。
 
 診断は計時後にコピーだけを読み、ANALYZE/PRAGMA optimizeを実行しません。追加実行・診断を既存rows_read/rows_writtenへ混入させません。警告は判定を止めず終了コードも変えません。`no_analyze_stats` と `data_too_small` の診断の失敗・時間上限・中断は既存のエラー処理に従います。`bind_dependent_partial_index` は best-effort で、追加の読み取りに失敗したら警告を出さずに続けます。
 
