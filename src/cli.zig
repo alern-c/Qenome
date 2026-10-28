@@ -13,6 +13,7 @@ const cli_timing = @import("cli/timing.zig");
 const cli_report = @import("cli/report.zig");
 const cli_pair = @import("cli/pair.zig");
 const cli_batch = @import("cli/batch.zig");
+const cli_record = @import("cli/record.zig");
 const cli_seed = @import("cli/seed.zig");
 
 pub const max_sql_bytes = cli_args.max_sql_bytes;
@@ -129,6 +130,10 @@ fn runCaptured(
     const missing = cli_args.missingRequired(args, &missing_buffer);
     if (missing.len != 0) {
         return missingArguments(stderr, args, missing);
+    }
+
+    if (args.record) |record_path| {
+        return cli_record.run(io, arena, record_path, args.out.?, stdout, stderr);
     }
 
     var d1: ?cli_d1.Resolved = null;
@@ -474,6 +479,20 @@ fn reportParseError(stderr: *Io.Writer, err: ParseError, offending: ?[:0]const u
             try result_rows.writeText(stderr, arg);
             try stderr.writeAll("; with --d1 the paths are the SELECT file and the CREATE INDEX file, at most 2 (see --help)\n");
         },
+        error.RecordTakesNoPaths => {
+            try stderr.writeAll("error: --record takes no database or SQL path: ");
+            try result_rows.writeText(stderr, arg);
+            try stderr.writeAll(" (see --help)\n");
+        },
+        error.RecordConflict => {
+            try stderr.print("error: --record does not take {s} (see --help)\n", .{arg});
+        },
+        error.OutRequiresRecord => {
+            try stderr.writeAll("error: --out is only used with --record (see --help)\n");
+        },
+        error.RecordRejectsFormat => {
+            try stderr.writeAll("error: --record writes a human summary; remove --format (see --help)\n");
+        },
         error.EmptyPath => try stderr.writeAll("error: a path cannot be empty (see --help)\n"),
         error.UnexpectedValue => {
             const end = std.mem.indexOfScalar(u8, arg, '=') orelse arg.len;
@@ -490,7 +509,9 @@ fn reportParseError(stderr: *Io.Writer, err: ParseError, offending: ?[:0]const u
 }
 
 fn missingArguments(stderr: *Io.Writer, args: cli_args.Args, missing: []const []const u8) ExitCode {
-    if (args.batch != null) {
+    if (args.record != null) {
+        stderr.print("{s}\n", .{cli_args.record_usage_line}) catch {};
+    } else if (args.batch != null) {
         const line = if (args.d1 != null) cli_args.d1_batch_usage_line else cli_args.batch_usage_line;
         stderr.print("{s}\n", .{line}) catch {};
     } else if (missing.len == cli_args.required_option_count) {

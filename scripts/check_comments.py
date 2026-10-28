@@ -42,6 +42,7 @@ KINDS_BY_SUFFIX = {
     ".tape": "hash",
     ".toml": "toml",
     ".js": "javascript",
+    ".mjs": "javascript",
     ".json": "json",
     ".jsonc": "jsonc",
     ".yml": "yaml",

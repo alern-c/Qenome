@@ -47,6 +47,7 @@ CANONICAL_FILES = {
         'const cli_report = @import("cli/report.zig");\n'
         'const cli_pair = @import("cli/pair.zig");\n'
         'const cli_batch = @import("cli/batch.zig");\n'
+        'const cli_record = @import("cli/record.zig");\n'
         'const cli_seed = @import("cli/seed.zig");\n'
         "\n"
         "pub fn run() void {}\n"
@@ -129,6 +130,12 @@ CANONICAL_FILES = {
         'const cli_suggest = @import("suggest.zig");\n'
         'const cli_workspace = @import("workspace.zig");\n'
     ),
+    "src/cli/record.zig": (
+        'const std = @import("std");\n'
+        'const builtin = @import("builtin");\n'
+        'const cli_args = @import("args.zig");\n'
+        'const cli_control = @import("control.zig");\n'
+    ),
     "src/cli/suggest.zig": (
         'const std = @import("std");\n'
         'const db = @import("../db.zig");\n'
@@ -149,6 +156,7 @@ CANONICAL_FILES = {
         'const cli_d1 = @import("d1.zig");\n'
         'const cli_suggest = @import("suggest.zig");\n'
         'const cli_seed = @import("seed.zig");\n'
+        'const cli_record = @import("record.zig");\n'
     ),
 }
 
@@ -201,7 +209,7 @@ def expect_rejected(name, code, output, rule, mention=None):
 def main():
     code, output = case(None)
     expect_clean("the smallest approved tree passes", code, output)
-    expect("the whole tree is checked", "(19 files checked" in output, output.strip())
+    expect("the whole tree is checked", "(20 files checked" in output, output.strip())
 
     code, output = case(lambda root: os.remove(os.path.join(root, "src/cli/tests.zig")))
     expect_rejected("a missing test file fails", code, output, "missing-file", "src/cli/tests.zig")

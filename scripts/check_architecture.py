@@ -19,6 +19,7 @@ APPROVED_FILES = [
     "src/cli/report.zig",
     "src/cli/pair.zig",
     "src/cli/batch.zig",
+    "src/cli/record.zig",
     "src/cli/suggest.zig",
     "src/cli/seed.zig",
     "src/cli/tests.zig",
@@ -50,6 +51,7 @@ PRODUCTION_IMPORTS = {
         "src/cli/report.zig",
         "src/cli/pair.zig",
         "src/cli/batch.zig",
+        "src/cli/record.zig",
         "src/cli/seed.zig",
     ],
     "src/cli/args.zig": ["src/db.zig"],
@@ -113,6 +115,10 @@ PRODUCTION_IMPORTS = {
         "src/db.zig",
         "src/sqlite.zig",
     ],
+    "src/cli/record.zig": [
+        "src/cli/args.zig",
+        "src/cli/control.zig",
+    ],
     "src/cli/seed.zig": [
         "src/sqlite.zig",
         "src/cli/control.zig",
@@ -140,6 +146,7 @@ TEST_IMPORTS = {
         "src/cli/batch.zig",
         "src/cli/suggest.zig",
         "src/cli/seed.zig",
+        "src/cli/record.zig",
     ],
 }
 

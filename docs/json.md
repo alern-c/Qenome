@@ -139,6 +139,10 @@ Batch error codes:
 | `code` | Exit | Next step the hint points at |
 | --- | --- | --- |
 | `usage_batch_conflict` | 2 | Put the SELECT, CREATE INDEX, and binds in the manifest; use `--format human` or `json`; do not pass `--runs` |
+| `usage_record_conflict` | 2 | Use `--record` with `--out` only; remove the database, SQL, batch, migration, bind, runs, suggest, seed, and format options |
+| `record_log_unreadable` | 1 | Check that the record log path exists and is readable, then rerun |
+| `record_log_invalid` | 1 | Record a session with at least one SELECT, at most 100 distinct statements, and at most 1 MiB |
+| `record_output_failed` | 1 | Choose a new `--out` directory and check that it is writable, then rerun |
 | `batch_manifest_unreadable` | 1 | Check the manifest path and permissions |
 | `batch_manifest_invalid` | 1 | Fix the shape, limits, repeated paths, or binds |
 | `batch_sql_unreadable` | 1 | Check the SQL paths in the manifest; they are relative to the manifest |

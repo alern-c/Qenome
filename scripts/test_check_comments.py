@@ -568,6 +568,18 @@ def main():
         "a JavaScript block comment",
     )
 
+    code, output = case(create("lib/d1.mjs", "export const value = 1;\n"))
+    expect_clean("an ES module passes", code, output)
+
+    code, output = case(create("lib/d1.mjs", "export const value = 1; // note\n"))
+    expect_rejected(
+        "an ES module line comment fails",
+        code,
+        output,
+        "lib/d1.mjs:1:",
+        "a JavaScript line comment",
+    )
+
     code, output = case(create("data.txt", "{}\n"))
     expect_rejected("an unclassified file fails", code, output, "unclassified-file", "data.txt")
 

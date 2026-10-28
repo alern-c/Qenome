@@ -115,6 +115,12 @@ def test_stage(version):
         expect("staged launcher is publishable", "private" not in launcher, launcher.get("private"))
         mode = os.stat(os.path.join(dest, "qenome", "bin", "qenome.js")).st_mode
         expect("staged launcher is executable", mode & stat.S_IXUSR != 0, oct(mode))
+        module = os.path.join(dest, "qenome", "lib", "d1.mjs")
+        expect(
+            "staged launcher ships the d1 module",
+            os.path.isfile(module) and os.path.getsize(module) > 0,
+            module,
+        )
         for platform in stage_npm.PLATFORMS:
             manifest = stage_npm.load_json(os.path.join(dest, platform["dir"], "package.json"))
             binary = os.path.join(dest, platform["dir"], "bin", "qenome")

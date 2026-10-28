@@ -94,6 +94,10 @@ def main():
             command([sys.executable, "scripts/test_stage_npm.py"]),
         ),
         (
+            "Test the record wrapper",
+            command([sys.executable, "scripts/test_record_wrapper.py"]),
+        ),
+        (
             "Test the Quick start checker",
             command([sys.executable, "scripts/test_check_quick_start.py"]),
         ),
