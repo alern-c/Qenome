@@ -337,6 +337,8 @@ Qenome copies the database once, checks every SELECT and every candidate before 
 
 With `--migration <FILE>`, the variant change is the whole migration file instead of a candidate index. The file is at most 1 MiB. Qenome checks the file before it touches the variant: only `CREATE INDEX`, `CREATE UNIQUE INDEX`, and `DROP INDEX` statements are allowed, separated by semicolons. It then applies the statements in file order to the variant only, so a migration may drop an index and create another with the same name. Each statement gets its own `--timeout-ms`. The original database is never changed. The report adds a `migration:` block (human) or a top-level `migration` object (JSON) with the path and every applied statement. When the result rows match but a query reads or writes more rows after the migration, the batch exits with status `6`; a result mismatch (`3`), a rejected change (`1`), a time limit (`124`), or an incomparable result (`4`) takes precedence. `no-effect` alone keeps `0`. The `no_analyze_stats` and `data_too_small` warnings are not emitted for a migration, because it can touch several tables.
 
+With `--migration`, the `size increase` is the change in the bytes that pages in use hold, `(page_count - freelist_count) * page_size`, not the change of the file size. `DROP INDEX` moves its pages to SQLite's freelist without shrinking the file, so the file delta stays `0 B`; the bytes in use report the freed space as a negative value (for example `-2.06 MiB`). The file itself shrinks only after `VACUUM`. Runs without `--migration` keep reporting the file size difference.
+
 <details>
 <summary>Batch statuses, failures, and exit status</summary>
 
@@ -452,7 +454,7 @@ Main keys:
 | `plan_changed` | Whether the query plan differs between baseline and variant |
 | `baseline` / `variant` | `rows`; `plan` (`id`, `parent`, `kind`, `covering`, `automatic`, `detail`); `counters` (`rows_read`, `rows_written`, `fullscan_steps`, `vm_steps`, `sort_ops`, `autoindex_rows`) |
 | `timing` | `rounds`, `variant_faster_rounds`, `ratio`, and `baseline` / `variant` with `median_ns`, `p25_ns`, `p75_ns`, `min_ns`, `max_ns`. `null` when not timed; `ratio` is `null` when the baseline median is `0`. `noise_band`, `confidence_interval`, `median_difference_ns`, `effect`, and `unavailable_reason` describe the timing evidence below |
-| `size_bytes` | `baseline`, `variant`, and `increase` (the whole database file, not the index alone) |
+| `size_bytes` | `baseline`, `variant`, and `increase` (the whole database file, not the index alone; with `--migration`, the bytes in use instead, see [Batch comparisons](#batch-comparisons)) |
 | `inputs` | `database`, `select`, and `index_sql` paths |
 | `d1` | Present only with `--d1`: `binding`, `config`, `database_id`, `local_database`, `sqlite_version` (D1's 3.53.4), `sqlite_version_note`, and `caution` |
 | `environment` | `qenome_version` (the same version as `--version`, from `build.zig.zon`), `sqlite_version`, `sqlite_source_id`, `zig_version`, `build_mode`, `os`, `arch`, `work_dir_parent` |
@@ -508,7 +510,7 @@ The interval is `null` with `unavailable_reason` `too-few-rounds` below six roun
 - Do not change the original database (open it read-only).
 - Never report a result that cannot be compared as a match or a success.
 - Judge from the rows read, not from the time: a SELECT that reads no fewer rows is not an improvement.
-- The size is the increase of the whole database file, not the size of the index alone.
+- The size is the increase of the whole database file, not the size of the index alone. A `--migration` run measures the bytes in use instead, so a dropped index reports the freed bytes as a negative value.
 - Reject multiple statements, writes, and dangerous DDL. A `--migration` file may hold several index changes, but only `CREATE INDEX`, `CREATE UNIQUE INDEX`, and `DROP INDEX`.
 - Clean up connections and temporary files on success, failure, and interruption.
 - Do not guess a D1 database file: stop when the binding does not resolve to exactly one file.

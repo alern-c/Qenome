@@ -107,6 +107,7 @@ npx qenome --d1 DB --batch queries.json --migration 0002_replace_index.sql --for
 - Only `CREATE INDEX`, `CREATE UNIQUE INDEX`, and `DROP INDEX` are accepted, in any order and separated by semicolons. Any other statement is rejected with exit `1` before the variant is touched. Do not put `INSERT`, `UPDATE`, `DELETE`, `ALTER TABLE`, or `CREATE TABLE` in the file.
 - The original database is never changed. Qenome applies the statements to the variant copy only.
 - The report is the batch object plus a top-level `migration` object with `path` and `statements` (`kind` and `sql`). Human output has a `migration:` block instead.
+- `size_increase` counts the bytes in use, not the file size, so a `DROP INDEX` reports the freed bytes as a negative number. The file itself shrinks only after `VACUUM`.
 - Exit `6` means the result rows matched, but at least one query read or wrote more rows after the migration. Do not keep the migration for a CI gate. Exit `3` (rows differ) and `4` (cannot compare) also stop the gate.
 
 ## Read the JSON

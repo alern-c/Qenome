@@ -126,7 +126,7 @@
         "incomparable": { "type": ["integer", "null"], "minimum": 0 },
         "timeout": { "type": ["integer", "null"], "minimum": 0 },
         "size_increase": {
-          "description": "Variant file size minus baseline file size, in bytes. Signed. Null when no index was built.",
+          "description": "Variant minus baseline in bytes. Signed. The file size for manifest and suggested candidates; the bytes in use for a --migration run, so a dropped index reports the freed bytes as a negative number. Null when the change was not applied.",
           "type": ["integer", "null"]
         }
       },

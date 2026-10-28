@@ -130,6 +130,8 @@ pub const CheckError = error{
     StatementNotCreateIndex,
 };
 
+pub const BytesInUseError = CheckError || StepError;
+
 fn diagnosticStepError(rc: c_int, control: *StepControl) StepError {
     if (rc == sqlite.SQLITE_INTERRUPT) if (control.reason) |reason| return switch (reason) {
         .timeout => error.Timeout,
@@ -459,6 +461,28 @@ pub const Db = struct {
         const statement = try self.prepareSingle(sql) orelse return error.StepFailed;
         defer _ = sqlite.sqlite3_finalize(statement);
         try bindAll(statement, binds);
+        control.start();
+        sqlite.sqlite3_progress_handler(self.connection(), progress_opcodes, progressHandler, control);
+        defer sqlite.sqlite3_progress_handler(self.connection(), 0, null, null);
+        const rc = sqlite.sqlite3_step(statement);
+        if (rc != sqlite.SQLITE_ROW) return diagnosticStepError(rc, control);
+        return sqlite.sqlite3_column_int64(statement, 0);
+    }
+
+    pub fn bytesInUse(self: *Db, control: *StepControl) BytesInUseError!u64 {
+        const pages = try self.pragmaInt("PRAGMA page_count", control);
+        const free = try self.pragmaInt("PRAGMA freelist_count", control);
+        const page_size = try self.pragmaInt("PRAGMA page_size", control);
+        const used: u64 = @intCast(@max(pages - free, 0));
+        const bytes_per_page: u64 = @intCast(@max(page_size, 0));
+        return used * bytes_per_page;
+    }
+
+    fn pragmaInt(self: *Db, sql: [:0]const u8, control: *StepControl) BytesInUseError!i64 {
+        const previous = self.enterMode(.internal);
+        defer self.mode = previous;
+        const statement = try self.prepareSingle(sql) orelse return error.StepFailed;
+        defer _ = sqlite.sqlite3_finalize(statement);
         control.start();
         sqlite.sqlite3_progress_handler(self.connection(), progress_opcodes, progressHandler, control);
         defer sqlite.sqlite3_progress_handler(self.connection(), 0, null, null);
@@ -2306,6 +2330,65 @@ test "applyMigration drops an index from an analyzed database" {
     defer variant.close() catch unreachable;
     try testing.expectEqual(@as(i64, 0), try queryInt(&variant, "SELECT count(*) FROM sqlite_master WHERE name = 'existing_idx'"));
     try testing.expectEqual(@as(i64, 0), try queryInt(&variant, "SELECT count(*) FROM sqlite_stat1 WHERE idx = 'existing_idx'"));
+}
+
+test "bytesInUse equals the file size while the database has no freelist" {
+    var fixture = try Fixture.init(testing.allocator);
+    defer fixture.deinit();
+
+    var cancel = std.atomic.Value(bool).init(false);
+    var control = StepControl.init(testing.io, 0, &cancel);
+    var database: Db = .{};
+    try database.openReadOnly(fixture.path);
+    defer database.close() catch unreachable;
+
+    const stat = try Io.Dir.cwd().statFile(testing.io, fixture.path, .{});
+    try testing.expectEqual(@as(i64, 0), try database.pragmaInt("PRAGMA freelist_count", &control));
+    try testing.expectEqual(stat.size, try database.bytesInUse(&control));
+}
+
+test "bytesInUse drops by the pages that DROP INDEX frees" {
+    var fixture = try Fixture.initWithSchema(testing.allocator,
+        \\CREATE TABLE t(a INTEGER, b TEXT);
+        \\WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 5000)
+        \\INSERT INTO t SELECT x, 'v' || x FROM c;
+        \\CREATE INDEX existing_idx ON t(a);
+    );
+    defer fixture.deinit();
+    try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = "variant.db", .data = "" });
+    const variant_path = try fixture.tmp.dir.realPathFileAlloc(testing.io, "variant.db", testing.allocator);
+    defer testing.allocator.free(variant_path);
+    try Io.Dir.cwd().copyFile(fixture.path, Io.Dir.cwd(), variant_path, testing.io, .{});
+
+    var cancel = std.atomic.Value(bool).init(false);
+    var control = StepControl.init(testing.io, 0, &cancel);
+
+    var before: Db = .{};
+    try before.openReadOnly(variant_path);
+    const bytes_before = try before.bytesInUse(&control);
+    const pages_before = try before.pragmaInt("PRAGMA page_count", &control);
+    const free_before = try before.pragmaInt("PRAGMA freelist_count", &control);
+    const page_size = try before.pragmaInt("PRAGMA page_size", &control);
+    before.close() catch unreachable;
+    try testing.expectEqual(@as(i64, 0), free_before);
+
+    var detail: SnapshotDetail = .{};
+    const statements = try parseMigration(testing.allocator, "DROP INDEX existing_idx", &detail);
+    defer freeMigrationStatements(testing.allocator, statements);
+    try applyMigration(variant_path, statements, &control, &detail);
+
+    var after: Db = .{};
+    try after.openReadOnly(variant_path);
+    const bytes_after = try after.bytesInUse(&control);
+    const pages_after = try after.pragmaInt("PRAGMA page_count", &control);
+    const free_after = try after.pragmaInt("PRAGMA freelist_count", &control);
+    after.close() catch unreachable;
+
+    try testing.expect(free_after > free_before);
+    try testing.expectEqual(pages_before, pages_after);
+    const freed_bytes = (free_after - free_before) * page_size;
+    try testing.expect(freed_bytes > 0);
+    try testing.expectEqual(@as(u64, @intCast(freed_bytes)), bytes_before - bytes_after);
 }
 
 test "applyMigration reports the failing statement" {

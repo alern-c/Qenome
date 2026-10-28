@@ -337,6 +337,8 @@ Qenome はデータベースを1回コピーし、何かを実行する前に全
 
 `--migration <FILE>` を付けると、variant の変更は候補インデックスではなく、マイグレーションのファイル全体になります。ファイルは 1 MiB までです。Qenome は variant を触る前にファイルを検査し、セミコロンで区切った `CREATE INDEX`・`CREATE UNIQUE INDEX`・`DROP INDEX` だけを許可します。そのあと文をファイル順に variant にだけ適用するので、同じ名前のインデックスを落として作り直せます。各文は `--timeout-ms` の制限時間を持ちます。元のデータベースは変更しません。レポートには、human では `migration:` の節、json ではトップレベルの `migration` オブジェクトとして、パスと適用した全文を出します。結果の行が一致しても、マイグレーション後にクエリの読んだ行数か書いた行数が増えた場合は batch の終了コードが `6` になります。結果の不一致 `3`、変更の拒否 `1`、時間切れ `124`、比較不能 `4` が優先されます。`no-effect` だけなら `0` です。`no_analyze_stats` と `data_too_small` の警告は、マイグレーションが複数のテーブルを触り得るため出しません。
 
+`--migration` の `size increase` は、ファイルサイズの差ではなく、使用中ページが持つバイト数（`(page_count - freelist_count) * page_size`）の差です。`DROP INDEX` はページを SQLite の freelist に移すだけでファイルを縮めないため、ファイルサイズの差は `0 B` のままですが、使用中のバイト数では解放された量が `-2.06 MiB` のような負の値で出ます。ファイル自体が縮むのは `VACUUM` の後です。`--migration` を使わない実行は、これまでどおりファイルサイズの差を出します。
+
 <details>
 <summary>候補の失敗・終了コード・実行時間</summary>
 
@@ -452,7 +454,7 @@ fi
 | `plan_changed` | 実行計画が baseline と variant で変わったか |
 | `baseline` / `variant` | それぞれの `rows`、`plan`（`id` / `parent` / `kind` / `covering` / `automatic` / `detail`）、`counters`（`rows_read` / `rows_written` / `fullscan_steps` / `vm_steps` / `sort_ops` / `autoindex_rows`） |
 | `timing` | `rounds`、`variant_faster_rounds`、`ratio`、`baseline` / `variant` の `median_ns` / `p25_ns` / `p75_ns` / `min_ns` / `max_ns`。計時しなければ `null`、baseline の median が 0 なら `ratio` は `null`。`noise_band`、`confidence_interval`、`median_difference_ns`、`effect`、`unavailable_reason` は下記の時間統計 |
-| `size_bytes` | `baseline` / `variant` / `increase`（データベース全体のバイト数。インデックス単体ではない） |
+| `size_bytes` | `baseline` / `variant` / `increase`（データベース全体のバイト数。インデックス単体ではない。`--migration` では使用中のバイト数。「まとめて比べる（--batch）」を参照） |
 | `inputs` | `database` / `select` / `index_sql` のパス |
 | `d1` | `--d1` のときだけ出る: `binding` / `config` / `database_id` / `local_database` / `sqlite_version`（D1 側の 3.53.4） / `sqlite_version_note` / `caution` |
 | `environment` | `qenome_version`（`--version` と同じ、`build.zig.zon` の版） / `sqlite_version` / `sqlite_source_id` / `zig_version` / `build_mode` / `os` / `arch` / `work_dir_parent` |
@@ -491,7 +493,7 @@ fi
 - 元のデータベースを変更しない（読み取り専用で開く）
 - 比較できない結果を「一致」「成功」として報告しない
 - 改善かどうかは読んだ行数で判定し、時間では判定しない（読んだ行数が減らない SELECT は改善ではない）
-- 容量はデータベース全体の増分であり、インデックス単体のサイズではない
+- 容量はデータベース全体の増分であり、インデックス単体のサイズではない。`--migration` は使用中のバイト数を測るので、落としたインデックスの解放量が負の値で出る
 - 複数文・書込・危険な DDL は拒否する。`--migration` のファイルだけは複数のインデックス変更を許すが、`CREATE INDEX`・`CREATE UNIQUE INDEX`・`DROP INDEX` に限る
 - 正常・失敗・中断のどの経路でも、接続と一時ファイルを後片付けする
 - D1 のデータベースファイルを推測しない。バインディングがちょうど1つのファイルに決まらないときは止まる
