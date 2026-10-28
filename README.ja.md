@@ -55,13 +55,22 @@
 
 ### npm
 
-Linux と macOS の x64 と arm64 では、次で実行できます。
+Linux と macOS の x64 と arm64 では、次の1回でコマンドをインストールできます。
+
+```sh
+npm install -g qenome
+qenome --version
+```
+
+グローバルにインストールすると `qenome` が `PATH` に入るので、下の例はそのまま実行できます。更新は `npm install -g qenome@latest` です。
+
+インストールせずに試すときは `npx` で実行します。`npx` はその実行のためにパッケージを取得し、グローバルにはコマンドを追加しません。
 
 ```sh
 npx qenome --version
 ```
 
-D1 のプロジェクトでは、このコマンドで Qenome を実行します。`npx` はパッケージを取得し、グローバルにはインストールしません。バイナリが `PATH` に無いときは、下の例の `qenome` を `npx qenome` に置き換えてください。`npm install --global qenome` でも同じコマンドが入ります。
+Qenome をよく使うなら1回インストールし、D1 プロジェクトで一時的に調べるときは `npx qenome` を使います。バイナリが `PATH` に無いときは、下の例の `qenome` を `npx qenome` に置き換えてください。
 
 入るのは小さなランチャーと、そのマシン向けのバイナリ1つです（`@qenome-cli/linux-x64`、`@qenome-cli/linux-arm64`、`@qenome-cli/darwin-x64`、`@qenome-cli/darwin-arm64` のいずれか）。版は `build.zig.zon` の `.version` で、組み立てと公開の手順は [docs/npm.md](docs/npm.md) にあります。Windows は npm の対象外なので、下のビルド済みバイナリを使ってください。
 

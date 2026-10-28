@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `README.md` and `README.ja.md` lead with `npm install -g qenome` for the npm install, so the command is on `PATH` for every project, and keep `npx qenome` for a run without installing; `skills/qenome/SKILL.md` no longer says the npm package is added separately, because `qenome` is published on npm.
+
 ## [0.3.4] - 2026-10-28
 
 ### Added
