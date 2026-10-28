@@ -55,14 +55,16 @@ fn writeTimeEvidence(stdout: *Io.Writer, evidence: cli_timing.Evidence) Io.Write
     }
 }
 
-fn writeHumanEvidence(stdout: *Io.Writer, report: Report) Io.Writer.Error!void {
+fn writeHumanWarnings(stdout: *Io.Writer, warnings: Warnings) Io.Writer.Error!void {
+    if (!warnings.no_analyze_stats and !warnings.data_too_small) return;
+    try stdout.writeAll("\nWarnings\n");
     var buffer: [4096]u8 = undefined;
     var text = Io.Writer.fixed(&buffer);
-    if (report.timing) |timing| try writeTimeEvidence(&text, timing.evidence);
-    try writeWarnings(&text, report.warnings);
+    try writeWarnings(&text, warnings);
     var lines = std.mem.tokenizeScalar(u8, text.buffered(), '\n');
     while (lines.next()) |line| {
-        try writeWrapped(stdout, line, 0, 2);
+        try writeIndent(stdout, 2);
+        try writeWrapped(stdout, line, 2, 4);
         try stdout.writeByte('\n');
     }
 }
@@ -717,6 +719,7 @@ pub fn writeHumanSummary(
         try stdout.writeAll("\nResult rows\n");
         try writeRowsDetail(stdout, outcome, header.show_rows);
     }
+    try writeHumanWarnings(stdout, report.warnings);
 }
 
 fn writeOverview(
@@ -764,14 +767,12 @@ fn writeOverview(
         try writeDuration(&text, timing.baseline.median);
         try text.writeAll(" -> ");
         try writeDuration(&text, timing.variant.median);
-        try text.writeAll(" (");
-        try writeRatio(&text, timing.baseline.median, timing.variant.median);
-        try text.print("); the variant was faster in {d} of {d} rounds (reference only)", .{ timing.variant_faster_rounds, timing.rounds });
+        try text.writeAll("; ");
+        try writeTimeAssessment(&text, timing.baseline.median, timing.variant.median, timing.evidence.effect);
     } else {
         try text.writeAll("not measured (0 rounds; reference only)");
     }
     try writeField(stdout, "time", text.buffered());
-    try writeHumanEvidence(stdout, report);
 
     text = Io.Writer.fixed(&buffer);
     const increase = @as(i128, report.sizes.variant) - @as(i128, report.sizes.baseline);
@@ -853,10 +854,42 @@ fn writeRowPair(writer: *Io.Writer, baseline: u32, variant: u32) Io.Writer.Error
     try writeCount(writer, variant);
 }
 
-fn writeRatio(writer: *Io.Writer, baseline: u64, variant: u64) Io.Writer.Error!void {
-    if (baseline == 0) return writer.writeAll("n/a");
-    const ratio = @as(f64, @floatFromInt(variant)) / @as(f64, @floatFromInt(baseline));
-    try writer.print("{d:.3}x", .{ratio});
+fn writeTimeAssessment(writer: *Io.Writer, baseline: u64, variant: u64, effect: cli_timing.TimeEffect) Io.Writer.Error!void {
+    switch (effect) {
+        .faster, .slower => {
+            const direction: []const u8 = if (effect == .faster) "faster" else "slower";
+            if (baseline == variant) {
+                try writer.print("{s} in the paired rounds (the medians are equal; reference only)", .{direction});
+                return;
+            }
+            const same_direction = if (effect == .faster) variant < baseline else variant > baseline;
+            if (!same_direction) {
+                try writer.print("{s} in the paired rounds (the medians differ in the other direction; reference only)", .{direction});
+                return;
+            }
+            try writeRatioMagnitude(writer, baseline, variant);
+            try writer.print(" {s} (reference only)", .{direction});
+        },
+        .no_difference => try writer.writeAll("no clear difference in the paired rounds (reference only)"),
+        .insufficient_samples => {
+            if (baseline == 0 or variant == 0) {
+                try writer.writeAll("median ratio n/a (the paired rounds cannot judge the direction; reference only)");
+                return;
+            }
+            try writer.writeAll("median ratio ");
+            try writeRatioMagnitude(writer, baseline, variant);
+            try writer.writeAll(" (the paired rounds cannot judge the direction; reference only)");
+        },
+    }
+}
+
+fn writeRatioMagnitude(writer: *Io.Writer, baseline: u64, variant: u64) Io.Writer.Error!void {
+    const larger = @max(baseline, variant);
+    const smaller = @min(baseline, variant);
+    const ratio = @as(f64, @floatFromInt(larger)) / @as(f64, @floatFromInt(smaller));
+    if (ratio >= 10) return writer.print("{d:.0}x", .{ratio});
+    if (ratio >= 2) return writer.print("{d:.1}x", .{ratio});
+    return writer.print("{d:.2}x", .{ratio});
 }
 
 fn writePlan(stdout: *Io.Writer, plan: Plan) Io.Writer.Error!void {
@@ -1022,6 +1055,28 @@ test "a duration keeps under 1000 of its unit after rounding" {
     }
 }
 
+test "the human time assessment follows the timing effect" {
+    const cases = [_]struct { effect: cli_timing.TimeEffect, baseline: u64, variant: u64, text: []const u8 }{
+        .{ .effect = .faster, .baseline = 230_000, .variant = 1_000, .text = "230x faster (reference only)" },
+        .{ .effect = .slower, .baseline = 1_000, .variant = 1_800, .text = "1.80x slower (reference only)" },
+        .{ .effect = .faster, .baseline = 1_000, .variant = 990, .text = "1.01x faster (reference only)" },
+        .{ .effect = .faster, .baseline = 1_000, .variant = 1_200, .text = "faster in the paired rounds (the medians differ in the other direction; reference only)" },
+        .{ .effect = .slower, .baseline = 1_800, .variant = 1_000, .text = "slower in the paired rounds (the medians differ in the other direction; reference only)" },
+        .{ .effect = .faster, .baseline = 1_000, .variant = 1_000, .text = "faster in the paired rounds (the medians are equal; reference only)" },
+        .{ .effect = .slower, .baseline = 1_000, .variant = 1_000, .text = "slower in the paired rounds (the medians are equal; reference only)" },
+        .{ .effect = .no_difference, .baseline = 1_000, .variant = 1_200, .text = "no clear difference in the paired rounds (reference only)" },
+        .{ .effect = .insufficient_samples, .baseline = 1_000, .variant = 1_200, .text = "median ratio 1.20x (the paired rounds cannot judge the direction; reference only)" },
+        .{ .effect = .insufficient_samples, .baseline = 0, .variant = 1_200, .text = "median ratio n/a (the paired rounds cannot judge the direction; reference only)" },
+        .{ .effect = .insufficient_samples, .baseline = 1_000, .variant = 0, .text = "median ratio n/a (the paired rounds cannot judge the direction; reference only)" },
+    };
+    for (cases) |case| {
+        var buffer: [192]u8 = undefined;
+        var writer = Io.Writer.fixed(&buffer);
+        try writeTimeAssessment(&writer, case.baseline, case.variant, case.effect);
+        try testing.expectEqualStrings(case.text, writer.buffered());
+    }
+}
+
 const scan_line = [_]cli_comparison.PlanRow{.{ .id = 2, .parent = 0, .label = .{ .kind = .scan }, .detail = "SCAN t" }};
 
 test "the summary keeps its block order without a database" {
@@ -1149,6 +1204,7 @@ test "the human summary puts the conclusion first and the copies side by side" {
             .variant = .{ .median = 37_292, .p25 = 33_198, .p75 = 40_417, .min = 28_583, .max = 71_583 },
             .rounds = 10,
             .variant_faster_rounds = 10,
+            .evidence = .{ .effect = .faster },
         },
         .sizes = .{ .baseline = 5_087_232, .variant = 7_258_112 },
         .judgement = .{ .verdict = .improved },
@@ -1162,12 +1218,7 @@ test "the human summary puts the conclusion first and the copies side by side" {
         \\  rows written  0 -> 0
         \\  verdict       improved: the rows match, and the variant reads fewer rows
         \\  query plan    changed on the variant
-        \\  time          median 4.33 ms -> 37.29 us (0.009x); the variant was faster in
-        \\                10 of 10 rounds (reference only)
-        \\time-effect: insufficient-samples (reference only)
-        \\time-median-difference-ns: 0 (variant - baseline, paired rounds)
-        \\time-noise-band-ns: 0 (baseline A/A absolute difference p95; 0 pairs; empirical)
-        \\time-confidence-interval-ns: unavailable (too-few-rounds)
+        \\  time          median 4.33 ms -> 37.29 us; 116x faster (reference only)
         \\  db size       +2,170,880 bytes (+2.07 MiB; the whole database file, not the
         \\                index alone)
         \\
@@ -1205,6 +1256,105 @@ test "the human summary puts the conclusion first and the copies side by side" {
     }
     var lines = std.mem.splitScalar(u8, stdout.buffered(), '\n');
     while (lines.next()) |line| try testing.expect(line.len <= line_width);
+}
+
+test "the human summary keeps the timing evidence and warnings out of the summary" {
+    var buffer: [8192]u8 = undefined;
+    var stdout = Io.Writer.fixed(&buffer);
+    const header: Header = .{
+        .database_path = "db.sqlite",
+        .select_path = "select.sql",
+        .index_path = "index.sql",
+        .work_parent = "/tmp",
+        .sqlite_version = "0.0.0",
+        .sqlite_source_id = "test-source-id",
+        .binds = &.{},
+        .show_binds = false,
+    };
+    const measurement: cli_comparison.Measurement = .{
+        .rows = 2,
+        .plan = .{ .rows = @constCast(&scan_line) },
+        .counters = .{ .rows_read = 0, .rows_written = 0, .fullscan_steps = 1, .vm_steps = 2, .sort_ops = 0, .autoindex_rows = 0 },
+        .columns = 1,
+    };
+    const comparison: result.Comparison = .{ .matched = true, .same_order = true };
+    const outcome: cli_comparison.Outcome = .{ .verdict = .match, .comparison = comparison };
+    const report: Report = .{
+        .timing = .{
+            .baseline = .{ .median = 4_331_750, .p25 = 4_158_324, .p75 = 4_364_397, .min = 4_098_250, .max = 4_465_958 },
+            .variant = .{ .median = 37_292, .p25 = 33_198, .p75 = 40_417, .min = 28_583, .max = 71_583 },
+            .rounds = 10,
+            .variant_faster_rounds = 10,
+            .evidence = .{ .effect = .faster },
+        },
+        .sizes = .{ .baseline = 4096, .variant = 4096 },
+        .judgement = .{ .verdict = .no_effect },
+        .warnings = .{ .no_analyze_stats = true },
+    };
+    try writeReport(&stdout, testing.allocator, .human, header, measurement, measurement, outcome, report);
+
+    const output = stdout.buffered();
+    const summary_end = std.mem.indexOf(u8, output, "\n\n") orelse return error.TestUnexpectedResult;
+    var summary_lines = std.mem.splitScalar(u8, output[0..summary_end], '\n');
+    try testing.expectEqualStrings("Summary", summary_lines.next().?);
+    while (summary_lines.next()) |line| {
+        try testing.expect(std.mem.startsWith(u8, line, "  "));
+        try testing.expect(std.mem.indexOf(u8, line, "time-") == null);
+        try testing.expect(std.mem.indexOf(u8, line, "warning:") == null);
+    }
+    try testing.expect(std.mem.indexOf(u8, output, "  time          median 4.33 ms -> 37.29 us; 116x faster") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "time-effect:") == null);
+    try testing.expect(std.mem.indexOf(u8, output, "time-median-difference-ns:") == null);
+    try testing.expect(std.mem.indexOf(u8, output, "time-noise-band-ns:") == null);
+    try testing.expect(std.mem.indexOf(u8, output, "time-confidence-interval-ns:") == null);
+    try testing.expect(std.mem.indexOf(u8, output, "\nWarnings\n  warning: no_analyze_stats: ") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "\n    sqlite_stat1 entry") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "sqlite_stat1 entry") != null);
+}
+
+test "the human warnings also follow an incomparable summary" {
+    var buffer: [8192]u8 = undefined;
+    var stdout = Io.Writer.fixed(&buffer);
+    const header: Header = .{
+        .database_path = "db.sqlite",
+        .select_path = "select.sql",
+        .index_path = "index.sql",
+        .work_parent = "/tmp",
+        .sqlite_version = "0.0.0",
+        .sqlite_source_id = "test-source-id",
+        .binds = &.{},
+        .show_binds = false,
+    };
+    const measurement: cli_comparison.Measurement = .{
+        .rows = 2,
+        .plan = .{ .rows = @constCast(&scan_line) },
+        .counters = .{ .rows_read = 0, .rows_written = 0, .fullscan_steps = 1, .vm_steps = 2, .sort_ops = 0, .autoindex_rows = 0 },
+        .columns = 1,
+    };
+    var outcome: cli_comparison.Outcome = .{ .verdict = .incomparable };
+    outcome.reasons[0] = .{ .text = "the SELECT calls random(), whose result changes between runs", .hint = "compare the SELECT without random()" };
+    outcome.reason_count = 1;
+    const report: Report = .{
+        .sizes = .{ .baseline = 4096, .variant = 4096 },
+        .judgement = .{ .verdict = .not_judged },
+        .warnings = .{ .no_analyze_stats = true, .data_too_small = true },
+    };
+    try writeReport(&stdout, testing.allocator, .human, header, measurement, measurement, outcome, report);
+
+    const output = stdout.buffered();
+    const summary_end = std.mem.indexOf(u8, output, "\n\n") orelse return error.TestUnexpectedResult;
+    var summary_lines = std.mem.splitScalar(u8, output[0..summary_end], '\n');
+    try testing.expectEqualStrings("Summary", summary_lines.next().?);
+    while (summary_lines.next()) |line| {
+        try testing.expect(std.mem.startsWith(u8, line, "  "));
+        try testing.expect(std.mem.indexOf(u8, line, "time-") == null);
+        try testing.expect(std.mem.indexOf(u8, line, "warning:") == null);
+    }
+    try testing.expect(std.mem.indexOf(u8, output, "\nWarnings\n  warning: no_analyze_stats: ") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "warning: data_too_small: ") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "\n    sqlite_stat1 entry") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "sqlite_stat1 entry") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "fewer than 1000 rows") != null);
 }
 
 test "the human summary lists the verdict reasons and says when nothing was timed" {

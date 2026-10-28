@@ -2486,8 +2486,14 @@ test "warnings describe candidate table and preserve counters verdict and exit a
         const text_result = fixture.runFormat(format, &.{ "--runs", "0" }, &output, &errors);
         try testing.expectEqual(ExitCode.ok, text_result.code);
         for (warnings) |warning| {
-            try testing.expect(contains(text_result.stdout, try jsonText(warning, "code")));
-            if (std.mem.eql(u8, format, "kv")) try testing.expect(contains(text_result.stdout, try jsonText(warning, "message")));
+            const code = try jsonText(warning, "code");
+            try testing.expect(contains(text_result.stdout, code));
+            if (std.mem.eql(u8, format, "kv")) {
+                try testing.expect(contains(text_result.stdout, try jsonText(warning, "message")));
+            } else {
+                const snippet = if (std.mem.eql(u8, code, "no_analyze_stats")) "sqlite_stat1 entry" else "fewer than 1000 rows";
+                try testing.expect(contains(text_result.stdout, snippet));
+            }
         }
     }
     const timed = fixture.runFormat("json", &.{ "--runs", "6" }, &output, &errors);
