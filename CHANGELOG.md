@@ -7,9 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-10-28
+
+### Added
+
+- `--migration <FILE>` applies a file of index changes to the variant copy before the `--batch` queries run, so one run compares the queries before and after a migration. It needs `--batch` with a manifest that has no candidates and does not take `--select`, `--index-sql`, `--bind`, `--runs`, `--suggest`, or `--format kv`. The file is at most 1 MiB and may hold `CREATE INDEX`, `CREATE UNIQUE INDEX`, and `DROP INDEX` statements, which run in file order on the variant only; the original database is never changed. The report adds a `migration:` block (human) or a top-level `migration` object (JSON) with the path and every applied statement.
+- `--seed-data <FILE>` replaces the tables listed in a JSON spec with deterministic dummy rows in the sandbox copy before the comparison, so an empty or small database can still show what an index would read. Each column takes a `fixed`, `uniform`, `ratio`, or `sequence` distribution, and the same spec and `seed` give the same rows on every run. The original database stays unchanged, and the option works with every mode, including `--batch`, `--suggest`, and `--migration`. The run rejects listed tables with triggers and limits the spec to 100 tables, 10,000,000 rows per table, and 20,000,000 rows in total. The human Summary adds `seed data` and `seed` lines, `kv` adds the seed values, and `json` adds a `seed_data` object.
+
 ### Changed
 
+- A batch measures each query's baseline once and reuses the rows for every candidate (up to 64 MiB), so it no longer repeats the baseline SELECT and prepare for every candidate. It still copies the database and runs the index build and the queries for each candidate, and a query that does not fit is measured per candidate as before; the report is unchanged.
+- With `--migration`, the size increase is the change in the bytes in use, `(page_count - freelist_count) * page_size`, not the change of the file size. A `DROP INDEX` moves its pages to SQLite's freelist without shrinking the file, so it reports the freed space as a negative value; runs without `--migration` keep the file size difference.
+- In a `--migration` batch, a query whose result rows match but that reads or writes more rows is `regressed` in the human Results column and in `results[].comparison.verdict`. The batch counts it under `needs_check`, recommends no such migration, and exits with status `6`; the other modes keep the name `needs-check`.
 - The four npm binary packages moved from the `@qenome` scope to `@qenome-cli/<platform>-<arch>`, because the npm org `qenome` could not be created. Nothing has been published to npm yet, so the launcher stays `qenome` and the command stays `npx qenome`.
+
+### Fixed
+
+- The human Summary reports the direction from the paired rounds, and the size of the change only when the medians agree, instead of a ratio that can point the other way. The timing evidence (`effect`, median difference, noise band, and confidence interval) stays in `kv` and `json`, and advisory warnings move to their own `Warnings` section.
 
 ## [0.3.3] - 2026-10-28
 
