@@ -70,13 +70,13 @@ D1 のプロジェクトでは、このコマンドで Qenome を実行します
 
 配布するアセットは圧縮していないバイナリで、名前は `qenome-<version>-<arch>-<os>`（Windows は `qenome-<version>-<arch>-<os>.exe`）です。例:
 
-- `qenome-0.3.2-x86_64-linux`
-- `qenome-0.3.2-aarch64-macos`
-- `qenome-0.3.2-x86_64-windows.exe`
+- `qenome-0.3.3-x86_64-linux`
+- `qenome-0.3.3-aarch64-macos`
+- `qenome-0.3.3-x86_64-windows.exe`
 
 ビルド済みバイナリは Linux・macOS・Windows 向けに提供します。リリースページに、そのリリースでビルドしたアセットが並ぶので、`<arch>` と `<os>` が自分の環境に合うものを選んでください。`SHA256SUMS` は sha256sum 形式（SHA-256 のハッシュ、半角スペース2個、ファイル名）です。
 
-実行する前にダウンロードを検証します。次の例では、`0.3.2` とファイル名を、ダウンロードした版とアセットに置き換えてください。
+実行する前にダウンロードを検証します。次の例では、`0.3.3` とファイル名を、ダウンロードした版とアセットに置き換えてください。
 
 <details>
 <summary>Linux・macOS・Windows のチェックサム確認コマンドを表示</summary>
@@ -90,14 +90,14 @@ sha256sum --check --ignore-missing SHA256SUMS
 macOS:
 
 ```sh
-grep 'qenome-0.3.2-aarch64-macos$' SHA256SUMS | shasum -a 256 -c
+grep 'qenome-0.3.3-aarch64-macos$' SHA256SUMS | shasum -a 256 -c
 ```
 
 Windows（PowerShell）:
 
 ```powershell
-Select-String 'qenome-0.3.2-x86_64-windows.exe$' SHA256SUMS
-Get-FileHash .\qenome-0.3.2-x86_64-windows.exe -Algorithm SHA256
+Select-String 'qenome-0.3.3-x86_64-windows.exe$' SHA256SUMS
+Get-FileHash .\qenome-0.3.3-x86_64-windows.exe -Algorithm SHA256
 ```
 
 `Get-FileHash` のハッシュが、`SHA256SUMS` の該当行と同じであることを確認してください（大文字・小文字は問いません）。
@@ -107,8 +107,8 @@ Get-FileHash .\qenome-0.3.2-x86_64-windows.exe -Algorithm SHA256
 次に実行権限を付けて実行します（Linux・macOS）。
 
 ```sh
-chmod +x qenome-0.3.2-aarch64-macos
-mv qenome-0.3.2-aarch64-macos qenome
+chmod +x qenome-0.3.3-aarch64-macos
+mv qenome-0.3.3-aarch64-macos qenome
 ./qenome --version
 ```
 
