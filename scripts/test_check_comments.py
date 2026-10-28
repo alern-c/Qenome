@@ -498,7 +498,7 @@ def main():
         "a JSONC // at column 17",
     )
 
-    code, output = case(create("docs/demo.gif", "GIF89a\n"))
+    code, output = case(create("docs/demo-suggest.gif", "GIF89a\n"))
     expect_clean("an excluded GIF passes", code, output)
 
     code, output = case(append("README.md", "# note\n"))

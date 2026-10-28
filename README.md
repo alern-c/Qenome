@@ -12,7 +12,7 @@
 
 English | [日本語](README.ja.md)
 
-<img src="docs/demo.gif" width="860" alt="The D1 sample project: qenome --d1 DEMO_DB select.sql index.sql --runs 40 reports matching rows, an improved verdict, and the D1 block with the SQLite versions and the caution">
+<img src="docs/demo-suggest.gif" width="1200" alt="The D1 sample project: qenome --d1 DEMO_DB select.sql --suggest proposes one index, matches the result rows, reads 200000 -> 101 rows, and recommends suggested:1">
 
 </div>
 
@@ -416,6 +416,16 @@ Each index build, each SELECT run, and each diagnostic statement has its own `--
 
 </details>
 
+Two recordings show the report. The first compares one SELECT with two candidates: the composite index with the columns in the wrong order reads the same rows (`200000 -> 200000`, `no-effect`), and `index.sql` reads `101` rows and becomes the `Recommendation`.
+
+<img src="docs/demo-candidates.gif" width="1200" alt="qenome --d1 DEMO_DB --batch candidates.json compares select.sql with a composite index and with index.sql: the composite index is no-effect at 200000 -> 200000 rows read, index.sql is improved at 200000 -> 101, and the Recommendation is index.sql">
+
+The second applies `0002_reindex.sql`, which drops `ix_events_customer_id` and creates the composite index in its place: `select.sql` is `regressed` (`101 -> 200000`), `failed.sql` is `improved` (`101 -> 35`), and the run exits with status `6`.
+
+<img src="docs/demo-migration.gif" width="1200" alt="qenome --d1 DEMO_DB --batch queries.json --migration 0002_reindex.sql applies the migration to the variant copy: select.sql is regressed at 101 -> 200000 rows read, failed.sql is improved at 101 -> 35, and the shell reports exit=6">
+
+Both recordings take their extra inputs from `docs/demo`, together with the `examples/d1-toml` sample.
+
 ### Suggesting candidate indexes
 
 `--suggest` has SQLite's expert (sqlite3expert, built from the vendored SQLite source) propose candidate indexes, then compares them with the same batch machinery. You do not need an index file.
@@ -586,7 +596,7 @@ The quality workflow in CI runs the same script. It checks the effective Zig ver
 
 The codebase carries no comments: explanations live in the README, and the checks are the source of truth for the rules they enforce.
 
-`docs/demo.gif` is recorded with `vhs docs/demo.tape` from the repository root, after `zig build -Doptimize=ReleaseFast`. The tape copies `examples/d1-toml` into a temporary directory and silences the terminal echo while it loads the sample, so the recording holds only the Qenome command and its output.
+`docs/demo-suggest.gif`, `docs/demo-candidates.gif`, and `docs/demo-migration.gif` are recorded with `vhs docs/demo-suggest.tape`, `vhs docs/demo-candidates.tape`, and `vhs docs/demo-migration.tape` from the repository root, after `zig build -Doptimize=ReleaseFast`. Each tape copies `examples/d1-toml` and `docs/demo` into a temporary directory and silences the terminal echo while it loads the sample, so the recording holds only the Qenome command and its output.
 
 ## License
 

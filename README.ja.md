@@ -12,7 +12,7 @@
 
 [English](README.md) | 日本語
 
-<img src="docs/demo.gif" width="860" alt="D1 のサンプルプロジェクトで qenome --d1 DEMO_DB select.sql index.sql --runs 40 を実行するターミナル。結果の行が一致し、判定が improved で、D1 ブロックに SQLite の版と注意が出ている">
+<img src="docs/demo-suggest.gif" width="1200" alt="D1 のサンプルプロジェクトで qenome --d1 DEMO_DB select.sql --suggest を実行するターミナル。SQLite が提案したインデックス1本を比べ、結果の行が一致し、読んだ行数が 200000 から 101 に減り、おすすめが suggested:1 になっている">
 
 </div>
 
@@ -416,6 +416,16 @@ human 出力は候補の表、`Recommendation:`、クエリと候補の判定表
 
 </details>
 
+batch の報告を録画したものが2本あります。1本目は1本の SELECT と候補2本を比べます。列の順番が逆の複合インデックスは読んだ行数が変わらず（`200000 -> 200000`、`no-effect`）、`index.sql` は `101` 行を読むので `Recommendation` になります。
+
+<img src="docs/demo-candidates.gif" width="1200" alt="qenome --d1 DEMO_DB --batch candidates.json で select.sql を複合インデックスと index.sql の2本と比べるターミナル。複合インデックスは読んだ行数 200000 -> 200000 の no-effect、index.sql は 200000 -> 101 の improved で、おすすめは index.sql">
+
+2本目は `0002_reindex.sql` を適用します。このマイグレーションは `ix_events_customer_id` を落として、その代わりに複合インデックスを作ります。`select.sql` は `regressed`（`101 -> 200000`）、`failed.sql` は `improved`（`101 -> 35`）になり、実行は終了コード `6` で終わります。
+
+<img src="docs/demo-migration.gif" width="1200" alt="qenome --d1 DEMO_DB --batch queries.json --migration 0002_reindex.sql で、variant のコピーにマイグレーションを適用するターミナル。select.sql は読んだ行数 101 -> 200000 の regressed、failed.sql は 101 -> 35 の improved で、シェルには exit=6 と出る">
+
+どちらの録画も、`examples/d1-toml` のサンプルに `docs/demo` の入力を組み合わせています。
+
 ### 候補のインデックスを提案させる（--suggest）
 
 `--suggest` は、SQLite の expert（同梱の SQLite ソースからビルドする sqlite3expert）に候補のインデックスを提案させ、その提案を同じ batch の仕組みで比べます。インデックスのファイルは要りません。
@@ -567,7 +577,7 @@ CI の quality ワークフローも同じスクリプトを呼びます。Zig �
 
 コードにコメントは書きません。説明は README に書き、ルールの正本は検査スクリプトです。
 
-`docs/demo.gif` は、`zig build -Doptimize=ReleaseFast` のあと、リポジトリのルートで `vhs docs/demo.tape` を実行して撮り直します。台本は `examples/d1-toml` を一時ディレクトリへコピーし、サンプルの投入中はターミナルのエコーを止めるので、録画に残るのは Qenome のコマンドと出力だけです。
+`docs/demo-suggest.gif`・`docs/demo-candidates.gif`・`docs/demo-migration.gif` は、`zig build -Doptimize=ReleaseFast` のあと、リポジトリのルートで `vhs docs/demo-suggest.tape`・`vhs docs/demo-candidates.tape`・`vhs docs/demo-migration.tape` を実行して撮り直します。台本は `examples/d1-toml` と `docs/demo` を一時ディレクトリへコピーし、サンプルの投入中はターミナルのエコーを止めるので、録画に残るのは Qenome のコマンドと出力だけです。
 
 ## ライセンス
 

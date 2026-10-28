@@ -1,0 +1,4 @@
+{
+  "queries": [{ "select": "select.sql" }],
+  "candidates": [{ "index_sql": "composite.sql" }, { "index_sql": "index.sql" }]
+}

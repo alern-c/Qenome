@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `README.md` and `README.ja.md` show three recordings instead of one: `--suggest` at the top, and a candidate comparison and a `--migration` regression in the `--batch` section. They are recorded from `docs/demo-suggest.tape`, `docs/demo-candidates.tape`, and `docs/demo-migration.tape`, which take their extra inputs from `docs/demo`; `docs/demo.tape` and `docs/demo.gif` are gone.
+
 ## [0.3.5] - 2026-10-28
 
 ### Added
