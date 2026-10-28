@@ -10,7 +10,7 @@ description: >
 
 # Qenome
 
-Qenome compares one read-only `SELECT` with one candidate `CREATE INDEX` on sandbox copies. With `--batch`, it compares every SELECT in a manifest with every candidate in one run. With `--suggest`, SQLite's expert proposes the candidate indexes, so a SELECT file is enough. The verdict uses the same counting as local D1 (workerd patch). The numbers have not yet been checked against production D1.
+Qenome compares one read-only `SELECT` with one candidate `CREATE INDEX` on sandbox copies. With `--batch`, it compares every SELECT in a manifest with every candidate in one run. With `--suggest`, SQLite's expert proposes the candidate indexes, so a SELECT file is enough. With `--migration`, it applies a SQL file of index changes to the variant before comparing every query in a manifest. The verdict uses the same counting as local D1 (workerd patch). The numbers have not yet been checked against production D1.
 
 The contract is [docs/json.md](../../docs/json.md). This skill expects `schema_version` 2.
 
@@ -94,11 +94,26 @@ npx qenome app.db --batch batch.json --format json
 npx qenome --d1 DB --batch batch.json --format json
 ```
 
+## Compare a migration (--migration)
+
+Use `--migration` when the change is a SQL file, especially when it drops an index or replaces one index with another.
+
+```sh
+npx qenome app.db --batch queries.json --migration 0002_replace_index.sql --format json
+npx qenome --d1 DB --batch queries.json --migration 0002_replace_index.sql --format json
+```
+
+- It needs `--batch`, and the manifest must omit `candidates` (or use `[]`). Put only the queries in the manifest.
+- Only `CREATE INDEX`, `CREATE UNIQUE INDEX`, and `DROP INDEX` are accepted, in any order and separated by semicolons. Any other statement is rejected with exit `1` before the variant is touched. Do not put `INSERT`, `UPDATE`, `DELETE`, `ALTER TABLE`, or `CREATE TABLE` in the file.
+- The original database is never changed. Qenome applies the statements to the variant copy only.
+- The report is the batch object plus a top-level `migration` object with `path` and `statements` (`kind` and `sql`). Human output has a `migration:` block instead.
+- Exit `6` means the result rows matched, but at least one query read or wrote more rows after the migration. Do not keep the migration for a CI gate. Exit `3` (rows differ) and `4` (cannot compare) also stop the gate.
+
 ## Read the JSON
 
 State `schema_version` before you interpret fields.
 
-- If stdout is a JSON object with `batch_schema_version`, it is a batch report. Read `batch_schema_version` first; it must be `1`. Read `recommended` (`null` when no candidate qualifies; with `--suggest` it can be `suggested:N`), the `summary` entries (`candidate`, `source`, `index_sql_text`), the `results`, and the top-level `warnings` (empty without `--suggest`). Repeat every batch warning `code` and `message`, like the comparison warnings. The `comparison` object under each result has `schema_version` 2 and the shape below.
+- If stdout is a JSON object with `batch_schema_version`, it is a batch report. Read `batch_schema_version` first; it must be `1`. Read `recommended` (`null` when no candidate qualifies; with `--suggest` it can be `suggested:N`; with `--migration` it is the migration path or `null`), the `summary` entries (`candidate`, `source`, `index_sql_text`; `source` can be `manifest`, `suggested`, or `migration`), the `results`, the optional top-level `migration` object (`path`, `statements`), and the top-level `warnings` (empty without `--suggest` and with `--migration`). Repeat every batch warning `code` and `message`, like the comparison warnings. The `comparison` object under each result has `schema_version` 2 and the shape below.
 - If stdout is a JSON object, it is the comparison. Read `schema_version` first. If it is missing or not `2`, stop and say the output does not match this skill or `docs/json.md`. Do not guess renamed fields.
 - If stdout is empty, stderr is the error object (skip any `progress:` lines). It also has `schema_version` 2, plus `exit_code` and `error` with `code`, `message`, and `hint`. Do what `hint` says. Do not treat the failure as a verdict.
 - `exit_code` inside a comparison object is `0`, `3`, or `4`. The process can still exit `5` after writing that object. Trust the process exit code.
@@ -142,12 +157,13 @@ Tell the user the process exit code, `schema_version`, `result`, `verdict`, and 
 | 4 and stdout is a comparison | Do not call it a match. Quote `result_reasons` and their hints. `verdict` is `not-judged` |
 | 4 and stdout is empty | The local D1 was not found. Follow `error.hint`. Do not edit the index to fix a missing database |
 | 5 | The comparison matched and cleanup failed. stdout holds the report (`exit_code` 0). Tell the user to remove the directory named in the stderr error. Do not loop |
+| 6 | `--migration` matched the rows but made a query read or write more rows. Do not keep the migration. Quote the `needs_check` summary and the comparison reasons |
 | 1 | The input was rejected. Follow `error.hint` or the `error:` line |
 | 2 | The command line is wrong. Follow the hint. Fix the invocation and rerun once |
 | 124 | The time limit fired. Raise `--timeout-ms` or narrow the SELECT. Do not treat it as a slow index |
 | 129, 130, 143 | The run was interrupted. Rerun once if the user still wants a verdict |
 
-With `--batch`, exit `1` or `124` can still have a report on stdout. If stdout is the batch object, the run finished: read `recommended`, the `summary` statuses, and the `failure` messages. If stdout is empty, the run stopped before the report and stderr holds the error object. Do not tell the user that a rejected candidate lost the other results; they are in `results`.
+With `--batch`, exit `1`, `6`, or `124` can still have a report on stdout. If stdout is the batch object, the run finished: read `recommended`, the `summary` statuses, and the `failure` messages. If stdout is empty, the run stopped before the report and stderr holds the error object. Do not tell the user that a rejected candidate lost the other results; they are in `results`.
 
 Do not apply `index.sql` to the user's database. Qenome already tried it on a copy.
 

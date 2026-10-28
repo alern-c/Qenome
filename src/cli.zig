@@ -155,7 +155,15 @@ fn runCaptured(
     if (args.batch) |batch_path| {
         var cleanup_failed = false;
         const code = blk: {
-            const loaded = cli_batch.load(io, arena, batch_path, stderr, args.suggest) orelse break :blk ExitCode.rejected;
+            var migration: ?cli_batch.Migration = null;
+            if (args.migration) |migration_path| {
+                const migration_sql = readSqlFile(io, arena, migration_path) catch |err| {
+                    reportSqlFileError(stderr, "--migration", migration_path, err) catch {};
+                    break :blk ExitCode.rejected;
+                };
+                migration = .{ .path = migration_path, .sql = migration_sql, .statements = &.{} };
+            }
+            const loaded = cli_batch.load(io, arena, batch_path, stderr, args.suggest, args.migration != null) orelse break :blk ExitCode.rejected;
             if (signalPending()) break :blk reportInterrupted(stderr);
             const parent_path = tempParentPath(temp_parent);
             var work = WorkDir.create(io, arena, parent_path) catch |err| {
@@ -169,6 +177,7 @@ fn runCaptured(
                 .baseline_path = work.baseline_path,
                 .variant_path = work.variant_path,
                 .d1 = d1,
+                .migration = migration,
                 .timeout_ms = args.timeout_ms,
                 .show_binds = args.show_binds,
                 .show_rows = args.show_rows,

@@ -47,6 +47,12 @@ pub const Query = struct {
 pub const Source = enum {
     manifest,
     suggested,
+    migration,
+};
+
+pub const ChangeKind = enum {
+    index,
+    migration,
 };
 
 pub const Candidate = struct {
@@ -54,6 +60,8 @@ pub const Candidate = struct {
     path: [:0]const u8,
     sql: [:0]const u8,
     source: Source = .manifest,
+    kind: ChangeKind = .index,
+    statements: []const db.MigrationStatement = &.{},
 };
 
 pub const Loaded = struct {
@@ -71,11 +79,18 @@ const SuggestOutcome = union(enum) {
     failed: ExitCode,
 };
 
+pub const Migration = struct {
+    path: [:0]const u8,
+    sql: [:0]const u8,
+    statements: []const db.MigrationStatement = &.{},
+};
+
 pub const Inputs = struct {
     database_path: [:0]const u8,
     baseline_path: [:0]const u8,
     variant_path: [:0]const u8,
     d1: ?cli_d1.Resolved = null,
+    migration: ?Migration = null,
     timeout_ms: u64,
     show_binds: bool = false,
     show_rows: bool = false,
@@ -127,7 +142,7 @@ const ResultEntry = struct {
     comparison: []const u8 = "",
 };
 
-pub fn load(io: Io, arena: std.mem.Allocator, path: [:0]const u8, stderr: *Io.Writer, suggest: bool) ?Loaded {
+pub fn load(io: Io, arena: std.mem.Allocator, path: [:0]const u8, stderr: *Io.Writer, suggest: bool, migration: bool) ?Loaded {
     const data = cli_args.readSqlFile(io, arena, path) catch |err| {
         switch (err) {
             error.SqlFileTooLarge => return invalidManifest(stderr, path, "the file is larger than 1 MiB", .{}),
@@ -146,18 +161,21 @@ pub fn load(io: Io, arena: std.mem.Allocator, path: [:0]const u8, stderr: *Io.Wr
         .object => |object| object,
         else => return invalidManifest(stderr, path, "it must be a JSON object", .{}),
     };
+    if (suggest and migration) {
+        return invalidManifest(stderr, path, "use --suggest or --migration, not both", .{});
+    }
     if (root.get("queries") == null) {
-        if (suggest) return invalidManifest(stderr, path, "it must have the key queries", .{});
+        if (suggest or migration) return invalidManifest(stderr, path, "it must have the key queries", .{});
         return invalidManifest(stderr, path, "it must have exactly the keys queries and candidates", .{});
     }
     var root_keys = root.iterator();
     while (root_keys.next()) |entry| {
         if (std.mem.eql(u8, entry.key_ptr.*, "queries")) continue;
         if (std.mem.eql(u8, entry.key_ptr.*, "candidates")) continue;
-        if (suggest) return invalidManifest(stderr, path, "it must have only the keys queries and candidates", .{});
+        if (suggest or migration) return invalidManifest(stderr, path, "it must have only the keys queries and candidates", .{});
         return invalidManifest(stderr, path, "it must have exactly the keys queries and candidates", .{});
     }
-    if (!suggest and root.get("candidates") == null) {
+    if (!suggest and !migration and root.get("candidates") == null) {
         return invalidManifest(stderr, path, "it must have exactly the keys queries and candidates", .{});
     }
 
@@ -230,7 +248,11 @@ pub fn load(io: Io, arena: std.mem.Allocator, path: [:0]const u8, stderr: *Io.Wr
         .array => |array| array.items,
         else => return invalidManifest(stderr, path, "candidates must be an array", .{}),
     } else &.{};
-    if (suggest) {
+    if (migration) {
+        if (candidate_values.len != 0) {
+            return invalidManifest(stderr, path, "candidates must be omitted or empty with --migration", .{});
+        }
+    } else if (suggest) {
         if (candidate_values.len > max_entries) {
             return invalidManifest(stderr, path, "candidates must hold 0 to {d} entries", .{max_entries});
         }
@@ -377,13 +399,34 @@ pub fn run(
         if (!prepareQuery(&baseline, query, stderr)) return .rejected;
     }
 
-    for (loaded.candidates) |*candidate| {
+    var migration_report: ?Migration = null;
+    var migration_candidate: [1]Candidate = undefined;
+    var candidates: []const Candidate = loaded.candidates;
+    if (inputs.migration) |migration| {
+        var detail: db.SnapshotDetail = .{};
+        const statements = db.parseMigration(arena, migration.sql, &detail) catch |err| {
+            reportMigrationParseFailure(stderr, migration.path, &detail, err);
+            return .rejected;
+        };
+        migration_candidate[0] = .{
+            .label = migration.path,
+            .path = migration.path,
+            .sql = migration.sql,
+            .source = .migration,
+            .kind = .migration,
+            .statements = statements,
+        };
+        candidates = &migration_candidate;
+        migration_report = .{ .path = migration.path, .sql = migration.sql, .statements = statements };
+    }
+
+    for (candidates) |*candidate| {
         if (cli_control.signalPending()) return cli_control.reportInterrupted(stderr);
+        if (candidate.kind == .migration) continue;
         if (!checkCandidate(&baseline, candidate, stderr)) return .rejected;
     }
 
     var suggest_warnings: std.ArrayList(cli_suggest.Warning) = .empty;
-    var candidates: []const Candidate = loaded.candidates;
     var suggested_rejected: usize = 0;
     if (inputs.suggest) {
         switch (suggestCandidates(arena, &baseline, inputs, loaded, &suggest_warnings, stderr)) {
@@ -402,6 +445,10 @@ pub fn run(
     };
     for (candidates, 0..) |*candidate, index| {
         if (cli_control.signalPending()) return cli_control.reportInterrupted(stderr);
+        if (candidate.kind == .migration) {
+            tables[index] = "";
+            continue;
+        }
         tables[index] = baseline.database.indexTarget(arena, candidate.sql) catch {
             stderr.writeAll("error: out of memory\n") catch {};
             return .rejected;
@@ -437,29 +484,32 @@ pub fn run(
 
         var detail: db.SnapshotDetail = .{};
         var candidate_failed = false;
-        work.applyCandidate(candidate.sql, &control, &detail) catch |err| switch (err) {
+        applyChange(work, candidate, &control, &detail) catch |err| switch (err) {
             error.Timeout => {
                 summary.status = .index_timeout;
                 summary.failure_code = "index_timeout";
-                summary.failure_message = failureMessage(arena, "the CREATE INDEX did not finish within {d} ms", .{inputs.timeout_ms});
+                summary.failure_message = if (candidate.kind == .migration)
+                    failureMessage(arena, "statement {d} did not finish within {d} ms", .{ detail.statement_index, inputs.timeout_ms })
+                else
+                    failureMessage(arena, "the CREATE INDEX did not finish within {d} ms", .{inputs.timeout_ms});
                 candidate_failed = true;
             },
             error.Interrupted => return cli_control.reportInterrupted(stderr),
-            error.ApplyFailed => {
+            error.ApplyFailed, error.MigrationApplyFailed => {
                 if (applyFailureIsCandidate(detail.error_code)) {
                     summary.status = .index_rejected;
                     summary.failure_code = "index_rejected";
-                    summary.failure_message = truncateUtf8(arena, if (detail.len != 0) detail.text() else "SQLite rejected the CREATE INDEX");
+                    summary.failure_message = migrationFailureMessage(arena, candidate, &detail);
                     candidate_failed = true;
                 } else {
                     const reason = if (detail.len != 0) detail.text() else @errorName(err);
-                    stderr.print("error: the batch candidate '{s}': the index could not be created: {s}\n", .{ candidate.label, reason }) catch {};
+                    reportApplyFailure(stderr, candidate, &detail, reason);
                     return .rejected;
                 }
             },
             else => {
                 const reason = if (detail.len != 0) detail.text() else @errorName(err);
-                stderr.print("error: the batch candidate '{s}': the index could not be created: {s}\n", .{ candidate.label, reason }) catch {};
+                reportApplyFailure(stderr, candidate, &detail, reason);
                 return .rejected;
             },
         };
@@ -473,19 +523,22 @@ pub fn run(
         const variant_size = batchFileSize(io, inputs.variant_path, candidate.label, stderr) orelse return .rejected;
         summary.size_increase = @as(i128, variant_size) - @as(i128, baseline_size);
 
-        const warnings = baseline.database.tableWarnings(arena, tables[index], &control) catch |err| {
-            switch (err) {
-                error.Timeout => {
-                    stderr.print("error: the batch diagnostics for candidate '{s}' exceeded the time limit of {d} ms\n", .{ candidate.label, inputs.timeout_ms }) catch {};
-                    return .timeout;
-                },
-                error.Interrupted => return cli_control.reportInterrupted(stderr),
-                else => {
-                    stderr.print("error: the batch diagnostics for candidate '{s}' failed: {s}\n", .{ candidate.label, baseline.message() }) catch {};
-                    return .rejected;
-                },
-            }
-        };
+        var warnings: db.TableWarnings = .{};
+        if (candidate.kind == .index) {
+            warnings = baseline.database.tableWarnings(arena, tables[index], &control) catch |err| {
+                switch (err) {
+                    error.Timeout => {
+                        stderr.print("error: the batch diagnostics for candidate '{s}' exceeded the time limit of {d} ms\n", .{ candidate.label, inputs.timeout_ms }) catch {};
+                        return .timeout;
+                    },
+                    error.Interrupted => return cli_control.reportInterrupted(stderr),
+                    else => {
+                        stderr.print("error: the batch diagnostics for candidate '{s}' failed: {s}\n", .{ candidate.label, baseline.message() }) catch {};
+                        return .rejected;
+                    },
+                }
+            };
+        }
 
         var variant: QuerySession = .{};
         var variant_done = false;
@@ -636,13 +689,13 @@ pub fn run(
 
     const order = summaryOrder(arena, summaries) catch return outOfMemoryCode(stderr);
     const recommended = recommendedIndex(summaries, order);
-    const code = batchExitCode(summaries, results.items);
+    const code = batchExitCode(summaries, results.items, migration_report != null);
 
     switch (inputs.format) {
-        .json => writeBatchJson(stdout, allocator, summaries, order, results.items, suggest_warnings.items, recommended, code) catch |err| {
+        .json => writeBatchJson(stdout, allocator, summaries, order, results.items, suggest_warnings.items, recommended, migration_report, code) catch |err| {
             return reportWriteFailure(err, stderr);
         },
-        .human => writeBatchHuman(stdout, inputs, loaded.queries.len, summaries, order, results.items, suggest_warnings.items, recommended) catch |err| {
+        .human => writeBatchHuman(stdout, inputs, loaded.queries.len, summaries, order, results.items, suggest_warnings.items, recommended, migration_report) catch |err| {
             return reportWriteFailure(err, stderr);
         },
         .kv => unreachable,
@@ -831,6 +884,39 @@ fn reportCaptured(stderr: *Io.Writer, prefix: []const u8, captured: []const u8) 
     if (std.mem.startsWith(u8, text, "error: ")) text = text["error: ".len..];
     if (text.len == 0) text = "the input was rejected";
     stderr.print("{s}{s}\n", .{ prefix, text }) catch {};
+}
+
+fn reportMigrationParseFailure(stderr: *Io.Writer, path: []const u8, detail: *const db.SnapshotDetail, err: anyerror) void {
+    switch (err) {
+        error.MigrationEmpty => stderr.print("error: --migration: the migration holds no statement in '{s}'\n", .{path}) catch {},
+        error.MigrationStatementNotAllowed => stderr.print("error: --migration: statement {d} in '{s}' is not a CREATE INDEX or DROP INDEX\n", .{ detail.statement_index, path }) catch {},
+        error.OutOfMemory => stderr.writeAll("error: out of memory\n") catch {},
+        else => stderr.print("error: --migration: the migration '{s}' is not valid: {s}\n", .{ path, @errorName(err) }) catch {},
+    }
+}
+
+fn applyChange(work: *const WorkDir, candidate: *const Candidate, control: *db.StepControl, detail: *db.SnapshotDetail) anyerror!void {
+    return switch (candidate.kind) {
+        .index => work.applyCandidate(candidate.sql, control, detail),
+        .migration => work.applyMigration(candidate.statements, control, detail),
+    };
+}
+
+fn migrationFailureMessage(arena: std.mem.Allocator, candidate: *const Candidate, detail: *const db.SnapshotDetail) []const u8 {
+    const reason = if (detail.len != 0) detail.text() else if (candidate.kind == .migration) "SQLite rejected the migration" else "SQLite rejected the CREATE INDEX";
+    if (candidate.kind == .migration) {
+        var buffer: [512]u8 = undefined;
+        const text = std.fmt.bufPrint(&buffer, "statement {d}: {s}", .{ detail.statement_index, reason }) catch reason;
+        return truncateUtf8(arena, text);
+    }
+    return truncateUtf8(arena, reason);
+}
+
+fn reportApplyFailure(stderr: *Io.Writer, candidate: *const Candidate, detail: *const db.SnapshotDetail, reason: []const u8) void {
+    switch (candidate.kind) {
+        .migration => stderr.print("error: the batch migration '{s}': statement {d} could not be applied: {s}\n", .{ candidate.label, detail.statement_index, reason }) catch {},
+        .index => stderr.print("error: the batch candidate '{s}': the index could not be created: {s}\n", .{ candidate.label, reason }) catch {},
+    }
 }
 
 const StepResult = union(enum) {
@@ -1030,7 +1116,7 @@ fn recommendedIndex(summaries: []const CandidateSummary, order: []const usize) ?
     return null;
 }
 
-fn batchExitCode(summaries: []const CandidateSummary, results: []const ResultEntry) ExitCode {
+fn batchExitCode(summaries: []const CandidateSummary, results: []const ResultEntry, migration: bool) ExitCode {
     var mismatch = false;
     var incomparable = false;
     var timeout = false;
@@ -1056,6 +1142,11 @@ fn batchExitCode(summaries: []const CandidateSummary, results: []const ResultEnt
     }
     if (timeout) return .timeout;
     if (incomparable) return .incomparable;
+    if (migration) {
+        for (summaries) |summary| {
+            if (summary.status == .compared and summary.needs_check != 0) return .regression;
+        }
+    }
     return .ok;
 }
 
@@ -1067,6 +1158,7 @@ fn writeBatchJson(
     results: []const ResultEntry,
     warnings: []const cli_suggest.Warning,
     recommended: ?usize,
+    migration: ?Migration,
     code: ExitCode,
 ) !void {
     var out: Io.Writer.Allocating = .init(allocator);
@@ -1085,6 +1177,24 @@ fn writeBatchJson(
         try cli_report.writeJsonText(&json, allocator, summaries[index].candidate);
     } else {
         try json.write(null);
+    }
+    if (migration) |value| {
+        try json.objectField("migration");
+        try json.beginObject();
+        try json.objectField("path");
+        try cli_report.writeJsonText(&json, allocator, value.path);
+        try json.objectField("statements");
+        try json.beginArray();
+        for (value.statements) |statement| {
+            try json.beginObject();
+            try json.objectField("kind");
+            try json.write(statement.kind.text());
+            try json.objectField("sql");
+            try cli_report.writeJsonText(&json, allocator, statement.sql);
+            try json.endObject();
+        }
+        try json.endArray();
+        try json.endObject();
     }
     try json.objectField("summary");
     try json.beginArray();
@@ -1176,6 +1286,7 @@ fn writeBatchHuman(
     results: []const ResultEntry,
     warnings: []const cli_suggest.Warning,
     recommended: ?usize,
+    migration: ?Migration,
 ) !void {
     var candidate_width: usize = "candidate".len;
     for (summaries) |summary| candidate_width = @max(candidate_width, summary.candidate.len);
@@ -1184,10 +1295,23 @@ fn writeBatchHuman(
     var result_candidate_width: usize = "candidate".len;
     for (results) |result| result_candidate_width = @max(result_candidate_width, result.candidate.len);
 
-    try stdout.print(
-        "batch: {d} {s}, {d} {s}\ndatabase: {s}\nsqlite: {s}\nwork-dir-parent: {s}\n\n",
-        .{ query_count, word(query_count, "query", "queries"), summaries.len, word(summaries.len, "candidate", "candidates"), inputs.database_path, cli_query.sqliteVersion(), inputs.work_parent },
-    );
+    if (migration) |value| {
+        try stdout.print(
+            "batch: {d} {s}, 1 migration ({d} {s})\nmigration: {s}\n",
+            .{ query_count, word(query_count, "query", "queries"), value.statements.len, word(value.statements.len, "statement", "statements"), value.path },
+        );
+        for (value.statements, 0..) |statement, index| {
+            try stdout.print("  {d}: ", .{index + 1});
+            try result_rows.writeEscapedText(stdout, statement.sql);
+            try stdout.writeByte('\n');
+        }
+    } else {
+        try stdout.print(
+            "batch: {d} {s}, {d} {s}\n",
+            .{ query_count, word(query_count, "query", "queries"), summaries.len, word(summaries.len, "candidate", "candidates") },
+        );
+    }
+    try stdout.print("database: {s}\nsqlite: {s}\nwork-dir-parent: {s}\n\n", .{ inputs.database_path, cli_query.sqliteVersion(), inputs.work_parent });
     try stdout.writeAll("Summary\n  ");
     try writeCell(stdout, "candidate", candidate_width);
     for ([_][]const u8{ "status", "improved", "no-effect", "needs-check", "mismatch", "incomparable", "timeout", "size increase" }) |header| {
@@ -1284,7 +1408,7 @@ fn writeBatchHuman(
         const summary = summaries[index];
         if (summary.status == .compared) continue;
         if (!failures_printed) {
-            try stdout.writeAll("\nRejected candidates\n");
+            try stdout.writeAll(if (summary.source == .migration) "\nMigration failure\n" else "\nRejected candidates\n");
             failures_printed = true;
         }
         try stdout.print("  {s}: {s}: ", .{ summary.candidate, @tagName(summary.status) });
@@ -1416,10 +1540,11 @@ fn batchSummary(status: CandidateStatus) CandidateSummary {
     return .{ .candidate = "c.sql", .status = status };
 }
 
-test "batchExitCode keeps 3 > 1 > 124 > 4 > 0" {
+test "batchExitCode keeps 3 > 1 > 124 > 4 > 6 > 0" {
     const compared = [_]CandidateSummary{batchSummary(.compared)};
     const rejected = [_]CandidateSummary{batchSummary(.index_rejected)};
     const index_timeout = [_]CandidateSummary{batchSummary(.index_timeout)};
+    const regressed = [_]CandidateSummary{.{ .candidate = "m.sql", .status = .compared, .needs_check = 1 }};
     const none = [_]ResultEntry{};
     const match = [_]ResultEntry{batchResult(.compared, .match)};
     const mismatch = [_]ResultEntry{batchResult(.compared, .mismatch)};
@@ -1431,13 +1556,16 @@ test "batchExitCode keeps 3 > 1 > 124 > 4 > 0" {
         batchResult(.variant_timeout, null),
     };
 
-    try testing.expectEqual(ExitCode.ok, batchExitCode(&compared, &none));
-    try testing.expectEqual(ExitCode.ok, batchExitCode(&compared, &match));
-    try testing.expectEqual(ExitCode.incomparable, batchExitCode(&compared, &incomparable));
-    try testing.expectEqual(ExitCode.timeout, batchExitCode(&compared, &variant_timeout));
-    try testing.expectEqual(ExitCode.rejected, batchExitCode(&rejected, &none));
-    try testing.expectEqual(ExitCode.mismatch, batchExitCode(&rejected, &mismatch));
-    try testing.expectEqual(ExitCode.timeout, batchExitCode(&index_timeout, &incomparable));
-    try testing.expectEqual(ExitCode.rejected, batchExitCode(&rejected, &variant_timeout));
-    try testing.expectEqual(ExitCode.mismatch, batchExitCode(&rejected, &everything));
+    try testing.expectEqual(ExitCode.ok, batchExitCode(&compared, &none, false));
+    try testing.expectEqual(ExitCode.ok, batchExitCode(&compared, &match, false));
+    try testing.expectEqual(ExitCode.incomparable, batchExitCode(&compared, &incomparable, false));
+    try testing.expectEqual(ExitCode.timeout, batchExitCode(&compared, &variant_timeout, false));
+    try testing.expectEqual(ExitCode.rejected, batchExitCode(&rejected, &none, false));
+    try testing.expectEqual(ExitCode.mismatch, batchExitCode(&rejected, &mismatch, false));
+    try testing.expectEqual(ExitCode.timeout, batchExitCode(&index_timeout, &incomparable, false));
+    try testing.expectEqual(ExitCode.rejected, batchExitCode(&rejected, &variant_timeout, false));
+    try testing.expectEqual(ExitCode.mismatch, batchExitCode(&rejected, &everything, false));
+    try testing.expectEqual(ExitCode.ok, batchExitCode(&regressed, &match, false));
+    try testing.expectEqual(ExitCode.regression, batchExitCode(&regressed, &match, true));
+    try testing.expectEqual(ExitCode.mismatch, batchExitCode(&regressed, &everything, true));
 }

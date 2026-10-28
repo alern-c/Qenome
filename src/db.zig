@@ -4,7 +4,7 @@ const builtin = @import("builtin");
 const sqlite = @import("sqlite.zig");
 const result = @import("result.zig");
 
-pub const Mode = enum { internal, user_select, user_ddl };
+pub const Mode = enum { internal, user_select, user_ddl, user_migration };
 
 pub const OpenError = error{
     OpenFailed,
@@ -23,6 +23,7 @@ pub const SnapshotDetail = struct {
     buffer: [256]u8 = undefined,
     len: usize = 0,
     error_code: c_int = 0,
+    statement_index: usize = 0,
 
     pub fn text(self: *const SnapshotDetail) []const u8 {
         return self.buffer[0..self.len];
@@ -48,6 +49,36 @@ pub const ApplyError = CheckError || error{
     Timeout,
     Interrupted,
     ApplyFailed,
+};
+
+pub const MigrationKind = enum {
+    create_index,
+    drop_index,
+
+    pub fn text(self: MigrationKind) []const u8 {
+        return switch (self) {
+            .create_index => "create_index",
+            .drop_index => "drop_index",
+        };
+    }
+};
+
+pub const MigrationStatement = struct {
+    kind: MigrationKind,
+    sql: [:0]const u8,
+};
+
+pub const MigrationError = error{
+    MigrationEmpty,
+    MigrationStatementNotAllowed,
+};
+
+pub const MigrationApplyError = error{
+    OpenFailed,
+    GuardSetupFailed,
+    MigrationApplyFailed,
+    Timeout,
+    Interrupted,
 };
 
 pub const ExplainError = error{
@@ -552,6 +583,16 @@ pub const Db = struct {
                 sqlite.SQLITE_REINDEX => return self.seen_create_index,
                 else => return false,
             },
+            .user_migration => switch (action_code) {
+                sqlite.SQLITE_CREATE_INDEX,
+                sqlite.SQLITE_DROP_INDEX,
+                sqlite.SQLITE_READ,
+                sqlite.SQLITE_FUNCTION,
+                sqlite.SQLITE_REINDEX,
+                => return true,
+                sqlite.SQLITE_INSERT, sqlite.SQLITE_DELETE, sqlite.SQLITE_UPDATE => return isMainSchema(arg3) and (isSchemaTable(arg1) or isStatTable(arg1)),
+                else => return false,
+            },
         }
     }
 };
@@ -736,6 +777,181 @@ pub fn applyCreateIndex(path: [:0]const u8, sql: [:0]const u8, control: *StepCon
     }
 }
 
+pub fn parseMigration(allocator: std.mem.Allocator, sql: [:0]const u8, detail: *SnapshotDetail) (MigrationError || std.mem.Allocator.Error)![]MigrationStatement {
+    detail.len = 0;
+    detail.error_code = 0;
+    detail.statement_index = 0;
+
+    var statements: std.ArrayList(MigrationStatement) = .empty;
+    errdefer {
+        for (statements.items) |statement| allocator.free(statement.sql);
+        statements.deinit(allocator);
+    }
+
+    var start: usize = 0;
+    var i: usize = 0;
+    while (i < sql.len) {
+        const c = sql[i];
+        switch (c) {
+            '\'', '"', '`' => i = skipQuoted(sql, i, c),
+            '[' => i = if (std.mem.indexOfScalarPos(u8, sql, i + 1, ']')) |end| end + 1 else sql.len,
+            '-' => i = if (i + 1 < sql.len and sql[i + 1] == '-')
+                (std.mem.indexOfScalarPos(u8, sql, i, '\n') orelse sql.len)
+            else
+                i + 1,
+            '/' => i = if (i + 1 < sql.len and sql[i + 1] == '*')
+                (if (std.mem.indexOfPos(u8, sql, i + 2, "*/")) |end| end + 2 else sql.len)
+            else
+                i + 1,
+            ';' => {
+                try appendMigrationStatement(allocator, &statements, sql[start..i], detail);
+                i += 1;
+                start = i;
+            },
+            else => i += 1,
+        }
+    }
+    try appendMigrationStatement(allocator, &statements, sql[start..sql.len], detail);
+
+    if (statements.items.len == 0) return error.MigrationEmpty;
+    detail.statement_index = 0;
+    return statements.toOwnedSlice(allocator);
+}
+
+fn appendMigrationStatement(allocator: std.mem.Allocator, statements: *std.ArrayList(MigrationStatement), span: []const u8, detail: *SnapshotDetail) (MigrationError || std.mem.Allocator.Error)!void {
+    const start = skipSqlTrivia(span, 0);
+    if (start == span.len) return;
+    const text = std.mem.trimEnd(u8, span[start..], " \t\r\n");
+    if (text.len == 0) return;
+    const kind = classifyMigrationStatement(text) orelse {
+        detail.statement_index = statements.items.len + 1;
+        return error.MigrationStatementNotAllowed;
+    };
+    const owned = try allocator.dupeSentinel(u8, text, 0);
+    errdefer allocator.free(owned);
+    try statements.append(allocator, .{ .kind = kind, .sql = owned });
+}
+
+pub fn applyMigration(path: [:0]const u8, statements: []const MigrationStatement, control: *StepControl, detail: *SnapshotDetail) MigrationApplyError!void {
+    detail.len = 0;
+    detail.error_code = 0;
+    detail.statement_index = 0;
+
+    var handle: ?*sqlite.sqlite3 = null;
+    const open_rc = sqlite.sqlite3_open_v2(path, &handle, sqlite.SQLITE_OPEN_READWRITE | sqlite.SQLITE_OPEN_NOFOLLOW, null);
+    const conn = handle orelse return error.OpenFailed;
+    var closed = false;
+    defer if (!closed) {
+        _ = sqlite.sqlite3_close(conn);
+    };
+    if (open_rc != sqlite.SQLITE_OK) {
+        detail.capture(conn);
+        return error.OpenFailed;
+    }
+
+    var target: Db = .{ .handle = conn };
+    if (!disableDoubleQuotedStrings(conn)) return error.GuardSetupFailed;
+    if (sqlite.sqlite3_set_authorizer(conn, authorizer, &target) != sqlite.SQLITE_OK) return error.GuardSetupFailed;
+
+    {
+        const previous = target.enterMode(.user_migration);
+        defer target.mode = previous;
+        sqlite.sqlite3_progress_handler(conn, progress_opcodes, progressHandler, control);
+        defer sqlite.sqlite3_progress_handler(conn, 0, null, null);
+
+        for (statements, 0..) |migration_statement, index| {
+            detail.statement_index = index + 1;
+
+            var statement: ?*sqlite.sqlite3_stmt = null;
+            var tail: ?[*:0]const u8 = null;
+            const prepare_rc = sqlite.sqlite3_prepare_v2(conn, migration_statement.sql.ptr, -1, &statement, &tail);
+            if (prepare_rc != sqlite.SQLITE_OK) {
+                detail.capture(conn);
+                return error.MigrationApplyFailed;
+            }
+            const prepared = statement orelse return error.MigrationApplyFailed;
+
+            const step_rc = blk: {
+                defer _ = sqlite.sqlite3_finalize(prepared);
+                if (sqlite.sqlite3_stmt_isexplain(prepared) != 0 or sqlite.sqlite3_stmt_readonly(prepared) != 0) return error.MigrationApplyFailed;
+                control.start();
+                const rc = sqlite.sqlite3_step(prepared);
+                if (rc != sqlite.SQLITE_DONE) detail.capture(conn);
+                break :blk rc;
+            };
+            if (step_rc != sqlite.SQLITE_DONE) {
+                if (step_rc == sqlite.SQLITE_INTERRUPT) {
+                    if (control.reason) |reason| return switch (reason) {
+                        .timeout => error.Timeout,
+                        .signal => error.Interrupted,
+                    };
+                }
+                return error.MigrationApplyFailed;
+            }
+        }
+    }
+
+    closed = true;
+    if (sqlite.sqlite3_close(conn) != sqlite.SQLITE_OK) {
+        detail.capture(conn);
+        _ = sqlite.sqlite3_close(conn);
+        return error.MigrationApplyFailed;
+    }
+    detail.statement_index = 0;
+}
+
+fn skipSqlTrivia(sql: []const u8, start: usize) usize {
+    var i = start;
+    while (i < sql.len) {
+        if (std.ascii.isWhitespace(sql[i])) {
+            i += 1;
+            continue;
+        }
+        if (sql[i] == '-' and i + 1 < sql.len and sql[i + 1] == '-') {
+            i = std.mem.indexOfScalarPos(u8, sql, i, '\n') orelse sql.len;
+            continue;
+        }
+        if (sql[i] == '/' and i + 1 < sql.len and sql[i + 1] == '*') {
+            i = if (std.mem.indexOfPos(u8, sql, i + 2, "*/")) |end| end + 2 else sql.len;
+            continue;
+        }
+        break;
+    }
+    return i;
+}
+
+const SqlWord = struct {
+    text: []const u8,
+    end: usize,
+};
+
+fn sqlWord(sql: []const u8, start: usize) SqlWord {
+    var end = start;
+    while (end < sql.len and (std.ascii.isAlphabetic(sql[end]) or sql[end] == '_')) end += 1;
+    return .{ .text = sql[start..end], .end = end };
+}
+
+fn classifyMigrationStatement(sql: []const u8) ?MigrationKind {
+    var i = skipSqlTrivia(sql, 0);
+    const first = sqlWord(sql, i);
+    if (std.ascii.eqlIgnoreCase(first.text, "create")) {
+        i = skipSqlTrivia(sql, first.end);
+        const second = sqlWord(sql, i);
+        if (std.ascii.eqlIgnoreCase(second.text, "unique")) {
+            i = skipSqlTrivia(sql, second.end);
+            const third = sqlWord(sql, i);
+            return if (std.ascii.eqlIgnoreCase(third.text, "index")) .create_index else null;
+        }
+        return if (std.ascii.eqlIgnoreCase(second.text, "index")) .create_index else null;
+    }
+    if (std.ascii.eqlIgnoreCase(first.text, "drop")) {
+        i = skipSqlTrivia(sql, first.end);
+        const second = sqlWord(sql, i);
+        return if (std.ascii.eqlIgnoreCase(second.text, "index")) .drop_index else null;
+    }
+    return null;
+}
+
 pub fn mentionsLimitOrOffset(sql: []const u8) bool {
     var i: usize = 0;
     while (i < sql.len) {
@@ -794,6 +1010,14 @@ fn isSchemaTable(name: ?[*:0]const u8) bool {
 
 fn isMainSchema(name: ?[*:0]const u8) bool {
     return std.mem.eql(u8, std.mem.span(name orelse return false), "main");
+}
+
+fn isStatTable(name: ?[*:0]const u8) bool {
+    const text = std.mem.span(name orelse return false);
+    for ([_][]const u8{ "sqlite_stat1", "sqlite_stat2", "sqlite_stat3", "sqlite_stat4" }) |stat| {
+        if (std.ascii.eqlIgnoreCase(text, stat)) return true;
+    }
+    return false;
 }
 
 fn authorizer(
@@ -1901,6 +2125,263 @@ test "applyCreateIndex is interrupted by the cancel flag and by the time limit" 
     var unlimited = StepControl.init(testing.io, 0, &cancel);
     try applyCreateIndex(fixture.path, "CREATE INDEX idx_b ON t(b)", &unlimited, &detail);
     try testing.expectEqual(@as(c_int, 0), detail.error_code);
+}
+
+fn freeMigrationStatements(allocator: std.mem.Allocator, statements: []MigrationStatement) void {
+    for (statements) |statement| allocator.free(statement.sql);
+    allocator.free(statements);
+}
+
+test "parseMigration accepts create and drop index statements" {
+    var detail: SnapshotDetail = .{};
+    const statements = try parseMigration(testing.allocator,
+        \\DROP INDEX existing_idx;
+        \\CREATE INDEX idx_new ON t(b);
+        \\CREATE UNIQUE INDEX idx_unique ON t(a) WHERE b IS NOT NULL;
+    , &detail);
+    defer freeMigrationStatements(testing.allocator, statements);
+
+    try testing.expectEqual(@as(usize, 3), statements.len);
+    try testing.expectEqual(MigrationKind.drop_index, statements[0].kind);
+    try testing.expectEqualStrings("DROP INDEX existing_idx", statements[0].sql);
+    try testing.expectEqual(MigrationKind.create_index, statements[1].kind);
+    try testing.expectEqualStrings("CREATE INDEX idx_new ON t(b)", statements[1].sql);
+    try testing.expectEqual(MigrationKind.create_index, statements[2].kind);
+    try testing.expectEqualStrings("CREATE UNIQUE INDEX idx_unique ON t(a) WHERE b IS NOT NULL", statements[2].sql);
+    try testing.expectEqual(@as(usize, 0), detail.statement_index);
+}
+
+test "parseMigration allows IF EXISTS and IF NOT EXISTS and keeps a semicolon inside a literal" {
+    var detail: SnapshotDetail = .{};
+    const statements = try parseMigration(testing.allocator,
+        \\DROP INDEX IF EXISTS nope;
+        \\CREATE INDEX IF NOT EXISTS existing_idx ON t(a);
+        \\CREATE INDEX idx_note ON t(b) WHERE b <> 'a;b';
+    , &detail);
+    defer freeMigrationStatements(testing.allocator, statements);
+
+    try testing.expectEqual(@as(usize, 3), statements.len);
+    try testing.expectEqual(MigrationKind.drop_index, statements[0].kind);
+    try testing.expectEqual(MigrationKind.create_index, statements[1].kind);
+    try testing.expectEqual(MigrationKind.create_index, statements[2].kind);
+    try testing.expectEqualStrings("CREATE INDEX idx_note ON t(b) WHERE b <> 'a;b'", statements[2].sql);
+}
+
+test "parseMigration skips comments and separators between statements" {
+    var detail: SnapshotDetail = .{};
+    const statements = try parseMigration(testing.allocator,
+        \\; ; -- a comment with ; inside
+        \\DROP INDEX existing_idx;
+        \\/* another ; comment */
+        \\CREATE INDEX idx_new ON t(b)
+    , &detail);
+    defer freeMigrationStatements(testing.allocator, statements);
+
+    try testing.expectEqual(@as(usize, 2), statements.len);
+    try testing.expectEqual(MigrationKind.drop_index, statements[0].kind);
+    try testing.expectEqual(MigrationKind.create_index, statements[1].kind);
+}
+
+test "parseMigration rejects other statements and reports the statement number" {
+    const cases = [_]struct { sql: [:0]const u8, index: usize }{
+        .{ .sql = "ALTER TABLE t ADD COLUMN c INTEGER", .index = 1 },
+        .{ .sql = "INSERT INTO t VALUES (4, 'w')", .index = 1 },
+        .{ .sql = "VACUUM", .index = 1 },
+        .{ .sql = "CREATE TABLE x(y)", .index = 1 },
+        .{ .sql = "CREATE TEMP TABLE x(y)", .index = 1 },
+        .{ .sql = "DROP TABLE t", .index = 1 },
+        .{ .sql = "ATTACH DATABASE 'other.db' AS other", .index = 1 },
+        .{ .sql = "DETACH other", .index = 1 },
+        .{ .sql = "PRAGMA writable_schema = 1", .index = 1 },
+        .{ .sql = "ANALYZE", .index = 1 },
+        .{ .sql = "UPDATE sqlite_stat1 SET stat = ''", .index = 1 },
+        .{ .sql = "INSERT INTO sqlite_stat1 VALUES ('t', 'idx', '1')", .index = 1 },
+        .{ .sql = "CREATE INDEX idx_new ON t(b); DROP TABLE t", .index = 2 },
+    };
+    for (cases) |case| {
+        var detail: SnapshotDetail = .{};
+        try testing.expectError(error.MigrationStatementNotAllowed, parseMigration(testing.allocator, case.sql, &detail));
+        try testing.expectEqual(case.index, detail.statement_index);
+    }
+
+    var detail: SnapshotDetail = .{};
+    try testing.expectError(error.MigrationEmpty, parseMigration(testing.allocator, "", &detail));
+    try testing.expectError(error.MigrationEmpty, parseMigration(testing.allocator, "-- nothing\n/* still nothing */", &detail));
+}
+
+test "applyMigration changes only the variant copy and keeps the source bytes" {
+    var fixture = try Fixture.init(testing.allocator);
+    defer fixture.deinit();
+    try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = "variant.db", .data = "" });
+    const variant_path = try fixture.tmp.dir.realPathFileAlloc(testing.io, "variant.db", testing.allocator);
+    defer testing.allocator.free(variant_path);
+    try createTestDatabase(variant_path, fixture_schema);
+
+    const source_before = try Io.Dir.cwd().readFileAlloc(testing.io, fixture.path, testing.allocator, .unlimited);
+    defer testing.allocator.free(source_before);
+
+    var detail: SnapshotDetail = .{};
+    const statements = try parseMigration(testing.allocator,
+        \\DROP INDEX existing_idx;
+        \\CREATE INDEX idx_new ON t(b);
+    , &detail);
+    defer freeMigrationStatements(testing.allocator, statements);
+
+    var cancel = std.atomic.Value(bool).init(false);
+    var control = StepControl.init(testing.io, 0, &cancel);
+    try applyMigration(variant_path, statements, &control, &detail);
+    try testing.expectEqual(@as(usize, 0), detail.statement_index);
+    try testing.expectEqual(@as(c_int, 0), detail.error_code);
+
+    var source: Db = .{};
+    try source.openReadOnly(fixture.path);
+    defer source.close() catch unreachable;
+    try testing.expectEqual(@as(i64, 1), try queryInt(&source, "SELECT count(*) FROM sqlite_master WHERE name = 'existing_idx'"));
+    try testing.expectEqual(@as(i64, 0), try queryInt(&source, "SELECT count(*) FROM sqlite_master WHERE name = 'idx_new'"));
+
+    var variant: Db = .{};
+    try variant.openReadOnly(variant_path);
+    defer variant.close() catch unreachable;
+    try testing.expectEqual(@as(i64, 0), try queryInt(&variant, "SELECT count(*) FROM sqlite_master WHERE name = 'existing_idx'"));
+    try testing.expectEqual(@as(i64, 1), try queryInt(&variant, "SELECT count(*) FROM sqlite_master WHERE name = 'idx_new'"));
+
+    const source_after = try Io.Dir.cwd().readFileAlloc(testing.io, fixture.path, testing.allocator, .unlimited);
+    defer testing.allocator.free(source_after);
+    try testing.expectEqualSlices(u8, source_before, source_after);
+}
+
+test "applyMigration denies forged data changes and other SQL" {
+    var fixture = try Fixture.init(testing.allocator);
+    defer fixture.deinit();
+    try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = "variant.db", .data = "" });
+    const variant_path = try fixture.tmp.dir.realPathFileAlloc(testing.io, "variant.db", testing.allocator);
+    defer testing.allocator.free(variant_path);
+    try createTestDatabase(variant_path, fixture_schema);
+
+    const forged = [_]MigrationStatement{
+        .{ .kind = .drop_index, .sql = "DELETE FROM t" },
+        .{ .kind = .create_index, .sql = "ATTACH DATABASE 'other.db' AS other" },
+        .{ .kind = .drop_index, .sql = "PRAGMA writable_schema = 1" },
+        .{ .kind = .create_index, .sql = "CREATE TEMP TABLE x(y)" },
+    };
+    for (forged) |statement| {
+        var detail: SnapshotDetail = .{};
+        var cancel = std.atomic.Value(bool).init(false);
+        var control = StepControl.init(testing.io, 0, &cancel);
+        try testing.expectError(error.MigrationApplyFailed, applyMigration(variant_path, &.{statement}, &control, &detail));
+        try testing.expectEqual(sqlite.SQLITE_AUTH, detail.error_code);
+        try testing.expectEqual(@as(usize, 1), detail.statement_index);
+    }
+
+    var variant: Db = .{};
+    try variant.openReadOnly(variant_path);
+    defer variant.close() catch unreachable;
+    try testing.expectEqual(@as(i64, 3), try queryInt(&variant, "SELECT count(*) FROM t"));
+}
+
+test "applyMigration drops an index from an analyzed database" {
+    var fixture = try Fixture.initWithSchema(testing.allocator,
+        \\CREATE TABLE t(a INTEGER, b TEXT);
+        \\INSERT INTO t VALUES (1, 'x'), (2, 'y'), (3, 'z');
+        \\CREATE INDEX existing_idx ON t(a);
+        \\ANALYZE;
+    );
+    defer fixture.deinit();
+    try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = "variant.db", .data = "" });
+    const variant_path = try fixture.tmp.dir.realPathFileAlloc(testing.io, "variant.db", testing.allocator);
+    defer testing.allocator.free(variant_path);
+    try Io.Dir.cwd().copyFile(fixture.path, Io.Dir.cwd(), variant_path, testing.io, .{});
+
+    var detail: SnapshotDetail = .{};
+    const statements = try parseMigration(testing.allocator, "DROP INDEX existing_idx", &detail);
+    defer freeMigrationStatements(testing.allocator, statements);
+
+    var cancel = std.atomic.Value(bool).init(false);
+    var control = StepControl.init(testing.io, 0, &cancel);
+    try applyMigration(variant_path, statements, &control, &detail);
+    try testing.expectEqual(@as(usize, 0), detail.statement_index);
+
+    var variant: Db = .{};
+    try variant.openReadOnly(variant_path);
+    defer variant.close() catch unreachable;
+    try testing.expectEqual(@as(i64, 0), try queryInt(&variant, "SELECT count(*) FROM sqlite_master WHERE name = 'existing_idx'"));
+    try testing.expectEqual(@as(i64, 0), try queryInt(&variant, "SELECT count(*) FROM sqlite_stat1 WHERE idx = 'existing_idx'"));
+}
+
+test "applyMigration reports the failing statement" {
+    var fixture = try Fixture.init(testing.allocator);
+    defer fixture.deinit();
+    try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = "variant.db", .data = "" });
+    const variant_path = try fixture.tmp.dir.realPathFileAlloc(testing.io, "variant.db", testing.allocator);
+    defer testing.allocator.free(variant_path);
+    try createTestDatabase(variant_path, fixture_schema);
+
+    var detail: SnapshotDetail = .{};
+    const statements = try parseMigration(testing.allocator,
+        \\DROP INDEX missing_idx;
+        \\CREATE INDEX idx_new ON t(b);
+    , &detail);
+    defer freeMigrationStatements(testing.allocator, statements);
+
+    var cancel = std.atomic.Value(bool).init(false);
+    var control = StepControl.init(testing.io, 0, &cancel);
+    try testing.expectError(error.MigrationApplyFailed, applyMigration(variant_path, statements, &control, &detail));
+    try testing.expectEqual(@as(usize, 1), detail.statement_index);
+    try testing.expect(std.mem.indexOf(u8, detail.text(), "no such index") != null);
+    try testing.expectEqual(sqlite.SQLITE_ERROR, detail.error_code);
+}
+
+test "applyMigration reports a syntax error with its statement number" {
+    var fixture = try Fixture.init(testing.allocator);
+    defer fixture.deinit();
+    try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = "variant.db", .data = "" });
+    const variant_path = try fixture.tmp.dir.realPathFileAlloc(testing.io, "variant.db", testing.allocator);
+    defer testing.allocator.free(variant_path);
+    try createTestDatabase(variant_path, fixture_schema);
+
+    var detail: SnapshotDetail = .{};
+    const statements = try parseMigration(testing.allocator,
+        \\CREATE INDEX idx_new ON t(b);
+        \\CREATE INDEX idx_bad ON t(
+    , &detail);
+    defer freeMigrationStatements(testing.allocator, statements);
+
+    var cancel = std.atomic.Value(bool).init(false);
+    var control = StepControl.init(testing.io, 0, &cancel);
+    try testing.expectError(error.MigrationApplyFailed, applyMigration(variant_path, statements, &control, &detail));
+    try testing.expectEqual(@as(usize, 2), detail.statement_index);
+    try testing.expect(detail.text().len != 0);
+}
+
+test "applyMigration is interrupted by the cancel flag and by the time limit" {
+    var fixture = try Fixture.initWithSchema(testing.allocator,
+        \\CREATE TABLE t(a INTEGER, b TEXT);
+        \\WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 300000)
+        \\INSERT INTO t SELECT x, 'v' || x FROM c;
+    );
+    defer fixture.deinit();
+    try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = "variant.db", .data = "" });
+    const variant_path = try fixture.tmp.dir.realPathFileAlloc(testing.io, "variant.db", testing.allocator);
+    defer testing.allocator.free(variant_path);
+    try Io.Dir.cwd().copyFile(fixture.path, Io.Dir.cwd(), variant_path, testing.io, .{});
+
+    var detail: SnapshotDetail = .{};
+    const statements = try parseMigration(testing.allocator, "CREATE INDEX idx_b ON t(b)", &detail);
+    defer freeMigrationStatements(testing.allocator, statements);
+
+    var cancel = std.atomic.Value(bool).init(true);
+    var signalled = StepControl.init(testing.io, 0, &cancel);
+    try testing.expectError(error.Interrupted, applyMigration(variant_path, statements, &signalled, &detail));
+    try testing.expectEqual(InterruptReason.signal, signalled.reason.?);
+
+    cancel.store(false, .monotonic);
+    var limited = StepControl.init(testing.io, 1, &cancel);
+    try testing.expectError(error.Timeout, applyMigration(variant_path, statements, &limited, &detail));
+    try testing.expectEqual(InterruptReason.timeout, limited.reason.?);
+
+    var unlimited = StepControl.init(testing.io, 0, &cancel);
+    try applyMigration(variant_path, statements, &unlimited, &detail);
+    try testing.expectEqual(@as(usize, 0), detail.statement_index);
 }
 
 test "the candidate index name is kept for the INDEXED BY message" {

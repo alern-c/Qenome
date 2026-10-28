@@ -9,6 +9,7 @@ pub const ExitCode = enum(u8) {
     mismatch = 3,
     incomparable = 4,
     cleanup = 5,
+    regression = 6,
     timeout = 124,
     hangup = 129,
     interrupted = 130,
@@ -174,6 +175,9 @@ pub fn classifyError(message: []const u8) ErrorClass {
     if (std.mem.startsWith(u8, message, "--suggest ")) {
         return .{ .code = "usage_suggest_conflict", .hint = "With --suggest, give one SELECT file or a manifest, and do not pass --runs, --format kv, or an index file." };
     }
+    if (std.mem.startsWith(u8, message, "--migration ")) {
+        return .{ .code = "usage_migration_conflict", .hint = "Use --migration with --batch and a manifest without candidates; do not pass --suggest or --index-sql." };
+    }
     if (std.mem.indexOf(u8, message, "no wrangler config") != null) {
         return .{ .code = "d1_config_not_found", .hint = "Pass --config <PATH>, or run qenome in the wrangler project directory." };
     }
@@ -251,6 +255,18 @@ pub fn classifyError(message: []const u8) ErrorClass {
     }
     if (std.mem.indexOf(u8, message, "cannot read --select") != null) {
         return .{ .code = "select_unreadable", .hint = "--select takes a path to a file that holds one SELECT, not the SQL text." };
+    }
+    if (std.mem.indexOf(u8, message, "cannot read --migration") != null) {
+        return .{ .code = "migration_unreadable", .hint = "--migration takes a path to a file that holds CREATE INDEX and DROP INDEX statements, not the SQL text." };
+    }
+    if (std.mem.indexOf(u8, message, "the migration holds no statement") != null) {
+        return .{ .code = "migration_empty", .hint = "Write at least one CREATE INDEX or DROP INDEX statement in the --migration file." };
+    }
+    if (std.mem.indexOf(u8, message, "is not a CREATE INDEX or DROP INDEX") != null) {
+        return .{ .code = "migration_statement_rejected", .hint = "Use only CREATE INDEX, CREATE UNIQUE INDEX, and DROP INDEX in a --migration file." };
+    }
+    if (std.mem.indexOf(u8, message, "could not be applied") != null) {
+        return .{ .code = "migration_failed", .hint = "Fix the named statement so it applies to this database, then rerun." };
     }
     if (std.mem.indexOf(u8, message, "cannot read --index-sql") != null) {
         return .{ .code = "index_unreadable", .hint = "--index-sql takes a path to a file that holds one CREATE INDEX, not the SQL text." };
@@ -526,6 +542,7 @@ test "cleanup failure maps to exit 5 and keeps every other code" {
     try testing.expectEqual(ExitCode.hangup, finalExitCode(.hangup, true));
     try testing.expectEqual(ExitCode.mismatch, finalExitCode(.mismatch, true));
     try testing.expectEqual(ExitCode.incomparable, finalExitCode(.incomparable, true));
+    try testing.expectEqual(ExitCode.regression, finalExitCode(.regression, true));
 }
 
 test "the step control borrows the cancel flag the signal handler writes" {
@@ -562,6 +579,9 @@ test "error text maps to a stable code and a next step" {
         .{ .message = "no candidate index to compare: SQLite suggested no index for these queries", .code = "no_candidates" },
         .{ .message = "no candidate index to compare: all 2 suggested indexes were rejected", .code = "no_candidates" },
         .{ .message = "--suggest does not run the timing; remove --runs (see --help)", .code = "usage_suggest_conflict" },
+        .{ .message = "--migration needs --batch; put the queries in a manifest (see --help)", .code = "usage_migration_conflict" },
+        .{ .message = "--migration applies one SQL file; remove --suggest (see --help)", .code = "usage_migration_conflict" },
+        .{ .message = "--migration replaces the index file; remove --index-sql (see --help)", .code = "usage_migration_conflict" },
         .{ .message = "--suggest supports --format human or --format json, not kv (see --help)", .code = "usage_suggest_conflict" },
         .{ .message = "--suggest suggests the index; remove --index-sql (see --help)", .code = "usage_suggest_conflict" },
         .{ .message = "--suggest takes two paths, the database and the SELECT file (see --help)", .code = "usage_suggest_conflict" },
