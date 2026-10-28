@@ -178,6 +178,27 @@ pub fn classifyError(message: []const u8) ErrorClass {
     if (std.mem.startsWith(u8, message, "--migration ")) {
         return .{ .code = "usage_migration_conflict", .hint = "Use --migration with --batch and a manifest without candidates; do not pass --suggest or --index-sql." };
     }
+    if (std.mem.indexOf(u8, message, "use either --select or --write") != null or
+        std.mem.startsWith(u8, message, "--write compares one statement") or
+        std.mem.startsWith(u8, message, "--write names the statement"))
+    {
+        return .{ .code = "usage_write_conflict", .hint = "Use --write with one INSERT, UPDATE, DELETE, or REPLACE and an index file; do not pass --select, --batch, --migration, or --suggest." };
+    }
+    if (std.mem.indexOf(u8, message, "cannot read --write") != null) {
+        return .{ .code = "write_unreadable", .hint = "--write takes a path to a file that holds one INSERT, UPDATE, DELETE, or REPLACE, not the SQL text." };
+    }
+    if (std.mem.indexOf(u8, message, "--write on the ") != null) {
+        return .{ .code = "write_rejected", .hint = "Use one INSERT, UPDATE, DELETE, or REPLACE that applies to this database; do not use DDL, PRAGMA, ATTACH, VACUUM, or multiple statements." };
+    }
+    if (std.mem.indexOf(u8, message, "--write exceeded the time limit") != null) {
+        return .{ .code = "write_timeout", .hint = "Raise --timeout-ms, or narrow the write." };
+    }
+    if (std.mem.indexOf(u8, message, "--write failed") != null) {
+        return .{ .code = "write_failed", .hint = "Read the SQLite message, fix the write or its constraints, then rerun. The original database was not changed." };
+    }
+    if (std.mem.indexOf(u8, message, "--write: the query plan could not be read") != null) {
+        return .{ .code = "write_plan_unreadable", .hint = "Check the write against this database, then rerun." };
+    }
     if (std.mem.indexOf(u8, message, "no wrangler config") != null) {
         return .{ .code = "d1_config_not_found", .hint = "Pass --config <PATH>, or run qenome in the wrangler project directory." };
     }

@@ -18,13 +18,14 @@
 
 <p align="center"><sub>この録画は <a href="#サンプルプロジェクトを試す"><code>examples/d1-toml</code></a> のもの。サンプルは手元でコマンド2本で再現できます。</sub></p>
 
-読み取り専用の `SELECT` を1本と、候補の `CREATE INDEX` を1本渡します。ローカルの SQLite ファイル、またはローカルの Cloudflare D1（`--d1 <BINDING>` と `--config`）をサンドボックスのコピーにして比較します。元のデータベースは変更しません。
+読み取り専用の `SELECT` を1本と、候補の `CREATE INDEX` を1本渡します。`--write` を付けると、代わりに `INSERT`・`UPDATE`・`DELETE`・`REPLACE` を1本渡します。ローカルの SQLite ファイル、またはローカルの Cloudflare D1（`--d1 <BINDING>` と `--config`）をサンドボックスのコピーにして比較します。元のデータベースは変更しません。
 
 ## 特徴
 
 - **元のデータベースは変更しません。** 読み取り専用で開き、サンドボックスのコピーで比較するので、役に立たない候補のインデックスはマージの前に捨てられます。
 - **判定は時間ではなく、読んだ行数。** 読んだ行数と書いた行数は、ローカル D1 と同じ数え方（workerd のパッチ）。`--runs 0` でも判定は残り、計時だけを省きます。
 - **結果の行も照合します。** 2つのコピーが同じ行を同じ回数返すかを多重集合として比べ、一致しない・比較できない結果は合格にせず報告します。
+- **インデックスが書き込みに与えるコストも見られます。** `--write` は `INSERT`・`UPDATE`・`DELETE`・`REPLACE` を1本、各コピーでロールバックするトランザクションの中で実行し、セカンダリインデックスの挿入・トリガー・外部キーの CASCADE を含む書いた行数を両側で報告します。[書き込みを比べる](#書き込みを比べる)を参照してください。
 - **ローカル D1 のバインディングだけで試せます。** `--d1 <BINDING>` が wrangler の設定からローカルデータベースを探し、`--config` で設定ファイルを指定できます。
 - **複数のクエリをまとめて比較。** `--batch <FILE>` は JSON のマニフェストにある全 SELECT と全候補 `CREATE INDEX` を組み合わせて、各組み合わせの判定を出します。[まとめて比べる（--batch）](#まとめて比べる--batch)を参照してください。
 - **クエリから候補のインデックスを探せます。** `--suggest` は SQLite の expert に候補のインデックスを提案させて比較するので、SELECT ファイルだけで済みます。[候補のインデックスを提案させる（--suggest）](#候補のインデックスを提案させる--suggest)を参照してください。
@@ -177,7 +178,7 @@ D1 のスキーマを変えるエージェントは、`CREATE INDEX` を残す�
 
 ## クイックスタート
 
-この手順では、テスト用データベースを作り、Qenome をビルドし、6つの例を実行します。コマンドはリポジトリのルートで、ブロックごとに Linux か macOS で実行してください。必要なものは Zig 0.17.0（「ソースからビルド」を参照）と `sqlite3` コマンドラインツールです。`sqlite3` は SQL ファイルを新しいデータベースへ読み込みます。
+この手順では、テスト用データベースを作り、Qenome をビルドし、7つの例を実行します。コマンドはリポジトリのルートで、ブロックごとに Linux か macOS で実行してください。必要なものは Zig 0.17.0（「ソースからビルド」を参照）と `sqlite3` コマンドラインツールです。`sqlite3` は SQL ファイルを新しいデータベースへ読み込みます。
 
 `testdata/schema.sql` と `testdata/seed.sql` からテスト用データベースを作ります。`verify.sql` は17項目それぞれについて `ok` を1行出力し、期待値と違う値があればその時点で失敗します。
 
@@ -195,7 +196,7 @@ Qenome をビルドします。
 zig build
 ```
 
-6つの例は `zig-out/bin/qenome` を実行します。各コマンドの末尾には、その例が返すべき結果（Summary の `result` と `verdict`、batch では `recommended`、終了コード）を書いてあります。`python3 scripts/check_all.py` と CI の quality ワークフローは、これらの行を書いてあるとおりに実行するので、README とプログラムのずれは見つかります。`--runs 40` は、負荷のあるマシンでも中央値を安定させるための指定です（既定は `10`）。
+7つの例は `zig-out/bin/qenome` を実行します。各コマンドの末尾には、その例が返すべき結果（Summary の `result` と `verdict`、batch では `recommended`、終了コード）を書いてあります。`python3 scripts/check_all.py` と CI の quality ワークフローは、これらの行を書いてあるとおりに実行するので、README とプログラムのずれは見つかります。`--runs 40` は、負荷のあるマシンでも中央値を安定させるための指定です（既定は `10`）。
 
 全走査をなくすインデックス: 候補のインデックスで `SCAN events` が `SEARCH events USING INDEX ix_events_customer_id (customer_id=?)` に変わり、読んだ行数が 200,000 から 101 に減り、両方のコピーが同じ100行を返します。
 
@@ -213,6 +214,12 @@ zig build
 
 ```sh
 ./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/no-effect.sql testdata/cases/no-effect.index.sql --bind 1:text:ok --runs 40  # expect: result=match verdict=no-effect exit=0
+```
+
+新しいインデックスで書くコストが増える INSERT: `--write` は `INSERT`・`UPDATE`・`DELETE`・`REPLACE` を1本、サンドボックスの両方のコピーで、ロールバックするトランザクションの中で比べます。この INSERT は `customer_id` のインデックスを使いませんが、行を追加するたびにインデックスも更新するため、書いた行数は 1 から 2 に増えます。両方のコピーが同じ1行を変更するので、判定は `needs-check`、終了コードは 0 のままです。元のデータベースは変更しません。
+
+```sh
+./zig-out/bin/qenome testdata/generated/qenome-fixture.db --write testdata/cases/write.sql --index-sql testdata/cases/improved.index.sql --bind 1:int:1234 --runs 0  # expect: result=match verdict=needs-check exit=0
 ```
 
 比較できない SELECT: `ORDER BY random()` は実行するたびに別の行を選ぶため、Qenome は行が一致したと報告せず、比較できないと報告します。この例では SELECT を計測も判定もしません。ここでの終了コード 4 は期待どおりの結果で、エラーではありません。
@@ -243,6 +250,7 @@ qenome app.db select.sql index.sql --bind 1:int:1234
 qenome --db app.db --select select.sql --index-sql index.sql --format kv
 qenome app.db select.sql index.sql --format json
 qenome app.db select.sql index.sql --seed-data seed.json
+qenome app.db --write update.sql --index-sql index.sql
 qenome --d1 DB select.sql index.sql
 qenome app.db --batch batch.json
 qenome app.db --batch batch.json --migration 0002_replace_index.sql
@@ -250,22 +258,25 @@ qenome app.db select.sql --suggest
 qenome app.db --batch batch.json --suggest
 ```
 
-パスは DB・SELECT ファイル・CREATE INDEX ファイルの順に埋まり、`--db` / `--select` / `--index-sql` でも指定できます（混在可）。位置指定のパスは、まだ指定されていない最初の役割に埋まります。`--d1` のときは、位置指定の2つのパスが SELECT と CREATE INDEX の役割に入ります。`--` の後は `-` で始まるパスとして扱います。
+パスは DB・SELECT（または書き込み）ファイル・CREATE INDEX ファイルの順に埋まり、`--db` / `--select` / `--write` / `--index-sql` でも指定できます（混在可）。位置指定のパスは、まだ指定されていない最初の役割に埋まります。`--d1` のときは、位置指定の2つのパスが SELECT と CREATE INDEX の役割に入ります。`--write` のときは、位置指定のパスが SELECT の代わりに書き込みファイルへ入ります。`--` の後は `-` で始まるパスとして扱います。
 
-`select.sql` には読み取り専用の SELECT を1本、`index.sql` には候補の `CREATE INDEX` を1本書きます。複数文・書込・その他の文は拒否します。`--migration` のファイルだけは例外で、`CREATE INDEX`・`CREATE UNIQUE INDEX`・`DROP INDEX`・`CREATE TABLE`・`ALTER TABLE` を複数書けます（「まとめて比べる（--batch）」を参照）。
+`select.sql` には読み取り専用の SELECT を1本、`index.sql` には候補の `CREATE INDEX` を1本書きます。複数文やその他の文は拒否します。`--migration` のファイルだけは例外で、`CREATE INDEX`・`CREATE UNIQUE INDEX`・`DROP INDEX`・`CREATE TABLE`・`ALTER TABLE` を複数書けます（「まとめて比べる（--batch）」を参照）。
+
+`--write` は `--select` の代わりに、`INSERT`・`UPDATE`・`DELETE`・`REPLACE` を1本受け取ります。先頭の `WITH` と末尾の `RETURNING` は使えます。`--batch`・`--migration`・`--suggest` とは併用できません。文は各コピーでトランザクションの中で実行してロールバックするため、元のデータベースは変更されず、`--runs` の各回は同じ行から始まります。
 
 - `--db <PATH>`: 対象の SQLite データベース（必須、1回だけ。`--d1` とは併用しない）
 - `--d1 <BINDING>`: wrangler 設定の `d1_databases` にあるこのバインディングのローカル D1 データベースを `--db` の代わりに使う。「D1 のローカルデータベース」を参照
 - `--config <PATH>`: `--d1` が読む wrangler 設定（既定はカレントディレクトリの `wrangler.toml` / `wrangler.jsonc` / `wrangler.json`）
-- `--select <FILE>`: 比較する SELECT を1本書いたファイル（必須、1回だけ）
+- `--select <FILE>`: 比較する SELECT を1本書いたファイル（必須、1回だけ。`--write` とは併用しない）
+- `--write <FILE>`: SELECT の代わりに、`INSERT`・`UPDATE`・`DELETE`・`REPLACE` を1本書いたファイル。サンドボックスの各コピーでトランザクションの中で実行してロールバックする。「書き込みを比べる」を参照。`--select`・`--batch`・`--migration`・`--suggest` とは併用できない
 - `--index-sql <FILE>`: 候補の CREATE INDEX を1本書いたファイル（必須、1回だけ）
 - `--batch <FILE>`: JSON のマニフェストにある全 SELECT を、全候補 CREATE INDEX と1回の実行で比べる。「まとめて比べる（--batch）」を参照。`--select` / `--index-sql` / `--bind` / 位置指定の SELECT・INDEX、`--runs`、`--format kv` とは併用できない
 - `--migration <FILE>`: `--batch` の全クエリを実行する前に、この SQL ファイルを variant にだけ適用する。`--batch` と、`candidates` を持たないマニフェストが必要。`--select` / `--index-sql` / `--bind` / `--runs` / `--suggest` / `--format kv` とは併用できない。`CREATE INDEX`・`CREATE UNIQUE INDEX`・`DROP INDEX`・`CREATE TABLE`（`AS SELECT` を除く）・`ALTER TABLE`（ADD / RENAME / DROP COLUMN と RENAME TO）を受け付け、データ変更・`DROP TABLE`・`ATTACH`・`PRAGMA`・その他の文は文番号付きで拒否する。マイグレーションで消した・名前を変えた列やテーブルを参照するクエリがあると実行全体が終了コード `1` で止まる。列を足す・消すと `SELECT *` は結果の列数が変わるため比較できず、終了コード `4` になる。「まとめて比べる（--batch）」を参照
 - `--seed-data <FILE>`: 比較の前に、この JSON の指定に従ってサンドボックスのコピーのテーブルを決まったダミーデータで置き換える。元のデータベースは変更しない。`--batch`・`--suggest`・`--migration` を含むすべてのモードで使える。「サンドボックス用のデータを作る」を参照
 - `--suggest`: インデックスを自分で用意する代わりに、SQLite の expert に候補のインデックスを提案させ、その提案を比べる。`--batch` のときはマニフェストの `candidates` を省略できる。`--runs`、`--format kv`、インデックスのファイル（`--index-sql` または3番目の位置指定パス）とは併用できない。「候補のインデックスを提案させる（--suggest）」を参照
 - `--bind <N>:<TYPE>[:<VALUE>]`: SELECT のパラメータ N に渡す型付きの値。繰り返し指定できる。N は SQLite のパラメータ番号で、名前付きパラメータは最初に現れたときの番号を共有し、`?NNN` は NNN を使う。TYPE は int / real / text / null（null は値を取らない）。1 からパラメータ数までの各番号をちょうど1回ずつ指定する必要があり、パラメータの無い SELECT に `--bind` は付けられない。値は引数の残り全体なので、text には `:` を含められる
-- `--runs <N>`: 結果が一致したあとの計測ラウンド数。各ラウンドは各コピーで SELECT を1回計測する。既定は 10、0 で計測しないが読んだ行数と判定は残る、最大 1000。1秒を超える計測は進捗を stderr に出す
-- `--timeout-ms <MS>`: インデックス作成と SELECT 1回あたりの制限時間。既定は 30000、0 で無効。1回の実行は全体で、データベースのコピーに加えて `(3 + 4 × runs)` 回分の制限時間に加え、ANALYZE とサイズの診断、SELECT にパラメータがある場合の bind 依存の部分インデックス診断それぞれの制限時間までかかることがある
+- `--runs <N>`: 結果が一致したあとの計測ラウンド数。各ラウンドは各コピーで SELECT を1回計測する。既定は 10、0 で計測しないが読んだ行数と判定は残る、最大 1000。1秒を超える計測は進捗を stderr に出す。`--write` では N は各コピーでロールバックしながら実行する回数（最低1回）で、計測は行わず、毎回同じ件数になることを確かめる
+- `--timeout-ms <MS>`: インデックス作成、SELECT 1回、`--write` の1回あたりの制限時間。既定は 30000、0 で無効。1回の実行は全体で、データベースのコピーに加えて `(3 + 4 × runs)` 回分の制限時間に加え、ANALYZE とサイズの診断、SELECT にパラメータがある場合の bind 依存の部分インデックス診断それぞれの制限時間までかかることがある
 - `--format <human|kv|json>`: 出力形式（既定 human）。「出力形式」を参照
 - `--show-binds`: バインド値を出す。付けない場合、human はバインドを出さず、kv と json は番号・型・テキストの長さだけを出し、値をログに残さない
 - `--show-rows`: 片方のコピーだけが返した例の行を出す。付けない場合、どの形式も件数だけを出して行の値をログに残さない。human はこのフラグで再実行するよう案内する
@@ -276,13 +287,29 @@ qenome app.db --batch batch.json --suggest
 
 Qenome はデータベースを読み取り専用で開き、SQLite の backup API を使って、Linux と macOS では `$TMPDIR`（既定は `/tmp`）、Windows では `%TMP%`、`%TEMP%`、`%USERPROFILE%` のうち設定されている最初の場所の下にある非公開ディレクトリへコピーします。このコピーが baseline で、2つ目のコピーが variant になり、候補のインデックスは variant にだけ作ります。`--seed-data` を付けると、Qenome は variant を作る前に baseline へ spec の行を入れるので、両方のコピーが同じダミーデータを持ちます。SELECT は両方のコピーで実行し、結果の行を多重集合として比較します（同じ行が同じ回数だけ現れること）。行の順序は参考情報として示し、一致判定には含めません。
 
-読んだ行数と書いた行数は、この最初の1回の実行から取るので追加のコストはなく、`--runs 0` でも残ります。結果が一致し、`--runs` が 0 でないとき、SELECT をもう一度両方のコピーで参考値として計測します。各コピーには、行の比較に使った計測しないウォームアップが1回あります。計測ラウンドは baseline→variant と variant→baseline を交互に繰り返します（ABBA）。1ラウンドは reset 文から `SQLITE_DONE` までの `sqlite3_step` を、割り込みの確認を含めて計測します。列の読み取り、prepare、bind、計画の取得は計測しません。各コピーは書き込み直後の接続とページキャッシュを再利用するため、キャッシュはウォームです。非公開ディレクトリは、結果にかかわらず終了前に削除します。
+読んだ行数と書いた行数は、この最初の1回の実行から取るので追加のコストはなく、`--runs 0` でも残ります。結果が一致し、`--runs` が 0 でないとき、SELECT をもう一度両方のコピーで参考値として計測します。各コピーには、行の比較に使った計測しないウォームアップが1回あります。計測ラウンドは baseline→variant と variant→baseline を交互に繰り返します（ABBA）。1ラウンドは reset 文から `SQLITE_DONE` までの `sqlite3_step` を、割り込みの確認を含めて計測します。列の読み取り、prepare、bind、計画の取得は計測しません。各コピーは書き込み直後の接続とページキャッシュを再利用するため、キャッシュはウォームです。非公開ディレクトリは、結果にかかわらず終了前に削除します。`--write` では各回がトランザクションとロールバックの中で行う実際の計測で、計測ラウンドはありません。
 
 Linux と macOS では、このディレクトリを所有者だけがアクセスできる権限（`0700`）で作ります。Windows にはこれに相当する指定がないため、一時ディレクトリのアクセス制御を引き継ぎ、保護はその場所がそのユーザー専用であることに依存します。Qenome は Windows では Ctrl+C と Ctrl+Break、Linux と macOS では SIGINT・SIGTERM・SIGHUP を受けたときに後片付けしますが、コンソールを閉じる・プロセスを強制終了するといった強制的な終了では、コピーが残ることがあります。
 
-判定は読んだ行数から決まり、終了コードを変えません。
+判定は読んだ行数から決まり、終了コードを変えません。`--write` では `RETURNING` の行・`changes`・`total_changes` も一致する必要があります。
 
 読んだ行数と書いた行数は、ローカル D1 と同じ数え方（workerd のパッチ）です。Qenome は同梱 SQLite を `workerd` の行数カウントのパッチ付きでビルドします。この数値は、まだ本番 D1 と照合していません。どちらのカウンタも 32 ビットで、それぞれの回数が 1回の実行で 4,294,967,295 を超えると一周して小さい値に戻るため、その場合は巻き戻った値を報告し、判定もその値で比較します。パッチの出どころは `NOTICE`、当て直す手順は `vendor/sqlite3/PROVENANCE.txt` に記録しています。
+
+### 書き込みを比べる
+
+`--write write.sql --index-sql index.sql` は、`INSERT`・`UPDATE`・`DELETE`・`REPLACE` を1本、候補のインデックスの前後で比べます。先頭の `WITH` と末尾の `RETURNING` は使えます。`CREATE`・`DROP`・`ALTER`・`PRAGMA`・`ATTACH`・`VACUUM` と複数文は拒否します。文は SELECT モードと同じ authorizer で準備するため、main スキーマへの書き込みと、読み取り・関数・共通テーブル式だけを許可します。
+
+元のデータベースはこれまでどおり読み取り専用で開き、コピーします。各コピーでトランザクションを開始し、文を実行し、カウンタ・changes・`RETURNING` の行を読み、ロールバックします。次の `--runs` の回は同じ行から始まります。書き込み用の接続はサンドボックスのコピーにだけ開き、SQLite の外部キーを有効にします（`PRAGMA foreign_keys=ON`）。そのため `ON DELETE CASCADE` や `SET NULL` の動作も数え、文と一緒にロールバックします。トリガーも有効で、その書き込みも数えます。ロールバックに失敗したら比較を中止します。サンドボックスを修復しようとはしません。
+
+両方のコピーが同じ変更をしたことを確かめます。比べるのは3つです。`RETURNING` の行の多重集合（`RETURNING` が無ければ空）、`sqlite3_changes`（文自身が変更した行数）、`sqlite3_total_changes` の差（トリガーと外部キーの変更も含む）。どれかが違えば結果の不一致（終了コード `3`）とし、行数から判定しません。
+
+`--runs` の意味はこのモードでは変わります。各コピーでロールバックしながら実行する回数で、最低1回です。最初の実行の値を報告します。2回目以降のカウンタか changes が違えば、同じ行から同じように実行できない文なので、比較不能（終了コード `4`）にして理由を出します。`--runs 0` でも1回は実行します。計測ラウンドは無いため `timing` は `null` で、`time` の行も計測していないと表示します。
+
+実行のたびに結果が変わる関数（`random()`・`randomblob()`・`changes()`・`last_insert_rowid()`・`total_changes()`）、現在時刻を読む関数（`date()`・`datetime()`・`julianday()`・`strftime()` などの時刻関数）、スキーマテーブル（`sqlite_schema`・`sqlite_master`・`sqlite_stat*`）を読む文は実行しません。トリガーがスキーマを読む場合も含みます。比較不能（終了コード `4`）にして、文を実行しなかったと表示します。`RETURNING` は行として比べるので、どの行を変更したかの確認に使えます。
+
+書いた行数は SELECT モードと同じローカル D1（workerd のパッチ）の数え方です。カウンタにはテーブルの行と、セカンダリインデックスの挿入・トリガーの挿入・外部キーの CASCADE が入ります。同梱のパッチはセカンダリインデックスの削除を数えません。そのため `DELETE` や、インデックスの古い項目を消す `UPDATE` は、テーブルの変更は数えてもインデックスの削除は数えません。`DELETE ... WHERE` は、書いた行数が同じまま読んだ行数だけ減ることがあります。書いた行数はパッチが測る範囲であり、インデックス更新の全コストではないと捉えてください。
+
+`--write` は `--d1`・`--seed-data`・`--bind`・`--timeout-ms`・`--show-binds`・`--show-rows` とすべての出力形式で使えます。`--batch`・`--migration`・`--suggest` とは併用できません。これらのモードは SELECT 専用の入力のままで、`--write` を usage エラーで拒否します。
 
 ### サンドボックス用のデータを作る
 
@@ -450,7 +477,7 @@ Qenome は baseline のコピーに2つ目の読み取り専用接続を開き�
 
 human は判断に必要なものを出します。
 
-- Summary: 結果の行が一致したか、コピーごとの読んだ行数と書いた行数、判定とその理由、計画が変わったか、`--seed-data` のときは `seed data` と `seed` の行、ペアのラウンドから決めた時間の向き（判定できないときは向きを付けない中央値の比）、中央値が同じ向きのときの変化の大きさ（`230x faster`）、容量の増分、デバッグビルドのときはその注意
+- Summary: 結果の行が一致したか、コピーごとの読んだ行数と書いた行数、判定とその理由、計画が変わったか、`--seed-data` のときは `seed data` と `seed` の行、ペアのラウンドから決めた時間の向き（判定できないときは向きを付けない中央値の比）、中央値が同じ向きのときの変化の大きさ（`230x faster`）、容量の増分、デバッグビルドのときはその注意。`--write` では `write` のファイル、`returning rows`、`rows changed`、`total changed`、`write runs` を足し、左右比較表にも `rows changed` と `total changed` を足す
 - baseline と variant の左右比較表: 読んだ行数、書いた行数、結果の行数、フルスキャン行数、VMステップ数、0 でないときはソート回数と autoindex 行数、計測したときは p25 / p75 の時間、データベースファイルのバイト数
 - 両方のコピーの実行計画。`kind` / `covering` / `automatic` は SQLite の文言から読んだヒント
 - 助言の警告があるときは `Warnings` の節に `warning: <code>: <message>` の行
@@ -463,7 +490,7 @@ human は判断に必要なものを出します。
 
 ### kv
 
-kv は全項目を1行1項目の `key: value` で出し、スクリプトとログに向きます。human が出さない入力、SQLite と Zig の版、ビルド種別、OS とアーキテクチャ、作業ディレクトリ、計時条件も含みます。`--d1` のときは `d1-binding` / `d1-config` / `d1-database-id` / `d1-local-database` / `d1-sqlite-version` / `d1-sqlite-version-note` / `d1-caution` を加えます。`--seed-data` のときは `seed-data` / `seed` / `seed-rows` / `seed-tables` とテーブルごとの `seed-table` を加えます。`baseline-only-row` / `variant-only-row` は `--show-rows` のときだけ出ます。
+kv は全項目を1行1項目の `key: value` で出し、スクリプトとログに向きます。human が出さない入力、SQLite と Zig の版、ビルド種別、OS とアーキテクチャ、作業ディレクトリ、計時条件も含みます。`--d1` のときは `d1-binding` / `d1-config` / `d1-database-id` / `d1-local-database` / `d1-sqlite-version` / `d1-sqlite-version-note` / `d1-caution` を加えます。`--seed-data` のときは `seed-data` / `seed` / `seed-rows` / `seed-tables` とテーブルごとの `seed-table` を加えます。`--write` のときは `select` の代わりに `write` を出し、`result-kind`、`write-changes-baseline`、`write-changes-variant`、`write-total-changes-baseline`、`write-total-changes-variant`、`write-runs` を加え、`measure-*` の行も書き込み用の内容にします。`baseline-only-row` / `variant-only-row` は `--show-rows` のときだけ出ます。
 
 ### json
 
@@ -480,7 +507,7 @@ json は、比較が終わったときに stdout へ JSON オブジェクトを1
 
 `--migration` の batch では、`needs-check` と同じ条件を `regressed` と呼びます。マイグレーションはすでに書かれた変更だからです。単発・`--batch`・`--suggest` の判定は `needs-check` のままです。batch の `summary` の件数キーも `needs_check` のままです。variant だけで実行できるクエリは `not-judged` で、終了コードは変わりません。「まとめて比べる（--batch）」を参照。
 
-判定は、ローカル D1 と同じ数え方（workerd のパッチ）で数えた読んだ行数と書いた行数で決まります。時間は参考値なので、`--runs 0` でも判定は出ます。この数値は、まだ本番 D1 と照合していません。
+判定は、ローカル D1 と同じ数え方（workerd のパッチ）で数えた読んだ行数と書いた行数で決まります。時間は参考値なので、`--runs 0` でも判定は出ます。この数値は、まだ本番 D1 と照合していません。`--write` では、`result` は `RETURNING` の行（`RETURNING` が無ければ空）を比べ、両方のコピーの `changes` と `total_changes` も一致しなければなりません。違えば `mismatch` と終了コード `3` になり、行数からは判定しません。
 
 `verdict` だけを読む例:
 
@@ -504,6 +531,7 @@ fi
 | キー | 内容 |
 | --- | --- |
 | `schema_version` | 形式の版（現在 2。1 は時間判定の版） |
+| `statement` | `select` または `write` |
 | `exit_code` | 比較結果に対応する終了コード（0 / 3 / 4）。一致したあとの後片付けに失敗した場合は、JSON を書いた後にプロセスが 5 で終わる |
 | `verdict` / `verdict_reasons` | 読んだ行数による判定とその理由（`improved` / `no-effect` / `needs-check` / `not-judged`） |
 | `result` | 結果行の比較（`match` / `mismatch` / `incomparable`） |
@@ -511,13 +539,13 @@ fi
 | `result_reasons` | 比較できない理由。各要素は `text` と `hint`（無いときは `null`） |
 | `row_differences` | `baseline_only` / `variant_only` の件数。`baseline_only_examples` / `variant_only_examples` は配列のままで、既定は空。`--show-rows` で最大 5 件の例の行が入る |
 | `plan_changed` | 実行計画が baseline と variant で変わったか |
-| `baseline` / `variant` | それぞれの `rows`、`plan`（`id` / `parent` / `kind` / `covering` / `automatic` / `detail`）、`counters`（`rows_read` / `rows_written` / `fullscan_steps` / `vm_steps` / `sort_ops` / `autoindex_rows`） |
+| `baseline` / `variant` | それぞれの `rows`、`plan`（`id` / `parent` / `kind` / `covering` / `automatic` / `detail`）、`counters`（`rows_read` / `rows_written` / `fullscan_steps` / `vm_steps` / `sort_ops` / `autoindex_rows`）。`--write` ではさらに `changes` / `total_changes` / `executions` |
 | `timing` | `rounds`、`variant_faster_rounds`、`ratio`、`baseline` / `variant` の `median_ns` / `p25_ns` / `p75_ns` / `min_ns` / `max_ns`。計時しなければ `null`、baseline の median が 0 なら `ratio` は `null`。`noise_band`、`confidence_interval`、`median_difference_ns`、`effect`、`unavailable_reason` は下記の時間統計 |
 | `size_bytes` | `baseline` / `variant` / `increase`（データベース全体のバイト数。インデックス単体ではない。`--migration` では使用中のバイト数。「まとめて比べる（--batch）」を参照） |
-| `inputs` | `database` / `select` / `index_sql` のパス |
+| `inputs` | `database` / `select` / `index_sql` のパス。`--write` では `select` の代わりに `write` |
 | `d1` | `--d1` のときだけ出る: `binding` / `config` / `database_id` / `local_database` / `sqlite_version`（D1 側の 3.53.4） / `sqlite_version_note` / `caution` |
 | `environment` | `qenome_version`（`--version` と同じ、`build.zig.zon` の版） / `sqlite_version` / `sqlite_source_id` / `zig_version` / `build_mode` / `os` / `arch` / `work_dir_parent` |
-| `measurement` | 計時条件（`runs_per_copy`（各コピーの計測ラウンド数。計時しないときは 0）/ `warmup` / `order` / `scope` / `cache`） |
+| `measurement` | 計時条件（`runs_per_copy`（各コピーの計測ラウンド数。計時しないときは 0）/ `warmup` / `order` / `scope` / `cache`）。`--write` では `runs_per_copy` は各コピーでロールバックしながら実行する回数 |
 | `binds` | `number` / `type`。text は `text_bytes` も持つ。`--show-binds` を付けたときだけ値が `value` に入る |
 | `warnings` | `{code, message}` の配列（`no_analyze_stats`、`data_too_small`、`bind_dependent_partial_index`）。判定と終了コードは変えない |
 | `sqlite` | 予約済みで、まだ出ない。`bundled_version` と `db_header_version`。それまでは同梱版を `environment.sqlite_version` で読む |
@@ -534,10 +562,10 @@ fi
 | コード | 意味 |
 | --- | --- |
 | 0 | 結果が一致した |
-| 1 | 入力を拒否した（読めないファイル、不正・拒否された SQL、バインドの不一致、インデックスの作成失敗） |
+| 1 | 入力を拒否した（読めないファイル、不正・拒否された SQL、バインドの不一致、インデックスの作成失敗、`--write` の文の拒否） |
 | 2 | 引数の誤り |
-| 3 | 結果が一致しない |
-| 4 | 結果を比較できない、または `--d1` がローカルデータベースをちょうど1つに決められない（設定が無い、設定が複数、設定が読めない・不正、バインディングが不明か重複、database id が無い、ローカルファイルが未作成、ローカルファイルを開けない） |
+| 3 | 結果が一致しない、または `--write` が違う変更をした（`changes` か `total_changes`） |
+| 4 | 結果を比較できない、`--write` がスキーマ・現在時刻・非決定的な関数を読むため実行されなかった、または `--d1` がローカルデータベースをちょうど1つに決められない（設定が無い、設定が複数、設定が読めない・不正、バインディングが不明か重複、database id が無い、ローカルファイルが未作成、ローカルファイルを開けない） |
 | 5 | 比較のあとの後片付けに失敗した（0 のときだけ置き換え、それ以外のコードはそのまま） |
 | 6 | `--migration` で結果の行は一致したが、クエリの読んだ行数か書いた行数が増えた。`--migration` の batch だけが返す |
 | 124 | 時間上限に達した（`--timeout-ms`） |
@@ -549,11 +577,11 @@ fi
 
 ## 守るルール
 
-- 元のデータベースを変更しない（読み取り専用で開く）
+- 元のデータベースを変更しない（読み取り専用で開く）。`--write` もサンドボックスのコピーだけで、ロールバックするトランザクションの中で実行する
 - 比較できない結果を「一致」「成功」として報告しない
-- 改善かどうかは読んだ行数で判定し、時間では判定しない（読んだ行数が減らない SELECT は改善ではない）
+- 改善かどうかは読んだ行数で判定し、時間では判定しない（読んだ行数が減らない SELECT は改善ではない）。書き込みは、読んだ行数が減っても書いた行数が増えれば `needs-check` とする
 - 容量はデータベース全体の増分であり、インデックス単体のサイズではない。`--migration` は使用中のバイト数を測るので、落としたインデックスの解放量が負の値で出る
-- 複数文・書込・危険な DDL は拒否する。`--migration` のファイルだけは複数のインデックス変更とテーブル変更を許すが、`CREATE INDEX`・`CREATE UNIQUE INDEX`・`DROP INDEX`・`CREATE TABLE`（`AS SELECT` を除く）・`ALTER TABLE`（ADD / RENAME / DROP COLUMN と RENAME TO）に限る。データ変更・`DROP TABLE`・`ATTACH`・`PRAGMA`・その他の文は拒否する
+- 複数文・`--write` 以外の書込・危険な DDL は拒否する。`--migration` のファイルだけは複数のインデックス変更とテーブル変更を許すが、`CREATE INDEX`・`CREATE UNIQUE INDEX`・`DROP INDEX`・`CREATE TABLE`（`AS SELECT` を除く）・`ALTER TABLE`（ADD / RENAME / DROP COLUMN と RENAME TO）に限る。データ変更・`DROP TABLE`・`ATTACH`・`PRAGMA`・その他の文は拒否する
 - 正常・失敗・中断のどの経路でも、接続と一時ファイルを後片付けする
 - D1 のデータベースファイルを推測しない。バインディングがちょうど1つのファイルに決まらないときは止まる
 

@@ -161,7 +161,9 @@ Batch error codes:
 | Name | Status |
 | --- | --- |
 | `schema_version`, `exit_code`, `verdict`, `verdict_reasons` | Emitted |
+| `statement` | Emitted as `select` or `write` |
 | `baseline.counters.rows_read`, `baseline.counters.rows_written`, and the same fields on `variant` | Emitted. This is the per-side row counts |
+| `baseline.changes`, `baseline.total_changes`, `baseline.executions`, and the same fields on `variant` | Emitted only with `--write` |
 | `timing` with `rounds`, `ratio`, and per-side `median_ns` / `p25_ns` / `p75_ns` / `min_ns` / `max_ns` | Emitted. The whole `timing` value is JSON `null` when the run is not timed (`--runs 0`, or the rows were not a match) |
 | `timing.noise_band` | Emitted; method, pairs, threshold_ns |
 | `timing.confidence_interval` | Emitted as object or null; method, level, coverage, lower_ns, upper_ns |
@@ -178,22 +180,23 @@ The object is indented with two spaces and ends with a newline. A missing key th
 | --- | --- | --- |
 | `schema_version` | number | `2` |
 | `exit_code` | number | `0`, `3`, or `4` for the comparison. This stays `0` when the process later exits `5`. A variant-only `--migration` comparison writes `0` |
-| `verdict` | string | `improved`, `no-effect`, `needs-check`, `regressed`, or `not-judged`. `regressed` appears only in a `--migration` batch; the other modes name the same condition `needs-check`. `not-judged` also covers a variant-only `--migration` query whose baseline cannot prepare it |
+| `statement` | string | `select` for a SELECT comparison, `write` for an `INSERT`, `UPDATE`, `DELETE`, or `REPLACE` comparison |
+| `verdict` | string | `improved`, `no-effect`, `needs-check`, `regressed`, or `not-judged`. `regressed` appears only in a `--migration` batch; the other modes name the same condition `needs-check`. `not-judged` also covers a variant-only `--migration` query whose baseline cannot prepare it, and a `--write` comparison that was not run |
 | `verdict_reasons` | array of strings | Why the verdict is `needs-check`, `regressed`, or `not-judged`. Empty for `improved` and `no-effect` |
-| `result` | string | `match`, `mismatch`, or `incomparable`. A variant-only `--migration` query is `incomparable` because there is no baseline result to compare |
+| `result` | string | `match`, `mismatch`, or `incomparable`. A variant-only `--migration` query is `incomparable` because there is no baseline result to compare. With `--write`, the rows are the `RETURNING` rows (empty without `RETURNING`), and the same `changes` and `total_changes` are also required for a match |
 | `row_order` | string | `same`, `differs`, or `not-applicable`. Reference only. `same` or `differs` only when `result` is `match` |
 | `result_reasons` | array of `{text, hint}` | Why the rows cannot be compared. `hint` is a string or `null`. Empty for a variant-only `--migration` query; its `verdict_reasons` holds the reason |
 | `row_differences` | object | `baseline_only` and `variant_only` counts. `baseline_only_examples` and `variant_only_examples` are arrays, empty unless `--show-rows` |
 | `plan_changed` | boolean | The query plan text differs. It is `true` for a variant-only `--migration` query because there is no baseline plan |
-| `baseline`, `variant` | object or `null` | `rows` (result row count), `plan` (array of plan steps), `counters`. `baseline` is `null` only for a variant-only `--migration` query; every other comparison has both objects |
+| `baseline`, `variant` | object or `null` | `rows` (result row count), `plan` (array of plan steps), `counters`. `baseline` is `null` only for a variant-only `--migration` query; every other comparison has both objects. With `--write`, each object also has `changes`, `total_changes`, and `executions` |
 | `baseline.counters` / `variant.counters` | object | `rows_read`, `rows_written`, `fullscan_steps`, `vm_steps`, `sort_ops`, `autoindex_rows`. All numbers. `rows_read` and `rows_written` are 32-bit and wrap past 4294967295 |
 | `timing` | object or `null` | See the status table. `ratio` is variant median / baseline median, or `null` when the baseline median is `0` |
 | `size_bytes` | object | `baseline`, `variant`, and `increase` (variant minus baseline). The whole database file, not the index alone. In a `--migration` batch it is the bytes in use instead. See [`--migration`](#--migration) |
-| `inputs` | object | `database`, `select`, `index_sql` paths |
+| `inputs` | object | `database`, `select`, `index_sql` paths. With `--write`, `write` replaces `select` |
 | `environment` | object | `qenome_version`, `sqlite_version`, `sqlite_source_id`, `zig_version`, `build_mode`, `os`, `arch`, `work_dir_parent` |
 | `d1` | object | Present only with `--d1`: `binding`, `config`, `database_id`, `local_database`, `sqlite_version`, `sqlite_version_note`, `caution` |
 | `seed_data` | object | Present only with `--seed-data`: `path`, `seed`, `rows`, and `tables` (each `{table, rows}`) |
-| `measurement` | object | `runs_per_copy`, `warmup`, `order`, `scope`, `cache` |
+| `measurement` | object | `runs_per_copy`, `warmup`, `order`, `scope`, `cache`. With `--write`, `runs_per_copy` is the rolled-back executions per copy and the other values describe the write runs |
 | `binds` | array | `number`, `type`. Text also has `text_bytes`. `value` only with `--show-binds` |
 | `warnings` | array | Emitted. `{ "code": string, "message": string }`. Expected codes: `no_analyze_stats` (no ANALYZE statistics), `data_too_small` (too little data to trust the counts), `bind_dependent_partial_index` (the variant plan uses a partial index only because the bound values satisfy its WHERE clause) |
 | `sqlite` | object | Reserved. `bundled_version` (string), `db_header_version` (string) |
@@ -209,6 +212,20 @@ The object is indented with two spaces and ends with a newline. A missing key th
 | `not-judged` | The rows differ or cannot be compared, or a `--migration` query could only run on the variant |
 
 The verdict comes from `rows_read` and `rows_written`. It does not change the exit code. Times do not change the verdict, so `--runs 0` still has a verdict.
+
+## Write comparison (`--write`)
+
+`--write` replaces `--select` and compares one `INSERT`, `UPDATE`, `DELETE`, or `REPLACE`. The comparison object keeps `schema_version` `2`; the differences are additive:
+
+- `statement` is `write`.
+- `inputs.write` holds the write-file path and `inputs.select` is absent. There is no `--batch`, `--migration`, or `--suggest` form of a write comparison.
+- `baseline.rows` and `variant.rows` are the number of `RETURNING` rows (0 without `RETURNING`). `row_differences` compares those rows as a multiset.
+- `baseline.changes` and `variant.changes` are `sqlite3_changes` for the statement, without trigger or foreign-key changes. `total_changes` is the difference of `sqlite3_total_changes`, which includes trigger and foreign-key changes. Both must match for `result` to be `match`; a difference is `mismatch` and exit `3`.
+- `executions` is the number of rolled-back executions per copy. `measurement.runs_per_copy` is the same number. `timing` is always `null`; the `measure-*` values describe the write runs, not a timing loop.
+- The plan is read with `EXPLAIN` before the statement runs. A write that calls `random()`, a time function, or a schema table is not executed: `verdict` is `not-judged`, `result` is `incomparable`, and `verdict_reasons` explains that the write was not run. `baseline.counters`, `changes`, `total_changes`, and `executions` are then all `0`.
+- `rows_written` is the D1 counter. It includes the table row and each secondary-index insert, trigger insert, and foreign-key cascade, but the bundled patch does not count secondary-index deletes. A `DELETE` can therefore report the same `rows_written` on both copies while its `rows_read` falls.
+
+`--write` keeps the same exit codes as a SELECT comparison: `0` for a match (including `needs-check`), `3` for a mismatch, `4` for an incomparable result, `1` for a rejected write or index, and `124` for a time limit. `regressed` is not used outside a `--migration` batch.
 
 String values in the comparison object write a backslash as `\\` and each byte that is not valid UTF-8 as `\xNN`, and the result is then escaped as JSON. Paths, plan details, reasons, and bind text use this rule. The README describes how to reverse it.
 
@@ -284,6 +301,12 @@ The comparison object's `exit_code` is `0`, `3`, or `4`. The process can still e
 | `usage_config_requires_d1` | 2 | Add `--d1`, or drop `--config` |
 | `usage_suggest_conflict` | 2 | With `--suggest`, give one SELECT file or a manifest; do not pass `--runs`, `--format kv`, or an index file |
 | `usage_migration_conflict` | 2 | `--migration` needs `--batch`; do not pass `--suggest` or `--index-sql` |
+| `usage_write_conflict` | 2 | Use `--write` for one `INSERT`, `UPDATE`, `DELETE`, or `REPLACE` with an index file; do not pass `--select`, `--batch`, `--migration`, or `--suggest` |
+| `write_unreadable` | 1 | `--write` takes a path to a file that holds one write, not SQL text |
+| `write_rejected` | 1 | Use one DML statement that applies to this database, without DDL, `PRAGMA`, `ATTACH`, `VACUUM`, or multiple statements |
+| `write_timeout` | 124 | Raise `--timeout-ms` or narrow the write |
+| `write_failed` | 1 | Read the SQLite message; the write or one of its constraints failed |
+| `write_plan_unreadable` | 1 | Check the write against this database |
 | `d1_config_not_found` | 4 | Pass `--config`, or run in the wrangler project |
 | `d1_config_ambiguous` | 4 | Pass `--config` naming one file |
 | `d1_config_unreadable` | 4 | Fix the path and permissions |

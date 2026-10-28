@@ -356,6 +356,7 @@ fn checkReason(handle: *db.Db, err: db.CheckError) []const u8 {
         error.StatementRejected => "the statement is not allowed here",
         error.StatementInvalid => "the statement is not valid for this database",
         error.StatementNotReadOnly => "the statement is not read-only",
+        error.StatementNotWrite => "the statement is not one INSERT, UPDATE, DELETE, or REPLACE",
         error.StatementNotCreateIndex => "the statement is not one CREATE INDEX",
     };
 }

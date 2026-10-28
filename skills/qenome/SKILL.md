@@ -10,13 +10,13 @@ description: >
 
 # Qenome
 
-Qenome compares one read-only `SELECT` with one candidate `CREATE INDEX` on sandbox copies. With `--batch`, it compares every SELECT in a manifest with every candidate in one run. With `--suggest`, SQLite's expert proposes the candidate indexes, so a SELECT file is enough. With `--migration`, it applies a SQL file of index or table changes to the variant before comparing every query in a manifest. The verdict uses the same counting as local D1 (workerd patch). The numbers have not yet been checked against production D1.
+Qenome compares one read-only `SELECT` with one candidate `CREATE INDEX` on sandbox copies. With `--write`, it compares one `INSERT`, `UPDATE`, `DELETE`, or `REPLACE` instead, inside a transaction that is rolled back. With `--batch`, it compares every SELECT in a manifest with every candidate in one run. With `--suggest`, SQLite's expert proposes the candidate indexes, so a SELECT file is enough. With `--migration`, it applies a SQL file of index or table changes to the variant before comparing every query in a manifest. The verdict uses the same counting as local D1 (workerd patch). The numbers have not yet been checked against production D1.
 
 The contract is [docs/json.md](../../docs/json.md). This skill expects `schema_version` 2.
 
 ## When to run
 
-Run Qenome before keeping a `CREATE INDEX` on a local D1 or a SQLite file. Run it when the user asks whether an index helps, whether a query got faster, or whether a schema change is safe to merge.
+Run Qenome before keeping a `CREATE INDEX` on a local D1 or a SQLite file. Run it when the user asks whether an index helps, whether a query got faster, whether a write gets more expensive, or whether a schema change is safe to merge.
 
 Do not run it to change production, to apply SQL, or to estimate a bill. One comparison is one SELECT file and one CREATE INDEX file; `--batch` takes a manifest of them. `--suggest` lets SQLite propose the candidate from the SELECT file alone.
 
@@ -61,6 +61,23 @@ A SQLite file uses a path instead of `--d1`:
 ```sh
 npx qenome app.db select.sql index.sql --runs 0 --format json
 ```
+
+## Compare a write (`--write`)
+
+Use `--write` when the user wants to know what a new index costs an `INSERT`, `UPDATE`, `DELETE`, or `REPLACE`, or whether `DELETE ... WHERE` can use the index. `--write` replaces `--select`:
+
+```sh
+npx qenome app.db --write update.sql --index-sql index.sql --bind 1:int:1234 --runs 0 --format json
+npx qenome --d1 DB --write delete.sql --index-sql index.sql --runs 0 --format json
+```
+
+- The file holds one DML statement. A leading `WITH` and a trailing `RETURNING` are allowed. `CREATE`, `DROP`, `ALTER`, `PRAGMA`, `ATTACH`, `VACUUM`, and multiple statements are rejected with exit `1`.
+- Each copy runs the statement in a transaction and rolls it back. The original database is never opened for writing. Triggers and foreign keys are active in the sandbox, so their writes are counted and rolled back.
+- Both copies must report the same `RETURNING` rows, `changes`, and `total_changes`; a difference is `mismatch` and exit `3`.
+- `--runs` is the number of rolled-back executions per copy (at least one), not a timing loop. `--runs 0` still runs once. A later run that reports different counts makes the comparison `incomparable` (exit `4`).
+- A write that calls `random()`, a time function, or reads `sqlite_schema` / `sqlite_master` / `sqlite_stat*` is not run: it is `incomparable` (exit `4`) and `verdict_reasons` says the write was not run.
+- `--write` works with `--d1`, `--seed-data`, `--bind`, `--timeout-ms`, and every output format. It does not combine with `--batch`, `--migration`, or `--suggest`.
+- `rows_written` includes the table row and secondary-index inserts, trigger inserts, and foreign-key cascades. The bundled D1 patch does not count secondary-index deletes, so a `DELETE` can read fewer rows without a higher write count. Say this when reporting a delete result; do not claim that index maintenance is free.
 
 ## Fill sandbox data (--seed-data)
 
@@ -151,13 +168,18 @@ Emitted fields an agent should read:
 | Field | Use |
 | --- | --- |
 | `verdict` | `improved`, `no-effect`, `needs-check`, `regressed` (a `--migration` result only), or `not-judged` (the rows differ or cannot be compared, or a `--migration` query could only run on the variant) |
+| `statement` | `select` or `write` |
 | `result` | `match`, `mismatch`, or `incomparable` |
 | `verdict_reasons` | Why it is `needs-check`, `regressed`, or `not-judged` |
 | `result_reasons` | Why the rows cannot be compared. Each item has `text` and `hint` |
 | `baseline` | The current schema's measurement. It is `null` for a variant-only `--migration` query; use `variant` for that query's plan and row counts |
+| `inputs.write` | With `--write`, the write-file path; `inputs.select` is absent |
 | `baseline.counters.rows_read` | Rows the current schema read |
 | `variant.counters.rows_read` | Rows the candidate index read |
-| `baseline.counters.rows_written` and `variant.counters.rows_written` | Writes during the SELECT. An increase is `needs-check` (`regressed` in a `--migration` result) when the rows match |
+| `baseline.counters.rows_written` and `variant.counters.rows_written` | Writes during the SELECT. An increase is `needs-check` (`regressed` in a `--migration` result) when the rows match. With `--write`, this is the write cost of the statement |
+| `baseline.changes` / `variant.changes` | With `--write`: rows the statement itself changed, without triggers or foreign keys |
+| `baseline.total_changes` / `variant.total_changes` | With `--write`: changes including triggers and foreign keys. Both `changes` and `total_changes` must match for `result` `match` |
+| `baseline.executions` / `variant.executions` | With `--write`: rolled-back executions per copy |
 | `plan_changed` | Whether the plan text changed |
 | `timing` | `null` with `--runs 0`. When present, it is a reference. It does not pick the verdict |
 | `environment.sqlite_version` | Bundled SQLite until `sqlite.bundled_version` exists |
@@ -183,9 +205,9 @@ Tell the user the process exit code, `schema_version`, `result`, `verdict`, and 
 | --- | --- |
 | 0 and `verdict` `improved` | The candidate read fewer rows and the result rows match. It is a candidate to keep on this local copy. It is not a production measurement. With `bind_dependent_partial_index`, the improvement holds only for the bound values; say so and test other values |
 | 0 and `verdict` `no-effect` | Do not add the index for this query. The variant did not read fewer rows |
-| 0 and `verdict` `needs-check` | Do not merge the index. Quote `verdict_reasons` |
+| 0 and `verdict` `needs-check` | Do not merge the index. Quote `verdict_reasons`. With `--write`, the reason is usually that the variant writes more rows |
 | 3 | Do not merge. The result rows differ. Offer `--show-rows` only if the user wants the example values in the log |
-| 4 and stdout is a comparison | Do not call it a match. Quote `result_reasons` and their hints. `verdict` is `not-judged`. With `--migration`, a `SELECT *` after a column was added or dropped lands here; list the columns and rerun |
+| 4 and stdout is a comparison | Do not call it a match. Quote `result_reasons` and their hints. `verdict` is `not-judged`. With `--migration`, a `SELECT *` after a column was added or dropped lands here; list the columns and rerun. With `--write`, a write that reads the schema, calls `random()`, or reads the current time lands here; the write was not run |
 | 4 and stdout is empty | The local D1 was not found. Follow `error.hint`. Do not edit the index to fix a missing database |
 | 5 | The comparison matched and cleanup failed. stdout holds the report (`exit_code` 0). Tell the user to remove the directory named in the stderr error. Do not loop |
 | 6 | `--migration` matched the rows but made a query read or write more rows. Do not keep the migration. Quote the `regressed` verdicts, the `needs_check` summary count, and the comparison reasons |
