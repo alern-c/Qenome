@@ -301,6 +301,7 @@ The spec is one JSON object. `tables` maps a table name to its `rows` and option
 Each column has one `kind`:
 
 | `kind` | Keys | Meaning |
+| --- | --- | --- |
 | `fixed` | `value` | the same value on every row |
 | `uniform` | `values` | one of the values, with the same chance each |
 | `ratio` | `value`, `ratio`, optional `otherwise` | `value` on the given fraction of rows (`0` to `1`), and `otherwise` (default `null`) on the rest |
@@ -423,6 +424,7 @@ Qenome opens a second read-only connection to the baseline copy and sets the exp
 The output is the batch report. Each `summary` entry adds `source` (`manifest` or `suggested`) and `index_sql_text`, and the top-level `warnings` array lists what was dropped or could not be done:
 
 | Warning `code` | Meaning |
+| --- | --- |
 | `suggest_query_skipped` | SQLite could not analyze one SELECT; the other SELECTs continue |
 | `suggestion_rejected` | A proposal failed the `CREATE INDEX` check |
 | `suggestions_truncated` | The 20 or 100 limit dropped the tail of the proposals |

@@ -301,6 +301,7 @@ spec は JSON オブジェクト1個です。`tables` はテーブル名から `
 各列は `kind` を1つ持ちます。
 
 | `kind` | キー | 意味 |
+| --- | --- | --- |
 | `fixed` | `value` | すべての行で同じ値 |
 | `uniform` | `values` | 値のどれかを同じ確率で選ぶ |
 | `ratio` | `value`、`ratio`、任意の `otherwise` | 指定した割合（`0`〜`1`）の行で `value`、残りで `otherwise`（既定は `null`） |
@@ -423,6 +424,7 @@ Qenome は baseline のコピーに2つ目の読み取り専用接続を開き�
 出力は batch の報告です。`summary` の各候補に `source`（`manifest` / `suggested`）と `index_sql_text` が付き、トップレベルの `warnings` に、捨てたもの・できなかったことが入ります。
 
 | warning の `code` | 意味 |
+| --- | --- |
 | `suggest_query_skipped` | 1本の SELECT を SQLite が解析できなかった。ほかの SELECT は続ける |
 | `suggestion_rejected` | 提案が `CREATE INDEX` の検査に落ちた |
 | `suggestions_truncated` | 20件または100件の上限で、提案の後ろを捨てた |
