@@ -463,7 +463,12 @@ pub fn run(
     var cache_failure: ExitCode = .rejected;
     if (!fillBaselineCache(arena, allocator, &baseline_cache, &baseline, loaded.queries, &control, stderr, &cache_failure)) return cache_failure;
 
-    const baseline_size = batchFileSize(io, inputs.baseline_path, null, stderr) orelse return .rejected;
+    const size_measure: SizeMeasure = if (inputs.migration != null) .used else .file;
+    var size_failure: ExitCode = .rejected;
+    const baseline_size = switch (size_measure) {
+        .file => batchFileSize(io, inputs.baseline_path, null, stderr) orelse return .rejected,
+        .used => batchUsedBytes(&baseline.database, &control, inputs.timeout_ms, null, stderr, &size_failure) orelse return size_failure,
+    };
 
     const summaries = arena.alloc(CandidateSummary, candidates.len) catch {
         stderr.writeAll("error: out of memory\n") catch {};
@@ -520,9 +525,6 @@ pub fn run(
             continue;
         }
 
-        const variant_size = batchFileSize(io, inputs.variant_path, candidate.label, stderr) orelse return .rejected;
-        summary.size_increase = @as(i128, variant_size) - @as(i128, baseline_size);
-
         var warnings: db.TableWarnings = .{};
         if (candidate.kind == .index) {
             warnings = baseline.database.tableWarnings(arena, tables[index], &control) catch |err| {
@@ -554,6 +556,12 @@ pub fn run(
                 return open_failure;
             }
         }
+
+        const variant_size = switch (size_measure) {
+            .file => batchFileSize(io, inputs.variant_path, candidate.label, stderr) orelse return .rejected,
+            .used => batchUsedBytes(&variant.database, &control, inputs.timeout_ms, candidate.label, stderr, &size_failure) orelse return size_failure,
+        };
+        summary.size_increase = @as(i128, variant_size) - @as(i128, baseline_size);
 
         for (loaded.queries, 0..) |*query, query_index| {
             if (cli_control.signalPending()) return cli_control.reportInterrupted(stderr);
@@ -1041,16 +1049,52 @@ fn deleteIfExists(io: Io, path: []const u8, label: []const u8, stderr: *Io.Write
     return true;
 }
 
+const SizeMeasure = enum { file, used };
+
 fn batchFileSize(io: Io, path: [:0]const u8, candidate: ?[]const u8, stderr: *Io.Writer) ?u64 {
     const stat = Io.Dir.cwd().statFile(io, path, .{}) catch |err| {
-        if (candidate) |label| {
-            stderr.print("error: the batch candidate '{s}': cannot read the size of the variant: {s}\n", .{ label, @errorName(err) }) catch {};
-        } else {
-            stderr.print("error: the batch baseline: cannot read the size of the baseline: {s}\n", .{@errorName(err)}) catch {};
-        }
+        reportSizeFailure(candidate, "the size", @errorName(err), stderr);
         return null;
     };
     return stat.size;
+}
+
+fn batchUsedBytes(
+    database: *db.Db,
+    control: *db.StepControl,
+    timeout_ms: u64,
+    candidate: ?[]const u8,
+    stderr: *Io.Writer,
+    failure: *ExitCode,
+) ?u64 {
+    return database.bytesInUse(control) catch |err| switch (err) {
+        error.Timeout => {
+            if (candidate) |label| {
+                stderr.print("error: the batch candidate '{s}': reading the bytes in use exceeded the time limit of {d} ms\n", .{ label, timeout_ms }) catch {};
+            } else {
+                stderr.print("error: the batch baseline: reading the bytes in use exceeded the time limit of {d} ms\n", .{timeout_ms}) catch {};
+            }
+            failure.* = .timeout;
+            return null;
+        },
+        error.Interrupted => {
+            failure.* = cli_control.reportInterrupted(stderr);
+            return null;
+        },
+        else => {
+            reportSizeFailure(candidate, "the bytes in use", @errorName(err), stderr);
+            failure.* = .rejected;
+            return null;
+        },
+    };
+}
+
+fn reportSizeFailure(candidate: ?[]const u8, what: []const u8, reason: []const u8, stderr: *Io.Writer) void {
+    if (candidate) |label| {
+        stderr.print("error: the batch candidate '{s}': cannot read {s} of the variant: {s}\n", .{ label, what, reason }) catch {};
+    } else {
+        stderr.print("error: the batch baseline: cannot read {s} of the baseline: {s}\n", .{ what, reason }) catch {};
+    }
 }
 
 fn truncateUtf8(arena: std.mem.Allocator, text: []const u8) []const u8 {

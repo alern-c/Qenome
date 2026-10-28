@@ -2699,6 +2699,46 @@ test "a migration that drops a useful index exits 6" {
     try fixture.expectNoLeftovers();
 }
 
+test "a migration that drops an index reports the freed bytes as a negative size" {
+    var fixture = try initMigrationFixture();
+    defer fixture.deinit();
+
+    var stdout_buffer: [65536]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const human = try runMigration(&fixture, "queries.json", "drop.sql", &.{}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.regression, human.code);
+    try testing.expectEqualStrings("", human.stderr);
+
+    var summary_line: ?[]const u8 = null;
+    var lines = std.mem.splitScalar(u8, human.stdout, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.indexOf(u8, line, "drop.sql") == null) continue;
+        if (std.mem.indexOf(u8, line, "compared") == null) continue;
+        summary_line = line;
+    }
+    try testing.expect(summary_line != null);
+    const size_at = std.mem.indexOf(u8, summary_line.?, " -") orelse return error.TestUnexpectedResult;
+    try testing.expect(size_at + 2 < summary_line.?.len);
+    try testing.expect(std.ascii.isDigit(summary_line.?[size_at + 2]));
+
+    var stdout_json: [65536]u8 = undefined;
+    var stderr_json: [2048]u8 = undefined;
+    const json = try runMigration(&fixture, "queries.json", "drop.sql", &.{ "--format", "json" }, &stdout_json, &stderr_json);
+    try testing.expectEqual(ExitCode.regression, json.code);
+    try testing.expectEqualStrings("", json.stderr);
+
+    var parsed = try parseJson(json.stdout);
+    defer parsed.deinit();
+    const summary = try jsonItems(parsed.value, "summary");
+    const increase = try jsonInt(summary[0], "size_increase");
+    try testing.expect(increase < 0);
+    const results = try jsonItems(parsed.value, "results");
+    const sizes = try jsonGet(try jsonGet(results[0], "comparison"), "size_bytes");
+    try testing.expectEqual(increase, try jsonInt(sizes, "increase"));
+    try testing.expect(try jsonInt(sizes, "baseline") > try jsonInt(sizes, "variant"));
+    try fixture.expectNoLeftovers();
+}
+
 test "a migration rejects a data change before touching the variant" {
     var fixture = try initMigrationFixture();
     defer fixture.deinit();

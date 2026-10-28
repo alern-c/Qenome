@@ -42,7 +42,7 @@ On failure, read the line that starts with `{`. `human` and `kv` do not print th
 | `failure` | object or `null` | `null` for `compared`; otherwise `{ "code", "message" }`. `code` is `index_rejected` or `index_timeout` |
 | `improved`, `no_effect`, `needs_check`, `mismatch`, `incomparable` | number or `null` | How many queries ended in each outcome. `improved + no_effect + needs_check + mismatch + incomparable + timeout` equals the query count. `null` when the candidate was not compared |
 | `timeout` | number or `null` | Queries whose variant SELECT reached `--timeout-ms` |
-| `size_increase` | number or `null` | Variant file size minus baseline file size, in bytes (signed). `null` when the index was not built |
+| `size_increase` | number or `null` | Variant minus baseline in bytes (signed). For `manifest` and `suggested` candidates it is the file size. For a `--migration` run it is the bytes in use, `(page_count - freelist_count) * page_size`, so a dropped index reports the freed bytes as a negative number. `null` when the change was not applied |
 
 A candidate qualifies for `recommended` when its status is `compared` and `mismatch`, `incomparable`, `needs_check`, and `timeout` are all `0` and `improved` is at least `1`. Qualifying candidates come first in `summary`, in this order: more `improved`, then smaller `size_increase`, then input order. Input order is the manifest order, and suggestions follow the manifest entries. A `--migration` run has exactly one candidate, so it is either first in this order or last. The remaining `compared` candidates follow in input order, and the `index_rejected` / `index_timeout` candidates come last in input order.
 
@@ -62,6 +62,7 @@ A candidate qualifies for `recommended` when its status is `compared` and `misma
 - Statements run in file order, so a migration may drop an index and create another with the same name. Each statement gets its own `--timeout-ms`. A statement that fails to apply is recorded as `index_rejected` (or `index_timeout`) in `summary`, and the run still writes the report with exit `1` (or `124`).
 - The report names the migration and every statement. Human output adds a `migration:` block; JSON adds the top-level `migration` object with `path` and `statements` (each has `kind`: `create_index` or `drop_index`, and `sql`).
 - The `summary` entry for a migration has `source` `migration`, `candidate` set to the migration path, and the same `improved` / `no_effect` / `needs_check` / `mismatch` / `incomparable` / `timeout` counts. `recommended` is the migration path only when it qualifies like any other candidate.
+- A migration measures `size_increase` and the `size_bytes` of each embedded comparison as the bytes in use, `(page_count - freelist_count) * page_size`, not as the file size. `DROP INDEX` moves its pages to SQLite's freelist without shrinking the file, so the file delta stays `0`; the bytes in use report the freed space as a negative number. The file shrinks only after `VACUUM`. A batch without `--migration` keeps the file size difference.
 - When the result rows match but at least one query has `needs_check` (the migration made it read or write more rows), the batch `exit_code` is `6`. A heavier result (`3` mismatch, `1` rejected change, `124` timeout, `4` incomparable) takes precedence. `no_effect` alone keeps `0`.
 - `warnings` is empty with `--migration`: the `no_analyze_stats` and `data_too_small` checks need one candidate table, and a migration can touch several.
 
@@ -149,7 +150,7 @@ The object is indented with two spaces and ends with a newline. A missing key th
 | `baseline`, `variant` | object | `rows` (result row count), `plan` (array of plan steps), `counters` |
 | `baseline.counters` / `variant.counters` | object | `rows_read`, `rows_written`, `fullscan_steps`, `vm_steps`, `sort_ops`, `autoindex_rows`. All numbers. `rows_read` and `rows_written` are 32-bit and wrap past 4294967295 |
 | `timing` | object or `null` | See the status table. `ratio` is variant median / baseline median, or `null` when the baseline median is `0` |
-| `size_bytes` | object | `baseline`, `variant`, and `increase` (variant minus baseline). The whole database file, not the index alone |
+| `size_bytes` | object | `baseline`, `variant`, and `increase` (variant minus baseline). The whole database file, not the index alone. In a `--migration` batch it is the bytes in use instead. See [`--migration`](#--migration) |
 | `inputs` | object | `database`, `select`, `index_sql` paths |
 | `environment` | object | `qenome_version`, `sqlite_version`, `sqlite_source_id`, `zig_version`, `build_mode`, `os`, `arch`, `work_dir_parent` |
 | `d1` | object | Present only with `--d1`: `binding`, `config`, `database_id`, `local_database`, `sqlite_version`, `sqlite_version_note`, `caution` |
