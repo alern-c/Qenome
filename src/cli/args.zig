@@ -507,8 +507,10 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\                       and --index-sql; see the batch manifest below
         \\  --migration <FILE>   apply this SQL file to the variant only before
         \\                       the --batch queries run; the manifest must omit
-        \\                       candidates; only CREATE INDEX and DROP INDEX
-        \\                       are allowed
+        \\                       candidates; CREATE INDEX, DROP INDEX, CREATE
+        \\                       TABLE, and ALTER TABLE are allowed; a query
+        \\                       that needs the new schema is measured on the
+        \\                       variant only and is not judged
         \\  --seed-data <FILE>   replace the listed tables in the sandbox copy
         \\                       with deterministic dummy rows before comparing;
         \\                       the original database is not changed; see the
@@ -597,11 +599,17 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\queries run. It needs --batch, takes a manifest without candidates,
         \\and does not take --select, --index-sql, --bind, --runs, --suggest,
         \\or --format kv. The file may hold several CREATE INDEX, CREATE
-        \\UNIQUE INDEX, and DROP INDEX statements separated by semicolons;
-        \\other statements are rejected with status 1. The report names the
-        \\migration and every applied statement. If the result rows match but
-        \\a query reads or writes more rows after the migration, the run exits
-        \\with status 6 so that a CI gate can stop.
+        \\UNIQUE INDEX, DROP INDEX, CREATE TABLE, and ALTER TABLE (ADD,
+        \\RENAME, or DROP COLUMN, and RENAME TO) statements separated by
+        \\semicolons; other statements, including INSERT, UPDATE, DELETE,
+        \\DROP TABLE, ATTACH, and PRAGMA, are rejected with status 1 and
+        \\the number of the statement. The report names the migration and
+        \\every applied statement. A query that uses a column or table the
+        \\migration adds is measured on the variant only: its plan and row
+        \\counts are reported with verdict not-judged, and it does not
+        \\change the exit status. If the result rows match but a query reads
+        \\or writes more rows after the migration, the run exits with status
+        \\6 so that a CI gate can stop.
         \\
         \\--seed-data reads a JSON spec, replaces the listed tables in the
         \\baseline copy, and copies that baseline to the variant. The tables
@@ -1518,4 +1526,6 @@ test "the usage shows the --migration synopsis and option" {
     try testing.expect(std.mem.indexOf(u8, writer.buffered(), "qenome <DB> --batch <FILE> --migration <FILE>") != null);
     try testing.expect(std.mem.indexOf(u8, writer.buffered(), "--migration <FILE>") != null);
     try testing.expect(std.mem.indexOf(u8, writer.buffered(), "6 a --migration query") != null);
+    try testing.expect(std.mem.indexOf(u8, writer.buffered(), "CREATE TABLE") != null);
+    try testing.expect(std.mem.indexOf(u8, writer.buffered(), "not-judged") != null);
 }

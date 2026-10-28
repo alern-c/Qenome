@@ -35,7 +35,7 @@
             "additionalProperties": false,
             "required": ["kind", "sql"],
             "properties": {
-              "kind": { "enum": ["create_index", "drop_index"] },
+              "kind": { "enum": ["create_index", "drop_index", "create_table", "alter_table"] },
               "sql": { "type": "string", "minLength": 1 }
             }
           }
@@ -114,6 +114,7 @@
         "mismatch",
         "incomparable",
         "timeout",
+        "not_judged",
         "size_increase"
       ],
       "properties": {
@@ -152,6 +153,11 @@
         "mismatch": { "type": ["integer", "null"], "minimum": 0 },
         "incomparable": { "type": ["integer", "null"], "minimum": 0 },
         "timeout": { "type": ["integer", "null"], "minimum": 0 },
+        "not_judged": {
+          "description": "Queries that only the variant could run because the migration added the column or table. Each has verdict not-judged in its embedded comparison. The count does not affect recommended or the exit code.",
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
         "size_increase": {
           "description": "Variant minus baseline in bytes. Signed. The file size for manifest and suggested candidates; the bytes in use for a --migration run, so a dropped index reports the freed bytes as a negative number. Null when the change was not applied.",
           "type": ["integer", "null"]
@@ -172,6 +178,7 @@
               "mismatch": { "type": "integer" },
               "incomparable": { "type": "integer" },
               "timeout": { "type": "integer" },
+              "not_judged": { "type": "integer" },
               "size_increase": { "type": "integer" }
             }
           },
@@ -184,6 +191,7 @@
               "mismatch": { "type": "null" },
               "incomparable": { "type": "null" },
               "timeout": { "type": "null" },
+              "not_judged": { "type": "null" },
               "size_increase": { "type": "null" }
             }
           }
@@ -225,7 +233,7 @@
         "candidate": { "type": "string" },
         "status": { "enum": ["compared", "variant_timeout"] },
         "comparison": {
-          "description": "The schema_version 2 comparison object, or null when the variant SELECT reached the time limit.",
+          "description": "The schema_version 2 comparison object, or null when the variant SELECT reached the time limit. A variant-only migration query has baseline null and verdict not-judged.",
           "anyOf": [
             { "type": "null" },
             { "$ref": "qenome-report.schema.json" }

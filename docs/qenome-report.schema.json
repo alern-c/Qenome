@@ -27,13 +27,19 @@
   ],
   "properties": {
     "schema_version": { "const": 2 },
-    "exit_code": { "enum": [0, 3, 4] },
+    "exit_code": {
+      "description": "A variant-only --migration comparison writes 0 and does not change the batch exit code.",
+      "enum": [0, 3, 4]
+    },
     "verdict": {
-      "description": "regressed appears only in a --migration batch: the rows match but the migration made the query read or write more rows.",
+      "description": "regressed appears only in a --migration batch: the rows match but the migration made the query read or write more rows. not-judged also covers a variant-only --migration query whose baseline cannot prepare it.",
       "enum": ["improved", "no-effect", "needs-check", "regressed", "not-judged"]
     },
     "verdict_reasons": { "type": "array", "items": { "type": "string" } },
-    "result": { "enum": ["match", "mismatch", "incomparable"] },
+    "result": {
+      "description": "A variant-only --migration query is incomparable: there is no baseline result to compare.",
+      "enum": ["match", "mismatch", "incomparable"]
+    },
     "row_order": { "enum": ["same", "differs", "not-applicable"] },
     "result_reasons": {
       "type": "array",
@@ -58,8 +64,17 @@
         "variant_only_examples": { "type": "array" }
       }
     },
-    "plan_changed": { "type": "boolean" },
-    "baseline": { "$ref": "#/$defs/side" },
+    "plan_changed": {
+      "description": "The query plan text differs. True for a variant-only --migration query, which has no baseline plan.",
+      "type": "boolean"
+    },
+    "baseline": {
+      "description": "Null only for a variant-only --migration query: the migration added the column or table, so the baseline cannot prepare the SELECT.",
+      "anyOf": [
+        { "$ref": "#/$defs/side" },
+        { "type": "null" }
+      ]
+    },
     "variant": { "$ref": "#/$defs/side" },
     "timing": {
       "description": "Null when not timed. Timing evidence is reference only and does not change the row verdict.",

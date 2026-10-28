@@ -2574,6 +2574,51 @@ fn initMigrationFixture() !CliFixture {
     try fixture.writeFile("data.sql", "DELETE FROM t;\n");
     try fixture.writeFile("missing.sql", "DROP INDEX missing_idx;\n");
     try fixture.writeFile("empty.sql", "-- nothing\n");
+    try fixture.writeFile("qc.sql", "SELECT a FROM t WHERE c = 0;");
+    try fixture.writeFile("qn.sql", "SELECT id FROM n WHERE id = 1;");
+    try fixture.writeFile("qmissing.sql", "SELECT missing FROM t;");
+    try fixture.writeFile("qoldcol.sql", "SELECT b FROM t WHERE a = 1;");
+    try fixture.writeFile("qstar.sql", "SELECT * FROM t WHERE a = 1;");
+    try fixture.writeFile("qtimeout.sql", "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 20000000) SELECT count(*) FROM c WHERE x IN (SELECT c FROM t);");
+    try fixture.writeFile("qrandom.sql", "SELECT a FROM t WHERE b = 'v1' ORDER BY random();");
+    try fixture.writeFile("queries_schema.json",
+        \\{"queries":[{"select":"q.sql","binds":["1:int:1234"]},{"select":"qc.sql"}]}
+    );
+    try fixture.writeFile("queries_b_schema.json",
+        \\{"queries":[{"select":"qb.sql","binds":["1:text:v1234"]},{"select":"qc.sql"}]}
+    );
+    try fixture.writeFile("queries_new_table.json",
+        \\{"queries":[{"select":"qn.sql"}]}
+    );
+    try fixture.writeFile("queries_missing.json",
+        \\{"queries":[{"select":"qmissing.sql"}]}
+    );
+    try fixture.writeFile("queries_old_column.json",
+        \\{"queries":[{"select":"qoldcol.sql"}]}
+    );
+    try fixture.writeFile("queries_star.json",
+        \\{"queries":[{"select":"qstar.sql"}]}
+    );
+    try fixture.writeFile("queries_timeout.json",
+        \\{"queries":[{"select":"qtimeout.sql"}]}
+    );
+    try fixture.writeFile("queries_mixed.json",
+        \\{"queries":[{"select":"qc.sql"},{"select":"qrandom.sql"}]}
+    );
+    try fixture.writeFile("queries_rename.json",
+        \\{"queries":[{"select":"qrename.sql"}]}
+    );
+    try fixture.writeFile("qrename.sql", "SELECT a FROM t2 WHERE label = 'v1';");
+    try fixture.writeFile("schema.sql", "ALTER TABLE t ADD COLUMN c INTEGER DEFAULT 0;\nCREATE INDEX idx_c ON t(c);\n");
+    try fixture.writeFile("schema_column_only.sql", "ALTER TABLE t ADD COLUMN c INTEGER DEFAULT 0;\n");
+    try fixture.writeFile("schema_improve.sql", "ALTER TABLE t ADD COLUMN c INTEGER DEFAULT 0;\nCREATE INDEX idx_b ON t(b);\n");
+    try fixture.writeFile("schema_drop.sql", "DROP INDEX idx_a;\nALTER TABLE t ADD COLUMN c INTEGER DEFAULT 0;\n");
+    try fixture.writeFile("schema_new_table.sql", "CREATE TABLE n(id INTEGER PRIMARY KEY);\nCREATE INDEX idx_n ON n(id);\n");
+    try fixture.writeFile("schema_drop_column.sql", "ALTER TABLE t ADD COLUMN tmp INTEGER;\nALTER TABLE t DROP COLUMN tmp;\nCREATE INDEX idx_b ON t(b);\n");
+    try fixture.writeFile("schema_drop_b.sql", "ALTER TABLE t DROP COLUMN b;\n");
+    try fixture.writeFile("schema_rename.sql", "ALTER TABLE t RENAME COLUMN b TO label;\nALTER TABLE t RENAME TO t2;\nCREATE INDEX idx_label ON t2(label);\n");
+    try fixture.writeFile("schema_bad.sql", "ALTER TABLE t ADD COLUMN c INTEGER;\nDROP TABLE t;\n");
+    try fixture.writeFile("schema_as_select.sql", "CREATE TABLE x AS SELECT * FROM t;\n");
     return fixture;
 }
 
@@ -2795,6 +2840,298 @@ test "a migration manifest must not name candidates" {
     try testing.expectEqual(ExitCode.rejected, result.code);
     try testing.expectEqualStrings("", result.stdout);
     try testing.expect(contains(result.stderr, "candidates must be omitted or empty with --migration"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a schema migration measures a new-column query on the variant only" {
+    var fixture = try initMigrationFixture();
+    defer fixture.deinit();
+    const before = try Io.Dir.cwd().readFileAlloc(testing.io, fixture.db_path, testing.allocator, .unlimited);
+    defer testing.allocator.free(before);
+
+    var stdout_buffer: [262144]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = try runMigration(&fixture, "queries_schema.json", "schema.sql", &.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    try testing.expectEqual(@as(i64, 1), try jsonInt(parsed.value, "batch_schema_version"));
+    const summary = try jsonItems(parsed.value, "summary");
+    try testing.expectEqual(@as(i64, 1), try jsonInt(summary[0], "not_judged"));
+    try testing.expectEqual(@as(i64, 0), try jsonInt(summary[0], "incomparable"));
+    try testing.expectEqual(@as(i64, 0), try jsonInt(summary[0], "needs_check"));
+
+    const results = try jsonItems(parsed.value, "results");
+    try testing.expectEqual(@as(usize, 2), results.len);
+    const comparison = try jsonGet(results[1], "comparison");
+    try testing.expectEqualStrings("not-judged", try jsonText(comparison, "verdict"));
+    try testing.expectEqualStrings("incomparable", try jsonText(comparison, "result"));
+    try testing.expectEqual(@as(i64, 0), try jsonInt(comparison, "exit_code"));
+    try testing.expect((try jsonGet(comparison, "baseline")) == .null);
+    try testing.expect((try jsonGet(comparison, "plan_changed")).bool);
+    const plan = try jsonItems(try jsonGet(comparison, "variant"), "plan");
+    try testing.expect(plan.len > 0);
+    const reasons = try jsonItems(comparison, "verdict_reasons");
+    try testing.expectEqual(@as(usize, 2), reasons.len);
+    try testing.expect(contains(reasons[0].string, "no such column: c"));
+    try testing.expect(contains(reasons[1].string, "only the variant was measured"));
+
+    const after = try Io.Dir.cwd().readFileAlloc(testing.io, fixture.db_path, testing.allocator, .unlimited);
+    defer testing.allocator.free(after);
+    try testing.expectEqualSlices(u8, before, after);
+    try fixture.expectNoLeftovers();
+}
+
+test "a schema migration shows the variant-only query in human output" {
+    var fixture = try initMigrationFixture();
+    defer fixture.deinit();
+
+    var stdout_buffer: [262144]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = try runMigration(&fixture, "queries_schema.json", "schema.sql", &.{}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+    try testing.expect(contains(result.stdout, "not-judged"));
+    try testing.expect(contains(result.stdout, "\nNot judged\n"));
+    try testing.expect(contains(result.stdout, "qc.sql: the baseline cannot run this SELECT before the migration: no such column: c"));
+    try testing.expect(contains(result.stdout, "- -> "));
+    try fixture.expectNoLeftovers();
+}
+
+test "a schema migration can create a table for a variant-only query" {
+    var fixture = try initMigrationFixture();
+    defer fixture.deinit();
+
+    var stdout_buffer: [262144]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = try runMigration(&fixture, "queries_new_table.json", "schema_new_table.sql", &.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    const summary = try jsonItems(parsed.value, "summary");
+    try testing.expectEqual(@as(i64, 1), try jsonInt(summary[0], "not_judged"));
+    const results = try jsonItems(parsed.value, "results");
+    const comparison = try jsonGet(results[0], "comparison");
+    try testing.expect((try jsonGet(comparison, "baseline")) == .null);
+    try testing.expectEqualStrings("not-judged", try jsonText(comparison, "verdict"));
+    const variant = try jsonGet(comparison, "variant");
+    try testing.expectEqual(@as(i64, 0), try jsonInt(variant, "rows"));
+    try testing.expect(contains((try jsonItems(comparison, "verdict_reasons"))[0].string, "no such table: n"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a migration with a variant-only query can still be recommended" {
+    var fixture = try initMigrationFixture();
+    defer fixture.deinit();
+
+    var stdout_buffer: [262144]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = try runMigration(&fixture, "queries_b_schema.json", "schema_improve.sql", &.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    try testing.expect(contains(try jsonText(parsed.value, "recommended"), "schema_improve.sql"));
+    const summary = try jsonItems(parsed.value, "summary");
+    try testing.expectEqual(@as(i64, 1), try jsonInt(summary[0], "improved"));
+    try testing.expectEqual(@as(i64, 1), try jsonInt(summary[0], "not_judged"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a variant-only query does not hide a regression" {
+    var fixture = try initMigrationFixture();
+    defer fixture.deinit();
+
+    var stdout_buffer: [262144]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = try runMigration(&fixture, "queries_schema.json", "schema_drop.sql", &.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.regression, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    const summary = try jsonItems(parsed.value, "summary");
+    try testing.expectEqual(@as(i64, 1), try jsonInt(summary[0], "needs_check"));
+    try testing.expectEqual(@as(i64, 1), try jsonInt(summary[0], "not_judged"));
+    const results = try jsonItems(parsed.value, "results");
+    const comparison = try jsonGet(results[0], "comparison");
+    try testing.expectEqualStrings("regressed", try jsonText(comparison, "verdict"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a variant-only query keeps the incomparable exit 4" {
+    var fixture = try initMigrationFixture();
+    defer fixture.deinit();
+
+    var stdout_buffer: [262144]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = try runMigration(&fixture, "queries_mixed.json", "schema.sql", &.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.incomparable, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    const summary = try jsonItems(parsed.value, "summary");
+    try testing.expectEqual(@as(i64, 1), try jsonInt(summary[0], "incomparable"));
+    try testing.expectEqual(@as(i64, 1), try jsonInt(summary[0], "not_judged"));
+    const results = try jsonItems(parsed.value, "results");
+    try testing.expectEqualStrings("not-judged", try jsonText(try jsonGet(results[0], "comparison"), "verdict"));
+    try testing.expectEqualStrings("incomparable", try jsonText(try jsonGet(results[1], "comparison"), "result"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a variant-only query that reaches the time limit is a timeout" {
+    var fixture = try initMigrationFixture();
+    defer fixture.deinit();
+
+    var stdout_buffer: [262144]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = try runMigration(&fixture, "queries_timeout.json", "schema_column_only.sql", &.{ "--format", "json", "--timeout-ms", "1" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.timeout, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    const summary = try jsonItems(parsed.value, "summary");
+    try testing.expectEqual(@as(i64, 1), try jsonInt(summary[0], "timeout"));
+    try testing.expectEqual(@as(i64, 0), try jsonInt(summary[0], "not_judged"));
+    const results = try jsonItems(parsed.value, "results");
+    try testing.expectEqualStrings("variant_timeout", try jsonText(results[0], "status"));
+    try testing.expect((try jsonGet(results[0], "comparison")) == .null);
+    try fixture.expectNoLeftovers();
+}
+
+test "a migration that breaks a query reports the variant error" {
+    var fixture = try initMigrationFixture();
+    defer fixture.deinit();
+
+    var stdout_buffer: [65536]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = try runMigration(&fixture, "queries_missing.json", "schema.sql", &.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try testing.expect(contains(result.stderr, "the batch variant for query 'qmissing.sql'"));
+    try testing.expect(contains(result.stderr, "no such column: missing"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a migration that drops a column breaks a manifest query before the report" {
+    var fixture = try initMigrationFixture();
+    defer fixture.deinit();
+
+    var stdout_buffer: [262144]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = try runMigration(&fixture, "queries_old_column.json", "schema_drop_b.sql", &.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try expectJsonFailure(result.stderr, "batch_variant_failed", 1);
+    try testing.expect(contains(result.stderr, "the batch variant for query 'qoldcol.sql'"));
+    try testing.expect(contains(result.stderr, "schema_drop_b.sql"));
+    try testing.expect(contains(result.stderr, "no such column: b"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a SELECT * query cannot be compared after a migration adds a column" {
+    var fixture = try initMigrationFixture();
+    defer fixture.deinit();
+
+    var stdout_buffer: [262144]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = try runMigration(&fixture, "queries_star.json", "schema_column_only.sql", &.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.incomparable, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    const summary = try jsonItems(parsed.value, "summary");
+    try testing.expectEqual(@as(i64, 1), try jsonInt(summary[0], "incomparable"));
+    try testing.expectEqual(@as(i64, 0), try jsonInt(summary[0], "not_judged"));
+    const results = try jsonItems(parsed.value, "results");
+    const comparison = try jsonGet(results[0], "comparison");
+    try testing.expectEqualStrings("not-judged", try jsonText(comparison, "verdict"));
+    try testing.expectEqualStrings("incomparable", try jsonText(comparison, "result"));
+    try testing.expectEqual(@as(i64, 4), try jsonInt(comparison, "exit_code"));
+    try testing.expect((try jsonGet(comparison, "baseline")) == .object);
+    const reasons = try jsonItems(comparison, "result_reasons");
+    try testing.expect(contains(try jsonText(reasons[0], "text"), "the column count differs between the copies"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a schema migration rejects a statement it cannot apply" {
+    var fixture = try initMigrationFixture();
+    defer fixture.deinit();
+    const before = try Io.Dir.cwd().readFileAlloc(testing.io, fixture.db_path, testing.allocator, .unlimited);
+    defer testing.allocator.free(before);
+
+    var stdout_buffer: [65536]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = try runMigration(&fixture, "queries_schema.json", "schema_bad.sql", &.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try expectJsonFailure(result.stderr, "migration_statement_rejected", 1);
+    try testing.expect(contains(result.stderr, "statement 2"));
+
+    const after = try Io.Dir.cwd().readFileAlloc(testing.io, fixture.db_path, testing.allocator, .unlimited);
+    defer testing.allocator.free(after);
+    try testing.expectEqualSlices(u8, before, after);
+    try fixture.expectNoLeftovers();
+}
+
+test "a CREATE TABLE AS SELECT is not accepted" {
+    var fixture = try initMigrationFixture();
+    defer fixture.deinit();
+
+    var stdout_buffer: [65536]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = try runMigration(&fixture, "queries_schema.json", "schema_as_select.sql", &.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try expectJsonFailure(result.stderr, "migration_statement_rejected", 1);
+    try testing.expect(contains(result.stderr, "statement 1"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a migration can rename a column and the table" {
+    var fixture = try initMigrationFixture();
+    defer fixture.deinit();
+
+    var stdout_buffer: [262144]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = try runMigration(&fixture, "queries_rename.json", "schema_rename.sql", &.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    const summary = try jsonItems(parsed.value, "summary");
+    try testing.expectEqual(@as(i64, 1), try jsonInt(summary[0], "not_judged"));
+    const results = try jsonItems(parsed.value, "results");
+    const comparison = try jsonGet(results[0], "comparison");
+    try testing.expect((try jsonGet(comparison, "baseline")) == .null);
+    try testing.expect(contains((try jsonItems(comparison, "verdict_reasons"))[0].string, "no such table: t2"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a migration can drop a column and create a useful index" {
+    var fixture = try initMigrationFixture();
+    defer fixture.deinit();
+
+    var stdout_buffer: [262144]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = try runMigration(&fixture, "queries_b.json", "schema_drop_column.sql", &.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    const summary = try jsonItems(parsed.value, "summary");
+    try testing.expectEqual(@as(i64, 1), try jsonInt(summary[0], "improved"));
+    try testing.expectEqual(@as(i64, 0), try jsonInt(summary[0], "not_judged"));
     try fixture.expectNoLeftovers();
 }
 
@@ -4120,6 +4457,43 @@ test "seed data works with --migration" {
     try testing.expectEqual(@as(usize, 1), results.len);
     const comparison = try jsonGet(results[0], "comparison");
     try testing.expectEqualStrings("match", try jsonText(comparison, "result"));
+    try fixture.expectNoLeftovers();
+}
+
+test "seed data works with a schema migration" {
+    var fixture = try initMigrationFixture();
+    defer fixture.deinit();
+    const before = try Io.Dir.cwd().readFileAlloc(testing.io, fixture.db_path, testing.allocator, .unlimited);
+    defer testing.allocator.free(before);
+    const seed_path = try writeSeedSpec(&fixture, "seed_schema.json",
+        \\{"seed": 5, "tables": {"t": {"rows": 2000, "columns": {
+        \\  "a": {"kind": "sequence"},
+        \\  "b": {"kind": "uniform", "values": ["v1", "v2"]}}}}}
+    );
+    defer testing.allocator.free(seed_path);
+
+    var stdout_buffer: [262144]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = try runMigration(&fixture, "queries_schema.json", "schema.sql", &.{ "--seed-data", seed_path, "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    const seed_data = try jsonGet(parsed.value, "seed_data");
+    try testing.expectEqual(@as(i64, 5), try jsonInt(seed_data, "seed"));
+    try testing.expectEqual(@as(i64, 2000), try jsonInt(seed_data, "rows"));
+    const summary = try jsonItems(parsed.value, "summary");
+    try testing.expectEqual(@as(i64, 1), try jsonInt(summary[0], "not_judged"));
+    const results = try jsonItems(parsed.value, "results");
+    const comparison = try jsonGet(results[1], "comparison");
+    try testing.expect((try jsonGet(comparison, "baseline")) == .null);
+    try testing.expectEqualStrings("not-judged", try jsonText(comparison, "verdict"));
+    try testing.expectEqual(@as(i64, 2000), try jsonInt(try jsonGet(comparison, "variant"), "rows"));
+
+    const after = try Io.Dir.cwd().readFileAlloc(testing.io, fixture.db_path, testing.allocator, .unlimited);
+    defer testing.allocator.free(after);
+    try testing.expectEqualSlices(u8, before, after);
     try fixture.expectNoLeftovers();
 }
 

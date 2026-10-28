@@ -21,7 +21,7 @@ On failure, read the line that starts with `{`. `human` and `kv` do not print th
 
 ## Batch report (batch_schema_version 1)
 
-`--batch manifest.json` compares every SELECT in the manifest with every candidate CREATE INDEX. With `--suggest`, the manifest may omit `candidates`, and SQLite's proposed indexes join the comparison. With `--migration`, the manifest also omits `candidates`, and one SQL file with index changes is applied to the variant before the queries run. Its stdout object is a separate contract with `batch_schema_version` 1. The comparison objects under `results` keep `schema_version` 2 and the shape above. `--suggest` and `--migration` add keys to this contract without changing the version.
+`--batch manifest.json` compares every SELECT in the manifest with every candidate CREATE INDEX. With `--suggest`, the manifest may omit `candidates`, and SQLite's proposed indexes join the comparison. With `--migration`, the manifest also omits `candidates`, and one SQL file with index or table changes is applied to the variant before the queries run. Its stdout object is a separate contract with `batch_schema_version` 1. The comparison objects under `results` keep `schema_version` 2 and the shape above. `--suggest` and `--migration` add keys to this contract without changing the version.
 
 | Key | Type | Meaning |
 | --- | --- | --- |
@@ -43,11 +43,12 @@ On failure, read the line that starts with `{`. `human` and `kv` do not print th
 | `index_sql_text` | string | The SQL text: for a manifest candidate, the contents of its file; for a suggestion, the statement SQLite reported (ending with `;`); for `--migration`, the contents of the migration file |
 | `status` | string | `compared`, `index_rejected`, or `index_timeout` |
 | `failure` | object or `null` | `null` for `compared`; otherwise `{ "code", "message" }`. `code` is `index_rejected` or `index_timeout` |
-| `improved`, `no_effect`, `needs_check`, `mismatch`, `incomparable` | number or `null` | How many queries ended in each outcome. `improved + no_effect + needs_check + mismatch + incomparable + timeout` equals the query count. `null` when the candidate was not compared. In a `--migration` run, `needs_check` counts the queries whose embedded comparison verdict is `regressed` |
+| `improved`, `no_effect`, `needs_check`, `mismatch`, `incomparable` | number or `null` | How many queries ended in each outcome. `improved + no_effect + needs_check + mismatch + incomparable + timeout + not_judged` equals the query count. `null` when the candidate was not compared. In a `--migration` run, `needs_check` counts the queries whose embedded comparison verdict is `regressed` |
 | `timeout` | number or `null` | Queries whose variant SELECT reached `--timeout-ms` |
+| `not_judged` | number or `null` | Queries that only the variant could run because the migration added the column or table. Each has `verdict` `not-judged` in its embedded comparison. The count does not affect `recommended` or the exit code |
 | `size_increase` | number or `null` | Variant minus baseline in bytes (signed). For `manifest` and `suggested` candidates it is the file size. For a `--migration` run it is the bytes in use, `(page_count - freelist_count) * page_size`, so a dropped index reports the freed bytes as a negative number. `null` when the change was not applied |
 
-A candidate qualifies for `recommended` when its status is `compared` and `mismatch`, `incomparable`, `needs_check`, and `timeout` are all `0` and `improved` is at least `1`. In a `--migration` run, `needs_check` counts the `regressed` queries, so a migration that made a query worse never qualifies. Qualifying candidates come first in `summary`, in this order: more `improved`, then smaller `size_increase`, then input order. Input order is the manifest order, and suggestions follow the manifest entries. A `--migration` run has exactly one candidate, so it is either first in this order or last. The remaining `compared` candidates follow in input order, and the `index_rejected` / `index_timeout` candidates come last in input order.
+A candidate qualifies for `recommended` when its status is `compared` and `mismatch`, `incomparable`, `needs_check`, and `timeout` are all `0` and `improved` is at least `1`. `not_judged` is not part of this check. In a `--migration` run, `needs_check` counts the `regressed` queries, so a migration that made a query worse never qualifies. Qualifying candidates come first in `summary`, in this order: more `improved`, then smaller `size_increase`, then input order. Input order is the manifest order, and suggestions follow the manifest entries. A `--migration` run has exactly one candidate, so it is either first in this order or last. The remaining `compared` candidates follow in input order, and the `index_rejected` / `index_timeout` candidates come last in input order.
 
 ### `results` entries
 
@@ -56,16 +57,19 @@ A candidate qualifies for `recommended` when its status is `compared` and `misma
 | `query` | string | The `select` string from the manifest, or the SELECT path argument for a one-SELECT `--suggest` |
 | `candidate` | string | The `index_sql` string from the manifest, or `suggested:N` |
 | `status` | string | `compared` or `variant_timeout` |
-| `comparison` | object or `null` | `null` for `variant_timeout`; otherwise the schema_version 2 comparison object, with `inputs.select` and `inputs.index_sql` set to the same strings. For a one-SELECT `--suggest`, `inputs.select` is the SELECT path argument. With `--migration`, `inputs.index_sql` is the migration path, and a query whose rows match but whose read or written rows increased has `verdict` `regressed`. The embedded object is minified |
+| `comparison` | object or `null` | `null` for `variant_timeout`; otherwise the schema_version 2 comparison object, with `inputs.select` and `inputs.index_sql` set to the same strings. For a one-SELECT `--suggest`, `inputs.select` is the SELECT path argument. With `--migration`, `inputs.index_sql` is the migration path, and a query whose rows match but whose read or written rows increased has `verdict` `regressed`. A query that only the variant can run has `verdict` `not-judged`, `result` `incomparable`, and `baseline` `null`. The embedded object is minified |
 
 ### `--migration`
 
 `--migration <FILE>` applies one migration file to the variant copy before the batch queries run. It needs `--batch`, and the manifest must omit `candidates` or set it to `[]`. It does not take `--select`, `--index-sql`, `--bind`, `--runs`, `--suggest`, or `--format kv`.
 
-- The file is at most 1 MiB and may hold several statements separated by semicolons. Only `CREATE INDEX`, `CREATE UNIQUE INDEX`, and `DROP INDEX` are accepted. Any other statement is rejected before the variant is touched, with a statement number and exit `1`; the original database is never changed.
-- Statements run in file order, so a migration may drop an index and create another with the same name. Each statement gets its own `--timeout-ms`. A statement that fails to apply is recorded as `index_rejected` (or `index_timeout`) in `summary`, and the run still writes the report with exit `1` (or `124`).
-- The report names the migration and every statement. Human output adds a `migration:` block; JSON adds the top-level `migration` object with `path` and `statements` (each has `kind`: `create_index` or `drop_index`, and `sql`).
-- The `summary` entry for a migration has `source` `migration`, `candidate` set to the migration path, and the same `improved` / `no_effect` / `needs_check` / `mismatch` / `incomparable` / `timeout` counts. A query whose rows match but whose read or written rows increased has `verdict` `regressed` in its embedded comparison and is counted under `needs_check`. `recommended` is the migration path only when it qualifies like any other candidate.
+- The file is at most 1 MiB and may hold several statements separated by semicolons. It accepts `CREATE INDEX`, `CREATE UNIQUE INDEX`, `DROP INDEX`, `CREATE TABLE` with a column list (not `AS SELECT`), and `ALTER TABLE` with ADD COLUMN, RENAME COLUMN, DROP COLUMN, or RENAME TO. `INSERT`, `UPDATE`, `DELETE`, `DROP TABLE`, `ATTACH`, `PRAGMA`, and every other statement are rejected before the variant is touched, with a statement number and exit `1`; the original database is never changed. The reject code is `migration_statement_rejected`.
+- Statements run in file order, so a migration may add a column and index it, rename a column or table, or drop an index and create another with the same name. Each statement gets its own `--timeout-ms`. A statement that fails to apply is recorded as `index_rejected` (or `index_timeout`) in `summary`, and the run still writes the report with exit `1` (or `124`).
+- The report names the migration and every statement. Human output adds a `migration:` block; JSON adds the top-level `migration` object with `path` and `statements` (each has `kind`: `create_index`, `drop_index`, `create_table`, or `alter_table`, and `sql`).
+- A query that uses a column or table the migration adds cannot be prepared on the baseline. Qenome measures it on the variant only and reports the variant plan and row counts. Its embedded comparison has `verdict` `not-judged`, `result` `incomparable`, `baseline` `null`, `plan_changed` `true`, `exit_code` `0`, and `verdict_reasons` with the baseline reason. `summary.not_judged` counts it. It does not change `recommended` or the batch `exit_code`.
+- A query that the migration breaks stops the run before the report. If it refers to a column or table the migration drops or renames, the variant cannot prepare the `SELECT`: stdout is empty, the exit code is `1`, and the error code is `batch_variant_failed`. The message names the query and the migration path. Write the post-migration names in the manifest.
+- Adding or dropping a column changes the column count of a `SELECT *` query, so its rows cannot be compared. Its embedded comparison has `verdict` `not-judged`, `result` `incomparable`, `exit_code` `4`, and `result_reasons` with `the column count differs between the copies`; `baseline` is present because the query runs on both copies. `summary.incomparable` counts it and the batch exits `4`. List the columns to compare it.
+- The `summary` entry for a migration has `source` `migration`, `candidate` set to the migration path, and the same `improved` / `no_effect` / `needs_check` / `mismatch` / `incomparable` / `timeout` / `not_judged` counts. A query whose rows match but whose read or written rows increased has `verdict` `regressed` in its embedded comparison and is counted under `needs_check`. `recommended` is the migration path only when it qualifies like any other candidate.
 - A migration measures `size_increase` and the `size_bytes` of each embedded comparison as the bytes in use, `(page_count - freelist_count) * page_size`, not as the file size. `DROP INDEX` moves its pages to SQLite's freelist without shrinking the file, so the file delta stays `0`; the bytes in use report the freed space as a negative number. The file shrinks only after `VACUUM`. A batch without `--migration` keeps the file size difference.
 - When the result rows match but at least one query read or wrote more rows after the migration, that query's `comparison.verdict` is `regressed`, the batch counts it under `needs_check` in `summary`, and the batch `exit_code` is `6`. A heavier result (`3` mismatch, `1` rejected change, `124` timeout, `4` incomparable) takes precedence. `no_effect` alone keeps `0`.
 - `warnings` is empty with `--migration`: the `no_analyze_stats` and `data_too_small` checks need one candidate table, and a migration can touch several.
@@ -128,7 +132,7 @@ When the report is written, the exit code is the heaviest of: result mismatch `3
 
 A batch can therefore write a report and still exit `1`, `6`, or `124`. Read stdout to decide: if stdout is a batch object, the run finished and the failures are in `summary` and `results`. If stdout is empty, the run stopped before the report and stderr holds the schema_version 2 error object. Candidate failures (`index_rejected`, `index_timeout`, `variant_timeout`) are never written as `error:` lines.
 
-The migration statement kind check is not a candidate failure: an unsupported statement, an empty migration, or an unreadable file stops before the report and writes the error object on stderr. A failure to apply a syntactically valid statement (for example, dropping an index that does not exist) is a candidate failure and stays in the report.
+The migration statement kind check is not a candidate failure: an unsupported statement (including a data change or `DROP TABLE`), an empty migration, or an unreadable file stops before the report and writes the error object on stderr. A manifest query that the variant cannot prepare after the migration (it uses a column or table the migration dropped or renamed) stops the same way with `batch_variant_failed`. A failure to apply a syntactically valid statement (for example, dropping an index that does not exist) is a candidate failure and stays in the report.
 
 Batch error codes:
 
@@ -139,12 +143,12 @@ Batch error codes:
 | `batch_manifest_invalid` | 1 | Fix the shape, limits, repeated paths, or binds |
 | `batch_sql_unreadable` | 1 | Check the SQL paths in the manifest; they are relative to the manifest |
 | `migration_unreadable` | 1 | Check the `--migration` path and permissions |
-| `migration_empty` | 1 | Write at least one CREATE INDEX or DROP INDEX statement |
-| `migration_statement_rejected` | 1 | Use only CREATE INDEX, CREATE UNIQUE INDEX, and DROP INDEX |
+| `migration_empty` | 1 | Write at least one CREATE INDEX, DROP INDEX, CREATE TABLE, or ALTER TABLE statement |
+| `migration_statement_rejected` | 1 | Use only CREATE INDEX, CREATE UNIQUE INDEX, DROP INDEX, CREATE TABLE (not AS SELECT), and ALTER TABLE (ADD / RENAME / DROP COLUMN and RENAME TO) |
 | `migration_failed` | 1 | Fix the named statement so it applies to this database |
 | `batch_baseline_failed` | 1 | Fix the SELECT or read the SQLite message |
 | `batch_baseline_timeout` | 124 | Raise `--timeout-ms` or narrow the SELECT |
-| `batch_variant_failed` | 1 | Read the SQLite message; the run stopped before the report |
+| `batch_variant_failed` | 1 | Read the SQLite message; the run stopped before the report. With `--migration`, the query may use a column or table that the migration dropped or renamed |
 | `batch_variant_timeout` | 124 | Raise `--timeout-ms` or simplify the CREATE INDEX |
 | `batch_index_failed` | 1 | Fix the candidate CREATE INDEX so it applies to this database |
 | `batch_workspace_failed` | 1 | Check the temporary directory and its permissions |
@@ -173,15 +177,15 @@ The object is indented with two spaces and ends with a newline. A missing key th
 | Key | Type | Meaning |
 | --- | --- | --- |
 | `schema_version` | number | `2` |
-| `exit_code` | number | `0`, `3`, or `4` for the comparison. This stays `0` when the process later exits `5` |
-| `verdict` | string | `improved`, `no-effect`, `needs-check`, `regressed`, or `not-judged`. `regressed` appears only in a `--migration` batch; the other modes name the same condition `needs-check` |
+| `exit_code` | number | `0`, `3`, or `4` for the comparison. This stays `0` when the process later exits `5`. A variant-only `--migration` comparison writes `0` |
+| `verdict` | string | `improved`, `no-effect`, `needs-check`, `regressed`, or `not-judged`. `regressed` appears only in a `--migration` batch; the other modes name the same condition `needs-check`. `not-judged` also covers a variant-only `--migration` query whose baseline cannot prepare it |
 | `verdict_reasons` | array of strings | Why the verdict is `needs-check`, `regressed`, or `not-judged`. Empty for `improved` and `no-effect` |
-| `result` | string | `match`, `mismatch`, or `incomparable` |
+| `result` | string | `match`, `mismatch`, or `incomparable`. A variant-only `--migration` query is `incomparable` because there is no baseline result to compare |
 | `row_order` | string | `same`, `differs`, or `not-applicable`. Reference only. `same` or `differs` only when `result` is `match` |
-| `result_reasons` | array of `{text, hint}` | Why the rows cannot be compared. `hint` is a string or `null` |
+| `result_reasons` | array of `{text, hint}` | Why the rows cannot be compared. `hint` is a string or `null`. Empty for a variant-only `--migration` query; its `verdict_reasons` holds the reason |
 | `row_differences` | object | `baseline_only` and `variant_only` counts. `baseline_only_examples` and `variant_only_examples` are arrays, empty unless `--show-rows` |
-| `plan_changed` | boolean | The query plan text differs |
-| `baseline`, `variant` | object | `rows` (result row count), `plan` (array of plan steps), `counters` |
+| `plan_changed` | boolean | The query plan text differs. It is `true` for a variant-only `--migration` query because there is no baseline plan |
+| `baseline`, `variant` | object or `null` | `rows` (result row count), `plan` (array of plan steps), `counters`. `baseline` is `null` only for a variant-only `--migration` query; every other comparison has both objects |
 | `baseline.counters` / `variant.counters` | object | `rows_read`, `rows_written`, `fullscan_steps`, `vm_steps`, `sort_ops`, `autoindex_rows`. All numbers. `rows_read` and `rows_written` are 32-bit and wrap past 4294967295 |
 | `timing` | object or `null` | See the status table. `ratio` is variant median / baseline median, or `null` when the baseline median is `0` |
 | `size_bytes` | object | `baseline`, `variant`, and `increase` (variant minus baseline). The whole database file, not the index alone. In a `--migration` batch it is the bytes in use instead. See [`--migration`](#--migration) |
@@ -202,7 +206,7 @@ The object is indented with two spaces and ends with a newline. A missing key th
 | `no-effect` | The rows match, and the variant reads the same number of rows |
 | `needs-check` | The rows match, but the variant reads or writes more rows |
 | `regressed` | The rows match, but the migration made the variant read or write more rows. Only inside a `--migration` batch; the other modes name the same condition `needs-check` |
-| `not-judged` | The rows differ or cannot be compared |
+| `not-judged` | The rows differ or cannot be compared, or a `--migration` query could only run on the variant |
 
 The verdict comes from `rows_read` and `rows_written`. It does not change the exit code. Times do not change the verdict, so `--runs 0` still has a verdict.
 
@@ -305,8 +309,8 @@ The comparison object's `exit_code` is `0`, `3`, or `4`. The process can still e
 | `size_unreadable` | 1 | Rerun |
 | `index_timeout` | 124 | Raise `--timeout-ms` or simplify the index |
 | `migration_unreadable` | 1 | `--migration` takes a path to a file, not the SQL text |
-| `migration_empty` | 1 | Write at least one CREATE INDEX or DROP INDEX statement |
-| `migration_statement_rejected` | 1 | Use only CREATE INDEX, CREATE UNIQUE INDEX, and DROP INDEX |
+| `migration_empty` | 1 | Write at least one CREATE INDEX, DROP INDEX, CREATE TABLE, or ALTER TABLE statement |
+| `migration_statement_rejected` | 1 | Use only CREATE INDEX, CREATE UNIQUE INDEX, DROP INDEX, CREATE TABLE (not AS SELECT), and ALTER TABLE (ADD / RENAME / DROP COLUMN and RENAME TO) |
 | `migration_failed` | 1 | Fix the named statement |
 | `seed_data_unreadable` | 1 | Check the `--seed-data` path and permissions |
 | `seed_data_invalid` | 1 | Fix the JSON shape, a missing table or column, or a value that does not fit a limit |

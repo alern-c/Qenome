@@ -266,13 +266,13 @@ pub fn classifyError(message: []const u8) ErrorClass {
         return .{ .code = "select_unreadable", .hint = "--select takes a path to a file that holds one SELECT, not the SQL text." };
     }
     if (std.mem.indexOf(u8, message, "cannot read --migration") != null) {
-        return .{ .code = "migration_unreadable", .hint = "--migration takes a path to a file that holds CREATE INDEX and DROP INDEX statements, not the SQL text." };
+        return .{ .code = "migration_unreadable", .hint = "--migration takes a path to a file that holds CREATE INDEX, DROP INDEX, CREATE TABLE, or ALTER TABLE statements, not the SQL text." };
     }
     if (std.mem.indexOf(u8, message, "the migration holds no statement") != null) {
-        return .{ .code = "migration_empty", .hint = "Write at least one CREATE INDEX or DROP INDEX statement in the --migration file." };
+        return .{ .code = "migration_empty", .hint = "Write at least one CREATE INDEX, DROP INDEX, CREATE TABLE, or ALTER TABLE statement in the --migration file." };
     }
-    if (std.mem.indexOf(u8, message, "is not a CREATE INDEX or DROP INDEX") != null) {
-        return .{ .code = "migration_statement_rejected", .hint = "Use only CREATE INDEX, CREATE UNIQUE INDEX, and DROP INDEX in a --migration file." };
+    if (std.mem.indexOf(u8, message, "is not a CREATE INDEX") != null) {
+        return .{ .code = "migration_statement_rejected", .hint = "Use only CREATE INDEX, CREATE UNIQUE INDEX, DROP INDEX, CREATE TABLE, and ALTER TABLE in a --migration file." };
     }
     if (std.mem.indexOf(u8, message, "could not be applied") != null) {
         return .{ .code = "migration_failed", .hint = "Fix the named statement so it applies to this database, then rerun." };
