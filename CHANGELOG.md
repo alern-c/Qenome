@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-10-28
+
+### Changed
+
+- The human summary no longer prints the timing evidence lines (`time-effect`, `time-median-difference-ns`, `time-noise-band-ns`, `time-confidence-interval-ns`) or the `warning:` lines: the evidence stays in `kv` and `json`, and advisory warnings move to a `Warnings` section of their own, with the text indented by two spaces and continuation lines by four.
+- The human summary's time line reports the direction and size of the change (`230x faster`, `1.80x slower`) from the same `effect` as `kv` and `json`, instead of an unqualified ratio and the faster-round count. When `effect` is `no-difference` or `insufficient-samples`, the line gives no direction: it says there is no clear difference, or shows the median ratio and says the paired rounds cannot judge the direction. When `effect` is `faster` or `slower` but the medians are equal or point the other way, the line says so and keeps the direction from the paired rounds.
+- `--batch` measures the baseline SELECT once per query before it visits the candidates and reuses the rows for every candidate, instead of preparing and running it again for each candidate. The cache holds at most 64 MiB in total; a query that does not fit is still measured once per candidate, as before. The baseline rows are restored to their insertion order for each comparison so `same_order` stays accurate, and the variant's result budget starts from the rows the baseline kept. The baseline work no longer grows with the number of candidates times the number of queries.
+
 ## [0.3.3] - 2026-10-28
 
 ### Added

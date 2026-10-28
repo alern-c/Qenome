@@ -70,13 +70,13 @@ Download an asset from the [Releases](https://github.com/alern-c/Qenome/releases
 
 Prebuilt binaries are provided for Linux, macOS, and Windows. Release assets are uncompressed binaries named `qenome-<version>-<arch>-<os>` (`qenome-<version>-<arch>-<os>.exe` on Windows). For example:
 
-- `qenome-0.3.3-x86_64-linux`
-- `qenome-0.3.3-aarch64-macos`
-- `qenome-0.3.3-x86_64-windows.exe`
+- `qenome-0.3.4-x86_64-linux`
+- `qenome-0.3.4-aarch64-macos`
+- `qenome-0.3.4-x86_64-windows.exe`
 
 The release page lists the assets that were built; pick the one whose `<arch>` and `<os>` match your machine. `SHA256SUMS` uses the `sha256sum` format: a SHA-256 hash, two spaces, and the file name.
 
-Verify the download before running it. Replace `0.3.3` and the file name in these examples with the version and asset you downloaded.
+Verify the download before running it. Replace `0.3.4` and the file name in these examples with the version and asset you downloaded.
 
 <details>
 <summary>Show the checksum commands for Linux, macOS, and Windows</summary>
@@ -90,14 +90,14 @@ sha256sum --check --ignore-missing SHA256SUMS
 macOS:
 
 ```sh
-grep 'qenome-0.3.3-aarch64-macos$' SHA256SUMS | shasum -a 256 -c
+grep 'qenome-0.3.4-aarch64-macos$' SHA256SUMS | shasum -a 256 -c
 ```
 
 Windows (PowerShell):
 
 ```powershell
-Select-String 'qenome-0.3.3-x86_64-windows.exe$' SHA256SUMS
-Get-FileHash .\qenome-0.3.3-x86_64-windows.exe -Algorithm SHA256
+Select-String 'qenome-0.3.4-x86_64-windows.exe$' SHA256SUMS
+Get-FileHash .\qenome-0.3.4-x86_64-windows.exe -Algorithm SHA256
 ```
 
 `Get-FileHash` must print the same SHA-256 hash as the line from `SHA256SUMS` (uppercase letters are fine).
@@ -107,8 +107,8 @@ Get-FileHash .\qenome-0.3.3-x86_64-windows.exe -Algorithm SHA256
 Then give the binary execute permission (Linux and macOS) and run it:
 
 ```sh
-chmod +x qenome-0.3.3-aarch64-macos
-mv qenome-0.3.3-aarch64-macos qenome
+chmod +x qenome-0.3.4-aarch64-macos
+mv qenome-0.3.4-aarch64-macos qenome
 ./qenome --version
 ```
 
