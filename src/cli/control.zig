@@ -121,6 +121,18 @@ const ErrorClass = struct {
 };
 
 pub fn classifyError(message: []const u8) ErrorClass {
+    if (std.mem.startsWith(u8, message, "--record") or std.mem.startsWith(u8, message, "--out")) {
+        return .{ .code = "usage_record_conflict", .hint = "Use --record with --out only; remove the database, SQL, batch, migration, bind, runs, suggest, seed, and format options." };
+    }
+    if (std.mem.startsWith(u8, message, "cannot read the record log")) {
+        return .{ .code = "record_log_unreadable", .hint = "Check that the record log path exists and is readable, then rerun." };
+    }
+    if (std.mem.startsWith(u8, message, "the record log") or std.mem.startsWith(u8, message, "the manifest would be")) {
+        return .{ .code = "record_log_invalid", .hint = "Record a session that runs at least one SELECT, and keep it to at most 100 distinct statements and 1 MiB." };
+    }
+    if (std.mem.startsWith(u8, message, "the output directory") or std.mem.startsWith(u8, message, "cannot create the output") or std.mem.startsWith(u8, message, "cannot write '")) {
+        return .{ .code = "record_output_failed", .hint = "Choose a new --out directory, check that it is writable, then rerun." };
+    }
     if (std.mem.startsWith(u8, message, "--suggest: the schema entry is not allowed")) {
         return .{ .code = "suggest_schema_rejected", .hint = "Use a database whose sqlite_schema holds only plain CREATE statements, or compare a named index without --suggest." };
     }

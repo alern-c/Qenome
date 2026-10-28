@@ -46,6 +46,8 @@ pub const Args = struct {
     d1: ?[:0]const u8 = null,
     config: ?[:0]const u8 = null,
     batch: ?[:0]const u8 = null,
+    record: ?[:0]const u8 = null,
+    out: ?[:0]const u8 = null,
     migration: ?[:0]const u8 = null,
     seed_data: ?[:0]const u8 = null,
     select: ?[:0]const u8 = null,
@@ -92,6 +94,10 @@ pub const ParseError = error{
     WriteRequiresSingle,
     WriteRejectsSuggest,
     WriteRejectsMigration,
+    RecordTakesNoPaths,
+    RecordConflict,
+    OutRequiresRecord,
+    RecordRejectsFormat,
     OutOfMemory,
 };
 
@@ -108,7 +114,9 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
     var batch_requested = false;
     var suggest_requested = false;
     var write_requested = false;
+    var record_requested = false;
     for (rest) |arg| {
+        if (std.mem.eql(u8, arg, "--record") or std.mem.startsWith(u8, arg, "--record=")) record_requested = true;
         if (std.mem.eql(u8, arg, "--")) break;
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             args.help = true;
@@ -140,7 +148,7 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
             continue;
         }
         if (positional_only) {
-            try assignPositional(&args, arg, d1_requested, batch_requested, suggest_requested, write_requested);
+            try assignPositional(&args, arg, d1_requested, batch_requested, suggest_requested, write_requested, record_requested);
             continue;
         }
         const inline_value = splitInline(arg);
@@ -164,6 +172,12 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
         } else if (std.mem.eql(u8, name, "--batch")) {
             if (args.batch != null) return error.DuplicateOption;
             args.batch = try optionValue(argv, &index, inline_value);
+        } else if (std.mem.eql(u8, name, "--record")) {
+            if (args.record != null) return error.DuplicateOption;
+            args.record = try optionValue(argv, &index, inline_value);
+        } else if (std.mem.eql(u8, name, "--out")) {
+            if (args.out != null) return error.DuplicateOption;
+            args.out = try optionValue(argv, &index, inline_value);
         } else if (std.mem.eql(u8, name, "--migration")) {
             if (args.migration != null) return error.DuplicateOption;
             args.migration = try optionValue(argv, &index, inline_value);
@@ -207,10 +221,42 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
         } else if (arg.len != 0 and arg[0] == '-') {
             return error.UnknownOption;
         } else {
-            try assignPositional(&args, arg, d1_requested, batch_requested, suggest_requested, write_requested);
+            try assignPositional(&args, arg, d1_requested, batch_requested, suggest_requested, write_requested, record_requested);
         }
     }
     offending.* = null;
+    if (args.out != null and args.record == null) {
+        offending.* = "--out";
+        return error.OutRequiresRecord;
+    }
+    if (args.record != null) {
+        const conflicts = [_]struct { name: [:0]const u8, present: bool }{
+            .{ .name = "--db", .present = args.db != null },
+            .{ .name = "--d1", .present = args.d1 != null },
+            .{ .name = "--config", .present = args.config != null },
+            .{ .name = "--batch", .present = args.batch != null },
+            .{ .name = "--migration", .present = args.migration != null },
+            .{ .name = "--seed-data", .present = args.seed_data != null },
+            .{ .name = "--select", .present = args.select != null },
+            .{ .name = "--write", .present = args.write != null },
+            .{ .name = "--index-sql", .present = args.index_sql != null },
+            .{ .name = "--bind", .present = binds.items.len != 0 },
+            .{ .name = "--runs", .present = args.runs_given },
+            .{ .name = "--timeout-ms", .present = args.timeout_ms != default_timeout_ms },
+            .{ .name = "--show-binds", .present = args.show_binds },
+            .{ .name = "--show-rows", .present = args.show_rows },
+            .{ .name = "--suggest", .present = args.suggest },
+        };
+        for (conflicts) |conflict| {
+            if (!conflict.present) continue;
+            offending.* = conflict.name;
+            return error.RecordConflict;
+        }
+        if (args.format != .human) {
+            offending.* = "--format";
+            return error.RecordRejectsFormat;
+        }
+    }
     if (args.db != null and args.d1 != null) {
         offending.* = "--d1";
         return error.ConflictingDatabase;
@@ -304,7 +350,8 @@ fn splitInline(arg: [:0]const u8) ?Inline {
     return .{ .name = arg[0..at], .value = arg[at + 1 ..] };
 }
 
-fn assignPositional(args: *Args, value: [:0]const u8, d1_requested: bool, batch_requested: bool, suggest_requested: bool, write_requested: bool) ParseError!void {
+fn assignPositional(args: *Args, value: [:0]const u8, d1_requested: bool, batch_requested: bool, suggest_requested: bool, write_requested: bool, record_requested: bool) ParseError!void {
+    if (record_requested) return error.RecordTakesNoPaths;
     if (value.len == 0) return error.EmptyPath;
     if (batch_requested) {
         if (!d1_requested and args.db == null) {
@@ -361,6 +408,13 @@ pub const required_option_count = 3;
 
 pub fn missingRequired(args: Args, buffer: *[required_option_count][]const u8) []const []const u8 {
     var count: usize = 0;
+    if (args.record != null) {
+        if (args.out == null) {
+            buffer[count] = "the output directory (--out)";
+            count += 1;
+        }
+        return buffer[0..count];
+    }
     if (args.db == null and args.d1 == null) {
         buffer[count] = "the database (a path, --db or --d1)";
         count += 1;
@@ -384,6 +438,8 @@ const long_options = [_][]const u8{
     "--d1",
     "--config",
     "--batch",
+    "--record",
+    "--out",
     "--migration",
     "--seed-data",
     "--select",
@@ -523,6 +579,8 @@ pub const suggest_usage_line = "       qenome <DB> <SELECT_FILE> --suggest [opti
 
 pub const d1_suggest_usage_line = "       qenome --d1 <BINDING> <SELECT_FILE> --suggest [options]";
 
+pub const record_usage_line = "       qenome --record <FILE> --out <DIR>";
+
 pub const write_usage_line = "       qenome <DB> --write <FILE> --index-sql <FILE> [options]";
 
 pub const d1_write_usage_line = "       qenome --d1 <BINDING> --write <FILE> --index-sql <FILE> [options]";
@@ -534,7 +592,7 @@ pub fn printVersion(writer: *Io.Writer) Io.Writer.Error!void {
 }
 
 pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
-    try writer.writeAll(usage_line ++ "\n" ++ d1_usage_line ++ "\n" ++ batch_usage_line ++ "\n" ++ d1_batch_usage_line ++ "\n" ++ migration_usage_line ++ "\n" ++ d1_migration_usage_line ++ "\n" ++ suggest_usage_line ++ "\n" ++ d1_suggest_usage_line ++ "\n" ++ write_usage_line ++ "\n" ++ d1_write_usage_line ++ "\n\n" ++
+    try writer.writeAll(usage_line ++ "\n" ++ d1_usage_line ++ "\n" ++ batch_usage_line ++ "\n" ++ d1_batch_usage_line ++ "\n" ++ migration_usage_line ++ "\n" ++ d1_migration_usage_line ++ "\n" ++ suggest_usage_line ++ "\n" ++ d1_suggest_usage_line ++ "\n" ++ write_usage_line ++ "\n" ++ d1_write_usage_line ++ "\n" ++ record_usage_line ++ "\n\n" ++
         \\Compares one read-only SELECT before and after one candidate CREATE INDEX
         \\on a local SQLite database, without changing the database. With --write,
         \\it compares one INSERT, UPDATE, DELETE, or REPLACE instead.
@@ -549,6 +607,15 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\  --batch <FILE>       compare every SELECT in a batch manifest with
         \\                       every candidate CREATE INDEX, instead of --select
         \\                       and --index-sql; see the batch manifest below
+        \\  --record <FILE>      read the records that qenome/d1 wrote to the output
+        \\                       of wrangler dev or a test run, and write a batch
+        \\                       manifest without candidates to --out; no database
+        \\                       is needed; every manifest holds the bind values,
+        \\                       so keep it local and out of version control
+        \\  --out <DIR>          new directory for --record; the command writes
+        \\                       manifest.json and queries/ there, with mode 0700
+        \\                       on the directory and 0600 on the files, and stops
+        \\                       when the directory already exists
         \\  --migration <FILE>   apply this SQL file to the variant only before
         \\                       the --batch queries run; the manifest must omit
         \\                       candidates; CREATE INDEX, DROP INDEX, CREATE
@@ -624,6 +691,7 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\  qenome app.db select.sql index.sql --seed-data seed.json
         \\  qenome app.db select.sql --suggest
         \\  qenome app.db --batch batch.json --suggest
+        \\  qenome --record record.log --out qenome-manifest
         \\
         \\The same paths can be given as --db, --select and --index-sql.
         \\With --d1, the two positional paths fill the SELECT and CREATE INDEX
@@ -767,6 +835,16 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
 
 pub fn parseErrorMessage(err: ParseError) []const u8 {
     return switch (err) {
+        error.RecordTakesNoPaths => "--record reads a log and writes a manifest; do not pass a database or SQL path (see --help)",
+        error.RecordConflict => "--record does not take the other mode options (see --help)",
+        error.OutRequiresRecord => "--out is only used with --record (see --help)",
+        error.RecordRejectsFormat => "--record writes a human summary; remove --format (see --help)",
+        else => parseErrorMessageForMode(err),
+    };
+}
+
+fn parseErrorMessageForMode(err: ParseError) []const u8 {
+    return switch (err) {
         error.MissingValue => "an option is missing its value (see --help)",
         error.DuplicateOption => "an option was given more than once (see --help)",
         error.UnexpectedValue => "an option that takes no value was given one (see --help)",
@@ -795,6 +873,7 @@ pub fn parseErrorMessage(err: ParseError) []const u8 {
         error.WriteRequiresSingle => "--write compares one statement; use --batch for a manifest (see --help)",
         error.WriteRejectsSuggest => "--write names the statement; remove --suggest (see --help)",
         error.WriteRejectsMigration => "--write compares one statement; remove --migration (see --help)",
+        error.RecordTakesNoPaths, error.RecordConflict, error.OutRequiresRecord, error.RecordRejectsFormat => unreachable,
         error.OutOfMemory => "out of memory",
     };
 }
@@ -1240,6 +1319,7 @@ test "every known long option is accepted by the parser" {
         &.{ "Qenome", "--d1", "DB" },
         &.{ "Qenome", "--d1", "DB", "--config", "wrangler.toml" },
         &.{ "Qenome", "--batch", "batch.json" },
+        &.{ "Qenome", "--record", "record.log", "--out", "manifest-dir" },
         &.{ "Qenome", "--batch", "batch.json", "--migration", "m.sql" },
         &.{ "Qenome", "--seed-data", "seed.json" },
         &.{ "Qenome", "--select", "s" },
@@ -1254,7 +1334,22 @@ test "every known long option is accepted by the parser" {
         &.{ "Qenome", "--format", "kv" },
         &.{ "Qenome", "--version" },
     };
-    try testing.expectEqual(long_options.len, cases.len);
+    var covered: usize = 0;
+    for (long_options) |option| {
+        var found = false;
+        for (cases) |argv| {
+            for (argv[1..]) |arg| {
+                const name = arg[0..(std.mem.indexOfScalar(u8, arg, '=') orelse arg.len)];
+                if (std.mem.eql(u8, option, name)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (found) break;
+        }
+        if (found) covered += 1;
+    }
+    try testing.expectEqual(long_options.len, covered);
     for (cases) |argv| {
         const args = try parseArgs(testing.allocator, argv);
         testing.allocator.free(args.binds);

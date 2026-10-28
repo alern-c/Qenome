@@ -16,7 +16,13 @@
   "bin": {
     "qenome": "bin/qenome.js"
   },
-  "files": ["bin", "LICENSE", "NOTICE", "README.md"],
+  "files": [
+    "bin",
+    "lib",
+    "LICENSE",
+    "NOTICE",
+    "README.md"
+  ],
   "engines": {
     "node": ">=18"
   },
@@ -25,5 +31,9 @@
     "@qenome-cli/darwin-x64": "0.0.0",
     "@qenome-cli/linux-arm64": "0.0.0",
     "@qenome-cli/linux-x64": "0.0.0"
+  },
+  "exports": {
+    "./d1": "./lib/d1.mjs",
+    "./package.json": "./package.json"
   }
 }

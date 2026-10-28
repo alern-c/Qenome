@@ -28,6 +28,7 @@
 - **インデックスが書き込みに与えるコストも見られます。** `--write` は `INSERT`・`UPDATE`・`DELETE`・`REPLACE` を1本、各コピーでロールバックするトランザクションの中で実行し、セカンダリインデックスの挿入・トリガー・外部キーの CASCADE を含む書いた行数を両側で報告します。[書き込みを比べる](#書き込みを比べる)を参照してください。
 - **ローカル D1 のバインディングだけで試せます。** `--d1 <BINDING>` が wrangler の設定からローカルデータベースを探し、`--config` で設定ファイルを指定できます。
 - **複数のクエリをまとめて比較。** `--batch <FILE>` は JSON のマニフェストにある全 SELECT と全候補 `CREATE INDEX` を組み合わせて、各組み合わせの判定を出します。[まとめて比べる（--batch）](#まとめて比べる--batch)を参照してください。
+- **アプリが実行したクエリからマニフェストを作れます。** `qenome/d1` はローカルの D1 に実際に発行された SELECT とバインド値を記録し、`--record` がそのまま比較に使えるマニフェストにします。[実際に実行されたクエリを記録する（--record）](#実際に実行されたクエリを記録する--record)を参照してください。
 - **クエリから候補のインデックスを探せます。** `--suggest` は SQLite の expert に候補のインデックスを提案させて比較するので、SELECT ファイルだけで済みます。[候補のインデックスを提案させる（--suggest）](#候補のインデックスを提案させる--suggest)を参照してください。
 - **AI エージェントと CI 向けの JSON。** `--format json` は `schema_version` 2 のレポートを出し、終了コードが一致・不一致・比較不能を分けます。
 - **判定の根拠も同じレポートに。** 実行計画、時間の中央値、データベース全体の容量の増分、助言の警告を出します。
@@ -45,6 +46,7 @@
 - [使い方](#使い方)
 - [サンドボックス用のデータを作る](#サンドボックス用のデータを作る)
 - [まとめて比べる（--batch）](#まとめて比べる--batch)
+- [実際に実行されたクエリを記録する（--record）](#実際に実行されたクエリを記録する--record)
 - [出力形式](#出力形式)
 - [守るルール](#守るルール)
 - [開発時の検査](#開発時の検査)
@@ -256,6 +258,7 @@ qenome app.db --batch batch.json
 qenome app.db --batch batch.json --migration 0002_replace_index.sql
 qenome app.db select.sql --suggest
 qenome app.db --batch batch.json --suggest
+qenome --record qenome-record.log --out qenome-manifest
 ```
 
 パスは DB・SELECT（または書き込み）ファイル・CREATE INDEX ファイルの順に埋まり、`--db` / `--select` / `--write` / `--index-sql` でも指定できます（混在可）。位置指定のパスは、まだ指定されていない最初の役割に埋まります。`--d1` のときは、位置指定の2つのパスが SELECT と CREATE INDEX の役割に入ります。`--write` のときは、位置指定のパスが SELECT の代わりに書き込みファイルへ入ります。`--` の後は `-` で始まるパスとして扱います。
@@ -271,6 +274,8 @@ qenome app.db --batch batch.json --suggest
 - `--write <FILE>`: SELECT の代わりに、`INSERT`・`UPDATE`・`DELETE`・`REPLACE` を1本書いたファイル。サンドボックスの各コピーでトランザクションの中で実行してロールバックする。「書き込みを比べる」を参照。`--select`・`--batch`・`--migration`・`--suggest` とは併用できない
 - `--index-sql <FILE>`: 候補の CREATE INDEX を1本書いたファイル（必須、1回だけ）
 - `--batch <FILE>`: JSON のマニフェストにある全 SELECT を、全候補 CREATE INDEX と1回の実行で比べる。「まとめて比べる（--batch）」を参照。`--select` / `--index-sql` / `--bind` / 位置指定の SELECT・INDEX、`--runs`、`--format kv` とは併用できない
+- `--record <FILE>`: `qenome/d1` が出力した記録を読み、`--out` に `candidates` を持たないマニフェストを書く。データベースは要らない。マニフェストにはバインド値が入るので、ローカルに置いて commit しない。`--out` とセットで使い、`--db`・`--d1`・`--select`・`--write`・`--index-sql`・`--batch`・`--migration`・`--seed-data`・`--bind`・`--runs`・`--suggest`・`--format kv` / `json` とは併用できない。「実際に実行されたクエリを記録する（--record）」を参照
+- `--out <DIR>`: `--record` の出力先。存在しない新しいディレクトリを指定する。ディレクトリは `0700`、ファイルは `0600` で作る
 - `--migration <FILE>`: `--batch` の全クエリを実行する前に、この SQL ファイルを variant にだけ適用する。`--batch` と、`candidates` を持たないマニフェストが必要。`--select` / `--index-sql` / `--bind` / `--runs` / `--suggest` / `--format kv` とは併用できない。`CREATE INDEX`・`CREATE UNIQUE INDEX`・`DROP INDEX`・`CREATE TABLE`（`AS SELECT` を除く）・`ALTER TABLE`（ADD / RENAME / DROP COLUMN と RENAME TO）を受け付け、データ変更・`DROP TABLE`・`ATTACH`・`PRAGMA`・その他の文は文番号付きで拒否する。マイグレーションで消した・名前を変えた列やテーブルを参照するクエリがあると実行全体が終了コード `1` で止まる。列を足す・消すと `SELECT *` は結果の列数が変わるため比較できず、終了コード `4` になる。「まとめて比べる（--batch）」を参照
 - `--seed-data <FILE>`: 比較の前に、この JSON の指定に従ってサンドボックスのコピーのテーブルを決まったダミーデータで置き換える。元のデータベースは変更しない。`--batch`・`--suggest`・`--migration` を含むすべてのモードで使える。「サンドボックス用のデータを作る」を参照
 - `--suggest`: インデックスを自分で用意する代わりに、SQLite の expert に候補のインデックスを提案させ、その提案を比べる。`--batch` のときはマニフェストの `candidates` を省略できる。`--runs`、`--format kv`、インデックスのファイル（`--index-sql` または3番目の位置指定パス）とは併用できない。「候補のインデックスを提案させる（--suggest）」を参照
@@ -452,6 +457,70 @@ batch の報告を録画したものが2本あります。1本目は1本の SELE
 <img src="docs/demo-migration.gif" width="1200" alt="qenome --d1 DEMO_DB --batch queries.json --migration 0002_reindex.sql で、variant のコピーにマイグレーションを適用するターミナル。select.sql は読んだ行数 101 -> 200000 の regressed、failed.sql は 101 -> 35 の improved で、シェルには exit=6 と出る">
 
 どちらの録画も、`examples/d1-toml` のサンプルに `docs/demo` の入力を組み合わせています。
+
+### 実際に実行されたクエリを記録する（--record）
+
+人がマニフェストを書くと、ORM が組み立てたクエリを書き漏らしても気づけません。`qenome/d1` は、アプリがローカルの D1 に実際に発行した SELECT とバインド値を記録し、`--record` がその記録からマニフェストを作ります。使うのはローカルの開発とテストの間だけにしてください。
+
+1. `qenome` を開発用の依存として入れます。
+
+```sh
+npm install -D qenome
+```
+
+1. テストまたは開発用の Worker エントリで、D1 のバインディングを `wrapD1` で包みます。アプリの変更はこの1行だけです。
+
+```js
+import { wrapD1 } from "qenome/d1";
+
+export default {
+  async fetch(request, env) {
+    const db = wrapD1(env.DB);
+    const { results } = await db
+      .prepare("SELECT id FROM events WHERE customer_id = ?")
+      .bind(1234)
+      .all();
+    return Response.json(results);
+  },
+};
+```
+
+1. アプリを動かし、出力を新しいファイルに残します。`umask 077` を付けると、記録した SQL とバインド値が他の利用者から読めません。
+
+```sh
+(umask 077; npx wrangler dev --local 2>&1 | tee qenome-record.log)
+```
+
+テストでも同じです。テストランナーが `console.log` の出力を表示する設定にしてください。
+
+```sh
+(umask 077; npx vitest run 2>&1 | tee qenome-record.log)
+```
+
+1. 記録からマニフェストを作ります。`--out` には存在しない新しいディレクトリを指定します。
+
+```sh
+npx qenome --record qenome-record.log --out qenome-manifest
+```
+
+`--out` の下に `manifest.json` と `queries/q001.sql` のような SQL ファイルができます。ディレクトリは `0700`、ファイルは `0600` で作り、stdout にはバインド値を出しません。`manifest.json` には実値が入るので commit しないでください。記録に使ったログも、マニフェストを作ったあとに削除してください。
+
+1. 作ったマニフェストを比べます。`queries` だけを持つので、`--suggest` か `--migration` と組み合わせます。
+
+```sh
+npx qenome --d1 DB --batch qenome-manifest/manifest.json --suggest
+```
+
+候補を自分で用意するときは、`manifest.json` に `candidates` を足してください。
+
+`--record` の動き:
+
+- 同じ SQL は1件にまとめます。文字列・コメントの外側の空白だけが違う SQL は同じとみなし、代表のバインド値は最初に実行された1組を使います。何回実行されたかは stdout に出ます。
+- INSERT・UPDATE・DELETE・REPLACE はマニフェストに入れず、件数だけ出します。`exec` と、BLOB・真偽値・NUL を含むテキストのバインドを使う文も入れません（BLOB は `--bind` で表せないため）。スキップした理由と件数は `skipped:` の行に出ます。
+- 異なる SELECT が100件を超える、マニフェストが 1 MiB を超える、SQL が 1 MiB を超える、記録が 16 MiB を超える場合は、`--out` を作る前に止まります。
+- `--record` はデータベースを必要とせず、`--db`・`--d1`・`--batch`・`--migration`・`--suggest`・`--seed-data`・`--bind`・`--runs` などとは併用できません。`--format human` だけを使えます。
+
+記録はローカルの開発とテストのためだけのものです。ラッパーは記録した SQL とバインド値をそのまま出力に書くので、本番の Worker には入れないでください。`withSession` と Durable Object の中の SQL は記録しません。
 
 ### 候補のインデックスを提案させる（--suggest）
 

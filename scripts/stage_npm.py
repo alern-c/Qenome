@@ -145,6 +145,16 @@ def validate_sources(root):
         raise ValueError("launcher package must not set os or cpu")
     if manifest.get("bin") != {"qenome": "bin/qenome.js"}:
         raise ValueError("launcher bin must be bin/qenome.js")
+    if "lib" not in manifest.get("files", []):
+        raise ValueError("launcher files must include lib")
+    exports = manifest.get("exports") or {}
+    if exports.get("./d1") != "./lib/d1.mjs":
+        raise ValueError("launcher exports must map ./d1 to ./lib/d1.mjs")
+    if exports.get("./package.json") != "./package.json":
+        raise ValueError("launcher exports must map ./package.json to itself")
+    module_path = os.path.join(root, "npm", MAIN_DIR, "lib", "d1.mjs")
+    if not os.path.isfile(module_path) or os.path.getsize(module_path) == 0:
+        raise ValueError("launcher needs a non-empty npm/" + MAIN_DIR + "/lib/d1.mjs")
     if manifest.get("optionalDependencies") != expected_optional:
         raise ValueError("launcher optionalDependencies do not match the platform packages")
     if manifest.get("engines", {}).get("node") != ">=18":
@@ -297,6 +307,10 @@ def stage_distribution(root, dest, binaries=None):
     os.makedirs(os.path.dirname(launcher), exist_ok=True)
     shutil.copyfile(launcher_path(root), launcher)
     os.chmod(launcher, 0o755)
+    module = os.path.join(directory, "lib", "d1.mjs")
+    os.makedirs(os.path.dirname(module), exist_ok=True)
+    shutil.copyfile(os.path.join(root, "npm", MAIN_DIR, "lib", "d1.mjs"), module)
+    os.chmod(module, 0o644)
     print("stage_npm: staged " + version + " in " + dest, flush=True)
     return version
 
@@ -320,6 +334,7 @@ def check_tarball(path, manifest):
         ]
         if manifest["name"] == "qenome":
             binary = "package/bin/qenome.js"
+            required.append("package/lib/d1.mjs")
         else:
             binary = "package/bin/qenome"
         required.append(binary)

@@ -28,6 +28,7 @@ Give it one read-only `SELECT` and one `CREATE INDEX`. With `--write`, give it o
 - **See what an index costs a write.** `--write` runs one `INSERT`, `UPDATE`, `DELETE`, or `REPLACE` in a rolled-back transaction on each copy and reports the rows written on both sides, including secondary-index inserts, triggers, and foreign-key cascades. See [Comparing a write](#comparing-a-write).
 - **A local D1 binding is enough.** `--d1 <BINDING>` finds the local database from a wrangler config, and `--config` names the config.
 - **Compare many queries in one run.** `--batch <FILE>` pairs every SELECT in a JSON manifest with every candidate `CREATE INDEX` and reports each pair; see [Batch comparisons](#batch-comparisons).
+- **Build a manifest from the queries your app runs.** `qenome/d1` records the SELECTs and bind values that run against a local D1, and `--record` turns the log into a manifest you can compare; see [Recording the queries your app runs (--record)](#recording-the-queries-your-app-runs---record).
 - **Find a candidate from the query.** `--suggest` lets SQLite's expert propose candidate indexes and compares them, so a SELECT file is enough; see [Suggesting candidate indexes](#suggesting-candidate-indexes).
 - **JSON for AI agents and CI.** `--format json` gives the report with `schema_version` 2, and the exit status separates a match, a mismatch, and an incomparable result.
 - **The evidence stays next to the verdict.** The query plan, the median times, the size increase of the whole database, and advisory warnings are in the report.
@@ -45,6 +46,7 @@ Give it one read-only `SELECT` and one `CREATE INDEX`. With `--write`, give it o
 - [Usage](#usage)
 - [Generating sandbox data (--seed-data)](#generating-sandbox-data)
 - [Batch comparisons](#batch-comparisons)
+- [Recording the queries your app runs (--record)](#recording-the-queries-your-app-runs---record)
 - [Output formats](#output-formats)
 - [Rules](#rules)
 - [Development checks](#development-checks)
@@ -256,6 +258,7 @@ qenome app.db --batch batch.json
 qenome app.db --batch batch.json --migration 0002_replace_index.sql
 qenome app.db select.sql --suggest
 qenome app.db --batch batch.json --suggest
+qenome --record qenome-record.log --out qenome-manifest
 ```
 
 The three paths fill the roles in this order: database, SELECT (or write) file, CREATE INDEX file. Each role can also be given with `--db`, `--select`/`--write`, or `--index-sql`, and the two forms can be mixed; a positional path fills the first role that is still empty. With `--d1`, the two positional paths fill the SELECT and CREATE INDEX roles. With `--write`, a positional path fills the write file instead of the SELECT file. After `--`, every argument is treated as a path, including paths that start with `-`.
@@ -271,6 +274,8 @@ The three paths fill the roles in this order: database, SELECT (or write) file, 
 - `--write <FILE>`: a file holding one `INSERT`, `UPDATE`, `DELETE`, or `REPLACE` to compare instead of a `SELECT`; it runs in a transaction on each sandbox copy and is rolled back. See [Comparing a write](#comparing-a-write). It cannot be combined with `--select`, `--batch`, `--migration`, or `--suggest`
 - `--index-sql <FILE>`: a file holding the one candidate `CREATE INDEX` (required, once)
 - `--batch <FILE>`: compare every SELECT in a JSON manifest with every candidate `CREATE INDEX` in one run; see [Batch comparisons](#batch-comparisons). It cannot be combined with `--select`, `--index-sql`, `--bind`, positional SELECT or INDEX paths, `--runs`, or `--format kv`
+- `--record <FILE>`: read the records that `qenome/d1` wrote and write a manifest without candidates to `--out`; no database is needed. The manifest holds bind values, so keep it local and do not commit it. Use it with `--out`; it cannot be combined with `--db`, `--d1`, `--select`, `--write`, `--index-sql`, `--batch`, `--migration`, `--seed-data`, `--bind`, `--runs`, `--suggest`, or `--format kv` / `json`. See [Recording the queries your app runs (--record)](#recording-the-queries-your-app-runs---record)
+- `--out <DIR>`: the new directory for `--record`. It must not exist. The directory is created with mode `0700` and its files with `0600`
 - `--migration <FILE>`: apply this SQL file to the variant only before the `--batch` queries run. It needs `--batch` and a manifest without `candidates`; it cannot be combined with `--select`, `--index-sql`, `--bind`, `--runs`, `--suggest`, or `--format kv`. `CREATE INDEX`, `CREATE UNIQUE INDEX`, `DROP INDEX`, `CREATE TABLE` (a column list, not `AS SELECT`), and `ALTER TABLE` (ADD / RENAME / DROP COLUMN and RENAME TO) are accepted; data changes, `DROP TABLE`, `ATTACH`, `PRAGMA`, and other statements are rejected with the statement number. A query that uses a column or table the migration drops or renames cannot run on the variant, so the whole run stops with exit `1`; a `SELECT *` cannot be compared after a column is added or dropped, so list the columns you need. See [Batch comparisons](#batch-comparisons)
 - `--seed-data <FILE>`: replace the tables listed in this JSON spec with deterministic dummy rows in the sandbox copy before comparing; the original database is not changed. It works with every mode, including `--batch`, `--suggest`, and `--migration`. See [Generating sandbox data](#generating-sandbox-data)
 - `--suggest`: ask SQLite's expert for candidate indexes instead of naming one, and compare the proposals. With `--batch`, the manifest may omit `candidates`. It cannot be combined with `--runs`, `--format kv`, or an index file (`--index-sql` or a third positional path). See [Suggesting candidate indexes](#suggesting-candidate-indexes)
@@ -452,6 +457,70 @@ The second applies `0002_reindex.sql`, which drops `ix_events_customer_id` and c
 <img src="docs/demo-migration.gif" width="1200" alt="qenome --d1 DEMO_DB --batch queries.json --migration 0002_reindex.sql applies the migration to the variant copy: select.sql is regressed at 101 -> 200000 rows read, failed.sql is improved at 101 -> 35, and the shell reports exit=6">
 
 Both recordings take their extra inputs from `docs/demo`, together with the `examples/d1-toml` sample.
+
+### Recording the queries your app runs (--record)
+
+A hand-written manifest misses the queries an ORM builds, and nothing tells you what is missing. `qenome/d1` records the SELECTs and bind values that the app actually runs against a local D1, and `--record` turns that log into a manifest. Use it only during local development and tests.
+
+1. Add `qenome` as a development dependency.
+
+```sh
+npm install -D qenome
+```
+
+1. In the test or development Worker entry, wrap the D1 binding with `wrapD1`. This one line is the only change to the app.
+
+```js
+import { wrapD1 } from "qenome/d1";
+
+export default {
+  async fetch(request, env) {
+    const db = wrapD1(env.DB);
+    const { results } = await db
+      .prepare("SELECT id FROM events WHERE customer_id = ?")
+      .bind(1234)
+      .all();
+    return Response.json(results);
+  },
+};
+```
+
+1. Run the app and keep its output in a new file. `umask 077` keeps the recorded SQL and bind values readable only by you.
+
+```sh
+(umask 077; npx wrangler dev --local 2>&1 | tee qenome-record.log)
+```
+
+The same works for tests; make the test runner print `console.log` output.
+
+```sh
+(umask 077; npx vitest run 2>&1 | tee qenome-record.log)
+```
+
+1. Build the manifest. `--out` must name a new directory.
+
+```sh
+npx qenome --record qenome-record.log --out qenome-manifest
+```
+
+`--out` gets `manifest.json` and SQL files such as `queries/q001.sql`. The directory is created with mode `0700` and the files with `0600`, and stdout never holds a bind value. The manifest does hold the values, so do not commit it, and delete the record log once the manifest exists.
+
+1. Compare the manifest. It holds only `queries`, so pair it with `--suggest` or `--migration`.
+
+```sh
+npx qenome --d1 DB --batch qenome-manifest/manifest.json --suggest
+```
+
+Add `candidates` to `manifest.json` when you have your own.
+
+How `--record` works:
+
+- The same SQL becomes one entry. SQL that differs only in whitespace outside strings and comments counts as the same, and the first execution supplies the bind values. stdout shows how many times each statement ran.
+- `INSERT`, `UPDATE`, `DELETE`, and `REPLACE` are not put in the manifest; only their count is reported. `exec` and statements that bind a BLOB, a boolean, or text with a NUL are skipped too, because `--bind` cannot express those values. The `skipped:` line names each reason and count.
+- More than 100 distinct SELECTs, a manifest over 1 MiB, a SQL statement over 1 MiB, or a log over 16 MiB stops the run before `--out` is created.
+- `--record` needs no database and cannot be combined with `--db`, `--d1`, `--batch`, `--migration`, `--suggest`, `--seed-data`, `--bind`, `--runs`, or the other comparison options. Only `--format human` is accepted.
+
+Recording is for local development and tests only. The wrapper writes the SQL and the bind values to its output, so do not ship it to production. SQL inside `withSession` and Durable Objects is not recorded.
 
 ### Suggesting candidate indexes
 

@@ -134,6 +134,35 @@ npx qenome app.db --batch batch.json --format json
 npx qenome --d1 DB --batch batch.json --format json
 ```
 
+## Record the queries the app runs (--record)
+
+Use this when the user wants a manifest from the queries the app actually runs, or when a hand-written manifest may miss ORM-built queries.
+
+1. Add `qenome` as a development dependency, and wrap the D1 binding in the test or development entry with `const db = wrapD1(env.DB);` from `qenome/d1`. This one line is the only change to the app.
+1. Run the app and keep its output in a new private file:
+
+```sh
+(umask 077; npx wrangler dev --local 2>&1 | tee qenome-record.log)
+```
+
+1. Build the manifest:
+
+```sh
+npx qenome --record qenome-record.log --out qenome-manifest
+```
+
+1. Compare it with `--suggest` or `--migration`, because the manifest holds only `queries`:
+
+```sh
+npx qenome --d1 DB --batch qenome-manifest/manifest.json --suggest --format json
+```
+
+- The same SQL in the log becomes one query. SQL that differs only in whitespace outside strings and comments counts as the same. The first execution supplies the bind values, and human output shows the execution count.
+- `INSERT`, `UPDATE`, `DELETE`, `REPLACE`, `exec`, and statements that bind a BLOB, a boolean, or text with a NUL are skipped and counted in the `skipped:` line.
+- The manifest holds bind values. Keep it local, do not commit it, and delete the record log after the manifest exists.
+- `--record` needs no database, prints a human summary only, and cannot be combined with the comparison options.
+- Do not put the wrapper in production code: it writes the SQL and the bind values to the output. SQL inside `withSession` and Durable Objects is not recorded.
+
 ## Compare a migration (--migration)
 
 Use `--migration` when the change is a SQL file, especially when it drops or replaces an index or adds, renames, or drops a column or table.
