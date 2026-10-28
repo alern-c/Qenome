@@ -10,7 +10,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `README.md` and `README.ja.md` show three recordings instead of one: `--suggest` at the top, and a candidate comparison and a `--migration` regression in the `--batch` section. They are recorded from `docs/demo-suggest.tape`, `docs/demo-candidates.tape`, and `docs/demo-migration.tape`, which take their extra inputs from `docs/demo`; `docs/demo.tape` and `docs/demo.gif` are gone.
+
+## [0.3.5] - 2026-10-28
+
+### Added
+
+- `--migration <FILE>` also accepts `CREATE TABLE` and `ALTER TABLE` next to the index changes, so one file can add a column and index it, rename or drop a column, or rename a table. `CREATE TABLE` takes a column list and not `AS SELECT`, and `ALTER TABLE` takes ADD COLUMN, RENAME COLUMN, DROP COLUMN, or RENAME TO; data changes, `DROP TABLE`, `ATTACH`, `PRAGMA`, and every other statement are still rejected with the statement number and exit `1`. The statements run in file order on the variant only, and the original database is never changed.
+- A query that uses a column or table that the migration adds cannot run on the baseline, so Qenome measures it on the variant only and reports its plan and rows read with verdict `not-judged`; the human Summary adds a `not-judged` column and a `Not judged` list, and JSON writes the comparison with `baseline: null` and counts it under `summary.not_judged`. It does not change the batch exit status. A query that the migration breaks stops the run: a column or table that the migration drops or renames cannot be prepared on the variant, so the batch exits `1` before the report, with an `error:` line that names the query and the migration file (JSON: `batch_variant_failed`). Adding or dropping a column also changes the column count of a `SELECT *`, so that query is `incomparable` and the batch exits `4`.
+- The comparison warns `bind_dependent_partial_index` when the variant plan uses a partial index only because the bound values satisfy its `WHERE` clause. Qenome reads the variant plan with the bound values and again with every parameter bound to `NULL`, and names the partial index that appears in the first plan and not the second, because another value or parameter style can drop it, so an `improved` result holds only for that run. The warning sits with the other warnings in human and `kv`, in the JSON `warnings` array, and in a batch in `results[].comparison.warnings`, while the batch top-level `warnings` keeps the `--suggest` entries. The check is best-effort and never changes the verdict, a batch count, or the exit status.
+
+### Changed
+
 - `README.md` and `README.ja.md` lead with `npm install -g qenome` for the npm install, so the command is on `PATH` for every project, and keep `npx qenome` for a run without installing; `skills/qenome/SKILL.md` no longer says the npm package is added separately, because `qenome` is published on npm.
+
+### Fixed
+
+- Nine tables in `README.md`, `README.ja.md`, and `docs/json.md` had no separator row under the header, so GitHub showed them as one line of pipe-separated text. Each now has the row and renders as a table, with the same words, columns, and rows.
 
 ## [0.3.4] - 2026-10-28
 
