@@ -663,7 +663,9 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\  reads fewer rows), no-effect (the rows match and both copies read the
         \\  same number of rows), needs-check (the rows match but the variant reads
         \\  or writes more, with the reasons), or not-judged (the rows differ or
-        \\  cannot be compared, with the reasons; --runs 0 is still judged). The
+        \\  cannot be compared, with the reasons; --runs 0 is still judged). A
+        \\  migration batch calls the needs-check case regressed, and its JSON
+        \\  summary counts those queries under needs_check. The
         \\  rows read and rows written use the same counting as local D1
         \\  (workerd patch). They are 32-bit counters that wrap past
         \\  4294967295. The times are a reference only and never change the verdict

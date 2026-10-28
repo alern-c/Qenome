@@ -747,6 +747,7 @@ fn writeOverview(
         .improved => "improved: the rows match, and the variant reads fewer rows",
         .no_effect => "no-effect: the rows match, and the variant reads the same rows",
         .needs_check => "needs-check:",
+        .regressed => "regressed:",
         .not_judged => "not-judged:",
     });
     for (report.judgement.reasons[0..report.judgement.reason_count]) |reason| {
