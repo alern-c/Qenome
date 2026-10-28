@@ -5,6 +5,7 @@ const db = @import("../db.zig");
 const cli_comparison = @import("comparison.zig");
 const cli_control = @import("control.zig");
 const cli_query = @import("query.zig");
+const cli_seed = @import("seed.zig");
 const openErrorMessage = cli_query.openErrorMessage;
 const signalPending = cli_control.signalPending;
 const reportInterrupted = cli_control.reportInterrupted;
@@ -105,8 +106,10 @@ pub const WorkDir = struct {
 
 pub fn prepareCopies(
     io: Io,
+    arena: std.mem.Allocator,
     database_path: [:0]const u8,
     work: *const WorkDir,
+    seed: ?cli_seed.Spec,
     stderr: *Io.Writer,
     cleanup_failed: *bool,
 ) ?ExitCode {
@@ -129,6 +132,10 @@ pub fn prepareCopies(
             }
             return .rejected;
         };
+    }
+
+    if (seed) |spec| {
+        if (cli_seed.apply(arena, work.baseline_path, spec, stderr)) |failure| return failure;
     }
 
     if (signalPending()) return reportInterrupted(stderr);
@@ -229,7 +236,7 @@ test "the work directory is private and the variant is a byte copy of the baseli
         const stat = try work.parent.statFile(testing.io, &work.name, .{});
         try testing.expectEqual(@as(std.posix.mode_t, 0o700), stat.permissions.toMode() & 0o777);
 
-        try testing.expectEqual(@as(?ExitCode, null), prepareCopies(testing.io, fixture.db_path, &work, &stderr, &cleanup_failed));
+        try testing.expectEqual(@as(?ExitCode, null), prepareCopies(testing.io, arena_state.allocator(), fixture.db_path, &work, null, &stderr, &cleanup_failed));
         const baseline = try Io.Dir.cwd().readFileAlloc(testing.io, work.baseline_path, testing.allocator, .unlimited);
         defer testing.allocator.free(baseline);
         const variant = try Io.Dir.cwd().readFileAlloc(testing.io, work.variant_path, testing.allocator, .unlimited);
@@ -260,7 +267,7 @@ test "applyCandidate writes the index into the variant copy only" {
     {
         defer work.remove(testing.io, &stderr, &cleanup_failed);
 
-        try testing.expectEqual(@as(?ExitCode, null), prepareCopies(testing.io, fixture.db_path, &work, &stderr, &cleanup_failed));
+        try testing.expectEqual(@as(?ExitCode, null), prepareCopies(testing.io, arena_state.allocator(), fixture.db_path, &work, null, &stderr, &cleanup_failed));
         const baseline_before = try Io.Dir.cwd().readFileAlloc(testing.io, work.baseline_path, testing.allocator, .unlimited);
         defer testing.allocator.free(baseline_before);
         const variant_before = try Io.Dir.cwd().readFileAlloc(testing.io, work.variant_path, testing.allocator, .unlimited);

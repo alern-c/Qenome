@@ -8,6 +8,7 @@ const cli_batch = @import("batch.zig");
 const cli_comparison = @import("comparison.zig");
 const cli_control = @import("control.zig");
 const cli_suggest = @import("suggest.zig");
+const cli_seed = @import("seed.zig");
 
 const run = cli.run;
 const runChecked = cli.runChecked;
@@ -3772,4 +3773,462 @@ test "--suggest stops when the expert fails and no candidate remains" {
     try expectJsonFailure(result.stderr, "suggest_failed", 1);
     try testing.expect(contains(result.stderr, "injected failure"));
     try fixture.expectNoLeftovers();
+}
+
+fn writeSeedSpec(fixture: *CliFixture, name: []const u8, text: []const u8) ![:0]u8 {
+    try fixture.writeFile(name, text);
+    return fixture.dir.tmp.dir.realPathFileAlloc(testing.io, name, testing.allocator);
+}
+
+fn scalarOn(path: [:0]const u8, sql: [:0]const u8) !i64 {
+    var database: db.Db = .{};
+    try database.openReadOnly(path);
+    defer database.close() catch {};
+    const statement = try database.prepareSelect(sql);
+    defer _ = sqlite.sqlite3_finalize(statement);
+    return switch (sqlite.sqlite3_step(statement)) {
+        sqlite.SQLITE_ROW => sqlite.sqlite3_column_int64(statement, 0),
+        else => error.TestUnexpectedResult,
+    };
+}
+
+const seed_four_rows =
+    \\{"seed": 11, "tables": {"t": {"rows": 4, "columns": {
+    \\  "a": {"kind": "sequence"},
+    \\  "b": {"kind": "uniform", "values": ["x", "y"]}}}}}
+;
+
+const seed_200_rows =
+    \\{"seed": 42, "tables": {"t": {"rows": 200, "columns": {
+    \\  "a": {"kind": "sequence"},
+    \\  "b": {"kind": "uniform", "values": ["x", "y"]}}}}}
+;
+
+test "seed data fills both copies, is reported in json, and leaves the source database unchanged" {
+    var fixture = try CliFixture.init("SELECT a FROM t WHERE a = ?1", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+    const seed_path = try writeSeedSpec(&fixture, "seed.json", seed_four_rows);
+    defer testing.allocator.free(seed_path);
+    const before = try readFixtureFile(&fixture, "fixture.db");
+    defer testing.allocator.free(before);
+
+    var stdout_buffer: [32768]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = fixture.runFormat("json", &.{ "--seed-data", seed_path, "--bind", "1:int:2", "--runs", "0" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    const root = parsed.value;
+    try testing.expectEqualStrings("match", try jsonText(root, "result"));
+    try testing.expectEqualStrings("improved", try jsonText(root, "verdict"));
+    const seed_data = try jsonGet(root, "seed_data");
+    try testing.expectEqualStrings(seed_path, try jsonText(seed_data, "path"));
+    try testing.expectEqual(@as(i64, 11), try jsonInt(seed_data, "seed"));
+    try testing.expectEqual(@as(i64, 4), try jsonInt(seed_data, "rows"));
+    const tables = try jsonItems(seed_data, "tables");
+    try testing.expectEqual(@as(usize, 1), tables.len);
+    try testing.expectEqualStrings("t", try jsonText(tables[0], "table"));
+    try testing.expectEqual(@as(i64, 4), try jsonInt(tables[0], "rows"));
+    const warnings = try jsonItems(root, "warnings");
+    for (warnings) |warning| {
+        try testing.expect(!std.mem.eql(u8, try jsonText(warning, "code"), "no_analyze_stats"));
+    }
+
+    const after = try readFixtureFile(&fixture, "fixture.db");
+    defer testing.allocator.free(after);
+    try testing.expectEqualSlices(u8, before, after);
+    try fixture.expectNoLeftovers();
+}
+
+test "seed data is named in human and kv output" {
+    var fixture = try CliFixture.init("SELECT a FROM t WHERE a = ?1", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+    const seed_path = try writeSeedSpec(&fixture, "seed.json", seed_four_rows);
+    defer testing.allocator.free(seed_path);
+
+    var kv_buffer: [8192]u8 = undefined;
+    var kv_stderr: [1024]u8 = undefined;
+    const kv = fixture.run(&.{ "--seed-data", seed_path, "--bind", "1:int:2", "--runs", "0" }, &kv_buffer, &kv_stderr);
+    try testing.expectEqual(ExitCode.ok, kv.code);
+    var expected_kv: [512]u8 = undefined;
+    const expected = try std.fmt.bufPrint(&expected_kv, "seed-data: {s}\nseed: 11\nseed-rows: 4\nseed-tables: 1\nseed-table: t rows=4\n", .{seed_path});
+    try testing.expect(contains(kv.stdout, expected));
+
+    var human_buffer: [16384]u8 = undefined;
+    var human_stderr: [1024]u8 = undefined;
+    const human = fixture.runFormat("human", &.{ "--seed-data", seed_path, "--bind", "1:int:2", "--runs", "0" }, &human_buffer, &human_stderr);
+    try testing.expectEqual(ExitCode.ok, human.code);
+    try testing.expect(contains(human.stdout, "\n  seed data"));
+    try testing.expect(contains(human.stdout, seed_path));
+    try testing.expect(contains(human.stdout, "seed 11, 4 rows in 1 table"));
+    try fixture.expectNoLeftovers();
+}
+
+test "seed data is reported at the top level of a batch report" {
+    var fixture = try initBatchHappy();
+    defer fixture.deinit();
+    const seed_path = try writeSeedSpec(&fixture, "seed.json", seed_200_rows);
+    defer testing.allocator.free(seed_path);
+
+    var stdout_buffer: [262144]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = try fixture.runBatch(&.{ "--seed-data", seed_path, "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    const root = parsed.value;
+    const seed_data = try jsonGet(root, "seed_data");
+    try testing.expectEqualStrings(seed_path, try jsonText(seed_data, "path"));
+    try testing.expectEqual(@as(i64, 42), try jsonInt(seed_data, "seed"));
+    try testing.expectEqual(@as(i64, 200), try jsonInt(seed_data, "rows"));
+
+    const results = try jsonItems(root, "results");
+    const comparison = try jsonGet(results[0], "comparison");
+    switch (comparison) {
+        .object => |object| try testing.expect(object.get("seed_data") == null),
+        else => return error.TestUnexpectedResult,
+    }
+
+    var human_buffer: [131072]u8 = undefined;
+    var human_stderr: [2048]u8 = undefined;
+    const human = try fixture.runBatch(&.{ "--seed-data", seed_path }, &human_buffer, &human_stderr);
+    try testing.expectEqual(ExitCode.ok, human.code);
+    try testing.expect(contains(human.stdout, "seed data: "));
+    try testing.expect(contains(human.stdout, seed_path));
+    try testing.expect(contains(human.stdout, "seed 42, 200 rows in 1 table"));
+    try fixture.expectNoLeftovers();
+}
+
+test "seed data works with --suggest" {
+    var fixture = try CliFixture.initWithSchema("SELECT a FROM t WHERE b = ?1;", "CREATE INDEX unused ON t(a)", batch_happy_schema);
+    defer fixture.deinit();
+    const seed_path = try writeSeedSpec(&fixture, "seed.json", seed_200_rows);
+    defer testing.allocator.free(seed_path);
+
+    var stdout_buffer: [262144]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = runSuggest(&fixture, "json", &.{ "--seed-data", seed_path, "--bind", "1:text:x" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    const root = parsed.value;
+    const seed_data = try jsonGet(root, "seed_data");
+    try testing.expectEqual(@as(i64, 42), try jsonInt(seed_data, "seed"));
+    try testing.expectEqual(@as(i64, 200), try jsonInt(seed_data, "rows"));
+    try testing.expectEqualStrings("suggested:1", try jsonText(root, "recommended"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a seed spec problem stops with a clear code and no temporary directory" {
+    var fixture = try CliFixture.init("SELECT a FROM t", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+
+    var stdout_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const missing = fixture.runFormat("json", &.{ "--seed-data", "no-such-seed.json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, missing.code);
+    try testing.expectEqualStrings("", missing.stdout);
+    try expectJsonFailure(missing.stderr, "seed_data_unreadable", 1);
+
+    const invalid_path = try writeSeedSpec(&fixture, "invalid.json", "{");
+    defer testing.allocator.free(invalid_path);
+    const invalid = fixture.runFormat("json", &.{ "--seed-data", invalid_path }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, invalid.code);
+    try expectJsonFailure(invalid.stderr, "seed_data_invalid", 1);
+
+    const unknown_path = try writeSeedSpec(&fixture, "unknown.json", "{\"tables\": {\"nope\": {\"rows\": 1}}}");
+    defer testing.allocator.free(unknown_path);
+    const unknown = fixture.runFormat("json", &.{ "--seed-data", unknown_path }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, unknown.code);
+    try expectJsonFailure(unknown.stderr, "seed_data_invalid", 1);
+    try testing.expect(contains(unknown.stderr, "no table 'nope'"));
+
+    const column_path = try writeSeedSpec(&fixture, "column.json", "{\"tables\": {\"t\": {\"rows\": 1, \"columns\": {\"nope\": {\"kind\": \"fixed\", \"value\": 1}}}}}");
+    defer testing.allocator.free(column_path);
+    const column = fixture.runFormat("json", &.{ "--seed-data", column_path }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, column.code);
+    try expectJsonFailure(column.stderr, "seed_data_invalid", 1);
+    try testing.expect(contains(column.stderr, "has no column 'nope'"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a seed value that breaks a constraint is rejected" {
+    var fixture = try CliFixture.initWithSchema("SELECT a FROM u", "CREATE INDEX idx_u ON u(a)",
+        \\CREATE TABLE u(a INTEGER UNIQUE, b TEXT NOT NULL);
+        \\INSERT INTO u VALUES (1, 'x');
+    );
+    defer fixture.deinit();
+    const seed_path = try writeSeedSpec(&fixture, "seed.json",
+        \\{"tables": {"u": {"rows": 2, "columns": {
+        \\  "a": {"kind": "fixed", "value": 1},
+        \\  "b": {"kind": "fixed", "value": "x"}}}}}
+    );
+    defer testing.allocator.free(seed_path);
+
+    var stdout_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = fixture.runFormat("json", &.{ "--seed-data", seed_path }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try expectJsonFailure(result.stderr, "seed_data_apply_failed", 1);
+    try testing.expect(contains(result.stderr, "UNIQUE constraint failed"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a table with no columns uses the rowid and SQLite defaults" {
+    var fixture = try CliFixture.initWithSchema("SELECT id FROM d WHERE label = 'd'", "CREATE INDEX idx_label ON d(label)",
+        \\CREATE TABLE d(id INTEGER PRIMARY KEY, label TEXT DEFAULT 'd', n INTEGER);
+    );
+    defer fixture.deinit();
+    const seed_path = try writeSeedSpec(&fixture, "seed.json", "{\"tables\": {\"d\": {\"rows\": 3}}}");
+    defer testing.allocator.free(seed_path);
+
+    var stdout_buffer: [32768]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = fixture.runFormat("json", &.{ "--seed-data", seed_path, "--runs", "0" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    try testing.expectEqualStrings("match", try jsonText(parsed.value, "result"));
+    const seed_data = try jsonGet(parsed.value, "seed_data");
+    try testing.expectEqual(@as(i64, 3), try jsonInt(seed_data, "rows"));
+    try fixture.expectNoLeftovers();
+}
+
+test "the same spec and seed give the same rows, and another seed changes them" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.db", .data = "" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "b.db", .data = "" });
+    const a_path = try tmp.dir.realPathFileAlloc(testing.io, "a.db", testing.allocator);
+    defer testing.allocator.free(a_path);
+    const b_path = try tmp.dir.realPathFileAlloc(testing.io, "b.db", testing.allocator);
+    defer testing.allocator.free(b_path);
+
+    const schema: [:0]const u8 =
+        \\CREATE TABLE u(a INTEGER, b TEXT, flag INTEGER);
+        \\CREATE TABLE keep(k TEXT);
+        \\INSERT INTO keep VALUES ('stay');
+    ;
+    try db.createTestDatabase(a_path, schema);
+    try db.createTestDatabase(b_path, schema);
+
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var stderr_buffer: [1024]u8 = undefined;
+    var stderr = Io.Writer.fixed(&stderr_buffer);
+
+    const spec_path = try writeSeedSpecFile(&tmp, arena,
+        \\{"seed": 7, "tables": {"u": {"rows": 200, "columns": {
+        \\  "a": {"kind": "uniform", "values": [1, 2, 3, 4, 5]},
+        \\  "b": {"kind": "uniform", "values": ["alpha", "beta", "gamma"]},
+        \\  "flag": {"kind": "ratio", "value": 1, "ratio": 0.25, "otherwise": 0}}}}}
+    );
+    const spec = cli_seed.load(testing.io, arena, spec_path, &stderr) orelse return error.TestUnexpectedResult;
+
+    try testing.expect(cli_seed.apply(arena, a_path, spec, &stderr) == null);
+    const sum_a = try scalarOn(a_path, "SELECT sum(a * 1000003 + length(b) * 1009 + flag) FROM u");
+    try testing.expectEqual(@as(i64, 200), try scalarOn(a_path, "SELECT count(*) FROM u"));
+    try testing.expectEqual(@as(i64, 1), try scalarOn(a_path, "SELECT count(*) FROM keep"));
+
+    try testing.expect(cli_seed.apply(arena, b_path, spec, &stderr) == null);
+    try testing.expectEqual(sum_a, try scalarOn(b_path, "SELECT sum(a * 1000003 + length(b) * 1009 + flag) FROM u"));
+
+    try testing.expect(cli_seed.apply(arena, a_path, spec, &stderr) == null);
+    try testing.expectEqual(sum_a, try scalarOn(a_path, "SELECT sum(a * 1000003 + length(b) * 1009 + flag) FROM u"));
+
+    const other_path = try writeSeedSpecFile(&tmp, arena,
+        \\{"seed": 8, "tables": {"u": {"rows": 200, "columns": {
+        \\  "a": {"kind": "uniform", "values": [1, 2, 3, 4, 5]},
+        \\  "b": {"kind": "uniform", "values": ["alpha", "beta", "gamma"]},
+        \\  "flag": {"kind": "ratio", "value": 1, "ratio": 0.25, "otherwise": 0}}}}}
+    );
+    const other = cli_seed.load(testing.io, arena, other_path, &stderr) orelse return error.TestUnexpectedResult;
+    try testing.expect(cli_seed.apply(arena, b_path, other, &stderr) == null);
+    try testing.expect(sum_a != try scalarOn(b_path, "SELECT sum(a * 1000003 + length(b) * 1009 + flag) FROM u"));
+}
+
+fn writeSeedSpecFile(tmp: *testing.TmpDir, arena: std.mem.Allocator, text: []const u8) ![:0]const u8 {
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "spec.json", .data = text });
+    return tmp.dir.realPathFileAlloc(testing.io, "spec.json", arena);
+}
+
+test "ratio 1 and 0 fill every row with the value or the other value" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "ratio.db", .data = "" });
+    const path = try tmp.dir.realPathFileAlloc(testing.io, "ratio.db", testing.allocator);
+    defer testing.allocator.free(path);
+    try db.createTestDatabase(path, "CREATE TABLE r(v INTEGER);");
+
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var stderr_buffer: [1024]u8 = undefined;
+    var stderr = Io.Writer.fixed(&stderr_buffer);
+
+    const ones_path = try writeSeedSpecFile(&tmp, arena,
+        \\{"tables": {"r": {"rows": 100, "columns": {
+        \\  "v": {"kind": "ratio", "value": 1, "ratio": 1, "otherwise": 0}}}}}
+    );
+    const ones = cli_seed.load(testing.io, arena, ones_path, &stderr) orelse return error.TestUnexpectedResult;
+    try testing.expect(cli_seed.apply(arena, path, ones, &stderr) == null);
+    try testing.expectEqual(@as(i64, 100), try scalarOn(path, "SELECT count(*) FROM r WHERE v = 1"));
+
+    const zeros_path = try writeSeedSpecFile(&tmp, arena,
+        \\{"tables": {"r": {"rows": 100, "columns": {
+        \\  "v": {"kind": "ratio", "value": 1, "ratio": 0, "otherwise": 0}}}}}
+    );
+    const zeros = cli_seed.load(testing.io, arena, zeros_path, &stderr) orelse return error.TestUnexpectedResult;
+    try testing.expect(cli_seed.apply(arena, path, zeros, &stderr) == null);
+    try testing.expectEqual(@as(i64, 100), try scalarOn(path, "SELECT count(*) FROM r WHERE v = 0"));
+}
+
+test "seed data works with --migration" {
+    var fixture = try initMigrationFixture();
+    defer fixture.deinit();
+    const seed_path = try writeSeedSpec(&fixture, "seed.json",
+        \\{"seed": 5, "tables": {"t": {"rows": 2000, "columns": {
+        \\  "a": {"kind": "sequence"},
+        \\  "b": {"kind": "uniform", "values": ["v1", "v2"]}}}}}
+    );
+    defer testing.allocator.free(seed_path);
+
+    var stdout_buffer: [262144]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = try runMigration(&fixture, "queries.json", "create.sql", &.{ "--seed-data", seed_path, "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    const seed_data = try jsonGet(parsed.value, "seed_data");
+    try testing.expectEqual(@as(i64, 5), try jsonInt(seed_data, "seed"));
+    try testing.expectEqual(@as(i64, 2000), try jsonInt(seed_data, "rows"));
+    const results = try jsonItems(parsed.value, "results");
+    try testing.expectEqual(@as(usize, 1), results.len);
+    const comparison = try jsonGet(results[0], "comparison");
+    try testing.expectEqualStrings("match", try jsonText(comparison, "result"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a seed spec rejects a table with a trigger" {
+    var fixture = try CliFixture.initWithSchema("SELECT a FROM t", "CREATE INDEX idx_a ON t(a)",
+        \\CREATE TABLE t(a INTEGER);
+        \\INSERT INTO t VALUES (1);
+        \\CREATE TABLE audit(a INTEGER);
+        \\CREATE TRIGGER t_ai AFTER INSERT ON t BEGIN INSERT INTO audit VALUES (new.a); END;
+    );
+    defer fixture.deinit();
+    const seed_path = try writeSeedSpec(&fixture, "seed.json",
+        \\{"tables": {"t": {"rows": 2, "columns": {"a": {"kind": "fixed", "value": 1}}}}}
+    );
+    defer testing.allocator.free(seed_path);
+
+    var stdout_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = fixture.runFormat("json", &.{ "--seed-data", seed_path }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try expectJsonFailure(result.stderr, "seed_data_invalid", 1);
+    try testing.expect(contains(result.stderr, "has a trigger"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a seed spec rejects a non-deterministic default for an omitted column" {
+    var fixture = try CliFixture.initWithSchema("SELECT a FROM d", "CREATE INDEX idx_a ON d(a)",
+        \\CREATE TABLE d(a INTEGER, b INTEGER DEFAULT (random()), c TEXT DEFAULT 'x');
+        \\INSERT INTO d(a) VALUES (1);
+    );
+    defer fixture.deinit();
+
+    const rejected_path = try writeSeedSpec(&fixture, "rejected.json",
+        \\{"tables": {"d": {"rows": 2, "columns": {"a": {"kind": "sequence"}}}}}
+    );
+    defer testing.allocator.free(rejected_path);
+    var stdout_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const rejected = fixture.runFormat("json", &.{ "--seed-data", rejected_path }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, rejected.code);
+    try expectJsonFailure(rejected.stderr, "seed_data_invalid", 1);
+    try testing.expect(contains(rejected.stderr, "default expression"));
+    try testing.expect(contains(rejected.stderr, "list the column in the spec"));
+
+    const explicit_path = try writeSeedSpec(&fixture, "explicit.json",
+        \\{"tables": {"d": {"rows": 2, "columns": {
+        \\  "a": {"kind": "sequence"},
+        \\  "b": {"kind": "fixed", "value": 5}}}}}
+    );
+    defer testing.allocator.free(explicit_path);
+    const explicit = fixture.runFormat("json", &.{ "--seed-data", explicit_path, "--runs", "0" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, explicit.code);
+    try testing.expectEqualStrings("", explicit.stderr);
+    try fixture.expectNoLeftovers();
+}
+
+test "a seed spec turns ON CONFLICT IGNORE and REPLACE into errors" {
+    const cases = [_]struct { schema: [:0]const u8, spec: []const u8 }{
+        .{
+            .schema = "CREATE TABLE u(a INTEGER UNIQUE ON CONFLICT IGNORE);",
+            .spec = "{\"tables\": {\"u\": {\"rows\": 2, \"columns\": {\"a\": {\"kind\": \"fixed\", \"value\": 1}}}}}",
+        },
+        .{
+            .schema = "CREATE TABLE u(a INTEGER UNIQUE ON CONFLICT REPLACE);",
+            .spec = "{\"tables\": {\"u\": {\"rows\": 2, \"columns\": {\"a\": {\"kind\": \"fixed\", \"value\": 1}}}}}",
+        },
+        .{
+            .schema = "CREATE TABLE u(a INTEGER NOT NULL ON CONFLICT REPLACE DEFAULT 9);",
+            .spec = "{\"tables\": {\"u\": {\"rows\": 2, \"columns\": {\"a\": {\"kind\": \"fixed\", \"value\": null}}}}}",
+        },
+    };
+    for (cases) |case| {
+        var fixture = try CliFixture.initWithSchema("SELECT a FROM u", "CREATE INDEX idx_u ON u(a)", case.schema);
+        defer fixture.deinit();
+        const seed_path = try writeSeedSpec(&fixture, "seed.json", case.spec);
+        defer testing.allocator.free(seed_path);
+
+        var stdout_buffer: [4096]u8 = undefined;
+        var stderr_buffer: [4096]u8 = undefined;
+        const result = fixture.runFormat("json", &.{ "--seed-data", seed_path }, &stdout_buffer, &stderr_buffer);
+        try testing.expectEqual(ExitCode.rejected, result.code);
+        try testing.expectEqualStrings("", result.stdout);
+        try expectJsonFailure(result.stderr, "seed_data_apply_failed", 1);
+        try testing.expect(contains(result.stderr, "constraint failed"));
+        try fixture.expectNoLeftovers();
+    }
+}
+
+test "a sequence keeps the values that fit even when the intermediate product does not" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "sequence.db", .data = "" });
+    const path = try tmp.dir.realPathFileAlloc(testing.io, "sequence.db", testing.allocator);
+    defer testing.allocator.free(path);
+    try db.createTestDatabase(path, "CREATE TABLE r(v INTEGER);");
+
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var stderr_buffer: [1024]u8 = undefined;
+    var stderr = Io.Writer.fixed(&stderr_buffer);
+
+    const spec_path = try writeSeedSpecFile(&tmp, arena,
+        \\{"tables": {"r": {"rows": 3, "columns": {
+        \\  "v": {"kind": "sequence", "from": -9223372036854775808, "step": 9223372036854775807}}}}}
+    );
+    const spec = cli_seed.load(testing.io, arena, spec_path, &stderr) orelse return error.TestUnexpectedResult;
+    try testing.expect(cli_seed.apply(arena, path, spec, &stderr) == null);
+    try testing.expectEqual(@as(i64, 3), try scalarOn(path, "SELECT count(*) FROM r"));
+    try testing.expectEqual(std.math.minInt(i64), try scalarOn(path, "SELECT min(v) FROM r"));
+    try testing.expectEqual(@as(i64, 9223372036854775806), try scalarOn(path, "SELECT max(v) FROM r"));
+    try testing.expectEqual(@as(i64, 1), try scalarOn(path, "SELECT count(*) FROM r WHERE v = -1"));
 }

@@ -97,6 +97,7 @@ pub const Inputs = struct {
     format: cli_args.Format = .human,
     suggest: bool = false,
     manifest: bool = true,
+    seed: ?cli_report.Seed = null,
     work_parent: []const u8,
 };
 
@@ -700,7 +701,7 @@ pub fn run(
     const code = batchExitCode(summaries, results.items, migration_report != null);
 
     switch (inputs.format) {
-        .json => writeBatchJson(stdout, allocator, summaries, order, results.items, suggest_warnings.items, recommended, migration_report, code) catch |err| {
+        .json => writeBatchJson(stdout, allocator, summaries, order, results.items, suggest_warnings.items, recommended, migration_report, inputs.seed, code) catch |err| {
             return reportWriteFailure(err, stderr);
         },
         .human => writeBatchHuman(stdout, inputs, loaded.queries.len, summaries, order, results.items, suggest_warnings.items, recommended, migration_report) catch |err| {
@@ -1203,6 +1204,7 @@ fn writeBatchJson(
     warnings: []const cli_suggest.Warning,
     recommended: ?usize,
     migration: ?Migration,
+    seed: ?cli_report.Seed,
     code: ExitCode,
 ) !void {
     var out: Io.Writer.Allocating = .init(allocator);
@@ -1239,6 +1241,10 @@ fn writeBatchJson(
         }
         try json.endArray();
         try json.endObject();
+    }
+    if (seed) |value| {
+        try json.objectField("seed_data");
+        try cli_report.writeJsonSeed(&json, allocator, value);
     }
     try json.objectField("summary");
     try json.beginArray();
@@ -1355,7 +1361,11 @@ fn writeBatchHuman(
             .{ query_count, word(query_count, "query", "queries"), summaries.len, word(summaries.len, "candidate", "candidates") },
         );
     }
-    try stdout.print("database: {s}\nsqlite: {s}\nwork-dir-parent: {s}\n\n", .{ inputs.database_path, cli_query.sqliteVersion(), inputs.work_parent });
+    try stdout.print("database: {s}\nsqlite: {s}\nwork-dir-parent: {s}\n", .{ inputs.database_path, cli_query.sqliteVersion(), inputs.work_parent });
+    if (inputs.seed) |seed| {
+        try stdout.print("seed data: {s} (seed {d}, {d} rows in {d} {s})\n", .{ seed.path, seed.seed, seed.rows, seed.tables.len, word(seed.tables.len, "table", "tables") });
+    }
+    try stdout.writeAll("\n");
     try stdout.writeAll("Summary\n  ");
     try writeCell(stdout, "candidate", candidate_width);
     for ([_][]const u8{ "status", "improved", "no-effect", "needs-check", "mismatch", "incomparable", "timeout", "size increase" }) |header| {

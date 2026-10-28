@@ -62,6 +62,29 @@ A SQLite file uses a path instead of `--d1`:
 npx qenome app.db select.sql index.sql --runs 0 --format json
 ```
 
+## Fill sandbox data (--seed-data)
+
+Use `--seed-data spec.json` when the local database is empty or too small to show an index effect. It replaces the listed tables in the sandbox copy before the comparison; the original database is never changed. It works with every mode.
+
+```json
+{ "seed": 7,
+  "tables": { "events": { "rows": 50000, "columns": {
+    "id": { "kind": "sequence" },
+    "status": { "kind": "ratio", "value": "ok", "ratio": 0.5, "otherwise": "failed" } } } } }
+```
+
+- `seed` is optional (default `0`). The same spec and seed give the same rows.
+- `kind` is `fixed` (`value`), `uniform` (`values`), `ratio` (`value`, `ratio`, optional `otherwise`), or `sequence` (optional `from`, `step`).
+- The listed tables are emptied first; unlisted tables are unchanged. A table with a trigger is rejected, as are names that differ only by case. A PRIMARY KEY, UNIQUE, NOT NULL, or CHECK violation stops with exit `1`, even with `ON CONFLICT IGNORE` or `REPLACE`.
+- A column left out takes its SQLite default or rowid; a default must be a literal, so list a column with an expression default in the spec.
+- Qenome runs `ANALYZE` on the listed tables, so the plan sees statistics for the generated rows.
+- The report adds a top-level `seed_data` object (`path`, `seed`, `rows`, `tables`). In a batch report it is at the top level, not inside each comparison.
+
+```sh
+npx qenome app.db select.sql index.sql --seed-data seed.json --runs 0 --format json
+npx qenome --d1 DB --batch batch.json --seed-data seed.json --format json
+```
+
 ## Find candidates (--suggest)
 
 Use `--suggest` when the user has a SELECT but no candidate index. SQLite's expert proposes indexes, and Qenome compares them with the same batch machinery. `--suggest` does not take `--runs`, `--format kv`, or an index file.
@@ -115,6 +138,7 @@ npx qenome --d1 DB --batch queries.json --migration 0002_replace_index.sql --for
 State `schema_version` before you interpret fields.
 
 - If stdout is a JSON object with `batch_schema_version`, it is a batch report. Read `batch_schema_version` first; it must be `1`. Read `recommended` (`null` when no candidate qualifies; with `--suggest` it can be `suggested:N`; with `--migration` it is the migration path or `null`), the `summary` entries (`candidate`, `source`, `index_sql_text`; `source` can be `manifest`, `suggested`, or `migration`), the `results`, the optional top-level `migration` object (`path`, `statements`), and the top-level `warnings` (empty without `--suggest` and with `--migration`). Repeat every batch warning `code` and `message`, like the comparison warnings. The `comparison` object under each result has `schema_version` 2 and the shape below.
+- A top-level `seed_data` object appears in a comparison or batch object when `--seed-data` was used. Read `path`, `seed`, `rows`, and `tables`. It is an input fact and does not change the verdict.
 - If stdout is a JSON object, it is the comparison. Read `schema_version` first. If it is missing or not `2`, stop and say the output does not match this skill or `docs/json.md`. Do not guess renamed fields.
 - If stdout is empty, stderr is the error object (skip any `progress:` lines). It also has `schema_version` 2, plus `exit_code` and `error` with `code`, `message`, and `hint`. Do what `hint` says. Do not treat the failure as a verdict.
 - `exit_code` inside a comparison object is `0`, `3`, or `4`. The process can still exit `5` after writing that object. Trust the process exit code.

@@ -9,6 +9,18 @@ const cli_timing = @import("timing.zig");
 const PlanRow = cli_comparison.PlanRow;
 const Plan = @FieldType(cli_comparison.Measurement, "plan");
 
+pub const SeedTable = struct {
+    table: []const u8,
+    rows: u64,
+};
+
+pub const Seed = struct {
+    path: []const u8,
+    seed: u64,
+    rows: u64,
+    tables: []const SeedTable,
+};
+
 pub const Header = struct {
     database_path: []const u8,
     select_path: []const u8,
@@ -21,6 +33,7 @@ pub const Header = struct {
     show_rows: bool = false,
     exit_code: u8 = 0,
     d1: ?cli_d1.Resolved = null,
+    seed: ?Seed = null,
 };
 
 pub const Sizes = struct {
@@ -168,6 +181,12 @@ pub fn writeFacts(stdout: *Io.Writer, header: Header, report: Report) Io.Writer.
         \\os-arch: {t}-{t}
         \\
     , .{ rounds, measure_warmup, measure_order, measure_scope, measure_cache, header.work_parent, builtin.zig_version_string, builtin.mode, builtin.os.tag, builtin.cpu.arch });
+    if (header.seed) |seed| {
+        try stdout.print("seed-data: {s}\nseed: {d}\nseed-rows: {d}\nseed-tables: {d}\n", .{ seed.path, seed.seed, seed.rows, seed.tables.len });
+        for (seed.tables) |table| {
+            try stdout.print("seed-table: {s} rows={d}\n", .{ table.table, table.rows });
+        }
+    }
     if (report.timing) |timing| {
         try writeStats(stdout, "time-baseline-ns", timing.baseline);
         try writeStats(stdout, "time-variant-ns", timing.variant);
@@ -373,6 +392,10 @@ pub fn writeJsonTo(
     try json.objectField("index_sql");
     try writeJsonText(&json, allocator, header.index_path);
     try json.endObject();
+    if (header.seed) |seed| {
+        try json.objectField("seed_data");
+        try writeJsonSeed(&json, allocator, seed);
+    }
     try json.objectField("environment");
     try json.beginObject();
     try json.objectField("qenome_version");
@@ -425,6 +448,28 @@ fn resultText(verdict: cli_comparison.Verdict) []const u8 {
 fn rowOrderText(outcome: cli_comparison.Outcome) []const u8 {
     if (outcome.verdict != .match) return "not-applicable";
     return if (outcome.comparison.?.same_order) "same" else "differs";
+}
+
+pub fn writeJsonSeed(json: *std.json.Stringify, allocator: std.mem.Allocator, seed: Seed) Error!void {
+    try json.beginObject();
+    try json.objectField("path");
+    try writeJsonText(json, allocator, seed.path);
+    try json.objectField("seed");
+    try json.write(seed.seed);
+    try json.objectField("rows");
+    try json.write(seed.rows);
+    try json.objectField("tables");
+    try json.beginArray();
+    for (seed.tables) |table| {
+        try json.beginObject();
+        try json.objectField("table");
+        try writeJsonText(json, allocator, table.table);
+        try json.objectField("rows");
+        try json.write(table.rows);
+        try json.endObject();
+    }
+    try json.endArray();
+    try json.endObject();
 }
 
 fn writeJsonReasons(json: *std.json.Stringify, allocator: std.mem.Allocator, outcome: cli_comparison.Outcome) Error!void {
@@ -759,6 +804,15 @@ fn writeOverview(
         "the same on both copies"
     else
         "changed on the variant");
+
+    if (header.seed) |seed| {
+        try writeField(stdout, "seed data", seed.path);
+        var seed_buffer: [256]u8 = undefined;
+        var seed_text = Io.Writer.fixed(&seed_buffer);
+        const table_word = if (seed.tables.len == 1) "table" else "tables";
+        try seed_text.print("seed {d}, {d} rows in {d} {s}", .{ seed.seed, seed.rows, seed.tables.len, table_word });
+        try writeField(stdout, "seed", seed_text.buffered());
+    }
 
     var buffer: [256]u8 = undefined;
     var text = Io.Writer.fixed(&buffer);

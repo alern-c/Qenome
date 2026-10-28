@@ -11,6 +11,7 @@
 | `schema.sql` | `events` テーブル（インデックスは作らない） |
 | `seed.sql` | 20万行の決定論的な投入（`random()` を使わない） |
 | `verify.sql` | 不変条件の検査（`sqlite3` CLI 専用） |
+| `seed.json` | `--seed-data` 用の50,000行のダミーデータ指定（Quick start で使う。fixture DB は変更しない） |
 | `cases/improved.sql` / `cases/improved.index.sql` | 改善する例の SELECT と候補DDL |
 | `cases/no-effect.sql` / `cases/no-effect.index.sql` | 効果のない例の SELECT と候補DDL |
 | `cases/incomparable.sql` / `cases/incomparable.index.sql` | 結果を比較できない例の SELECT と候補DDL |
@@ -35,6 +36,8 @@ sqlite3 testdata/generated/qenome-fixture.db ".read testdata/verify.sql"
 - この手順を2回実行し、検査の出力が完全に一致することを確認済み（2026-10-10）
 
 `verify.sql` の検査項目: 行数、`id` の最小・最大・重複なし、`customer_id` の非NULL件数・NULL件数・種類数・最小・最大・範囲外0件、`status` 3値の件数と未知値0件、`note` のNULL件数・非NULL件数、ユーザー定義インデックス0件。
+
+`seed.json` は Quick start の `--seed-data` の例で使う。サンドボックスのコピーにある `events` を、`id` と `customer_id` が 1..50,000 の連番、`status` が `ok` 50% / `failed` 50%、`note` が NULL の50,000行で置き換える。`fixture DB` は変更しない。
 
 ## 基準版
 
