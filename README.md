@@ -55,13 +55,22 @@ From this README, a D1 developer or their AI agent can get that verdict on a loc
 
 ### npm
 
-On Linux and macOS, for x64 and arm64:
+On Linux and macOS, for x64 and arm64, install the command once:
+
+```sh
+npm install -g qenome
+qenome --version
+```
+
+The global install puts `qenome` on your `PATH`, so the examples below run as written. Update it with `npm install -g qenome@latest`.
+
+To try Qenome without installing it, run it through `npx`, which fetches the package and adds no global command:
 
 ```sh
 npx qenome --version
 ```
 
-A D1 project runs Qenome this way. `npx` fetches the package and does not add a global binary. Use `npx qenome` in place of `qenome` in the examples when the binary is not on your `PATH`. `npm install --global qenome` installs the same command.
+Install it once if you run Qenome often; use `npx qenome` for a one-off check on a D1 project. When the binary is not on your `PATH`, replace `qenome` with `npx qenome` in the examples.
 
 The package is a small launcher plus one optional binary for the machine you are on (`@qenome-cli/linux-x64`, `@qenome-cli/linux-arm64`, `@qenome-cli/darwin-x64`, or `@qenome-cli/darwin-arm64`). The version is `.version` in `build.zig.zon`, and [docs/npm.md](docs/npm.md) covers how the packages are built and published. Windows is not an npm target: use the prebuilt binaries below.
 

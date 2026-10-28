@@ -28,7 +28,7 @@ On a D1 project:
 npx qenome --version
 ```
 
-The npm package is added separately. If `npx qenome` does not resolve, build this repository with `zig build` and call `zig-out/bin/qenome`. The commands below use `npx qenome`. A checkout that has already been built can substitute that binary. The CI job does that substitution.
+The package is published on npm as `qenome`, so `npx qenome` downloads it. If the command does not resolve, build this repository with `zig build` and call `zig-out/bin/qenome`. The commands below use `npx qenome`. A checkout that has already been built can substitute that binary. The CI job does that substitution.
 
 ## Run on a D1 project
 
