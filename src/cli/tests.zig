@@ -2577,6 +2577,8 @@ fn initMigrationFixture() !CliFixture {
     try fixture.writeFile("qc.sql", "SELECT a FROM t WHERE c = 0;");
     try fixture.writeFile("qn.sql", "SELECT id FROM n WHERE id = 1;");
     try fixture.writeFile("qmissing.sql", "SELECT missing FROM t;");
+    try fixture.writeFile("qoldcol.sql", "SELECT b FROM t WHERE a = 1;");
+    try fixture.writeFile("qstar.sql", "SELECT * FROM t WHERE a = 1;");
     try fixture.writeFile("qtimeout.sql", "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 20000000) SELECT count(*) FROM c WHERE x IN (SELECT c FROM t);");
     try fixture.writeFile("qrandom.sql", "SELECT a FROM t WHERE b = 'v1' ORDER BY random();");
     try fixture.writeFile("queries_schema.json",
@@ -2590,6 +2592,12 @@ fn initMigrationFixture() !CliFixture {
     );
     try fixture.writeFile("queries_missing.json",
         \\{"queries":[{"select":"qmissing.sql"}]}
+    );
+    try fixture.writeFile("queries_old_column.json",
+        \\{"queries":[{"select":"qoldcol.sql"}]}
+    );
+    try fixture.writeFile("queries_star.json",
+        \\{"queries":[{"select":"qstar.sql"}]}
     );
     try fixture.writeFile("queries_timeout.json",
         \\{"queries":[{"select":"qtimeout.sql"}]}
@@ -2607,6 +2615,7 @@ fn initMigrationFixture() !CliFixture {
     try fixture.writeFile("schema_drop.sql", "DROP INDEX idx_a;\nALTER TABLE t ADD COLUMN c INTEGER DEFAULT 0;\n");
     try fixture.writeFile("schema_new_table.sql", "CREATE TABLE n(id INTEGER PRIMARY KEY);\nCREATE INDEX idx_n ON n(id);\n");
     try fixture.writeFile("schema_drop_column.sql", "ALTER TABLE t ADD COLUMN tmp INTEGER;\nALTER TABLE t DROP COLUMN tmp;\nCREATE INDEX idx_b ON t(b);\n");
+    try fixture.writeFile("schema_drop_b.sql", "ALTER TABLE t DROP COLUMN b;\n");
     try fixture.writeFile("schema_rename.sql", "ALTER TABLE t RENAME COLUMN b TO label;\nALTER TABLE t RENAME TO t2;\nCREATE INDEX idx_label ON t2(label);\n");
     try fixture.writeFile("schema_bad.sql", "ALTER TABLE t ADD COLUMN c INTEGER;\nDROP TABLE t;\n");
     try fixture.writeFile("schema_as_select.sql", "CREATE TABLE x AS SELECT * FROM t;\n");
@@ -3008,6 +3017,48 @@ test "a migration that breaks a query reports the variant error" {
     try testing.expectEqualStrings("", result.stdout);
     try testing.expect(contains(result.stderr, "the batch variant for query 'qmissing.sql'"));
     try testing.expect(contains(result.stderr, "no such column: missing"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a migration that drops a column breaks a manifest query before the report" {
+    var fixture = try initMigrationFixture();
+    defer fixture.deinit();
+
+    var stdout_buffer: [262144]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = try runMigration(&fixture, "queries_old_column.json", "schema_drop_b.sql", &.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try expectJsonFailure(result.stderr, "batch_variant_failed", 1);
+    try testing.expect(contains(result.stderr, "the batch variant for query 'qoldcol.sql'"));
+    try testing.expect(contains(result.stderr, "schema_drop_b.sql"));
+    try testing.expect(contains(result.stderr, "no such column: b"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a SELECT * query cannot be compared after a migration adds a column" {
+    var fixture = try initMigrationFixture();
+    defer fixture.deinit();
+
+    var stdout_buffer: [262144]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = try runMigration(&fixture, "queries_star.json", "schema_column_only.sql", &.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.incomparable, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    const summary = try jsonItems(parsed.value, "summary");
+    try testing.expectEqual(@as(i64, 1), try jsonInt(summary[0], "incomparable"));
+    try testing.expectEqual(@as(i64, 0), try jsonInt(summary[0], "not_judged"));
+    const results = try jsonItems(parsed.value, "results");
+    const comparison = try jsonGet(results[0], "comparison");
+    try testing.expectEqualStrings("not-judged", try jsonText(comparison, "verdict"));
+    try testing.expectEqualStrings("incomparable", try jsonText(comparison, "result"));
+    try testing.expectEqual(@as(i64, 4), try jsonInt(comparison, "exit_code"));
+    try testing.expect((try jsonGet(comparison, "baseline")) == .object);
+    const reasons = try jsonItems(comparison, "result_reasons");
+    try testing.expect(contains(try jsonText(reasons[0], "text"), "the column count differs between the copies"));
     try fixture.expectNoLeftovers();
 }
 
