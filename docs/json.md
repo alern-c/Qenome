@@ -21,29 +21,30 @@ On failure, read the line that starts with `{`. `human` and `kv` do not print th
 
 ## Batch report (batch_schema_version 1)
 
-`--batch manifest.json` compares every SELECT in the manifest with every candidate CREATE INDEX. With `--suggest`, the manifest may omit `candidates`, and SQLite's proposed indexes join the comparison. Its stdout object is a separate contract with `batch_schema_version` 1. The comparison objects under `results` keep `schema_version` 2 and the shape above. `--suggest` adds keys to this contract without changing the version.
+`--batch manifest.json` compares every SELECT in the manifest with every candidate CREATE INDEX. With `--suggest`, the manifest may omit `candidates`, and SQLite's proposed indexes join the comparison. With `--migration`, the manifest also omits `candidates`, and one SQL file with index changes is applied to the variant before the queries run. Its stdout object is a separate contract with `batch_schema_version` 1. The comparison objects under `results` keep `schema_version` 2 and the shape above. `--suggest` and `--migration` add keys to this contract without changing the version.
 
 | Key | Type | Meaning |
 | `batch_schema_version` | number | `1` |
-| `exit_code` | number | `0`, `1`, `3`, `4`, or `124`. The process can still exit `5` after this object when cleanup fails and the code is `0` |
-| `recommended` | string or `null` | The candidate label: a path from the manifest, or `suggested:N` with `--suggest`. `null` when no candidate qualifies |
+| `exit_code` | number | `0`, `1`, `3`, `4`, `6`, or `124`. The process can still exit `5` after this object when cleanup fails and the code is `0` |
+| `recommended` | string or `null` | The candidate label: a path from the manifest, the `--migration` path, or `suggested:N` with `--suggest`. `null` when no candidate qualifies |
+| `migration` | object | Present only with `--migration`: `path` and `statements`. See [`--migration`](#--migration) |
 | `summary` | array | One object per candidate, ordered as described below. 1 to 100 entries |
 | `results` | array | One object per compared query and candidate, ordered by candidate (manifest entries first, then suggestions) and then by query (manifest order). An `index_rejected` or `index_timeout` candidate has no entries here |
-| `warnings` | array | `{ "code", "message" }` entries. Empty without `--suggest`. See [`--suggest`](#--suggest) for the codes |
+| `warnings` | array | `{ "code", "message" }` entries. Empty without `--suggest` and with `--migration`. See [`--suggest`](#--suggest) for the codes |
 
 ### `summary` entries
 
 | Key | Type | Meaning |
-| `candidate` | string | The `index_sql` string from the manifest, or `suggested:1`, `suggested:2`, … for a proposed index |
-| `source` | string | `manifest` or `suggested` |
-| `index_sql_text` | string | The SQL text: for a manifest candidate, the contents of its file; for a suggestion, the statement SQLite reported (ending with `;`) |
+| `candidate` | string | The `index_sql` string from the manifest, `suggested:1`, `suggested:2`, … for a proposed index, or the `--migration` path |
+| `source` | string | `manifest`, `suggested`, or `migration` |
+| `index_sql_text` | string | The SQL text: for a manifest candidate, the contents of its file; for a suggestion, the statement SQLite reported (ending with `;`); for `--migration`, the contents of the migration file |
 | `status` | string | `compared`, `index_rejected`, or `index_timeout` |
 | `failure` | object or `null` | `null` for `compared`; otherwise `{ "code", "message" }`. `code` is `index_rejected` or `index_timeout` |
 | `improved`, `no_effect`, `needs_check`, `mismatch`, `incomparable` | number or `null` | How many queries ended in each outcome. `improved + no_effect + needs_check + mismatch + incomparable + timeout` equals the query count. `null` when the candidate was not compared |
 | `timeout` | number or `null` | Queries whose variant SELECT reached `--timeout-ms` |
 | `size_increase` | number or `null` | Variant file size minus baseline file size, in bytes (signed). `null` when the index was not built |
 
-A candidate qualifies for `recommended` when its status is `compared` and `mismatch`, `incomparable`, `needs_check`, and `timeout` are all `0` and `improved` is at least `1`. Qualifying candidates come first in `summary`, in this order: more `improved`, then smaller `size_increase`, then input order. Input order is the manifest order, and suggestions follow the manifest entries. The remaining `compared` candidates follow in input order, and the `index_rejected` / `index_timeout` candidates come last in input order.
+A candidate qualifies for `recommended` when its status is `compared` and `mismatch`, `incomparable`, `needs_check`, and `timeout` are all `0` and `improved` is at least `1`. Qualifying candidates come first in `summary`, in this order: more `improved`, then smaller `size_increase`, then input order. Input order is the manifest order, and suggestions follow the manifest entries. A `--migration` run has exactly one candidate, so it is either first in this order or last. The remaining `compared` candidates follow in input order, and the `index_rejected` / `index_timeout` candidates come last in input order.
 
 ### `results` entries
 
@@ -51,7 +52,18 @@ A candidate qualifies for `recommended` when its status is `compared` and `misma
 | `query` | string | The `select` string from the manifest, or the SELECT path argument for a one-SELECT `--suggest` |
 | `candidate` | string | The `index_sql` string from the manifest, or `suggested:N` |
 | `status` | string | `compared` or `variant_timeout` |
-| `comparison` | object or `null` | `null` for `variant_timeout`; otherwise the schema_version 2 comparison object, with `inputs.select` and `inputs.index_sql` set to the same strings. For a one-SELECT `--suggest`, `inputs.select` is the SELECT path argument. The embedded object is minified |
+| `comparison` | object or `null` | `null` for `variant_timeout`; otherwise the schema_version 2 comparison object, with `inputs.select` and `inputs.index_sql` set to the same strings. For a one-SELECT `--suggest`, `inputs.select` is the SELECT path argument. With `--migration`, `inputs.index_sql` is the migration path. The embedded object is minified |
+
+### `--migration`
+
+`--migration <FILE>` applies one migration file to the variant copy before the batch queries run. It needs `--batch`, and the manifest must omit `candidates` or set it to `[]`. It does not take `--select`, `--index-sql`, `--bind`, `--runs`, `--suggest`, or `--format kv`.
+
+- The file is at most 1 MiB and may hold several statements separated by semicolons. Only `CREATE INDEX`, `CREATE UNIQUE INDEX`, and `DROP INDEX` are accepted. Any other statement is rejected before the variant is touched, with a statement number and exit `1`; the original database is never changed.
+- Statements run in file order, so a migration may drop an index and create another with the same name. Each statement gets its own `--timeout-ms`. A statement that fails to apply is recorded as `index_rejected` (or `index_timeout`) in `summary`, and the run still writes the report with exit `1` (or `124`).
+- The report names the migration and every statement. Human output adds a `migration:` block; JSON adds the top-level `migration` object with `path` and `statements` (each has `kind`: `create_index` or `drop_index`, and `sql`).
+- The `summary` entry for a migration has `source` `migration`, `candidate` set to the migration path, and the same `improved` / `no_effect` / `needs_check` / `mismatch` / `incomparable` / `timeout` counts. `recommended` is the migration path only when it qualifies like any other candidate.
+- When the result rows match but at least one query has `needs_check` (the migration made it read or write more rows), the batch `exit_code` is `6`. A heavier result (`3` mismatch, `1` rejected change, `124` timeout, `4` incomparable) takes precedence. `no_effect` alone keeps `0`.
+- `warnings` is empty with `--migration`: the `no_analyze_stats` and `data_too_small` checks need one candidate table, and a migration can touch several.
 
 ### `--suggest`
 
@@ -78,9 +90,11 @@ A candidate qualifies for `recommended` when its status is `compared` and `misma
 
 ### Exit code and stderr
 
-When the report is written, the exit code is the heaviest of: result mismatch `3`, a candidate index that could not be built `1`, a candidate time limit `124`, an incomparable result `4`, and `0`. Cleanup failure replaces `0` with `5`.
+When the report is written, the exit code is the heaviest of: result mismatch `3`, a candidate index or migration that could not be built `1`, a candidate time limit `124`, an incomparable result `4`, a `--migration` regression `6`, and `0`. Cleanup failure replaces `0` with `5`.
 
-A batch can therefore write a report and still exit `1` or `124`. Read stdout to decide: if stdout is a batch object, the run finished and the failures are in `summary` and `results`. If stdout is empty, the run stopped before the report and stderr holds the schema_version 2 error object. Candidate failures (`index_rejected`, `index_timeout`, `variant_timeout`) are never written as `error:` lines.
+A batch can therefore write a report and still exit `1`, `6`, or `124`. Read stdout to decide: if stdout is a batch object, the run finished and the failures are in `summary` and `results`. If stdout is empty, the run stopped before the report and stderr holds the schema_version 2 error object. Candidate failures (`index_rejected`, `index_timeout`, `variant_timeout`) are never written as `error:` lines.
+
+The migration statement kind check is not a candidate failure: an unsupported statement, an empty migration, or an unreadable file stops before the report and writes the error object on stderr. A failure to apply a syntactically valid statement (for example, dropping an index that does not exist) is a candidate failure and stays in the report.
 
 Batch error codes:
 
@@ -89,6 +103,10 @@ Batch error codes:
 | `batch_manifest_unreadable` | 1 | Check the manifest path and permissions |
 | `batch_manifest_invalid` | 1 | Fix the shape, limits, repeated paths, or binds |
 | `batch_sql_unreadable` | 1 | Check the SQL paths in the manifest; they are relative to the manifest |
+| `migration_unreadable` | 1 | Check the `--migration` path and permissions |
+| `migration_empty` | 1 | Write at least one CREATE INDEX or DROP INDEX statement |
+| `migration_statement_rejected` | 1 | Use only CREATE INDEX, CREATE UNIQUE INDEX, and DROP INDEX |
+| `migration_failed` | 1 | Fix the named statement so it applies to this database |
 | `batch_baseline_failed` | 1 | Fix the SELECT or read the SQLite message |
 | `batch_baseline_timeout` | 124 | Raise `--timeout-ms` or narrow the SELECT |
 | `batch_variant_failed` | 1 | Read the SQLite message; the run stopped before the report |
@@ -194,6 +212,7 @@ These are the values of `ExitCode` in `src/cli/control.zig`, `--help`, and the R
 | 3 | `mismatch` | The result rows differ |
 | 4 | `incomparable` | The results cannot be compared, or `--d1` cannot resolve exactly one local database |
 | 5 | `cleanup` | Cleanup failed after a match. This replaces `0` only. Every other code is kept |
+| 6 | `regression` | With `--migration`, the result rows matched but a query read or wrote more rows. Only returned by the `--migration` batch path |
 | 124 | `timeout` | `--timeout-ms` was reached |
 | 129 | `hangup` | `SIGHUP` |
 | 130 | `interrupted` | `SIGINT` |
@@ -223,6 +242,7 @@ The comparison object's `exit_code` is `0`, `3`, or `4`. The process can still e
 | `usage_conflicting_database` | 2 | Pass `--db` or `--d1`, not both |
 | `usage_config_requires_d1` | 2 | Add `--d1`, or drop `--config` |
 | `usage_suggest_conflict` | 2 | With `--suggest`, give one SELECT file or a manifest; do not pass `--runs`, `--format kv`, or an index file |
+| `usage_migration_conflict` | 2 | `--migration` needs `--batch`; do not pass `--suggest` or `--index-sql` |
 | `d1_config_not_found` | 4 | Pass `--config`, or run in the wrangler project |
 | `d1_config_ambiguous` | 4 | Pass `--config` naming one file |
 | `d1_config_unreadable` | 4 | Fix the path and permissions |
@@ -247,6 +267,10 @@ The comparison object's `exit_code` is `0`, `3`, or `4`. The process can still e
 | `workspace_failed` | 1 | The temporary directory must be writable |
 | `size_unreadable` | 1 | Rerun |
 | `index_timeout` | 124 | Raise `--timeout-ms` or simplify the index |
+| `migration_unreadable` | 1 | `--migration` takes a path to a file, not the SQL text |
+| `migration_empty` | 1 | Write at least one CREATE INDEX or DROP INDEX statement |
+| `migration_statement_rejected` | 1 | Use only CREATE INDEX, CREATE UNIQUE INDEX, and DROP INDEX |
+| `migration_failed` | 1 | Fix the named statement |
 | `select_timeout` | 124 | Raise `--timeout-ms` or narrow the SELECT |
 | `out_of_memory` | 1 | Free memory and rerun |
 | `report_failed` | 1 | Rerun. The comparison finished but the report was not written |

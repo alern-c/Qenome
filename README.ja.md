@@ -228,13 +228,14 @@ qenome --db app.db --select select.sql --index-sql index.sql --format kv
 qenome app.db select.sql index.sql --format json
 qenome --d1 DB select.sql index.sql
 qenome app.db --batch batch.json
+qenome app.db --batch batch.json --migration 0002_replace_index.sql
 qenome app.db select.sql --suggest
 qenome app.db --batch batch.json --suggest
 ```
 
 パスは DB・SELECT ファイル・CREATE INDEX ファイルの順に埋まり、`--db` / `--select` / `--index-sql` でも指定できます（混在可）。位置指定のパスは、まだ指定されていない最初の役割に埋まります。`--d1` のときは、位置指定の2つのパスが SELECT と CREATE INDEX の役割に入ります。`--` の後は `-` で始まるパスとして扱います。
 
-`select.sql` には読み取り専用の SELECT を1本、`index.sql` には候補の `CREATE INDEX` を1本書きます。複数文・書込・その他の文は拒否します。
+`select.sql` には読み取り専用の SELECT を1本、`index.sql` には候補の `CREATE INDEX` を1本書きます。複数文・書込・その他の文は拒否します。`--migration` のファイルだけは例外で、`CREATE INDEX`・`CREATE UNIQUE INDEX`・`DROP INDEX` を複数書けます（「まとめて比べる（--batch）」を参照）。
 
 - `--db <PATH>`: 対象の SQLite データベース（必須、1回だけ。`--d1` とは併用しない）
 - `--d1 <BINDING>`: wrangler 設定の `d1_databases` にあるこのバインディングのローカル D1 データベースを `--db` の代わりに使う。「D1 のローカルデータベース」を参照
@@ -242,6 +243,7 @@ qenome app.db --batch batch.json --suggest
 - `--select <FILE>`: 比較する SELECT を1本書いたファイル（必須、1回だけ）
 - `--index-sql <FILE>`: 候補の CREATE INDEX を1本書いたファイル（必須、1回だけ）
 - `--batch <FILE>`: JSON のマニフェストにある全 SELECT を、全候補 CREATE INDEX と1回の実行で比べる。「まとめて比べる（--batch）」を参照。`--select` / `--index-sql` / `--bind` / 位置指定の SELECT・INDEX、`--runs`、`--format kv` とは併用できない
+- `--migration <FILE>`: `--batch` の全クエリを実行する前に、この SQL ファイルを variant にだけ適用する。`--batch` と、`candidates` を持たないマニフェストが必要。`--select` / `--index-sql` / `--bind` / `--runs` / `--suggest` / `--format kv` とは併用できない。`CREATE INDEX`・`CREATE UNIQUE INDEX`・`DROP INDEX` だけを受け付ける。「まとめて比べる（--batch）」を参照
 - `--suggest`: インデックスを自分で用意する代わりに、SQLite の expert に候補のインデックスを提案させ、その提案を比べる。`--batch` のときはマニフェストの `candidates` を省略できる。`--runs`、`--format kv`、インデックスのファイル（`--index-sql` または3番目の位置指定パス）とは併用できない。「候補のインデックスを提案させる（--suggest）」を参照
 - `--bind <N>:<TYPE>[:<VALUE>]`: SELECT のパラメータ N に渡す型付きの値。繰り返し指定できる。N は SQLite のパラメータ番号で、名前付きパラメータは最初に現れたときの番号を共有し、`?NNN` は NNN を使う。TYPE は int / real / text / null（null は値を取らない）。1 からパラメータ数までの各番号をちょうど1回ずつ指定する必要があり、パラメータの無い SELECT に `--bind` は付けられない。値は引数の残り全体なので、text には `:` を含められる
 - `--runs <N>`: 結果が一致したあとの計測ラウンド数。各ラウンドは各コピーで SELECT を1回計測する。既定は 10、0 で計測しないが読んだ行数と判定は残る、最大 1000。1秒を超える計測は進捗を stderr に出す
@@ -324,13 +326,16 @@ qenome --d1 DEMO_DB select.sql index.sql --runs 40
 }
 ```
 
-- `queries` は1〜100件。`candidates` は1〜100件で、`--suggest` が提案を足すときは省略（または `[]`）できる。マニフェストは1 MiBまで。
+- `queries` は1〜100件。`candidates` は1〜100件で、`--suggest` が提案を足すとき、または `--migration` が variant の変更を渡すときは省略（または `[]`）できる。マニフェストは1 MiBまで。
 - 同じパスを `queries` の中で2回、または `candidates` の中で2回書くことはできない。
+- `--migration` のとき、`candidates` は省略または `[]` にし、マニフェストは `queries` だけを持つ。
 - `select` と `index_sql` はファイルのパス。カレントディレクトリではなく、マニフェストのディレクトリを基準に解決する。各ファイルは読み取り専用の SELECT 1本、または `CREATE INDEX` 1本で、1 MiBまで。
 - `binds` は任意で、`--bind` と同じ `N:TYPE:VALUE` 形式。パスとバインド値は NUL バイトを含まない JSON 文字列にする。
 - `select` と `index_sql` の文字列は、書いたとおりに報告へ出す。
 
 Qenome はデータベースを1回コピーし、何かを実行する前に全 SELECT と全候補を検査します。そのあと候補をマニフェスト順に処理し、候補ごとに baseline をもう一度コピーして、そのコピーにだけインデックスを作り、全クエリを両方のコピーで実行します。baseline の SELECT は候補ごとに実行し直します。
+
+`--migration <FILE>` を付けると、variant の変更は候補インデックスではなく、マイグレーションのファイル全体になります。ファイルは 1 MiB までです。Qenome は variant を触る前にファイルを検査し、セミコロンで区切った `CREATE INDEX`・`CREATE UNIQUE INDEX`・`DROP INDEX` だけを許可します。そのあと文をファイル順に variant にだけ適用するので、同じ名前のインデックスを落として作り直せます。各文は `--timeout-ms` の制限時間を持ちます。元のデータベースは変更しません。レポートには、human では `migration:` の節、json ではトップレベルの `migration` オブジェクトとして、パスと適用した全文を出します。結果の行が一致しても、マイグレーション後にクエリの読んだ行数か書いた行数が増えた場合は batch の終了コードが `6` になります。結果の不一致 `3`、変更の拒否 `1`、時間切れ `124`、比較不能 `4` が優先されます。`no-effect` だけなら `0` です。`no_analyze_stats` と `data_too_small` の警告は、マイグレーションが複数のテーブルを触り得るため出しません。
 
 <details>
 <summary>候補の失敗・終了コード・実行時間</summary>
@@ -345,7 +350,7 @@ Qenome はデータベースを1回コピーし、何かを実行する前に全
 
 全体に影響する失敗では、報告を書く前に止まり、stdout は空のままです。baseline の SELECT の失敗・時間切れ、シグナル、variant / baseline の接続の失敗、一時コピーの作成・削除の失敗、ディスク不足などの保存の失敗が該当します。候補単位の失敗は `error:` 行にはしません。
 
-報告を書けた場合、終了コードは、結果の不一致 `3`、インデックスの作成失敗 `1`、候補の時間切れ `124`、比較不能 `4`、`0` のうち一番重いものです。後片付けの失敗は `0` のときだけ `5` に置き換えます。そのため batch は、報告を書きながら `1` や `124` で終わることがあります。どちらかは stdout で見分けます。
+報告を書けた場合、終了コードは、結果の不一致 `3`、インデックスまたはマイグレーションの作成失敗 `1`、候補の時間切れ `124`、比較不能 `4`、`--migration` の退行 `6`、`0` のうち一番重いものです。後片付けの失敗は `0` のときだけ `5` に置き換えます。そのため batch は、報告を書きながら `1`・`6`・`124` で終わることがあります。どれかは stdout で見分けます。
 
 human 出力は候補の表、`Recommendation:`、クエリと候補の判定表を出します。おすすめは、不一致・比較不能・`needs-check`・時間切れがなく、改善が1件以上ある候補のうち、改善したクエリが最も多いものです。同じなら容量の増分が小さい順、次に入力順（マニフェストの候補の後ろに提案）です。`--format json` では [docs/json.md](docs/json.md) に書いた `batch_schema_version` 1 のオブジェクトを出します。
 
@@ -473,12 +478,13 @@ fi
 | 3 | 結果が一致しない |
 | 4 | 結果を比較できない、または `--d1` がローカルデータベースをちょうど1つに決められない（設定が無い、設定が複数、設定が読めない・不正、バインディングが不明か重複、database id が無い、ローカルファイルが未作成、ローカルファイルを開けない） |
 | 5 | 比較のあとの後片付けに失敗した（0 のときだけ置き換え、それ以外のコードはそのまま） |
+| 6 | `--migration` で結果の行は一致したが、クエリの読んだ行数か書いた行数が増えた。`--migration` の batch だけが返す |
 | 124 | 時間上限に達した（`--timeout-ms`） |
 | 129 / 130 / 143 | `SIGHUP` / `SIGINT` / `SIGTERM` による中断（POSIX） |
 
 `--format json` は比較結果を `exit_code` に 0 / 3 / 4 で出します。JSON を書いた後にプロセスが 5 で終わることはあります。
 
-`--batch` の報告は、終了コード `1` や `124` で書かれることがあります。stdout が batch のオブジェクトなら実行は最後まで進み、失敗は報告の中にあります。stdout が空なら実行は途中で止まり、stderr にエラーオブジェクトがあります。
+`--batch` の報告は、終了コード `1`・`6`・`124` で書かれることがあります。stdout が batch のオブジェクトなら実行は最後まで進み、失敗は報告の中にあります。stdout が空なら実行は途中で止まり、stderr にエラーオブジェクトがあります。
 
 ## 守るルール
 
@@ -486,7 +492,7 @@ fi
 - 比較できない結果を「一致」「成功」として報告しない
 - 改善かどうかは読んだ行数で判定し、時間では判定しない（読んだ行数が減らない SELECT は改善ではない）
 - 容量はデータベース全体の増分であり、インデックス単体のサイズではない
-- 複数文・書込・危険な DDL は拒否する
+- 複数文・書込・危険な DDL は拒否する。`--migration` のファイルだけは複数のインデックス変更を許すが、`CREATE INDEX`・`CREATE UNIQUE INDEX`・`DROP INDEX` に限る
 - 正常・失敗・中断のどの経路でも、接続と一時ファイルを後片付けする
 - D1 のデータベースファイルを推測しない。バインディングがちょうど1つのファイルに決まらないときは止まる
 

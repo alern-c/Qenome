@@ -228,13 +228,14 @@ qenome --db app.db --select select.sql --index-sql index.sql --format kv
 qenome app.db select.sql index.sql --format json
 qenome --d1 DB select.sql index.sql
 qenome app.db --batch batch.json
+qenome app.db --batch batch.json --migration 0002_replace_index.sql
 qenome app.db select.sql --suggest
 qenome app.db --batch batch.json --suggest
 ```
 
 The three paths fill the roles in this order: database, SELECT file, CREATE INDEX file. Each role can also be given with `--db`, `--select`, or `--index-sql`, and the two forms can be mixed; a positional path fills the first role that is still empty. With `--d1`, the two positional paths fill the SELECT and CREATE INDEX roles. After `--`, every argument is treated as a path, including paths that start with `-`.
 
-`select.sql` holds one read-only `SELECT`; `index.sql` holds one candidate `CREATE INDEX`. Qenome rejects multiple statements, writes, and any other statement.
+`select.sql` holds one read-only `SELECT`; `index.sql` holds one candidate `CREATE INDEX`. Qenome rejects multiple statements, writes, and any other statement. A `--migration` file is the one exception: it may hold several `CREATE INDEX`, `CREATE UNIQUE INDEX`, and `DROP INDEX` statements; see [Batch comparisons](#batch-comparisons).
 
 - `--db <PATH>`: the SQLite database to read (required, once; not with `--d1`)
 - `--d1 <BINDING>`: the local D1 database of this `d1_databases` binding in a wrangler config, instead of `--db`. See [D1 local databases](#d1-local-databases)
@@ -242,6 +243,7 @@ The three paths fill the roles in this order: database, SELECT file, CREATE INDE
 - `--select <FILE>`: a file holding the one `SELECT` to compare (required, once)
 - `--index-sql <FILE>`: a file holding the one candidate `CREATE INDEX` (required, once)
 - `--batch <FILE>`: compare every SELECT in a JSON manifest with every candidate `CREATE INDEX` in one run; see [Batch comparisons](#batch-comparisons). It cannot be combined with `--select`, `--index-sql`, `--bind`, positional SELECT or INDEX paths, `--runs`, or `--format kv`
+- `--migration <FILE>`: apply this SQL file to the variant only before the `--batch` queries run. It needs `--batch` and a manifest without `candidates`; it cannot be combined with `--select`, `--index-sql`, `--bind`, `--runs`, `--suggest`, or `--format kv`. Only `CREATE INDEX`, `CREATE UNIQUE INDEX`, and `DROP INDEX` are accepted. See [Batch comparisons](#batch-comparisons)
 - `--suggest`: ask SQLite's expert for candidate indexes instead of naming one, and compare the proposals. With `--batch`, the manifest may omit `candidates`. It cannot be combined with `--runs`, `--format kv`, or an index file (`--index-sql` or a third positional path). See [Suggesting candidate indexes](#suggesting-candidate-indexes)
 - `--bind <N>:<TYPE>[:<VALUE>]`: a typed value bound to parameter `N`; repeatable. `N` is SQLite's parameter number: named parameters share the number of their first appearance, and `?NNN` uses `NNN`. `TYPE` is `int`, `real`, `text`, or `null` (null takes no value). Every number in `1..parameter count` must be given exactly once, and a `SELECT` without parameters takes no `--bind`. The value is the rest of the argument, so text may contain `:`.
 - `--runs <N>`: timed rounds after the results match; each round adds two baseline A/A executions and times the `SELECT` once per copy. The default is `10`; `0` skips the timing but keeps the row counts and the verdict; the maximum is `1000`. A timing that takes longer than a second reports its progress on stderr.
@@ -324,13 +326,16 @@ The first command writes the local database into `.wrangler/` and loads 200,000 
 }
 ```
 
-- `queries` holds 1 to 100 entries. `candidates` holds 1 to 100 entries, or may be omitted (or `[]`) when `--suggest` adds the proposals.
+- `queries` holds 1 to 100 entries. `candidates` holds 1 to 100 entries, or may be omitted (or `[]`) when `--suggest` adds the proposals or `--migration` supplies the variant change.
 - The same path cannot appear twice in `queries`, and it cannot appear twice in `candidates`.
+- With `--migration`, `candidates` must be omitted or `[]`, and the manifest holds only `queries`.
 - `select` and `index_sql` are paths to files. They are resolved from the manifest's directory, not from the current directory. Each file holds one read-only SELECT or one `CREATE INDEX`, and is at most 1 MiB.
 - `binds` is optional and uses the same `N:TYPE:VALUE` syntax as `--bind`. Every path and bind must be a JSON string without a NUL byte.
 - The `select` and `index_sql` strings are copied to the report exactly as written.
 
 Qenome copies the database once, checks every SELECT and every candidate before it runs anything, then visits the candidates in manifest order. For each candidate it copies the baseline again, builds the index on that copy only, and runs every query on both copies. The baseline SELECT is run again for each candidate.
+
+With `--migration <FILE>`, the variant change is the whole migration file instead of a candidate index. The file is at most 1 MiB. Qenome checks the file before it touches the variant: only `CREATE INDEX`, `CREATE UNIQUE INDEX`, and `DROP INDEX` statements are allowed, separated by semicolons. It then applies the statements in file order to the variant only, so a migration may drop an index and create another with the same name. Each statement gets its own `--timeout-ms`. The original database is never changed. The report adds a `migration:` block (human) or a top-level `migration` object (JSON) with the path and every applied statement. When the result rows match but a query reads or writes more rows after the migration, the batch exits with status `6`; a result mismatch (`3`), a rejected change (`1`), a time limit (`124`), or an incomparable result (`4`) takes precedence. `no-effect` alone keeps `0`. The `no_analyze_stats` and `data_too_small` warnings are not emitted for a migration, because it can touch several tables.
 
 <details>
 <summary>Batch statuses, failures, and exit status</summary>
@@ -345,7 +350,7 @@ A candidate that cannot be built is recorded and the batch continues:
 
 A failure that affects the whole run stops it before any report is written and leaves stdout empty: a baseline SELECT that fails or times out, a signal, a variant or baseline connection that fails, the temporary copies that cannot be created or removed, and storage errors such as a full disk. Candidate failures are not written as `error:` lines.
 
-When the report is written, the exit status is the heaviest of a result mismatch (`3`), a rejected index (`1`), a candidate time limit (`124`), an incomparable result (`4`), and `0`. Cleanup failure replaces `0` with `5`. A batch can therefore write a report and still exit `1` or `124`; read stdout to tell the two cases apart.
+When the report is written, the exit status is the heaviest of a result mismatch (`3`), a rejected index or migration (`1`), a candidate time limit (`124`), an incomparable result (`4`), a `--migration` regression (`6`), and `0`. Cleanup failure replaces `0` with `5`. A batch can therefore write a report and still exit `1`, `6`, or `124`; read stdout to tell the cases apart.
 
 The `human` output has a table of candidates, a `Recommendation:`, and a table of query and candidate verdicts. The recommendation is the candidate with the most improved queries among those with no mismatch, no incomparable result, no `needs-check`, no timeout, and at least one improvement. Ties go to the smaller size increase, then to manifest order. With `--format json` the output is the `batch_schema_version` 1 object described in [docs/json.md](docs/json.md).
 
@@ -473,12 +478,13 @@ Main keys:
 | 3 | The result rows differ |
 | 4 | The results cannot be compared, or `--d1` cannot locate exactly one local database (no config, more than one config, an unreadable or invalid config, an unknown or duplicate binding, a missing database id, a local file that does not exist yet, or a local file that cannot be opened) |
 | 5 | Cleanup failed after the comparison (this replaces 0; every other code is kept) |
+| 6 | With `--migration`, the result rows matched but a query read or wrote more rows. Only the `--migration` batch path returns it |
 | 124 | A time limit was reached (`--timeout-ms`) |
 | 129 / 130 / 143 | Interrupted by `SIGHUP` / `SIGINT` / `SIGTERM` (POSIX) |
 
 `--format json` reports the comparison result in `exit_code` as `0`, `3`, or `4`. The process can still exit with `5` after writing the JSON.
 
-A `--batch` report can be written with exit `1` or `124`. If stdout is the batch object, the run finished and the failures are in the report. If stdout is empty, the run stopped and stderr holds the error object.
+A `--batch` report can be written with exit `1`, `6`, or `124`. If stdout is the batch object, the run finished and the failures are in the report. If stdout is empty, the run stopped and stderr holds the error object.
 
 ### Timing evidence and advisory warnings
 
@@ -503,7 +509,7 @@ The interval is `null` with `unavailable_reason` `too-few-rounds` below six roun
 - Never report a result that cannot be compared as a match or a success.
 - Judge from the rows read, not from the time: a SELECT that reads no fewer rows is not an improvement.
 - The size is the increase of the whole database file, not the size of the index alone.
-- Reject multiple statements, writes, and dangerous DDL.
+- Reject multiple statements, writes, and dangerous DDL. A `--migration` file may hold several index changes, but only `CREATE INDEX`, `CREATE UNIQUE INDEX`, and `DROP INDEX`.
 - Clean up connections and temporary files on success, failure, and interruption.
 - Do not guess a D1 database file: stop when the binding does not resolve to exactly one file.
 

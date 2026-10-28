@@ -46,6 +46,7 @@ pub const Args = struct {
     d1: ?[:0]const u8 = null,
     config: ?[:0]const u8 = null,
     batch: ?[:0]const u8 = null,
+    migration: ?[:0]const u8 = null,
     select: ?[:0]const u8 = null,
     index_sql: ?[:0]const u8 = null,
     binds: []const db.BindArg = &.{},
@@ -78,6 +79,9 @@ pub const ParseError = error{
     BatchRejectsBind,
     BatchRejectsRuns,
     BatchRejectsKv,
+    MigrationRequiresBatch,
+    MigrationRejectsSuggest,
+    MigrationRejectsIndex,
     SuggestRejectsIndex,
     SuggestRejectsRuns,
     SuggestRejectsKv,
@@ -152,6 +156,9 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
         } else if (std.mem.eql(u8, name, "--batch")) {
             if (args.batch != null) return error.DuplicateOption;
             args.batch = try optionValue(argv, &index, inline_value);
+        } else if (std.mem.eql(u8, name, "--migration")) {
+            if (args.migration != null) return error.DuplicateOption;
+            args.migration = try optionValue(argv, &index, inline_value);
         } else if (std.mem.eql(u8, name, "--select")) {
             if (args.select != null) return error.DuplicateOption;
             args.select = try optionValue(argv, &index, inline_value);
@@ -195,6 +202,20 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
     if (args.config != null and args.d1 == null) {
         offending.* = "--config";
         return error.ConfigRequiresD1;
+    }
+    if (args.migration != null) {
+        if (args.batch == null) {
+            offending.* = "--migration";
+            return error.MigrationRequiresBatch;
+        }
+        if (args.suggest) {
+            offending.* = "--suggest";
+            return error.MigrationRejectsSuggest;
+        }
+        if (args.index_sql != null) {
+            offending.* = "--index-sql";
+            return error.MigrationRejectsIndex;
+        }
     }
     if (args.batch != null) {
         if (args.select != null) {
@@ -321,6 +342,7 @@ const long_options = [_][]const u8{
     "--d1",
     "--config",
     "--batch",
+    "--migration",
     "--select",
     "--index-sql",
     "--bind",
@@ -449,6 +471,10 @@ pub const batch_usage_line = "       qenome <DB> --batch <FILE> [options]";
 
 pub const d1_batch_usage_line = "       qenome --d1 <BINDING> --batch <FILE> [options]";
 
+pub const migration_usage_line = "       qenome <DB> --batch <FILE> --migration <FILE> [options]";
+
+pub const d1_migration_usage_line = "       qenome --d1 <BINDING> --batch <FILE> --migration <FILE> [options]";
+
 pub const suggest_usage_line = "       qenome <DB> <SELECT_FILE> --suggest [options]";
 
 pub const d1_suggest_usage_line = "       qenome --d1 <BINDING> <SELECT_FILE> --suggest [options]";
@@ -460,7 +486,7 @@ pub fn printVersion(writer: *Io.Writer) Io.Writer.Error!void {
 }
 
 pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
-    try writer.writeAll(usage_line ++ "\n" ++ d1_usage_line ++ "\n" ++ batch_usage_line ++ "\n" ++ d1_batch_usage_line ++ "\n" ++ suggest_usage_line ++ "\n" ++ d1_suggest_usage_line ++ "\n\n" ++
+    try writer.writeAll(usage_line ++ "\n" ++ d1_usage_line ++ "\n" ++ batch_usage_line ++ "\n" ++ d1_batch_usage_line ++ "\n" ++ migration_usage_line ++ "\n" ++ d1_migration_usage_line ++ "\n" ++ suggest_usage_line ++ "\n" ++ d1_suggest_usage_line ++ "\n\n" ++
         \\Compares one read-only SELECT before and after one candidate CREATE INDEX
         \\on a local SQLite database, without changing the database.
         \\
@@ -474,6 +500,10 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\  --batch <FILE>       compare every SELECT in a batch manifest with
         \\                       every candidate CREATE INDEX, instead of --select
         \\                       and --index-sql; see the batch manifest below
+        \\  --migration <FILE>   apply this SQL file to the variant only before
+        \\                       the --batch queries run; the manifest must omit
+        \\                       candidates; only CREATE INDEX and DROP INDEX
+        \\                       are allowed
         \\  --suggest            ask SQLite for candidate indexes instead of
         \\                       naming them, and compare the suggestions; with
         \\                       --batch the manifest may omit candidates
@@ -522,6 +552,7 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\  qenome --d1 DB select.sql index.sql
         \\  qenome app.db --batch batch.json
         \\  qenome --db app.db --batch batch.json --format json
+        \\  qenome app.db --batch batch.json --migration 0002.sql
         \\  qenome app.db select.sql --suggest
         \\  qenome app.db --batch batch.json --suggest
         \\
@@ -552,6 +583,16 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\124 can still have a report on stdout; stdout is empty when the run
         \\stopped before the report.
         \\
+        \\--migration applies the file to the variant copy before the manifest
+        \\queries run. It needs --batch, takes a manifest without candidates,
+        \\and does not take --select, --index-sql, --bind, --runs, --suggest,
+        \\or --format kv. The file may hold several CREATE INDEX, CREATE
+        \\UNIQUE INDEX, and DROP INDEX statements separated by semicolons;
+        \\other statements are rejected with status 1. The report names the
+        \\migration and every applied statement. If the result rows match but
+        \\a query reads or writes more rows after the migration, the run exits
+        \\with status 6 so that a CI gate can stop.
+        \\
         \\--suggest asks SQLite's expert for candidate indexes for the SELECT
         \\files and compares them with the manifest candidates (with --batch) or
         \\alone (with one SELECT file). It does not take --runs, --format kv, or
@@ -566,7 +607,8 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\
         \\exit status: 0 result rows match, 1 rejected, 2 usage error,
         \\3 result rows differ, 4 results cannot be compared or --d1 cannot
-        \\locate the local database, 5 cleanup failure, 124 time limit reached,
+        \\locate the local database, 5 cleanup failure, 6 a --migration query
+        \\read or wrote more rows, 124 time limit reached,
         \\129 / 130 / 143 interrupted by SIGHUP / SIGINT / SIGTERM
         \\
         \\The database is opened read-only and copied as one snapshot into a
@@ -650,6 +692,9 @@ pub fn parseErrorMessage(err: ParseError) []const u8 {
         error.BatchRejectsBind => "--batch does not take --bind; put the binds in the manifest (see --help)",
         error.BatchRejectsRuns => "--batch does not run the timing; remove --runs (see --help)",
         error.BatchRejectsKv => "--batch supports --format human or --format json, not kv (see --help)",
+        error.MigrationRequiresBatch => "--migration needs --batch; put the queries in a manifest (see --help)",
+        error.MigrationRejectsSuggest => "--migration applies one SQL file; remove --suggest (see --help)",
+        error.MigrationRejectsIndex => "--migration replaces the index file; remove --index-sql (see --help)",
         error.SuggestRejectsIndex => "--suggest suggests the index; remove --index-sql (see --help)",
         error.SuggestRejectsRuns => "--suggest does not run the timing; remove --runs (see --help)",
         error.SuggestRejectsKv => "--suggest supports --format human or --format json, not kv (see --help)",
@@ -1099,6 +1144,7 @@ test "every known long option is accepted by the parser" {
         &.{ "Qenome", "--d1", "DB" },
         &.{ "Qenome", "--d1", "DB", "--config", "wrangler.toml" },
         &.{ "Qenome", "--batch", "batch.json" },
+        &.{ "Qenome", "--batch", "batch.json", "--migration", "m.sql" },
         &.{ "Qenome", "--select", "s" },
         &.{ "Qenome", "--index-sql", "i" },
         &.{ "Qenome", "--bind", "1:null" },
@@ -1415,4 +1461,40 @@ test "the usage shows the --suggest synopsis and option" {
     try usage(&writer);
     try testing.expect(std.mem.indexOf(u8, writer.buffered(), "qenome <DB> <SELECT_FILE> --suggest") != null);
     try testing.expect(std.mem.indexOf(u8, writer.buffered(), "--suggest            ask SQLite") != null);
+}
+
+test "--migration needs --batch and rejects suggest and the index file" {
+    const cases = [_]struct { argv: []const [:0]const u8, err: ParseError, offending: []const u8 }{
+        .{ .argv = &.{ "Qenome", "d", "s", "--migration", "m.sql" }, .err = error.MigrationRequiresBatch, .offending = "--migration" },
+        .{ .argv = &.{ "Qenome", "d", "--batch", "b.json", "--migration", "m.sql", "--suggest" }, .err = error.MigrationRejectsSuggest, .offending = "--suggest" },
+        .{ .argv = &.{ "Qenome", "d", "--batch", "b.json", "--migration", "m.sql", "--index-sql", "i" }, .err = error.MigrationRejectsIndex, .offending = "--index-sql" },
+    };
+    for (cases) |case| {
+        var offending: ?[:0]const u8 = null;
+        try testing.expectError(case.err, parseArgsReporting(testing.allocator, case.argv, &offending));
+        try testing.expectEqualStrings(case.offending, offending.?);
+        try testing.expect(parseErrorMessage(case.err).len != 0);
+    }
+}
+
+test "--migration with a batch keeps the database and the migration path" {
+    const args = try parseArgs(testing.allocator, &.{ "Qenome", "app.db", "--batch", "batch.json", "--migration", "0002.sql" });
+    defer testing.allocator.free(args.binds);
+    try testing.expectEqualStrings("app.db", args.db.?);
+    try testing.expectEqualStrings("batch.json", args.batch.?);
+    try testing.expectEqualStrings("0002.sql", args.migration.?);
+    try testing.expect(args.select == null);
+    try testing.expect(args.index_sql == null);
+
+    var missing_buffer: [required_option_count][]const u8 = undefined;
+    try testing.expectEqual(@as(usize, 0), missingRequired(args, &missing_buffer).len);
+}
+
+test "the usage shows the --migration synopsis and option" {
+    var buffer: [32768]u8 = undefined;
+    var writer = Io.Writer.fixed(&buffer);
+    try usage(&writer);
+    try testing.expect(std.mem.indexOf(u8, writer.buffered(), "qenome <DB> --batch <FILE> --migration <FILE>") != null);
+    try testing.expect(std.mem.indexOf(u8, writer.buffered(), "--migration <FILE>") != null);
+    try testing.expect(std.mem.indexOf(u8, writer.buffered(), "6 a --migration query") != null);
 }

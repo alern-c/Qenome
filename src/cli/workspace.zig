@@ -85,6 +85,15 @@ pub const WorkDir = struct {
         return db.applyCreateIndex(self.variant_path, index_sql, control, detail);
     }
 
+    pub fn applyMigration(
+        self: *const WorkDir,
+        statements: []const db.MigrationStatement,
+        control: *db.StepControl,
+        detail: *db.SnapshotDetail,
+    ) db.MigrationApplyError!void {
+        return db.applyMigration(self.variant_path, statements, control, detail);
+    }
+
     pub fn remove(self: *WorkDir, io: Io, stderr: *Io.Writer, cleanup_failed: *bool) void {
         defer self.parent.close(io);
         self.parent.deleteTree(io, &self.name) catch |err| {

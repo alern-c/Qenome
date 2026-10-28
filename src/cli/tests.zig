@@ -2551,6 +2551,225 @@ test "analyzed large quoted target emits no warnings and long index names remain
     try fixture.expectNoLeftovers();
 }
 
+const migration_schema: [:0]const u8 =
+    \\CREATE TABLE t(a INTEGER, b TEXT);
+    \\WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 2000)
+    \\INSERT INTO t SELECT x, 'v' || x FROM c;
+    \\CREATE INDEX idx_a ON t(a);
+    \\ANALYZE;
+;
+
+fn initMigrationFixture() !CliFixture {
+    var fixture = try CliFixture.initWithSchema("SELECT b FROM t WHERE a = ?1", "CREATE INDEX unused ON t(a)", migration_schema);
+    errdefer fixture.deinit();
+    try fixture.writeFile("q.sql", "SELECT b FROM t WHERE a = ?1;");
+    try fixture.writeFile("qb.sql", "SELECT a FROM t WHERE b = ?1;");
+    try fixture.writeFile("queries.json", "{\"queries\":[{\"select\":\"q.sql\",\"binds\":[\"1:int:1234\"]}]}");
+    try fixture.writeFile("queries_b.json", "{\"queries\":[{\"select\":\"qb.sql\",\"binds\":[\"1:text:v1234\"]}]}");
+    try fixture.writeFile("replace.sql", "DROP INDEX idx_a;\nCREATE INDEX idx_ab ON t(a, b);\n");
+    try fixture.writeFile("replace_same.sql", "DROP INDEX idx_a;\nCREATE UNIQUE INDEX idx_a ON t(a, b);\n");
+    try fixture.writeFile("create.sql", "CREATE INDEX idx_b ON t(b);\n");
+    try fixture.writeFile("drop.sql", "DROP INDEX idx_a;\n");
+    try fixture.writeFile("data.sql", "DELETE FROM t;\n");
+    try fixture.writeFile("missing.sql", "DROP INDEX missing_idx;\n");
+    try fixture.writeFile("empty.sql", "-- nothing\n");
+    return fixture;
+}
+
+fn runMigration(
+    fixture: *CliFixture,
+    manifest_name: []const u8,
+    migration_name: []const u8,
+    extra: []const [:0]const u8,
+    stdout_buffer: []u8,
+    stderr_buffer: []u8,
+) !RunResult {
+    const manifest = try fixture.dir.tmp.dir.realPathFileAlloc(testing.io, manifest_name, testing.allocator);
+    defer testing.allocator.free(manifest);
+    const migration = try fixture.dir.tmp.dir.realPathFileAlloc(testing.io, migration_name, testing.allocator);
+    defer testing.allocator.free(migration);
+    var argv: [32][:0]const u8 = undefined;
+    const required = [_][:0]const u8{ "Qenome", "--db", fixture.db_path, "--batch", manifest, "--migration", migration };
+    @memcpy(argv[0..required.len], &required);
+    @memcpy(argv[required.len..][0..extra.len], extra);
+    return callRun(testing.allocator, argv[0 .. required.len + extra.len], fixture.work_parent, stdout_buffer, stderr_buffer);
+}
+
+fn queryInt64(database: *db.Db, sql: [:0]const u8) !i64 {
+    const statement = try database.prepareSelect(sql);
+    defer _ = sqlite.sqlite3_finalize(statement);
+    if (sqlite.sqlite3_step(statement) != sqlite.SQLITE_ROW) return error.TestUnexpectedResult;
+    return sqlite.sqlite3_column_int64(statement, 0);
+}
+
+test "a migration replaces an index and reports every statement" {
+    var fixture = try initMigrationFixture();
+    defer fixture.deinit();
+    const before = try Io.Dir.cwd().readFileAlloc(testing.io, fixture.db_path, testing.allocator, .unlimited);
+    defer testing.allocator.free(before);
+
+    var stdout_buffer: [65536]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = try runMigration(&fixture, "queries.json", "replace.sql", &.{}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+    try testing.expect(contains(result.stdout, "batch: 1 query, 1 migration (2 statements)\n"));
+    try testing.expect(contains(result.stdout, "migration: "));
+    try testing.expect(contains(result.stdout, "  1: DROP INDEX idx_a\n"));
+    try testing.expect(contains(result.stdout, "  2: CREATE INDEX idx_ab ON t(a, b)\n"));
+    try testing.expect(contains(result.stdout, "replace.sql  compared"));
+    try testing.expect(contains(result.stdout, "match         no-effect"));
+    try fixture.expectNoLeftovers();
+
+    const after = try Io.Dir.cwd().readFileAlloc(testing.io, fixture.db_path, testing.allocator, .unlimited);
+    defer testing.allocator.free(after);
+    try testing.expectEqualSlices(u8, before, after);
+
+    var source: db.Db = .{};
+    try source.openReadOnly(fixture.db_path);
+    defer source.close() catch unreachable;
+    try testing.expectEqual(@as(i64, 1), try queryInt64(&source, "SELECT count(*) FROM sqlite_master WHERE name = 'idx_a'"));
+    try testing.expectEqual(@as(i64, 0), try queryInt64(&source, "SELECT count(*) FROM sqlite_master WHERE name = 'idx_ab'"));
+}
+
+test "a migration may drop and recreate the same index name" {
+    var fixture = try initMigrationFixture();
+    defer fixture.deinit();
+
+    var stdout_buffer: [65536]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = try runMigration(&fixture, "queries.json", "replace_same.sql", &.{}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+    try testing.expect(contains(result.stdout, "  1: DROP INDEX idx_a\n"));
+    try testing.expect(contains(result.stdout, "  2: CREATE UNIQUE INDEX idx_a ON t(a, b)\n"));
+    try testing.expect(contains(result.stdout, "replace_same.sql  compared"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a migration that creates an index can be recommended" {
+    var fixture = try initMigrationFixture();
+    defer fixture.deinit();
+
+    var stdout_buffer: [65536]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = try runMigration(&fixture, "queries_b.json", "create.sql", &.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    try testing.expectEqual(@as(i64, 0), try jsonInt(parsed.value, "exit_code"));
+    try testing.expect(contains(try jsonText(parsed.value, "recommended"), "create.sql"));
+    const migration = try jsonGet(parsed.value, "migration");
+    try testing.expect(contains(try jsonText(migration, "path"), "create.sql"));
+    const statements = try jsonItems(migration, "statements");
+    try testing.expectEqual(@as(usize, 1), statements.len);
+    try testing.expectEqualStrings("create_index", try jsonText(statements[0], "kind"));
+    try testing.expectEqualStrings("CREATE INDEX idx_b ON t(b)", try jsonText(statements[0], "sql"));
+    const summary = try jsonItems(parsed.value, "summary");
+    try testing.expectEqualStrings("migration", try jsonText(summary[0], "source"));
+    try testing.expectEqual(@as(i64, 1), try jsonInt(summary[0], "improved"));
+    const results = try jsonItems(parsed.value, "results");
+    const comparison = try jsonGet(results[0], "comparison");
+    try testing.expectEqualStrings("improved", try jsonText(comparison, "verdict"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a migration that drops a useful index exits 6" {
+    var fixture = try initMigrationFixture();
+    defer fixture.deinit();
+
+    var stdout_buffer: [65536]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = try runMigration(&fixture, "queries.json", "drop.sql", &.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.regression, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    try testing.expectEqual(@as(i64, 6), try jsonInt(parsed.value, "exit_code"));
+    const summary = try jsonItems(parsed.value, "summary");
+    try testing.expectEqualStrings("migration", try jsonText(summary[0], "source"));
+    try testing.expectEqual(@as(i64, 1), try jsonInt(summary[0], "needs_check"));
+    try testing.expectEqual(@as(i64, 0), try jsonInt(summary[0], "improved"));
+    const results = try jsonItems(parsed.value, "results");
+    const comparison = try jsonGet(results[0], "comparison");
+    try testing.expectEqualStrings("needs-check", try jsonText(comparison, "verdict"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a migration rejects a data change before touching the variant" {
+    var fixture = try initMigrationFixture();
+    defer fixture.deinit();
+
+    var stdout_buffer: [32768]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = try runMigration(&fixture, "queries.json", "data.sql", &.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try expectJsonFailure(result.stderr, "migration_statement_rejected", 1);
+    try fixture.expectNoLeftovers();
+}
+
+test "a migration that fails to apply is kept in the report" {
+    var fixture = try initMigrationFixture();
+    defer fixture.deinit();
+
+    var stdout_buffer: [65536]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = try runMigration(&fixture, "queries.json", "missing.sql", &.{}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+    try testing.expect(contains(result.stdout, "\nMigration failure\n"));
+    try testing.expect(contains(result.stdout, "statement 1: no such index: missing_idx"));
+    try fixture.expectNoLeftovers();
+}
+
+test "an empty migration is rejected with a stable error code" {
+    var fixture = try initMigrationFixture();
+    defer fixture.deinit();
+
+    var stdout_buffer: [32768]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = try runMigration(&fixture, "queries.json", "empty.sql", &.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try expectJsonFailure(result.stderr, "migration_empty", 1);
+    try fixture.expectNoLeftovers();
+}
+
+test "a migration manifest must not name candidates" {
+    var fixture = try initMigrationFixture();
+    defer fixture.deinit();
+    try fixture.writeFile("with_candidates.json",
+        \\{"queries":[{"select":"q.sql","binds":["1:int:1234"]}],"candidates":[{"index_sql":"create.sql"}]}
+    );
+
+    var stdout_buffer: [32768]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = try runMigration(&fixture, "with_candidates.json", "create.sql", &.{}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try testing.expect(contains(result.stderr, "candidates must be omitted or empty with --migration"));
+    try fixture.expectNoLeftovers();
+}
+
+test "--migration without --batch is a usage error" {
+    var fixture = try initMigrationFixture();
+    defer fixture.deinit();
+    const migration = try fixture.dir.tmp.dir.realPathFileAlloc(testing.io, "replace.sql", testing.allocator);
+    defer testing.allocator.free(migration);
+
+    var stdout_buffer: [1024]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const result = callRun(testing.allocator, &.{ "Qenome", "--db", fixture.db_path, "--select", fixture.select_path, "--migration", migration }, fixture.work_parent, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.usage, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try testing.expect(contains(result.stderr, "--migration needs --batch"));
+    try fixture.expectNoLeftovers();
+}
+
 const batch_happy_schema: [:0]const u8 =
     \\CREATE TABLE t(a INTEGER, b TEXT);
     \\INSERT INTO t VALUES (1, 'x'), (2, 'y'), (3, 'z');
