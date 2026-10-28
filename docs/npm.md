@@ -7,12 +7,12 @@
 | ディレクトリ | npm の名前 | 中身 |
 | --- | --- | --- |
 | `npm/qenome` | `qenome` | Node のランチャー。`bin` は `qenome` |
-| `npm/linux-x64` | `@qenome/linux-x64` | Linux x64 のバイナリ |
-| `npm/linux-arm64` | `@qenome/linux-arm64` | Linux arm64 のバイナリ |
-| `npm/darwin-x64` | `@qenome/darwin-x64` | macOS x64 のバイナリ |
-| `npm/darwin-arm64` | `@qenome/darwin-arm64` | macOS arm64 のバイナリ |
+| `npm/linux-x64` | `@qenome-cli/linux-x64` | Linux x64 のバイナリ |
+| `npm/linux-arm64` | `@qenome-cli/linux-arm64` | Linux arm64 のバイナリ |
+| `npm/darwin-x64` | `@qenome-cli/darwin-x64` | macOS x64 のバイナリ |
+| `npm/darwin-arm64` | `@qenome-cli/darwin-arm64` | macOS arm64 のバイナリ |
 
-ランチャーの `optionalDependencies` に4つのバイナリパッケージを、`build.zig.zon` と同じ版で書く。各バイナリパッケージは `os` と `cpu` を持つので、npm はそのマシンに合うものだけを入れる。ランチャーは `process.platform` と `process.arch` から `@qenome/<platform>-<arch>` を探し、その中の `bin/qenome` を起動する。
+ランチャーの `optionalDependencies` に4つのバイナリパッケージを、`build.zig.zon` と同じ版で書く。各バイナリパッケージは `os` と `cpu` を持つので、npm はそのマシンに合うものだけを入れる。ランチャーは `process.platform` と `process.arch` から `@qenome-cli/<platform>-<arch>` を探し、その中の `bin/qenome` を起動する。
 
 この形は esbuild と biome と同じ。一つのパッケージに全バイナリを入れると、使わない OS のバイナリまで落ちる。postinstall でダウンロードすると、npm 以外の配布場所が要る。optionalDependencies なら `npx qenome` の1回で足りる。
 
@@ -33,7 +33,7 @@ Trusted Publishing は、npmjs.com にパッケージが既にあるときだけ
 
 1. 出したい版が `build.zig.zon` に入った `main` をチェックアウトする。`npm/*/package.json` は編集しない。
 2. Zig が `minimum_zig_version` と一致していることを確認し、`python3 scripts/stage_npm.py` を実行する。
-3. `npm login` する。アカウントは `alern-c` で、org `@qenome` に公開できること。
+3. `npm login` する。アカウントは `alern-c` で、org `qenome-cli` に公開できること。
 4. プラットフォームを先に、ランチャーを最後に公開する。
 
 ```sh

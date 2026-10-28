@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The four npm binary packages moved from the `@qenome` scope to `@qenome-cli/<platform>-<arch>`, because the npm org `qenome` could not be created. Nothing has been published to npm yet, so the launcher stays `qenome` and the command stays `npx qenome`.
+
 ## [0.3.3] - 2026-10-28
 
 ### Added

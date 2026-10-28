@@ -21,9 +21,9 @@
     "node": ">=18"
   },
   "optionalDependencies": {
-    "@qenome/darwin-arm64": "0.0.0",
-    "@qenome/darwin-x64": "0.0.0",
-    "@qenome/linux-arm64": "0.0.0",
-    "@qenome/linux-x64": "0.0.0"
+    "@qenome-cli/darwin-arm64": "0.0.0",
+    "@qenome-cli/darwin-x64": "0.0.0",
+    "@qenome-cli/linux-arm64": "0.0.0",
+    "@qenome-cli/linux-x64": "0.0.0"
   }
 }

@@ -23,8 +23,8 @@ def node_target():
 
 def find_installed(work, dirname):
     candidates = [
-        os.path.join(work, "node_modules", "@qenome", dirname),
-        os.path.join(work, "node_modules", "qenome", "node_modules", "@qenome", dirname),
+        os.path.join(work, "node_modules", "@qenome-cli", dirname),
+        os.path.join(work, "node_modules", "qenome", "node_modules", "@qenome-cli", dirname),
     ]
     found = [path for path in candidates if os.path.isdir(path)]
     if len(found) == 1:

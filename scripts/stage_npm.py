@@ -14,13 +14,13 @@ SEMVER = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
 )
 LAUNCHER_MAP = re.compile(
-    r'"((?:darwin|linux)-(?:arm64|x64))": "(@qenome/(?:darwin|linux)-(?:arm64|x64))"'
+    r'"((?:darwin|linux)-(?:arm64|x64))": "(@qenome-cli/(?:darwin|linux)-(?:arm64|x64))"'
 )
 REQUIRED_FILES = ["bin", "LICENSE", "NOTICE", "README.md"]
 PLATFORMS = [
     {
         "dir": "darwin-arm64",
-        "npm": "@qenome/darwin-arm64",
+        "npm": "@qenome-cli/darwin-arm64",
         "zig": "aarch64-macos",
         "kind": "macho",
         "os": ["darwin"],
@@ -28,7 +28,7 @@ PLATFORMS = [
     },
     {
         "dir": "darwin-x64",
-        "npm": "@qenome/darwin-x64",
+        "npm": "@qenome-cli/darwin-x64",
         "zig": "x86_64-macos",
         "kind": "macho",
         "os": ["darwin"],
@@ -36,7 +36,7 @@ PLATFORMS = [
     },
     {
         "dir": "linux-arm64",
-        "npm": "@qenome/linux-arm64",
+        "npm": "@qenome-cli/linux-arm64",
         "zig": "aarch64-linux-musl",
         "kind": "elf",
         "os": ["linux"],
@@ -44,7 +44,7 @@ PLATFORMS = [
     },
     {
         "dir": "linux-x64",
-        "npm": "@qenome/linux-x64",
+        "npm": "@qenome-cli/linux-x64",
         "zig": "x86_64-linux-musl",
         "kind": "elf",
         "os": ["linux"],
@@ -188,8 +188,8 @@ def readme_text(manifest):
             "npx qenome --version\n"
             "```\n"
             "\n"
-            "This package is a launcher. npm installs one of `@qenome/linux-x64`, "
-            "`@qenome/linux-arm64`, `@qenome/darwin-x64`, or `@qenome/darwin-arm64` "
+            "This package is a launcher. npm installs one of `@qenome-cli/linux-x64`, "
+            "`@qenome-cli/linux-arm64`, `@qenome-cli/darwin-x64`, or `@qenome-cli/darwin-arm64` "
             "for the machine you are on. Linux and macOS on x64 and arm64 are supported.\n"
             "\n"
             "Source: https://github.com/alern-c/Qenome\n"

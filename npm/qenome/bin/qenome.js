@@ -6,10 +6,10 @@ const { accessSync, chmodSync, constants, existsSync } = require("fs");
 const { join } = require("path");
 
 const packages = {
-  "darwin-arm64": "@qenome/darwin-arm64",
-  "darwin-x64": "@qenome/darwin-x64",
-  "linux-arm64": "@qenome/linux-arm64",
-  "linux-x64": "@qenome/linux-x64",
+  "darwin-arm64": "@qenome-cli/darwin-arm64",
+  "darwin-x64": "@qenome-cli/darwin-x64",
+  "linux-arm64": "@qenome-cli/linux-arm64",
+  "linux-x64": "@qenome-cli/linux-x64",
 };
 
 function fail(message) {

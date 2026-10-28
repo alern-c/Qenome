@@ -1,5 +1,5 @@
 {
-  "name": "@qenome/linux-arm64",
+  "name": "@qenome-cli/linux-arm64",
   "version": "0.0.0",
   "private": true,
   "description": "Linux arm64 binary for the qenome launcher.",

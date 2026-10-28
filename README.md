@@ -63,7 +63,7 @@ npx qenome --version
 
 A D1 project runs Qenome this way. `npx` fetches the package and does not add a global binary. Use `npx qenome` in place of `qenome` in the examples when the binary is not on your `PATH`. `npm install --global qenome` installs the same command.
 
-The package is a small launcher plus one optional binary for the machine you are on (`@qenome/linux-x64`, `@qenome/linux-arm64`, `@qenome/darwin-x64`, or `@qenome/darwin-arm64`). The version is `.version` in `build.zig.zon`, and [docs/npm.md](docs/npm.md) covers how the packages are built and published. Windows is not an npm target: use the prebuilt binaries below.
+The package is a small launcher plus one optional binary for the machine you are on (`@qenome-cli/linux-x64`, `@qenome-cli/linux-arm64`, `@qenome-cli/darwin-x64`, or `@qenome-cli/darwin-arm64`). The version is `.version` in `build.zig.zon`, and [docs/npm.md](docs/npm.md) covers how the packages are built and published. Windows is not an npm target: use the prebuilt binaries below.
 
 ### Prebuilt binaries (GitHub Releases)
 
