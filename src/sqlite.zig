@@ -55,6 +55,7 @@ pub const SQLITE_LIMIT_ATTACHED = 7;
 pub const max_parameter_number: u32 = 32766;
 
 pub const SQLITE_CREATE_INDEX = 1;
+pub const SQLITE_CREATE_TABLE = 2;
 pub const SQLITE_DELETE = 9;
 pub const SQLITE_DROP_INDEX = 10;
 pub const SQLITE_INSERT = 18;
@@ -64,6 +65,7 @@ pub const SQLITE_SELECT = 21;
 pub const SQLITE_UPDATE = 23;
 pub const SQLITE_ATTACH = 24;
 pub const SQLITE_DETACH = 25;
+pub const SQLITE_ALTER_TABLE = 26;
 pub const SQLITE_REINDEX = 27;
 pub const SQLITE_FUNCTION = 31;
 pub const SQLITE_RECURSIVE = 33;

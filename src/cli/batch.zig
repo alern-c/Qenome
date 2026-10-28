@@ -125,6 +125,7 @@ const CandidateSummary = struct {
     mismatch: u64 = 0,
     incomparable: u64 = 0,
     timeout: u64 = 0,
+    not_judged: u64 = 0,
     size_increase: i128 = 0,
 };
 
@@ -140,6 +141,9 @@ const ResultEntry = struct {
     outcome: ?cli_comparison.Verdict = null,
     judgement: cli_comparison.RowVerdict = .not_judged,
     rows: ?RowsRead = null,
+    baseline_missing: bool = false,
+    reason: []const u8 = "",
+    variant_rows: ?u64 = null,
     comparison: []const u8 = "",
 };
 
@@ -396,8 +400,20 @@ pub fn run(
         }
     }
 
-    for (loaded.queries) |*query| {
-        if (!prepareQuery(&baseline, query, stderr)) return .rejected;
+    const baseline_missing = arena.alloc(bool, loaded.queries.len) catch return outOfMemoryCode(stderr);
+    const baseline_reasons = arena.alloc([]const u8, loaded.queries.len) catch return outOfMemoryCode(stderr);
+    for (loaded.queries, 0..) |*query, index| {
+        baseline_missing[index] = false;
+        baseline_reasons[index] = "";
+        if (inputs.migration != null) {
+            var reason: []const u8 = "";
+            if (!tryBaselinePrepare(&baseline, query, arena, &reason)) {
+                baseline_missing[index] = true;
+                baseline_reasons[index] = reason;
+            }
+        } else if (!prepareQuery(&baseline, query, stderr)) {
+            return .rejected;
+        }
     }
 
     var migration_report: ?Migration = null;
@@ -462,7 +478,7 @@ pub fn run(
     var baseline_cache: BaselineCache = .{ .entries = cache_entries };
     defer baseline_cache.deinit(allocator);
     var cache_failure: ExitCode = .rejected;
-    if (!fillBaselineCache(arena, allocator, &baseline_cache, &baseline, loaded.queries, &control, stderr, &cache_failure)) return cache_failure;
+    if (!fillBaselineCache(arena, allocator, &baseline_cache, &baseline, loaded.queries, baseline_missing, &control, stderr, &cache_failure)) return cache_failure;
 
     const size_measure: SizeMeasure = if (inputs.migration != null) .used else .file;
     var size_failure: ExitCode = .rejected;
@@ -575,27 +591,30 @@ pub fn run(
             rows.init(child);
             defer rows.deinit();
 
+            const missing_baseline = baseline_missing[query_index];
             const entry = &baseline_cache.entries[query_index];
             var keep_rows = false;
             var clues: db.Clues = .{};
             var before: Measurement = undefined;
             var baseline_rows: *result_rows.RowCollector = undefined;
-            if (entry.cached) {
-                result_rows.restoreInsertionOrder(&entry.rows);
-                keep_rows = entry.keep_rows;
-                clues = entry.clues;
-                before = entry.before;
-                baseline_rows = &entry.rows;
-                rows.budget.used = entry.charged;
-            } else {
-                if (!prepareQuery(&baseline, query, stderr)) return .rejected;
-                keep_rows = !baseline.clues().alwaysIncomparable();
-                switch (measureBaseline(child, &baseline, query, &control, if (keep_rows) &rows.baseline else null, stderr)) {
-                    .measured => |value| before = value,
-                    .failed => |code| return code,
+            if (!missing_baseline) {
+                if (entry.cached) {
+                    result_rows.restoreInsertionOrder(&entry.rows);
+                    keep_rows = entry.keep_rows;
+                    clues = entry.clues;
+                    before = entry.before;
+                    baseline_rows = &entry.rows;
+                    rows.budget.used = entry.charged;
+                } else {
+                    if (!prepareQuery(&baseline, query, stderr)) return .rejected;
+                    keep_rows = !baseline.clues().alwaysIncomparable();
+                    switch (measureBaseline(child, &baseline, query, &control, if (keep_rows) &rows.baseline else null, stderr)) {
+                        .measured => |value| before = value,
+                        .failed => |code| return code,
+                    }
+                    clues = baseline.clues();
+                    baseline_rows = &rows.baseline;
                 }
-                clues = baseline.clues();
-                baseline_rows = &rows.baseline;
             }
 
             if (!prepareVariant(&variant, query, candidate, stderr)) return .rejected;
@@ -612,6 +631,43 @@ pub fn run(
                 },
                 .failed => |code| return code,
             };
+
+            if (missing_baseline) {
+                const reason = failureMessage(arena, "the baseline cannot run this SELECT before the migration: {s}", .{baseline_reasons[query_index]});
+                var variant_report: cli_report.Report = .{ .judgement = .{ .verdict = .not_judged } };
+                variant_report.judgement.add(reason);
+                variant_report.judgement.add("only the variant was measured, so its plan and row counts are reported without a comparison");
+                variant_report.sizes = .{ .baseline = baseline_size, .variant = variant_size };
+
+                const variant_header: cli_report.Header = .{
+                    .database_path = inputs.database_path,
+                    .select_path = query.label,
+                    .index_path = candidate.label,
+                    .work_parent = inputs.work_parent,
+                    .sqlite_version = cli_query.sqliteVersion(),
+                    .sqlite_source_id = cli_query.sqliteSourceId(),
+                    .binds = query.binds,
+                    .show_binds = inputs.show_binds,
+                    .show_rows = inputs.show_rows,
+                    .exit_code = 0,
+                    .d1 = inputs.d1,
+                };
+                var variant_rendered: Io.Writer.Allocating = .init(child);
+                cli_report.writeJsonVariantOnlyTo(&variant_rendered.writer, child, variant_header, after, variant_report, .minified) catch |err| return reportWriteFailure(err, stderr);
+                const variant_comparison = arena.dupe(u8, variant_rendered.written()) catch return outOfMemoryCode(stderr);
+                summary.not_judged += 1;
+                results.append(arena, .{
+                    .query = query.label,
+                    .candidate = candidate.label,
+                    .status = .compared,
+                    .judgement = .not_judged,
+                    .baseline_missing = true,
+                    .reason = reason,
+                    .variant_rows = @as(u64, after.counters.rows_read),
+                    .comparison = variant_comparison,
+                }) catch return outOfMemoryCode(stderr);
+                continue;
+            }
 
             const outcome = cli_comparison.decide(child, before, after, baseline_rows, &rows.variant, .{
                 .clues = db.Clues.merge(clues, variant.clues()),
@@ -718,6 +774,7 @@ fn fillBaselineCache(
     cache: *BaselineCache,
     session: *QuerySession,
     queries: []const Query,
+    skip: []const bool,
     control: *db.StepControl,
     stderr: *Io.Writer,
     failure: *ExitCode,
@@ -727,6 +784,7 @@ fn fillBaselineCache(
             failure.* = cli_control.reportInterrupted(stderr);
             return false;
         }
+        if (skip[index]) continue;
         if (!prepareQuery(session, query, stderr)) {
             failure.* = .rejected;
             return false;
@@ -755,6 +813,33 @@ fn fillBaselineCache(
         cache.used += entry.charged;
     }
     return true;
+}
+
+fn tryBaselinePrepare(session: *QuerySession, query: *const Query, arena: std.mem.Allocator, reason: *[]const u8) bool {
+    var capture: [4096]u8 = undefined;
+    var sink = Io.Writer.fixed(&capture);
+    var failure: ExitCode = .rejected;
+    if (session.prepare(query.sql, query.binds, .baseline, "", &sink, &failure)) return true;
+    var text = std.mem.trimEnd(u8, sink.buffered(), "\n");
+    if (std.mem.startsWith(u8, text, "error: ")) text = text["error: ".len..];
+    const line_end = std.mem.indexOfScalar(u8, text, '\n') orelse text.len;
+    const line = if (line_end == 0) "the baseline cannot prepare the SELECT" else baselineReasonText(text[0..line_end]);
+    reason.* = truncateUtf8(arena, line);
+    if (reason.len == 0) reason.* = "the baseline cannot prepare the SELECT";
+    return false;
+}
+
+fn baselineReasonText(text: []const u8) []const u8 {
+    var line = text;
+    for ([_][]const u8{ "--select: ", "--bind: " }) |prefix| {
+        if (std.mem.startsWith(u8, line, prefix)) {
+            line = line[prefix.len..];
+            break;
+        }
+    }
+    const invalid_prefix = "the statement is not valid for this database: ";
+    if (std.mem.startsWith(u8, line, invalid_prefix)) line = line[invalid_prefix.len..];
+    return line;
 }
 
 fn prepareQuery(session: *QuerySession, query: *const Query, stderr: *Io.Writer) bool {
@@ -898,7 +983,7 @@ fn reportCaptured(stderr: *Io.Writer, prefix: []const u8, captured: []const u8) 
 fn reportMigrationParseFailure(stderr: *Io.Writer, path: []const u8, detail: *const db.SnapshotDetail, err: anyerror) void {
     switch (err) {
         error.MigrationEmpty => stderr.print("error: --migration: the migration holds no statement in '{s}'\n", .{path}) catch {},
-        error.MigrationStatementNotAllowed => stderr.print("error: --migration: statement {d} in '{s}' is not a CREATE INDEX or DROP INDEX\n", .{ detail.statement_index, path }) catch {},
+        error.MigrationStatementNotAllowed => stderr.print("error: --migration: statement {d} in '{s}' is not a CREATE INDEX, DROP INDEX, CREATE TABLE, or ALTER TABLE\n", .{ detail.statement_index, path }) catch {},
         error.OutOfMemory => stderr.writeAll("error: out of memory\n") catch {},
         else => stderr.print("error: --migration: the migration '{s}' is not valid: {s}\n", .{ path, @errorName(err) }) catch {},
     }
@@ -1287,6 +1372,8 @@ fn writeBatchJson(
         try writeOptionalCount(&json, compared, summary.incomparable);
         try json.objectField("timeout");
         try writeOptionalCount(&json, compared, summary.timeout);
+        try json.objectField("not_judged");
+        try writeOptionalCount(&json, compared, summary.not_judged);
         try json.objectField("size_increase");
         if (compared) try json.write(summary.size_increase) else try json.write(null);
         try json.endObject();
@@ -1373,10 +1460,18 @@ fn writeBatchHuman(
     try stdout.writeAll("Summary\n  ");
     try writeCell(stdout, "candidate", candidate_width);
     const worse_header = if (migration != null) "regressed" else "needs-check";
-    for ([_][]const u8{ "status", "improved", "no-effect", worse_header, "mismatch", "incomparable", "timeout", "size increase" }) |header| {
+    const count_headers: []const []const u8 = if (migration != null)
+        &.{ "improved", "no-effect", worse_header, "mismatch", "incomparable", "timeout", "not-judged" }
+    else
+        &.{ "improved", "no-effect", worse_header, "mismatch", "incomparable", "timeout" };
+    try stdout.writeAll("  ");
+    try writeCell(stdout, "status", 12);
+    for (count_headers) |header| {
         try stdout.writeAll("  ");
         try writeCell(stdout, header, 12);
     }
+    try stdout.writeAll("  ");
+    try writeCell(stdout, "size increase", 12);
     try stdout.writeByte('\n');
     for (order) |index| {
         const summary = summaries[index];
@@ -1385,8 +1480,11 @@ fn writeBatchHuman(
         try stdout.writeAll("  ");
         try writeCell(stdout, @tagName(summary.status), 12);
         if (summary.status == .compared) {
-            var buffers: [6][32]u8 = undefined;
-            const counts = [_]u64{ summary.improved, summary.no_effect, summary.needs_check, summary.mismatch, summary.incomparable, summary.timeout };
+            var buffers: [7][32]u8 = undefined;
+            const counts: []const u64 = if (migration != null)
+                &.{ summary.improved, summary.no_effect, summary.needs_check, summary.mismatch, summary.incomparable, summary.timeout, summary.not_judged }
+            else
+                &.{ summary.improved, summary.no_effect, summary.needs_check, summary.mismatch, summary.incomparable, summary.timeout };
             for (counts, 0..) |count, position| {
                 const text = std.fmt.bufPrint(&buffers[position], "{d}", .{count}) catch "?";
                 try stdout.writeAll("  ");
@@ -1397,10 +1495,12 @@ fn writeBatchHuman(
             try stdout.writeAll("  ");
             try writeCell(stdout, size, 12);
         } else {
-            for (0..7) |_| {
+            for (0..count_headers.len) |_| {
                 try stdout.writeAll("  ");
                 try writeCell(stdout, "-", 12);
             }
+            try stdout.writeAll("  ");
+            try writeCell(stdout, "-", 12);
         }
         try stdout.writeByte('\n');
     }
@@ -1446,6 +1546,14 @@ fn writeBatchHuman(
             try writeCell(stdout, "timeout", 12);
             try stdout.writeAll("  ");
             try writeCell(stdout, "-", 12);
+        } else if (result.baseline_missing) {
+            try writeCell(stdout, "incomparable", 12);
+            try stdout.writeAll("  ");
+            try writeCell(stdout, "not-judged", 12);
+            try stdout.writeAll("  ");
+            var buffer: [64]u8 = undefined;
+            const text = std.fmt.bufPrint(&buffer, "- -> {d}", .{result.variant_rows orelse 0}) catch "?";
+            try writeCell(stdout, text, 12);
         } else {
             try writeCell(stdout, resultText(result.outcome orelse .match), 12);
             try stdout.writeAll("  ");
@@ -1459,6 +1567,18 @@ fn writeBatchHuman(
                 try writeCell(stdout, "-", 12);
             }
         }
+        try stdout.writeByte('\n');
+    }
+
+    var not_judged_printed = false;
+    for (results) |result| {
+        if (!result.baseline_missing) continue;
+        if (!not_judged_printed) {
+            try stdout.writeAll("\nNot judged\n");
+            not_judged_printed = true;
+        }
+        try stdout.print("  {s}: ", .{result.query});
+        try result_rows.writeEscapedText(stdout, result.reason);
         try stdout.writeByte('\n');
     }
 
@@ -1529,6 +1649,20 @@ fn reportWriteFailure(err: anyerror, stderr: *Io.Writer) ExitCode {
 }
 
 const testing = std.testing;
+
+test "a variant-only result does not change the batch exit code" {
+    const summary = [_]CandidateSummary{.{ .candidate = "m.sql", .status = .compared, .not_judged = 1 }};
+    const variant_only = [_]ResultEntry{.{
+        .query = "q.sql",
+        .candidate = "m.sql",
+        .status = .compared,
+        .baseline_missing = true,
+        .variant_rows = 10,
+    }};
+    try testing.expectEqual(ExitCode.ok, batchExitCode(&summary, &variant_only, true));
+    try testing.expectEqual(ExitCode.mismatch, batchExitCode(&summary, &[_]ResultEntry{ variant_only[0], batchResult(.compared, .mismatch) }, true));
+    try testing.expectEqual(ExitCode.incomparable, batchExitCode(&summary, &[_]ResultEntry{ variant_only[0], batchResult(.compared, .incomparable) }, true));
+}
 
 test "a variant timeout is a candidate failure without an error line" {
     var tmp = testing.tmpDir(.{});

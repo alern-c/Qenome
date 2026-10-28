@@ -10,7 +10,7 @@ description: >
 
 # Qenome
 
-Qenome compares one read-only `SELECT` with one candidate `CREATE INDEX` on sandbox copies. With `--batch`, it compares every SELECT in a manifest with every candidate in one run. With `--suggest`, SQLite's expert proposes the candidate indexes, so a SELECT file is enough. With `--migration`, it applies a SQL file of index changes to the variant before comparing every query in a manifest. The verdict uses the same counting as local D1 (workerd patch). The numbers have not yet been checked against production D1.
+Qenome compares one read-only `SELECT` with one candidate `CREATE INDEX` on sandbox copies. With `--batch`, it compares every SELECT in a manifest with every candidate in one run. With `--suggest`, SQLite's expert proposes the candidate indexes, so a SELECT file is enough. With `--migration`, it applies a SQL file of index or table changes to the variant before comparing every query in a manifest. The verdict uses the same counting as local D1 (workerd patch). The numbers have not yet been checked against production D1.
 
 The contract is [docs/json.md](../../docs/json.md). This skill expects `schema_version` 2.
 
@@ -119,7 +119,7 @@ npx qenome --d1 DB --batch batch.json --format json
 
 ## Compare a migration (--migration)
 
-Use `--migration` when the change is a SQL file, especially when it drops an index or replaces one index with another.
+Use `--migration` when the change is a SQL file, especially when it drops or replaces an index or adds, renames, or drops a column or table.
 
 ```sh
 npx qenome app.db --batch queries.json --migration 0002_replace_index.sql --format json
@@ -127,9 +127,10 @@ npx qenome --d1 DB --batch queries.json --migration 0002_replace_index.sql --for
 ```
 
 - It needs `--batch`, and the manifest must omit `candidates` (or use `[]`). Put only the queries in the manifest.
-- Only `CREATE INDEX`, `CREATE UNIQUE INDEX`, and `DROP INDEX` are accepted, in any order and separated by semicolons. Any other statement is rejected with exit `1` before the variant is touched. Do not put `INSERT`, `UPDATE`, `DELETE`, `ALTER TABLE`, or `CREATE TABLE` in the file.
+- `CREATE INDEX`, `CREATE UNIQUE INDEX`, `DROP INDEX`, `CREATE TABLE` (a column list, not `AS SELECT`), and `ALTER TABLE` (ADD / RENAME / DROP COLUMN and RENAME TO) are accepted, in any order and separated by semicolons. Any other statement is rejected with exit `1` and the statement number before the variant is touched. Do not put `INSERT`, `UPDATE`, `DELETE`, `DROP TABLE`, `ATTACH`, or `PRAGMA` in the file.
 - The original database is never changed. Qenome applies the statements to the variant copy only.
-- The report is the batch object plus a top-level `migration` object with `path` and `statements` (`kind` and `sql`). Human output has a `migration:` block instead.
+- A query that uses a column or table the migration adds cannot run on the baseline. Qenome measures it on the variant only: its embedded comparison has `verdict` `not-judged`, `result` `incomparable`, `baseline` `null`, the variant plan and row counts, and the baseline reason in `verdict_reasons`. Its `summary.not_judged` count and the batch exit code are separate: this query does not change the exit code. Do not call it a failure; report the variant plan, the row counts, and the reason.
+- The report is the batch object plus a top-level `migration` object with `path` and `statements` (`kind` is `create_index`, `drop_index`, `create_table`, or `alter_table`, and `sql`). Human output has a `migration:` block and a `not-judged` summary column instead.
 - `size_increase` counts the bytes in use, not the file size, so a `DROP INDEX` reports the freed bytes as a negative number. The file itself shrinks only after `VACUUM`.
 - Exit `6` means the result rows matched, but at least one query read or wrote more rows after the migration. That query's verdict is `regressed` (the human `Results` column and `results[].comparison.verdict`); the JSON `summary` key stays `needs_check` and counts those queries. Do not keep the migration for a CI gate. Exit `3` (rows differ) and `4` (cannot compare) also stop the gate.
 
@@ -137,7 +138,7 @@ npx qenome --d1 DB --batch queries.json --migration 0002_replace_index.sql --for
 
 State `schema_version` before you interpret fields.
 
-- If stdout is a JSON object with `batch_schema_version`, it is a batch report. Read `batch_schema_version` first; it must be `1`. Read `recommended` (`null` when no candidate qualifies; with `--suggest` it can be `suggested:N`; with `--migration` it is the migration path or `null`), the `summary` entries (`candidate`, `source`, `index_sql_text`; `source` can be `manifest`, `suggested`, or `migration`), the `results`, the optional top-level `migration` object (`path`, `statements`), and the top-level `warnings` (empty without `--suggest` and with `--migration`). Repeat every batch warning `code` and `message`, like the comparison warnings. The `comparison` object under each result has `schema_version` 2 and the shape below.
+- If stdout is a JSON object with `batch_schema_version`, it is a batch report. Read `batch_schema_version` first; it must be `1`. Read `recommended` (`null` when no candidate qualifies; with `--suggest` it can be `suggested:N`; with `--migration` it is the migration path or `null`), the `summary` entries (`candidate`, `source`, `index_sql_text`, `not_judged`; `source` can be `manifest`, `suggested`, or `migration`), the `results`, the optional top-level `migration` object (`path`, `statements`), and the top-level `warnings` (empty without `--suggest` and with `--migration`). Repeat every batch warning `code` and `message`, like the comparison warnings. The `comparison` object under each result has `schema_version` 2 and the shape below.
 - A top-level `seed_data` object appears in a comparison or batch object when `--seed-data` was used. Read `path`, `seed`, `rows`, and `tables`. It is an input fact and does not change the verdict.
 - If stdout is a JSON object, it is the comparison. Read `schema_version` first. If it is missing or not `2`, stop and say the output does not match this skill or `docs/json.md`. Do not guess renamed fields.
 - If stdout is empty, stderr is the error object (skip any `progress:` lines). It also has `schema_version` 2, plus `exit_code` and `error` with `code`, `message`, and `hint`. Do what `hint` says. Do not treat the failure as a verdict.
@@ -147,10 +148,11 @@ Emitted fields an agent should read:
 
 | Field | Use |
 | --- | --- |
-| `verdict` | `improved`, `no-effect`, `needs-check`, `regressed` (a `--migration` result only), or `not-judged` |
+| `verdict` | `improved`, `no-effect`, `needs-check`, `regressed` (a `--migration` result only), or `not-judged` (the rows differ or cannot be compared, or a `--migration` query could only run on the variant) |
 | `result` | `match`, `mismatch`, or `incomparable` |
 | `verdict_reasons` | Why it is `needs-check`, `regressed`, or `not-judged` |
 | `result_reasons` | Why the rows cannot be compared. Each item has `text` and `hint` |
+| `baseline` | The current schema's measurement. It is `null` for a variant-only `--migration` query; use `variant` for that query's plan and row counts |
 | `baseline.counters.rows_read` | Rows the current schema read |
 | `variant.counters.rows_read` | Rows the candidate index read |
 | `baseline.counters.rows_written` and `variant.counters.rows_written` | Writes during the SELECT. An increase is `needs-check` (`regressed` in a `--migration` result) when the rows match |
@@ -183,6 +185,7 @@ Tell the user the process exit code, `schema_version`, `result`, `verdict`, and 
 | 4 and stdout is empty | The local D1 was not found. Follow `error.hint`. Do not edit the index to fix a missing database |
 | 5 | The comparison matched and cleanup failed. stdout holds the report (`exit_code` 0). Tell the user to remove the directory named in the stderr error. Do not loop |
 | 6 | `--migration` matched the rows but made a query read or write more rows. Do not keep the migration. Quote the `regressed` verdicts, the `needs_check` summary count, and the comparison reasons |
+| 0 with `not-judged` | The query could only run on the variant. Report the variant plan, the row counts, and the `verdict_reasons`; do not treat it as a failure and do not change the exit code. Quote `summary.not_judged` |
 | 1 | The input was rejected. Follow `error.hint` or the `error:` line |
 | 2 | The command line is wrong. Follow the hint. Fix the invocation and rerun once |
 | 124 | The time limit fired. Raise `--timeout-ms` or narrow the SELECT. Do not treat it as a slow index |

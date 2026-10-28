@@ -326,6 +326,30 @@ pub fn writeJsonTo(
     report: Report,
     style: JsonStyle,
 ) Error!void {
+    return writeJsonComparison(writer, allocator, header, before, after, outcome, report, style);
+}
+
+pub fn writeJsonVariantOnlyTo(
+    writer: *Io.Writer,
+    allocator: std.mem.Allocator,
+    header: Header,
+    after: cli_comparison.Measurement,
+    report: Report,
+    style: JsonStyle,
+) Error!void {
+    return writeJsonComparison(writer, allocator, header, null, after, null, report, style);
+}
+
+fn writeJsonComparison(
+    writer: *Io.Writer,
+    allocator: std.mem.Allocator,
+    header: Header,
+    before: ?cli_comparison.Measurement,
+    after: cli_comparison.Measurement,
+    outcome: ?cli_comparison.Outcome,
+    report: Report,
+    style: JsonStyle,
+) Error!void {
     var json: std.json.Stringify = .{
         .writer = writer,
         .options = .{
@@ -347,17 +371,26 @@ pub fn writeJsonTo(
     }
     try json.endArray();
     try json.objectField("result");
-    try json.write(resultText(outcome.verdict));
+    try json.write(if (outcome) |value| resultText(value.verdict) else "incomparable");
     try json.objectField("row_order");
-    try json.write(rowOrderText(outcome));
+    try json.write(if (outcome) |value| rowOrderText(value) else "not-applicable");
     try json.objectField("result_reasons");
-    try writeJsonReasons(&json, allocator, outcome);
+    if (outcome) |value| {
+        try writeJsonReasons(&json, allocator, value);
+    } else {
+        try json.beginArray();
+        try json.endArray();
+    }
     try json.objectField("row_differences");
-    try writeJsonRowDifferences(&json, allocator, outcome.comparison, header.show_rows);
+    try writeJsonRowDifferences(&json, allocator, if (outcome) |value| value.comparison else null, header.show_rows);
     try json.objectField("plan_changed");
-    try json.write(!cli_comparison.samePlan(before.plan, after.plan));
+    try json.write(if (before) |value| !cli_comparison.samePlan(value.plan, after.plan) else true);
     try json.objectField("baseline");
-    try writeJsonMeasurement(&json, allocator, before);
+    if (before) |value| {
+        try writeJsonMeasurement(&json, allocator, value);
+    } else {
+        try json.write(null);
+    }
     try json.objectField("variant");
     try writeJsonMeasurement(&json, allocator, after);
     try json.objectField("timing");

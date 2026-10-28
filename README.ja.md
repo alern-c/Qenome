@@ -243,7 +243,7 @@ qenome app.db --batch batch.json --suggest
 
 パスは DB・SELECT ファイル・CREATE INDEX ファイルの順に埋まり、`--db` / `--select` / `--index-sql` でも指定できます（混在可）。位置指定のパスは、まだ指定されていない最初の役割に埋まります。`--d1` のときは、位置指定の2つのパスが SELECT と CREATE INDEX の役割に入ります。`--` の後は `-` で始まるパスとして扱います。
 
-`select.sql` には読み取り専用の SELECT を1本、`index.sql` には候補の `CREATE INDEX` を1本書きます。複数文・書込・その他の文は拒否します。`--migration` のファイルだけは例外で、`CREATE INDEX`・`CREATE UNIQUE INDEX`・`DROP INDEX` を複数書けます（「まとめて比べる（--batch）」を参照）。
+`select.sql` には読み取り専用の SELECT を1本、`index.sql` には候補の `CREATE INDEX` を1本書きます。複数文・書込・その他の文は拒否します。`--migration` のファイルだけは例外で、`CREATE INDEX`・`CREATE UNIQUE INDEX`・`DROP INDEX`・`CREATE TABLE`・`ALTER TABLE` を複数書けます（「まとめて比べる（--batch）」を参照）。
 
 - `--db <PATH>`: 対象の SQLite データベース（必須、1回だけ。`--d1` とは併用しない）
 - `--d1 <BINDING>`: wrangler 設定の `d1_databases` にあるこのバインディングのローカル D1 データベースを `--db` の代わりに使う。「D1 のローカルデータベース」を参照
@@ -251,7 +251,7 @@ qenome app.db --batch batch.json --suggest
 - `--select <FILE>`: 比較する SELECT を1本書いたファイル（必須、1回だけ）
 - `--index-sql <FILE>`: 候補の CREATE INDEX を1本書いたファイル（必須、1回だけ）
 - `--batch <FILE>`: JSON のマニフェストにある全 SELECT を、全候補 CREATE INDEX と1回の実行で比べる。「まとめて比べる（--batch）」を参照。`--select` / `--index-sql` / `--bind` / 位置指定の SELECT・INDEX、`--runs`、`--format kv` とは併用できない
-- `--migration <FILE>`: `--batch` の全クエリを実行する前に、この SQL ファイルを variant にだけ適用する。`--batch` と、`candidates` を持たないマニフェストが必要。`--select` / `--index-sql` / `--bind` / `--runs` / `--suggest` / `--format kv` とは併用できない。`CREATE INDEX`・`CREATE UNIQUE INDEX`・`DROP INDEX` だけを受け付ける。「まとめて比べる（--batch）」を参照
+- `--migration <FILE>`: `--batch` の全クエリを実行する前に、この SQL ファイルを variant にだけ適用する。`--batch` と、`candidates` を持たないマニフェストが必要。`--select` / `--index-sql` / `--bind` / `--runs` / `--suggest` / `--format kv` とは併用できない。`CREATE INDEX`・`CREATE UNIQUE INDEX`・`DROP INDEX`・`CREATE TABLE`（`AS SELECT` を除く）・`ALTER TABLE`（ADD / RENAME / DROP COLUMN と RENAME TO）を受け付け、データ変更・`DROP TABLE`・`ATTACH`・`PRAGMA`・その他の文は文番号付きで拒否する。「まとめて比べる（--batch）」を参照
 - `--seed-data <FILE>`: 比較の前に、この JSON の指定に従ってサンドボックスのコピーのテーブルを決まったダミーデータで置き換える。元のデータベースは変更しない。`--batch`・`--suggest`・`--migration` を含むすべてのモードで使える。「サンドボックス用のデータを作る」を参照
 - `--suggest`: インデックスを自分で用意する代わりに、SQLite の expert に候補のインデックスを提案させ、その提案を比べる。`--batch` のときはマニフェストの `candidates` を省略できる。`--runs`、`--format kv`、インデックスのファイル（`--index-sql` または3番目の位置指定パス）とは併用できない。「候補のインデックスを提案させる（--suggest）」を参照
 - `--bind <N>:<TYPE>[:<VALUE>]`: SELECT のパラメータ N に渡す型付きの値。繰り返し指定できる。N は SQLite のパラメータ番号で、名前付きパラメータは最初に現れたときの番号を共有し、`?NNN` は NNN を使う。TYPE は int / real / text / null（null は値を取らない）。1 からパラメータ数までの各番号をちょうど1回ずつ指定する必要があり、パラメータの無い SELECT に `--bind` は付けられない。値は引数の残り全体なので、text には `:` を含められる
@@ -381,7 +381,7 @@ qenome --d1 DEMO_DB select.sql index.sql --runs 40
 
 Qenome はデータベースを1回コピーし、何かを実行する前に全 SELECT と全候補を検査します。そのあと候補をマニフェスト順に処理し、候補ごとに baseline をもう一度コピーして、そのコピーにだけインデックスを作り、全クエリを両方のコピーで実行します。baseline の SELECT は候補ごとに実行し直します。
 
-`--migration <FILE>` を付けると、variant の変更は候補インデックスではなく、マイグレーションのファイル全体になります。ファイルは 1 MiB までです。Qenome は variant を触る前にファイルを検査し、セミコロンで区切った `CREATE INDEX`・`CREATE UNIQUE INDEX`・`DROP INDEX` だけを許可します。そのあと文をファイル順に variant にだけ適用するので、同じ名前のインデックスを落として作り直せます。各文は `--timeout-ms` の制限時間を持ちます。元のデータベースは変更しません。レポートには、human では `migration:` の節、json ではトップレベルの `migration` オブジェクトとして、パスと適用した全文を出します。結果の行が一致しても、マイグレーション後にクエリの読んだ行数か書いた行数が増えた場合、そのクエリの判定は `regressed` になります。human の `Results` 表は `regressed`、JSON は `results[].comparison.verdict` が `"regressed"` です。`summary` の件数キーは `needs_check` のままで、そのクエリを数えます。batch の終了コードは `6` です。結果の不一致 `3`、変更の拒否 `1`、時間切れ `124`、比較不能 `4` が優先されます。`no-effect` だけなら `0` です。ほかのモードでは同じ条件を `needs-check` と呼びます。`no_analyze_stats` と `data_too_small` の警告は、マイグレーションが複数のテーブルを触り得るため出しません。
+`--migration <FILE>` を付けると、variant の変更は候補インデックスではなく、マイグレーションのファイル全体になります。ファイルは 1 MiB までです。Qenome は variant を触る前にファイルを検査し、セミコロンで区切った `CREATE INDEX`・`CREATE UNIQUE INDEX`・`DROP INDEX`・`CREATE TABLE`（`AS SELECT` を除く）・`ALTER TABLE`（ADD COLUMN / RENAME COLUMN / DROP COLUMN / RENAME TO）を許可します。`INSERT`・`UPDATE`・`DELETE`・`DROP TABLE`・`ATTACH`・`PRAGMA`・その他の文は文番号付きで拒否し、variant と元のデータベースは触りません。そのあと文をファイル順に variant にだけ適用するので、列を追加してインデックスを張る、列やテーブルの名前を変える、同じ名前のインデックスを落として作り直す、といった変更ができます。各文は `--timeout-ms` の制限時間を持ちます。元のデータベースは変更しません。レポートには、human では `migration:` の節、json ではトップレベルの `migration` オブジェクトとして、パスと適用した全文を出します。マイグレーションが追加した列やテーブルを使うクエリは baseline では実行できないため、variant だけで計測し、計画と行数を判定 `not-judged` として出します。理由は `verdict_reasons` に入り、終了コードは変わりません。human は `not-judged` の summary 列と `Not judged` の一覧を追加し、JSON は `summary.not_judged` で数え、比較オブジェクトの `baseline` を `null` にします。結果の行が一致しても、マイグレーション後にクエリの読んだ行数か書いた行数が増えた場合、そのクエリの判定は `regressed` になります。human の `Results` 表は `regressed`、JSON は `results[].comparison.verdict` が `"regressed"` です。`summary` の件数キーは `needs_check` のままで、そのクエリを数えます。batch の終了コードは `6` です。結果の不一致 `3`、変更の拒否 `1`、時間切れ `124`、比較不能 `4` が優先されます。`no-effect` だけなら `0` です。ほかのモードでは同じ条件を `needs-check` と呼びます。`no_analyze_stats` と `data_too_small` の警告は、マイグレーションが複数のテーブルを触り得るため出しません。
 
 `--migration` の `size increase` は、ファイルサイズの差ではなく、使用中ページが持つバイト数（`(page_count - freelist_count) * page_size`）の差です。`DROP INDEX` はページを SQLite の freelist に移すだけでファイルを縮めないため、ファイルサイズの差は `0 B` のままですが、使用中のバイト数では解放された量が `-2.06 MiB` のような負の値で出ます。ファイル自体が縮むのは `VACUUM` の後です。`--migration` を使わない実行は、これまでどおりファイルサイズの差を出します。
 
@@ -400,7 +400,7 @@ Qenome はデータベースを1回コピーし、何かを実行する前に全
 
 報告を書けた場合、終了コードは、結果の不一致 `3`、インデックスまたはマイグレーションの作成失敗 `1`、候補の時間切れ `124`、比較不能 `4`、`--migration` の退行 `6`、`0` のうち一番重いものです。後片付けの失敗は `0` のときだけ `5` に置き換えます。そのため batch は、報告を書きながら `1`・`6`・`124` で終わることがあります。どれかは stdout で見分けます。
 
-human 出力は候補の表、`Recommendation:`、クエリと候補の判定表を出します。おすすめは、不一致・比較不能・`needs-check`（`--migration` では `needs_check` が `regressed` のクエリを数える）・時間切れがなく、改善が1件以上ある候補のうち、改善したクエリが最も多いものです。同じなら容量の増分が小さい順、次に入力順（マニフェストの候補の後ろに提案）です。`--format json` では [docs/json.md](docs/json.md) に書いた `batch_schema_version` 1 のオブジェクトを出します。
+human 出力は候補の表、`Recommendation:`、クエリと候補の判定表を出します。おすすめは、不一致・比較不能・`needs-check`（`--migration` では `needs_check` が `regressed` のクエリを数える）・時間切れがなく、改善が1件以上ある候補のうち、改善したクエリが最も多いものです。variant だけで計測した `not-judged` のクエリは、それだけではおすすめの条件を外しません。同じなら容量の増分が小さい順、次に入力順（マニフェストの候補の後ろに提案）です。`--format json` では [docs/json.md](docs/json.md) に書いた `batch_schema_version` 1 のオブジェクトを出します。
 
 インデックスの作成・SELECT 1回・診断文1回は、それぞれ `--timeout-ms` の制限時間を持ちます。batch は全体で、データベースのコピー1回と、候補ループの前に全クエリの baseline SELECT を1回ずつ実行する分に加えて、候補ごとにインデックスの作成1回とクエリごとの SELECT 2回、さらに最大3つの診断文それぞれの制限時間までかかることがあります。`--show-binds` と `--show-rows` は各比較オブジェクトに適用します。
 
@@ -467,7 +467,7 @@ json は、比較が終わったときに stdout へ JSON オブジェクトを1
 | `needs-check` | 結果は一致するが、variant の読んだ行数か書いた行数が増えた。`verdict_reasons` に理由が入る |
 | `not-judged` | 結果が不一致・比較不能。`verdict_reasons` に理由が入る |
 
-`--migration` の batch では、`needs-check` と同じ条件を `regressed` と呼びます。マイグレーションはすでに書かれた変更だからです。単発・`--batch`・`--suggest` の判定は `needs-check` のままです。batch の `summary` の件数キーも `needs_check` のままです。「まとめて比べる（--batch）」を参照。
+`--migration` の batch では、`needs-check` と同じ条件を `regressed` と呼びます。マイグレーションはすでに書かれた変更だからです。単発・`--batch`・`--suggest` の判定は `needs-check` のままです。batch の `summary` の件数キーも `needs_check` のままです。variant だけで実行できるクエリは `not-judged` で、終了コードは変わりません。「まとめて比べる（--batch）」を参照。
 
 判定は、ローカル D1 と同じ数え方（workerd のパッチ）で数えた読んだ行数と書いた行数で決まります。時間は参考値なので、`--runs 0` でも判定は出ます。この数値は、まだ本番 D1 と照合していません。
 
@@ -542,7 +542,7 @@ fi
 - 比較できない結果を「一致」「成功」として報告しない
 - 改善かどうかは読んだ行数で判定し、時間では判定しない（読んだ行数が減らない SELECT は改善ではない）
 - 容量はデータベース全体の増分であり、インデックス単体のサイズではない。`--migration` は使用中のバイト数を測るので、落としたインデックスの解放量が負の値で出る
-- 複数文・書込・危険な DDL は拒否する。`--migration` のファイルだけは複数のインデックス変更を許すが、`CREATE INDEX`・`CREATE UNIQUE INDEX`・`DROP INDEX` に限る
+- 複数文・書込・危険な DDL は拒否する。`--migration` のファイルだけは複数のインデックス変更とテーブル変更を許すが、`CREATE INDEX`・`CREATE UNIQUE INDEX`・`DROP INDEX`・`CREATE TABLE`（`AS SELECT` を除く）・`ALTER TABLE`（ADD / RENAME / DROP COLUMN と RENAME TO）に限る。データ変更・`DROP TABLE`・`ATTACH`・`PRAGMA`・その他の文は拒否する
 - 正常・失敗・中断のどの経路でも、接続と一時ファイルを後片付けする
 - D1 のデータベースファイルを推測しない。バインディングがちょうど1つのファイルに決まらないときは止まる
 

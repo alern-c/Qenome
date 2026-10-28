@@ -54,11 +54,15 @@ pub const ApplyError = CheckError || error{
 pub const MigrationKind = enum {
     create_index,
     drop_index,
+    create_table,
+    alter_table,
 
     pub fn text(self: MigrationKind) []const u8 {
         return switch (self) {
             .create_index => "create_index",
             .drop_index => "drop_index",
+            .create_table => "create_table",
+            .alter_table => "alter_table",
         };
     }
 };
@@ -610,11 +614,15 @@ pub const Db = struct {
             .user_migration => switch (action_code) {
                 sqlite.SQLITE_CREATE_INDEX,
                 sqlite.SQLITE_DROP_INDEX,
+                sqlite.SQLITE_SELECT,
                 sqlite.SQLITE_READ,
                 sqlite.SQLITE_FUNCTION,
                 sqlite.SQLITE_REINDEX,
                 => return true,
-                sqlite.SQLITE_INSERT, sqlite.SQLITE_DELETE, sqlite.SQLITE_UPDATE => return isMainSchema(arg3) and (isSchemaTable(arg1) or isStatTable(arg1)),
+                sqlite.SQLITE_CREATE_TABLE => return isMainSchema(arg3),
+                sqlite.SQLITE_ALTER_TABLE => return isMainSchema(arg1),
+                sqlite.SQLITE_INSERT => return isMainSchema(arg3) and (isSchemaTable(arg1) or isStatTable(arg1)),
+                sqlite.SQLITE_DELETE, sqlite.SQLITE_UPDATE => return (isMainSchema(arg3) or isTempSchema(arg3)) and (isSchemaTable(arg1) or isStatTable(arg1)),
                 else => return false,
             },
         }
@@ -966,14 +974,85 @@ fn classifyMigrationStatement(sql: []const u8) ?MigrationKind {
             const third = sqlWord(sql, i);
             return if (std.ascii.eqlIgnoreCase(third.text, "index")) .create_index else null;
         }
-        return if (std.ascii.eqlIgnoreCase(second.text, "index")) .create_index else null;
+        if (std.ascii.eqlIgnoreCase(second.text, "index")) return .create_index;
+        if (std.ascii.eqlIgnoreCase(second.text, "table")) return if (createTableHasColumnList(sql, second.end)) .create_table else null;
+        return null;
     }
     if (std.ascii.eqlIgnoreCase(first.text, "drop")) {
         i = skipSqlTrivia(sql, first.end);
         const second = sqlWord(sql, i);
         return if (std.ascii.eqlIgnoreCase(second.text, "index")) .drop_index else null;
     }
+    if (std.ascii.eqlIgnoreCase(first.text, "alter")) {
+        i = skipSqlTrivia(sql, first.end);
+        const second = sqlWord(sql, i);
+        if (!std.ascii.eqlIgnoreCase(second.text, "table")) return null;
+        i = skipSqlTrivia(sql, skipMigrationTableName(sql, second.end));
+        const third = sqlWord(sql, i);
+        if (std.ascii.eqlIgnoreCase(third.text, "add") or
+            std.ascii.eqlIgnoreCase(third.text, "rename") or
+            std.ascii.eqlIgnoreCase(third.text, "drop")) return .alter_table;
+        return null;
+    }
     return null;
+}
+
+fn skipMigrationTableName(sql: []const u8, start: usize) usize {
+    var i = skipSqlTrivia(sql, start);
+    if (i >= sql.len) return i;
+    switch (sql[i]) {
+        '\'', '"', '`' => i = skipQuoted(sql, i, sql[i]),
+        '[' => i = if (std.mem.indexOfScalarPos(u8, sql, i + 1, ']')) |end| end + 1 else sql.len,
+        else => {
+            while (i < sql.len and isWordByte(sql[i])) i += 1;
+        },
+    }
+    const after = skipSqlTrivia(sql, i);
+    if (after < sql.len and sql[after] == '.') {
+        i = skipSqlTrivia(sql, after + 1);
+        if (i >= sql.len) return i;
+        switch (sql[i]) {
+            '\'', '"', '`' => return skipQuoted(sql, i, sql[i]),
+            '[' => return if (std.mem.indexOfScalarPos(u8, sql, i + 1, ']')) |end| end + 1 else sql.len,
+            else => {
+                while (i < sql.len and isWordByte(sql[i])) i += 1;
+                return i;
+            },
+        }
+    }
+    return i;
+}
+
+fn createTableHasColumnList(sql: []const u8, start: usize) bool {
+    var i = start;
+    while (i < sql.len) {
+        const c = sql[i];
+        switch (c) {
+            '\'', '"', '`' => i = skipQuoted(sql, i, c),
+            '[' => i = if (std.mem.indexOfScalarPos(u8, sql, i + 1, ']')) |end| end + 1 else sql.len,
+            '-' => i = if (i + 1 < sql.len and sql[i + 1] == '-')
+                (std.mem.indexOfScalarPos(u8, sql, i, '\n') orelse sql.len)
+            else
+                i + 1,
+            '/' => i = if (i + 1 < sql.len and sql[i + 1] == '*')
+                (if (std.mem.indexOfPos(u8, sql, i + 2, "*/")) |end| end + 2 else sql.len)
+            else
+                i + 1,
+            '(' => return true,
+            ';' => return false,
+            else => {
+                if (!isWordByte(c)) {
+                    i += 1;
+                    continue;
+                }
+                const word_start = i;
+                i += 1;
+                while (i < sql.len and isWordByte(sql[i])) i += 1;
+                if (std.ascii.eqlIgnoreCase(sql[word_start..i], "as")) return false;
+            },
+        }
+    }
+    return false;
 }
 
 pub fn mentionsLimitOrOffset(sql: []const u8) bool {
@@ -1029,11 +1108,16 @@ fn disableDoubleQuotedStrings(conn: *sqlite.sqlite3) bool {
 }
 
 fn isSchemaTable(name: ?[*:0]const u8) bool {
-    return std.mem.eql(u8, std.mem.span(name orelse return false), "sqlite_master");
+    const text = std.mem.span(name orelse return false);
+    return std.mem.eql(u8, text, "sqlite_master") or std.mem.eql(u8, text, "sqlite_temp_master");
 }
 
 fn isMainSchema(name: ?[*:0]const u8) bool {
     return std.mem.eql(u8, std.mem.span(name orelse return false), "main");
+}
+
+fn isTempSchema(name: ?[*:0]const u8) bool {
+    return std.mem.eql(u8, std.mem.span(name orelse return false), "temp");
 }
 
 fn isStatTable(name: ?[*:0]const u8) bool {
@@ -2206,19 +2290,56 @@ test "parseMigration skips comments and separators between statements" {
     try testing.expectEqual(MigrationKind.create_index, statements[1].kind);
 }
 
+test "parseMigration accepts table changes and index changes" {
+    var detail: SnapshotDetail = .{};
+    const statements = try parseMigration(testing.allocator,
+        \\CREATE TABLE IF NOT EXISTS n(id INTEGER PRIMARY KEY, note TEXT);
+        \\CREATE TABLE "as"("a" INTEGER) STRICT;
+        \\CREATE TABLE x$as(id INTEGER);
+        \\CREATE TABLE 商品(id INTEGER);
+        \\ALTER TABLE t ADD COLUMN c INTEGER DEFAULT 0;
+        \\ALTER TABLE main.商品 ADD COLUMN price INTEGER;
+        \\ALTER TABLE t RENAME COLUMN b TO label;
+        \\ALTER TABLE t RENAME TO u;
+        \\ALTER TABLE u DROP COLUMN c;
+        \\CREATE INDEX idx_note ON u(label);
+    , &detail);
+    defer freeMigrationStatements(testing.allocator, statements);
+
+    try testing.expectEqual(@as(usize, 10), statements.len);
+    try testing.expectEqual(MigrationKind.create_table, statements[0].kind);
+    try testing.expectEqual(MigrationKind.create_table, statements[1].kind);
+    try testing.expectEqual(MigrationKind.create_table, statements[2].kind);
+    try testing.expectEqual(MigrationKind.create_table, statements[3].kind);
+    try testing.expectEqual(MigrationKind.alter_table, statements[4].kind);
+    try testing.expectEqual(MigrationKind.alter_table, statements[5].kind);
+    try testing.expectEqual(MigrationKind.alter_table, statements[6].kind);
+    try testing.expectEqual(MigrationKind.alter_table, statements[7].kind);
+    try testing.expectEqual(MigrationKind.alter_table, statements[8].kind);
+    try testing.expectEqual(MigrationKind.create_index, statements[9].kind);
+    try testing.expectEqualStrings("CREATE TABLE IF NOT EXISTS n(id INTEGER PRIMARY KEY, note TEXT)", statements[0].sql);
+    try testing.expectEqual(@as(usize, 0), detail.statement_index);
+}
+
 test "parseMigration rejects other statements and reports the statement number" {
     const cases = [_]struct { sql: [:0]const u8, index: usize }{
-        .{ .sql = "ALTER TABLE t ADD COLUMN c INTEGER", .index = 1 },
         .{ .sql = "INSERT INTO t VALUES (4, 'w')", .index = 1 },
+        .{ .sql = "UPDATE t SET a = 4", .index = 1 },
+        .{ .sql = "DELETE FROM t", .index = 1 },
         .{ .sql = "VACUUM", .index = 1 },
-        .{ .sql = "CREATE TABLE x(y)", .index = 1 },
+        .{ .sql = "CREATE TABLE x AS SELECT a FROM t", .index = 1 },
+        .{ .sql = "CREATE TABLE x AS SELECT (1)", .index = 1 },
         .{ .sql = "CREATE TEMP TABLE x(y)", .index = 1 },
+        .{ .sql = "CREATE VIRTUAL TABLE x USING fts5(y)", .index = 1 },
+        .{ .sql = "CREATE VIEW v AS SELECT a FROM t", .index = 1 },
+        .{ .sql = "CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT 1; END", .index = 1 },
+        .{ .sql = "ALTER TABLE t SET x", .index = 1 },
+        .{ .sql = "UPDATE sqlite_stat1 SET stat = ''", .index = 1 },
         .{ .sql = "DROP TABLE t", .index = 1 },
         .{ .sql = "ATTACH DATABASE 'other.db' AS other", .index = 1 },
         .{ .sql = "DETACH other", .index = 1 },
         .{ .sql = "PRAGMA writable_schema = 1", .index = 1 },
         .{ .sql = "ANALYZE", .index = 1 },
-        .{ .sql = "UPDATE sqlite_stat1 SET stat = ''", .index = 1 },
         .{ .sql = "INSERT INTO sqlite_stat1 VALUES ('t', 'idx', '1')", .index = 1 },
         .{ .sql = "CREATE INDEX idx_new ON t(b); DROP TABLE t", .index = 2 },
     };
@@ -2274,6 +2395,64 @@ test "applyMigration changes only the variant copy and keeps the source bytes" {
     try testing.expectEqualSlices(u8, source_before, source_after);
 }
 
+test "applyMigration applies table changes and index changes to the variant" {
+    var fixture = try Fixture.init(testing.allocator);
+    defer fixture.deinit();
+    try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = "variant.db", .data = "" });
+    const variant_path = try fixture.tmp.dir.realPathFileAlloc(testing.io, "variant.db", testing.allocator);
+    defer testing.allocator.free(variant_path);
+    try createTestDatabase(variant_path, fixture_schema);
+
+    const source_before = try Io.Dir.cwd().readFileAlloc(testing.io, fixture.path, testing.allocator, .unlimited);
+    defer testing.allocator.free(source_before);
+
+    var detail: SnapshotDetail = .{};
+    const statements = try parseMigration(testing.allocator,
+        \\CREATE TABLE n(id INTEGER PRIMARY KEY, note TEXT);
+        \\ALTER TABLE t ADD COLUMN c INTEGER DEFAULT 7;
+        \\ALTER TABLE t RENAME COLUMN b TO label;
+        \\ALTER TABLE t RENAME TO u;
+        \\CREATE INDEX idx_label ON u(label);
+        \\CREATE INDEX idx_n ON n(id);
+        \\CREATE TABLE m(dropme INTEGER, keep TEXT);
+        \\ALTER TABLE m ADD COLUMN added TEXT DEFAULT 'x';
+        \\ALTER TABLE m DROP COLUMN dropme;
+        \\CREATE TABLE 商品(id INTEGER);
+        \\ALTER TABLE main.商品 ADD COLUMN price INTEGER;
+        \\ALTER TABLE main.商品 RENAME TO products;
+        \\CREATE INDEX idx_price ON products(price);
+        \\CREATE TABLE x$as(id INTEGER);
+    , &detail);
+    defer freeMigrationStatements(testing.allocator, statements);
+
+    var cancel = std.atomic.Value(bool).init(false);
+    var control = StepControl.init(testing.io, 0, &cancel);
+    try applyMigration(variant_path, statements, &control, &detail);
+    try testing.expectEqual(@as(usize, 0), detail.statement_index);
+    try testing.expectEqual(@as(c_int, 0), detail.error_code);
+
+    var variant: Db = .{};
+    try variant.openReadOnly(variant_path);
+    defer variant.close() catch unreachable;
+    try testing.expectEqual(@as(i64, 1), try queryInt(&variant, "SELECT count(*) FROM sqlite_master WHERE name = 'idx_label'"));
+    try testing.expectEqual(@as(i64, 1), try queryInt(&variant, "SELECT count(*) FROM sqlite_master WHERE name = 'idx_n'"));
+    try testing.expectEqual(@as(i64, 1), try queryInt(&variant, "SELECT count(*) FROM sqlite_master WHERE name = 'existing_idx'"));
+    try testing.expectEqual(@as(i64, 1), try queryInt(&variant, "SELECT count(*) FROM sqlite_master WHERE name = 'u'"));
+    try testing.expectEqual(@as(i64, 0), try queryInt(&variant, "SELECT count(*) FROM sqlite_master WHERE name = 't'"));
+    try testing.expectEqual(@as(i64, 7), try queryInt(&variant, "SELECT c FROM u WHERE a = 1"));
+    try testing.expectEqual(@as(i64, 0), try queryInt(&variant, "SELECT count(*) FROM n"));
+    try testing.expectEqual(@as(i64, 0), try queryInt(&variant, "SELECT count(*) FROM m WHERE added IS NULL"));
+    try testing.expectError(error.StatementInvalid, queryInt(&variant, "SELECT dropme FROM m"));
+    try testing.expectEqual(@as(i64, 1), try queryInt(&variant, "SELECT count(*) FROM sqlite_master WHERE name = 'idx_price'"));
+    try testing.expectEqual(@as(i64, 1), try queryInt(&variant, "SELECT count(*) FROM sqlite_master WHERE name = 'products'"));
+    try testing.expectEqual(@as(i64, 0), try queryInt(&variant, "SELECT count(*) FROM sqlite_master WHERE name = '商品'"));
+    try testing.expectEqual(@as(i64, 1), try queryInt(&variant, "SELECT count(*) FROM sqlite_master WHERE name = 'x$as'"));
+
+    const source_after = try Io.Dir.cwd().readFileAlloc(testing.io, fixture.path, testing.allocator, .unlimited);
+    defer testing.allocator.free(source_after);
+    try testing.expectEqualSlices(u8, source_before, source_after);
+}
+
 test "applyMigration denies forged data changes and other SQL" {
     var fixture = try Fixture.init(testing.allocator);
     defer fixture.deinit();
@@ -2284,6 +2463,8 @@ test "applyMigration denies forged data changes and other SQL" {
 
     const forged = [_]MigrationStatement{
         .{ .kind = .drop_index, .sql = "DELETE FROM t" },
+        .{ .kind = .create_index, .sql = "UPDATE t SET a = 4" },
+        .{ .kind = .create_index, .sql = "DROP TABLE t" },
         .{ .kind = .create_index, .sql = "ATTACH DATABASE 'other.db' AS other" },
         .{ .kind = .drop_index, .sql = "PRAGMA writable_schema = 1" },
         .{ .kind = .create_index, .sql = "CREATE TEMP TABLE x(y)" },
