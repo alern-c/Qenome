@@ -131,7 +131,7 @@ npx qenome --d1 DB --batch queries.json --migration 0002_replace_index.sql --for
 - The original database is never changed. Qenome applies the statements to the variant copy only.
 - The report is the batch object plus a top-level `migration` object with `path` and `statements` (`kind` and `sql`). Human output has a `migration:` block instead.
 - `size_increase` counts the bytes in use, not the file size, so a `DROP INDEX` reports the freed bytes as a negative number. The file itself shrinks only after `VACUUM`.
-- Exit `6` means the result rows matched, but at least one query read or wrote more rows after the migration. Do not keep the migration for a CI gate. Exit `3` (rows differ) and `4` (cannot compare) also stop the gate.
+- Exit `6` means the result rows matched, but at least one query read or wrote more rows after the migration. That query's verdict is `regressed` (the human `Results` column and `results[].comparison.verdict`); the JSON `summary` key stays `needs_check` and counts those queries. Do not keep the migration for a CI gate. Exit `3` (rows differ) and `4` (cannot compare) also stop the gate.
 
 ## Read the JSON
 
@@ -147,13 +147,13 @@ Emitted fields an agent should read:
 
 | Field | Use |
 | --- | --- |
-| `verdict` | `improved`, `no-effect`, `needs-check`, or `not-judged` |
+| `verdict` | `improved`, `no-effect`, `needs-check`, `regressed` (a `--migration` result only), or `not-judged` |
 | `result` | `match`, `mismatch`, or `incomparable` |
-| `verdict_reasons` | Why it is `needs-check` or `not-judged` |
+| `verdict_reasons` | Why it is `needs-check`, `regressed`, or `not-judged` |
 | `result_reasons` | Why the rows cannot be compared. Each item has `text` and `hint` |
 | `baseline.counters.rows_read` | Rows the current schema read |
 | `variant.counters.rows_read` | Rows the candidate index read |
-| `baseline.counters.rows_written` and `variant.counters.rows_written` | Writes during the SELECT. An increase is `needs-check` when the rows match |
+| `baseline.counters.rows_written` and `variant.counters.rows_written` | Writes during the SELECT. An increase is `needs-check` (`regressed` in a `--migration` result) when the rows match |
 | `plan_changed` | Whether the plan text changed |
 | `timing` | `null` with `--runs 0`. When present, it is a reference. It does not pick the verdict |
 | `environment.sqlite_version` | Bundled SQLite until `sqlite.bundled_version` exists |
@@ -182,7 +182,7 @@ Tell the user the process exit code, `schema_version`, `result`, `verdict`, and 
 | 4 and stdout is a comparison | Do not call it a match. Quote `result_reasons` and their hints. `verdict` is `not-judged` |
 | 4 and stdout is empty | The local D1 was not found. Follow `error.hint`. Do not edit the index to fix a missing database |
 | 5 | The comparison matched and cleanup failed. stdout holds the report (`exit_code` 0). Tell the user to remove the directory named in the stderr error. Do not loop |
-| 6 | `--migration` matched the rows but made a query read or write more rows. Do not keep the migration. Quote the `needs_check` summary and the comparison reasons |
+| 6 | `--migration` matched the rows but made a query read or write more rows. Do not keep the migration. Quote the `regressed` verdicts, the `needs_check` summary count, and the comparison reasons |
 | 1 | The input was rejected. Follow `error.hint` or the `error:` line |
 | 2 | The command line is wrong. Follow the hint. Fix the invocation and rerun once |
 | 124 | The time limit fired. Raise `--timeout-ms` or narrow the SELECT. Do not treat it as a slow index |

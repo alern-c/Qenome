@@ -28,7 +28,10 @@
   "properties": {
     "schema_version": { "const": 2 },
     "exit_code": { "enum": [0, 3, 4] },
-    "verdict": { "enum": ["improved", "no-effect", "needs-check", "not-judged"] },
+    "verdict": {
+      "description": "regressed appears only in a --migration batch: the rows match but the migration made the query read or write more rows.",
+      "enum": ["improved", "no-effect", "needs-check", "regressed", "not-judged"]
+    },
     "verdict_reasons": { "type": "array", "items": { "type": "string" } },
     "result": { "enum": ["match", "mismatch", "incomparable"] },
     "row_order": { "enum": ["same", "differs", "not-applicable"] },

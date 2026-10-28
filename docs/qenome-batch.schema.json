@@ -144,7 +144,11 @@
         },
         "improved": { "type": ["integer", "null"], "minimum": 0 },
         "no_effect": { "type": ["integer", "null"], "minimum": 0 },
-        "needs_check": { "type": ["integer", "null"], "minimum": 0 },
+        "needs_check": {
+          "description": "In a --migration run this counts the queries whose embedded comparison verdict is regressed.",
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
         "mismatch": { "type": ["integer", "null"], "minimum": 0 },
         "incomparable": { "type": ["integer", "null"], "minimum": 0 },
         "timeout": { "type": ["integer", "null"], "minimum": 0 },

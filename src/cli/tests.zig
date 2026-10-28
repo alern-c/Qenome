@@ -2696,7 +2696,7 @@ test "a migration that drops a useful index exits 6" {
     try testing.expectEqual(@as(i64, 0), try jsonInt(summary[0], "improved"));
     const results = try jsonItems(parsed.value, "results");
     const comparison = try jsonGet(results[0], "comparison");
-    try testing.expectEqualStrings("needs-check", try jsonText(comparison, "verdict"));
+    try testing.expectEqualStrings("regressed", try jsonText(comparison, "verdict"));
     try fixture.expectNoLeftovers();
 }
 
@@ -2709,6 +2709,8 @@ test "a migration that drops an index reports the freed bytes as a negative size
     const human = try runMigration(&fixture, "queries.json", "drop.sql", &.{}, &stdout_buffer, &stderr_buffer);
     try testing.expectEqual(ExitCode.regression, human.code);
     try testing.expectEqualStrings("", human.stderr);
+    try testing.expect(contains(human.stdout, "match         regressed"));
+    try testing.expect(!contains(human.stdout, "needs-check"));
 
     var summary_line: ?[]const u8 = null;
     var lines = std.mem.splitScalar(u8, human.stdout, '\n');

@@ -629,11 +629,11 @@ pub fn run(
                     summary.incomparable += 1;
                 },
                 .match => {
-                    report.judgement = cli_comparison.judgeRows(before, after);
+                    report.judgement = candidateJudgement(before, after, candidate.kind == .migration);
                     switch (report.judgement.verdict) {
                         .improved => summary.improved += 1,
                         .no_effect => summary.no_effect += 1,
-                        .needs_check => summary.needs_check += 1,
+                        .needs_check, .regressed => summary.needs_check += 1,
                         .not_judged => {},
                     }
                 },
@@ -1120,6 +1120,10 @@ fn comparisonExitCode(verdict: cli_comparison.Verdict) u8 {
     };
 }
 
+fn candidateJudgement(before: Measurement, after: Measurement, migration: bool) cli_comparison.Judgement {
+    return cli_comparison.judgeRowsWith(before, after, if (migration) .regressed else .needs_check);
+}
+
 fn isEligible(summary: CandidateSummary) bool {
     return summary.status == .compared and
         summary.mismatch == 0 and
@@ -1368,7 +1372,8 @@ fn writeBatchHuman(
     try stdout.writeAll("\n");
     try stdout.writeAll("Summary\n  ");
     try writeCell(stdout, "candidate", candidate_width);
-    for ([_][]const u8{ "status", "improved", "no-effect", "needs-check", "mismatch", "incomparable", "timeout", "size increase" }) |header| {
+    const worse_header = if (migration != null) "regressed" else "needs-check";
+    for ([_][]const u8{ "status", "improved", "no-effect", worse_header, "mismatch", "incomparable", "timeout", "size increase" }) |header| {
         try stdout.writeAll("  ");
         try writeCell(stdout, header, 12);
     }
@@ -1584,6 +1589,20 @@ test "summaryOrder puts eligible candidates first by improved and size" {
     const order = try summaryOrder(arena_state.allocator(), &summaries);
     try testing.expectEqualSlices(usize, &.{ 2, 1, 0, 3, 4, 5 }, order);
     try testing.expectEqual(@as(?usize, 2), recommendedIndex(&summaries, order));
+}
+
+test "only a migration candidate names a worse row count regressed" {
+    const scan = [_]db.PlanRow{.{ .id = 2, .parent = 0, .label = .{ .kind = .scan }, .detail = "SCAN t" }};
+    const before: Measurement = .{
+        .rows = 1,
+        .plan = .{ .rows = @constCast(&scan) },
+        .counters = .{ .rows_read = 10, .rows_written = 0, .fullscan_steps = 0, .vm_steps = 0, .sort_ops = 0, .autoindex_rows = 0 },
+        .columns = 1,
+    };
+    var after = before;
+    after.counters.rows_read = 11;
+    try testing.expectEqual(cli_comparison.RowVerdict.needs_check, candidateJudgement(before, after, false).verdict);
+    try testing.expectEqual(cli_comparison.RowVerdict.regressed, candidateJudgement(before, after, true).verdict);
 }
 
 fn batchResult(status: ResultStatus, outcome: ?cli_comparison.Verdict) ResultEntry {

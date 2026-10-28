@@ -120,6 +120,7 @@ pub const RowVerdict = enum {
     improved,
     no_effect,
     needs_check,
+    regressed,
     not_judged,
 
     pub fn text(self: RowVerdict) []const u8 {
@@ -127,10 +128,13 @@ pub const RowVerdict = enum {
             .improved => "improved",
             .no_effect => "no-effect",
             .needs_check => "needs-check",
+            .regressed => "regressed",
             .not_judged => "not-judged",
         };
     }
 };
+
+pub const Worsening = enum { needs_check, regressed };
 
 pub const Judgement = struct {
     verdict: RowVerdict,
@@ -147,7 +151,14 @@ pub const Judgement = struct {
 };
 
 pub fn judgeRows(before: Measurement, after: Measurement) Judgement {
-    var judgement: Judgement = .{ .verdict = .needs_check };
+    return judgeRowsWith(before, after, .needs_check);
+}
+
+pub fn judgeRowsWith(before: Measurement, after: Measurement, worsening: Worsening) Judgement {
+    var judgement: Judgement = .{ .verdict = switch (worsening) {
+        .needs_check => .needs_check,
+        .regressed => .regressed,
+    } };
     const baseline = before.counters;
     const variant = after.counters;
     if (variant.rows_read > baseline.rows_read) {
@@ -238,6 +249,13 @@ test "judgeRows reading more rows is needs-check" {
 test "judgeRows more rows written is needs-check" {
     try expectJudgement(.needs_check, "but the variant writes more", judgeRows(testMeasurement(1000, 0), testMeasurement(10, 1)));
     try expectJudgement(.needs_check, "the variant writes more", judgeRows(testMeasurement(1000, 5), testMeasurement(1000, 6)));
+}
+
+test "judgeRowsWith names a worse row count regressed" {
+    try expectJudgement(.regressed, "reads more rows", judgeRowsWith(testMeasurement(1000, 0), testMeasurement(1001, 0), .regressed));
+    try expectJudgement(.regressed, "the variant writes more", judgeRowsWith(testMeasurement(1000, 5), testMeasurement(1000, 6), .regressed));
+    try expectJudgement(.improved, null, judgeRowsWith(testMeasurement(1000, 0), testMeasurement(1, 0), .regressed));
+    try expectJudgement(.no_effect, null, judgeRowsWith(testMeasurement(1000, 0), testMeasurement(1000, 0), .regressed));
 }
 
 test "judgeRows ignores the plan and the times" {
