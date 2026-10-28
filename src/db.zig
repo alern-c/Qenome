@@ -4,11 +4,12 @@ const builtin = @import("builtin");
 const sqlite = @import("sqlite.zig");
 const result = @import("result.zig");
 
-pub const Mode = enum { internal, user_select, user_ddl, user_migration };
+pub const Mode = enum { internal, user_select, user_dml, user_ddl, user_migration };
 
 pub const OpenError = error{
     OpenFailed,
     NotReadOnlyConnection,
+    NotWritableConnection,
     GuardSetupFailed,
 };
 
@@ -131,6 +132,7 @@ pub const CheckError = error{
     StatementRejected,
     StatementInvalid,
     StatementNotReadOnly,
+    StatementNotWrite,
     StatementNotCreateIndex,
 };
 
@@ -217,6 +219,7 @@ pub const Db = struct {
     handle: ?*sqlite.sqlite3 = null,
     mode: Mode = .internal,
     seen_create_index: bool = false,
+    seen_write: bool = false,
     candidate_index: [256]u8 = undefined,
     candidate_index_len: usize = 0,
     clues: Clues = .{},
@@ -248,6 +251,33 @@ pub const Db = struct {
             return error.GuardSetupFailed;
         }
         if (sqlite.sqlite3_exec(conn, "PRAGMA query_only=1", null, null, null) != sqlite.SQLITE_OK) {
+            return error.GuardSetupFailed;
+        }
+    }
+
+    pub fn openWritable(self: *Db, path: [:0]const u8) OpenError!void {
+        var handle: ?*sqlite.sqlite3 = null;
+        const flags = sqlite.SQLITE_OPEN_READWRITE | sqlite.SQLITE_OPEN_NOFOLLOW;
+        const rc = sqlite.sqlite3_open_v2(path, &handle, flags, null);
+        const conn = handle orelse return error.OpenFailed;
+        if (rc != sqlite.SQLITE_OK) {
+            _ = sqlite.sqlite3_close(conn);
+            return error.OpenFailed;
+        }
+        self.* = .{ .handle = conn };
+        errdefer {
+            _ = sqlite.sqlite3_close(conn);
+            self.* = .{};
+        }
+
+        if (sqlite.sqlite3_db_readonly(conn, "main") != 0) return error.NotWritableConnection;
+
+        if (!disableDoubleQuotedStrings(conn)) return error.GuardSetupFailed;
+        if (sqlite.sqlite3_exec(conn, "PRAGMA foreign_keys=ON", null, null, null) != sqlite.SQLITE_OK) {
+            return error.GuardSetupFailed;
+        }
+
+        if (sqlite.sqlite3_set_authorizer(conn, authorizer, self) != sqlite.SQLITE_OK) {
             return error.GuardSetupFailed;
         }
     }
@@ -316,6 +346,26 @@ pub const Db = struct {
         _ = sqlite.sqlite3_finalize(statement);
     }
 
+    pub fn checkWrite(self: *Db, sql: [:0]const u8) CheckError!void {
+        const statement = try self.prepareWrite(sql);
+        _ = sqlite.sqlite3_finalize(statement);
+    }
+
+    pub fn prepareWrite(self: *Db, sql: [:0]const u8) CheckError!*sqlite.sqlite3_stmt {
+        self.clues = .{};
+        const previous = self.enterMode(.user_dml);
+        defer self.mode = previous;
+
+        if (!startsWithWriteKeyword(sql)) return error.StatementNotWrite;
+
+        const statement = (try self.prepareSingle(sql)) orelse return error.EmptyStatement;
+        errdefer _ = sqlite.sqlite3_finalize(statement);
+
+        if (sqlite.sqlite3_stmt_readonly(statement) != 0) return error.StatementNotWrite;
+        if (!self.seen_write) return error.StatementNotWrite;
+        return statement;
+    }
+
     pub fn checkCreateIndex(self: *Db, sql: [:0]const u8) CheckError!void {
         const previous = self.enterMode(.user_ddl);
         defer self.mode = previous;
@@ -369,7 +419,15 @@ pub const Db = struct {
     }
 
     pub fn stepAll(self: *Db, statement: *sqlite.sqlite3_stmt, control: *StepControl, collector: ?*result.RowCollector) StepError!u64 {
-        const previous = self.enterMode(.user_select);
+        return self.stepAllInMode(.user_select, statement, control, collector);
+    }
+
+    pub fn stepDml(self: *Db, statement: *sqlite.sqlite3_stmt, control: *StepControl, collector: ?*result.RowCollector) StepError!u64 {
+        return self.stepAllInMode(.user_dml, statement, control, collector);
+    }
+
+    fn stepAllInMode(self: *Db, mode: Mode, statement: *sqlite.sqlite3_stmt, control: *StepControl, collector: ?*result.RowCollector) StepError!u64 {
+        const previous = self.enterMode(mode);
         defer self.mode = previous;
 
         control.start();
@@ -398,6 +456,29 @@ pub const Db = struct {
         }
     }
 
+    pub fn beginWrite(self: *Db, control: *StepControl) StepError!void {
+        const previous = self.enterMode(.internal);
+        defer self.mode = previous;
+        control.start();
+        if (controlStopError(control)) |stop| return stop;
+        if (sqlite.sqlite3_exec(self.connection(), "BEGIN IMMEDIATE", null, null, null) != sqlite.SQLITE_OK) return error.StepFailed;
+    }
+
+    pub fn rollbackWrite(self: *Db) StepError!void {
+        if (sqlite.sqlite3_get_autocommit(self.connection()) != 0) return;
+        const previous = self.enterMode(.internal);
+        defer self.mode = previous;
+        if (sqlite.sqlite3_exec(self.connection(), "ROLLBACK", null, null, null) != sqlite.SQLITE_OK) return error.StepFailed;
+    }
+
+    pub fn changes(self: *const Db) u64 {
+        return @intCast(@max(sqlite.sqlite3_changes64(self.connection()), 0));
+    }
+
+    pub fn totalChanges(self: *const Db) u64 {
+        return @intCast(@max(sqlite.sqlite3_total_changes64(self.connection()), 0));
+    }
+
     pub fn explainPlan(
         self: *Db,
         allocator: std.mem.Allocator,
@@ -407,12 +488,33 @@ pub const Db = struct {
         return self.explainPlanBounded(allocator, sql, binds, null);
     }
 
+    pub fn explainDml(
+        self: *Db,
+        allocator: std.mem.Allocator,
+        sql: [:0]const u8,
+        binds: []const BindArg,
+        control: *StepControl,
+    ) (CheckError || BindError || ExplainError || StepError || std.mem.Allocator.Error)!Plan {
+        return self.explainPlanInMode(allocator, sql, binds, control, .user_dml);
+    }
+
     fn explainPlanBounded(
         self: *Db,
         allocator: std.mem.Allocator,
         sql: [:0]const u8,
         binds: []const BindArg,
         control: ?*StepControl,
+    ) (CheckError || BindError || ExplainError || StepError || std.mem.Allocator.Error)!Plan {
+        return self.explainPlanInMode(allocator, sql, binds, control, .user_select);
+    }
+
+    fn explainPlanInMode(
+        self: *Db,
+        allocator: std.mem.Allocator,
+        sql: [:0]const u8,
+        binds: []const BindArg,
+        control: ?*StepControl,
+        mode: Mode,
     ) (CheckError || BindError || ExplainError || StepError || std.mem.Allocator.Error)!Plan {
         if (control) |running| {
             running.start();
@@ -423,11 +525,14 @@ pub const Db = struct {
             sqlite.sqlite3_progress_handler(self.connection(), 0, null, null);
         };
 
-        const statement = try self.prepareSelect(sql);
+        const statement = switch (mode) {
+            .user_dml => try self.prepareWrite(sql),
+            else => try self.prepareSelect(sql),
+        };
         defer _ = sqlite.sqlite3_finalize(statement);
         try bindAll(statement, binds);
 
-        const previous = self.enterMode(.user_select);
+        const previous = self.enterMode(mode);
         defer self.mode = previous;
 
         if (sqlite.sqlite3_stmt_explain(statement, 2) != sqlite.SQLITE_OK) return error.ExplainFailed;
@@ -723,6 +828,7 @@ pub const Db = struct {
         const previous = self.mode;
         self.mode = mode;
         self.seen_create_index = false;
+        self.seen_write = false;
         self.candidate_index_len = 0;
         self.observed_count = 0;
         return previous;
@@ -764,7 +870,7 @@ pub const Db = struct {
 
     fn allows(self: *Db, action_code: c_int, arg1: ?[*:0]const u8, arg2: ?[*:0]const u8, arg3: ?[*:0]const u8) bool {
         switch (self.mode) {
-            .internal => return action_code == sqlite.SQLITE_PRAGMA,
+            .internal => return true,
             .user_select => return switch (action_code) {
                 sqlite.SQLITE_SELECT,
                 sqlite.SQLITE_READ,
@@ -772,6 +878,14 @@ pub const Db = struct {
                 sqlite.SQLITE_RECURSIVE,
                 => true,
                 else => false,
+            },
+            .user_dml => switch (action_code) {
+                sqlite.SQLITE_INSERT, sqlite.SQLITE_UPDATE, sqlite.SQLITE_DELETE => {
+                    self.seen_write = true;
+                    return true;
+                },
+                sqlite.SQLITE_SELECT, sqlite.SQLITE_READ, sqlite.SQLITE_FUNCTION, sqlite.SQLITE_RECURSIVE => return true,
+                else => return false,
             },
             .user_ddl => switch (action_code) {
                 sqlite.SQLITE_CREATE_INDEX => {
@@ -966,6 +1080,29 @@ pub fn statementCounters(statement: *sqlite.sqlite3_stmt) Counters {
 
 fn readCounter(statement: *sqlite.sqlite3_stmt, op: c_int) u32 {
     return @bitCast(sqlite.sqlite3_stmt_status(statement, op, 0));
+}
+
+fn takeCounter(statement: *sqlite.sqlite3_stmt, op: c_int) u32 {
+    return @bitCast(sqlite.sqlite3_stmt_status(statement, op, 1));
+}
+
+pub fn takeCounters(statement: *sqlite.sqlite3_stmt) Counters {
+    return .{
+        .rows_read = takeCounter(statement, sqlite.LIBSQL_STMTSTATUS_ROWS_READ),
+        .rows_written = takeCounter(statement, sqlite.LIBSQL_STMTSTATUS_ROWS_WRITTEN),
+        .fullscan_steps = takeCounter(statement, sqlite.SQLITE_STMTSTATUS_FULLSCAN_STEP),
+        .vm_steps = takeCounter(statement, sqlite.SQLITE_STMTSTATUS_VM_STEP),
+        .sort_ops = takeCounter(statement, sqlite.SQLITE_STMTSTATUS_SORT),
+        .autoindex_rows = takeCounter(statement, sqlite.SQLITE_STMTSTATUS_AUTOINDEX),
+    };
+}
+
+pub fn resetStatement(statement: *sqlite.sqlite3_stmt) StepError!void {
+    if (sqlite.sqlite3_reset(statement) != sqlite.SQLITE_OK) return error.StepFailed;
+}
+
+pub fn columnCount(statement: *sqlite.sqlite3_stmt) c_int {
+    return sqlite.sqlite3_column_count(statement);
 }
 
 pub fn applyCreateIndex(path: [:0]const u8, sql: [:0]const u8, control: *StepControl, detail: *SnapshotDetail) ApplyError!void {
@@ -1176,6 +1313,16 @@ fn sqlWord(sql: []const u8, start: usize) SqlWord {
     return .{ .text = sql[start..end], .end = end };
 }
 
+fn startsWithWriteKeyword(sql: []const u8) bool {
+    const start = skipSqlTrivia(sql, 0);
+    const first = sqlWord(sql, start);
+    return std.ascii.eqlIgnoreCase(first.text, "insert") or
+        std.ascii.eqlIgnoreCase(first.text, "replace") or
+        std.ascii.eqlIgnoreCase(first.text, "update") or
+        std.ascii.eqlIgnoreCase(first.text, "delete") or
+        std.ascii.eqlIgnoreCase(first.text, "with");
+}
+
 fn classifyMigrationStatement(sql: []const u8) ?MigrationKind {
     var i = skipSqlTrivia(sql, 0);
     const first = sqlWord(sql, i);
@@ -1352,7 +1499,7 @@ fn authorizer(
     const self: *Db = @ptrCast(@alignCast(user_data orelse return sqlite.SQLITE_DENY));
     self.record(action_code);
     if (!self.allows(action_code, arg1, arg2, arg3)) return sqlite.SQLITE_DENY;
-    if (self.mode == .user_select) self.noteClues(action_code, arg1, arg2, arg4);
+    if (self.mode == .user_select or self.mode == .user_dml) self.noteClues(action_code, arg1, arg2, arg4);
     return sqlite.SQLITE_OK;
 }
 
@@ -3328,4 +3475,237 @@ test "table warning checks target stats and actual bounded cardinality" {
     const other = try database.tableWarnings(testing.allocator, "other", &control);
     try testing.expect(!other.no_analyze_stats);
     try testing.expect(other.data_too_small);
+}
+
+const WriteCounts = struct {
+    rows: u64,
+    counters: Counters,
+    changes: u64,
+    total_changes: u64,
+};
+
+fn runWrite(database: *Db, sql: [:0]const u8, control: *StepControl) !WriteCounts {
+    const statement = try database.prepareWrite(sql);
+    defer _ = sqlite.sqlite3_finalize(statement);
+    try database.beginWrite(control);
+    const total_before = database.totalChanges();
+    const rows = try database.stepDml(statement, control, null);
+    const counters = takeCounters(statement);
+    const changes = database.changes();
+    const total_after = database.totalChanges();
+    try database.rollbackWrite();
+    return .{ .rows = rows, .counters = counters, .changes = changes, .total_changes = total_after - total_before };
+}
+
+test "a writable connection opens the sandbox database for writing" {
+    var fixture = try Fixture.init(testing.allocator);
+    defer fixture.deinit();
+
+    var database: Db = .{};
+    try database.openWritable(fixture.path);
+    defer database.close() catch unreachable;
+
+    try testing.expectEqual(@as(c_int, 0), sqlite.sqlite3_db_readonly(database.handle, "main"));
+}
+
+test "one insert counts the table, its secondary index, and its trigger, then rolls back" {
+    const schema =
+        \\CREATE TABLE t(a INTEGER PRIMARY KEY, b TEXT);
+        \\CREATE INDEX ix_b ON t(b);
+        \\CREATE TABLE log(x INTEGER);
+        \\CREATE TRIGGER tr AFTER INSERT ON t BEGIN INSERT INTO log VALUES(new.a); END;
+        \\INSERT INTO t VALUES (1, 'x');
+    ;
+    var fixture = try Fixture.initWithSchema(testing.allocator, schema);
+    defer fixture.deinit();
+
+    var database: Db = .{};
+    try database.openWritable(fixture.path);
+    defer database.close() catch unreachable;
+    var cancel = std.atomic.Value(bool).init(false);
+    var control = StepControl.init(testing.io, 30000, &cancel);
+
+    const counts = try runWrite(&database, "INSERT INTO t VALUES (2, 'y')", &control);
+    try testing.expectEqual(@as(u64, 0), counts.rows);
+    try testing.expectEqual(@as(u32, 3), counts.counters.rows_written);
+    try testing.expectEqual(@as(u64, 1), counts.changes);
+    try testing.expectEqual(@as(u64, 2), counts.total_changes);
+    try testing.expectEqual(@as(i64, 1), try queryInt(&database, "SELECT count(*) FROM t"));
+    try testing.expectEqual(@as(i64, 1), try queryInt(&database, "SELECT count(*) FROM log"));
+}
+
+test "a foreign key cascade is counted and rolled back" {
+    const schema =
+        \\CREATE TABLE p(id INTEGER PRIMARY KEY);
+        \\CREATE TABLE c(id INTEGER PRIMARY KEY, pid INTEGER REFERENCES p(id) ON DELETE CASCADE);
+        \\CREATE INDEX ix_c_pid ON c(pid);
+        \\INSERT INTO p VALUES (1);
+        \\INSERT INTO c VALUES (10, 1), (11, 1);
+    ;
+    var fixture = try Fixture.initWithSchema(testing.allocator, schema);
+    defer fixture.deinit();
+
+    var database: Db = .{};
+    try database.openWritable(fixture.path);
+    defer database.close() catch unreachable;
+    var cancel = std.atomic.Value(bool).init(false);
+    var control = StepControl.init(testing.io, 30000, &cancel);
+
+    const counts = try runWrite(&database, "DELETE FROM p WHERE id = 1", &control);
+    try testing.expectEqual(@as(u32, 3), counts.counters.rows_written);
+    try testing.expectEqual(@as(u64, 1), counts.changes);
+    try testing.expectEqual(@as(u64, 3), counts.total_changes);
+    try testing.expectEqual(@as(i64, 1), try queryInt(&database, "SELECT count(*) FROM p"));
+    try testing.expectEqual(@as(i64, 2), try queryInt(&database, "SELECT count(*) FROM c"));
+}
+
+test "insert or replace is rolled back with its implicit delete" {
+    const schema =
+        \\CREATE TABLE t(a INTEGER PRIMARY KEY, b TEXT);
+        \\CREATE INDEX ix_b ON t(b);
+        \\INSERT INTO t VALUES (1, 'x');
+    ;
+    var fixture = try Fixture.initWithSchema(testing.allocator, schema);
+    defer fixture.deinit();
+
+    var database: Db = .{};
+    try database.openWritable(fixture.path);
+    defer database.close() catch unreachable;
+    var cancel = std.atomic.Value(bool).init(false);
+    var control = StepControl.init(testing.io, 30000, &cancel);
+
+    const counts = try runWrite(&database, "INSERT OR REPLACE INTO t(a, b) VALUES (1, 'y')", &control);
+    try testing.expectEqual(@as(u32, 2), counts.counters.rows_written);
+    try testing.expectEqual(@as(u64, 1), counts.changes);
+    try testing.expectEqual(@as(u64, 1), counts.total_changes);
+    try testing.expectEqual(@as(i64, 1), try queryInt(&database, "SELECT count(*) FROM t"));
+    try testing.expectEqual(@as(?i64, 1), try firstRowInt64(&database, "SELECT count(*) FROM t WHERE b = 'x'"));
+}
+
+fn firstRowInt64(database: *Db, sql: [:0]const u8) !?i64 {
+    const statement = try database.prepareSelect(sql);
+    defer _ = sqlite.sqlite3_finalize(statement);
+    return switch (sqlite.sqlite3_step(statement)) {
+        sqlite.SQLITE_ROW => sqlite.sqlite3_column_int64(statement, 0),
+        else => error.TestFixtureFailed,
+    };
+}
+
+test "autoincrement sqlite_sequence returns to its old value after rollback" {
+    const schema =
+        \\CREATE TABLE t(a INTEGER PRIMARY KEY AUTOINCREMENT, b TEXT);
+        \\INSERT INTO t(b) VALUES ('x');
+    ;
+    var fixture = try Fixture.initWithSchema(testing.allocator, schema);
+    defer fixture.deinit();
+
+    var database: Db = .{};
+    try database.openWritable(fixture.path);
+    defer database.close() catch unreachable;
+    var cancel = std.atomic.Value(bool).init(false);
+    var control = StepControl.init(testing.io, 30000, &cancel);
+
+    const counts = try runWrite(&database, "INSERT INTO t(b) VALUES ('y')", &control);
+    try testing.expectEqual(@as(u32, 2), counts.counters.rows_written);
+    try testing.expectEqual(@as(i64, 1), try queryInt(&database, "SELECT seq FROM sqlite_sequence WHERE name = 't'"));
+    try testing.expectEqual(@as(i64, 1), try queryInt(&database, "SELECT count(*) FROM t"));
+}
+
+test "a repeated write after rollback reports the same counters" {
+    var fixture = try Fixture.init(testing.allocator);
+    defer fixture.deinit();
+
+    var database: Db = .{};
+    try database.openWritable(fixture.path);
+    defer database.close() catch unreachable;
+    var cancel = std.atomic.Value(bool).init(false);
+    var control = StepControl.init(testing.io, 30000, &cancel);
+
+    const first = try runWrite(&database, "UPDATE t SET b = b || '!' WHERE a = 2", &control);
+    const second = try runWrite(&database, "UPDATE t SET b = b || '!' WHERE a = 2", &control);
+    try testing.expect(std.meta.eql(first.counters, second.counters));
+    try testing.expectEqual(first.changes, second.changes);
+    try testing.expectEqual(first.total_changes, second.total_changes);
+    try testing.expectEqual(@as(i64, 1), try queryInt(&database, "SELECT count(*) FROM t WHERE b = 'y'"));
+}
+
+test "a write plan is read without changing rows" {
+    var fixture = try Fixture.init(testing.allocator);
+    defer fixture.deinit();
+
+    var database: Db = .{};
+    try database.openWritable(fixture.path);
+    defer database.close() catch unreachable;
+    var cancel = std.atomic.Value(bool).init(false);
+    var control = StepControl.init(testing.io, 30000, &cancel);
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+
+    const plan = try database.explainDml(arena_state.allocator(), "UPDATE t SET b = 'q' WHERE a = 1", &.{}, &control);
+    try testing.expect(plan.rows.len > 0);
+    try testing.expectEqual(@as(i64, 3), try queryInt(&database, "SELECT count(*) FROM t"));
+}
+
+test "a non-write statement is rejected before it runs" {
+    var fixture = try Fixture.init(testing.allocator);
+    defer fixture.deinit();
+
+    var database: Db = .{};
+    try database.openWritable(fixture.path);
+    defer database.close() catch unreachable;
+
+    try testing.expectError(error.StatementNotWrite, database.checkWrite("SELECT 1"));
+    try testing.expectError(error.StatementNotWrite, database.checkWrite("VACUUM"));
+    try testing.expectError(error.StatementNotWrite, database.checkWrite("CREATE TABLE u(x)"));
+    try testing.expectError(error.StatementNotWrite, database.checkWrite("PRAGMA user_version = 1"));
+    try testing.expectError(error.StatementNotWrite, database.checkWrite("WITH c AS (SELECT 1) SELECT * FROM c"));
+    try testing.expectError(error.MultipleStatements, database.checkWrite("INSERT INTO t VALUES (4, 'w'); SELECT 1"));
+    try testing.expectError(error.StatementNotWrite, database.checkWrite("EXPLAIN INSERT INTO t VALUES (4, 'w')"));
+}
+
+test "a write records the clues that make its effect incomparable" {
+    var fixture = try Fixture.init(testing.allocator);
+    defer fixture.deinit();
+
+    var database: Db = .{};
+    try database.openWritable(fixture.path);
+    defer database.close() catch unreachable;
+
+    const random_statement = try database.prepareWrite("INSERT INTO t SELECT a, b FROM t WHERE random() > 0");
+    defer _ = sqlite.sqlite3_finalize(random_statement);
+    try testing.expectEqualStrings("random", database.clues.nondeterministic_function.?);
+
+    const schema_statement = try database.prepareWrite("INSERT INTO t SELECT name, sql FROM sqlite_master");
+    defer _ = sqlite.sqlite3_finalize(schema_statement);
+    try testing.expect(database.clues.schema_table != null);
+}
+
+test "a new write run starts a fresh time limit" {
+    var fixture = try Fixture.init(testing.allocator);
+    defer fixture.deinit();
+
+    var database: Db = .{};
+    try database.openWritable(fixture.path);
+    defer database.close() catch unreachable;
+    var cancel = std.atomic.Value(bool).init(false);
+    var control = StepControl.init(testing.io, 30000, &cancel);
+    control.start();
+    control.deadline_ns = Io.Clock.now(.awake, testing.io).nanoseconds - 1;
+
+    const counts = try runWrite(&database, "INSERT INTO t VALUES (4, 'w')", &control);
+    try testing.expectEqual(@as(u64, 1), counts.changes);
+}
+
+test "a cancelled write does not start a transaction" {
+    var fixture = try Fixture.init(testing.allocator);
+    defer fixture.deinit();
+
+    var database: Db = .{};
+    try database.openWritable(fixture.path);
+    defer database.close() catch unreachable;
+    var cancel = std.atomic.Value(bool).init(true);
+    var control = StepControl.init(testing.io, 30000, &cancel);
+
+    try testing.expectError(error.Interrupted, database.beginWrite(&control));
+    try testing.expectEqual(@as(c_int, 1), sqlite.sqlite3_get_autocommit(database.handle));
 }

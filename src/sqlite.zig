@@ -62,6 +62,7 @@ pub const SQLITE_INSERT = 18;
 pub const SQLITE_PRAGMA = 19;
 pub const SQLITE_READ = 20;
 pub const SQLITE_SELECT = 21;
+pub const SQLITE_TRANSACTION = 22;
 pub const SQLITE_UPDATE = 23;
 pub const SQLITE_ATTACH = 24;
 pub const SQLITE_DETACH = 25;
@@ -102,6 +103,12 @@ pub const SQLITE_NULL = 5;
 pub extern fn sqlite3_stmt_explain(stmt: ?*sqlite3_stmt, eMode: c_int) c_int;
 
 pub extern fn sqlite3_stmt_status(stmt: ?*sqlite3_stmt, op: c_int, resetFlg: c_int) c_int;
+
+pub extern fn sqlite3_changes64(db: ?*sqlite3) i64;
+
+pub extern fn sqlite3_total_changes64(db: ?*sqlite3) i64;
+
+pub extern fn sqlite3_get_autocommit(db: ?*sqlite3) c_int;
 
 pub extern fn sqlite3_backup_init(pDest: ?*sqlite3, zDestName: [*:0]const u8, pSource: ?*sqlite3, zSourceName: [*:0]const u8) ?*sqlite3_backup;
 pub extern fn sqlite3_backup_step(p: ?*sqlite3_backup, nPage: c_int) c_int;

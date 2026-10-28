@@ -49,6 +49,7 @@ pub const Args = struct {
     migration: ?[:0]const u8 = null,
     seed_data: ?[:0]const u8 = null,
     select: ?[:0]const u8 = null,
+    write: ?[:0]const u8 = null,
     index_sql: ?[:0]const u8 = null,
     binds: []const db.BindArg = &.{},
     timeout_ms: u64 = default_timeout_ms,
@@ -87,6 +88,10 @@ pub const ParseError = error{
     SuggestRejectsRuns,
     SuggestRejectsKv,
     SuggestTakesTwoPaths,
+    WriteRejectsSelect,
+    WriteRequiresSingle,
+    WriteRejectsSuggest,
+    WriteRejectsMigration,
     OutOfMemory,
 };
 
@@ -102,6 +107,7 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
     var d1_requested = false;
     var batch_requested = false;
     var suggest_requested = false;
+    var write_requested = false;
     for (rest) |arg| {
         if (std.mem.eql(u8, arg, "--")) break;
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
@@ -113,6 +119,7 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
         if (std.mem.eql(u8, arg, "--d1") or std.mem.startsWith(u8, arg, "--d1=")) d1_requested = true;
         if (std.mem.eql(u8, arg, "--batch") or std.mem.startsWith(u8, arg, "--batch=")) batch_requested = true;
         if (std.mem.eql(u8, arg, "--suggest")) suggest_requested = true;
+        if (std.mem.eql(u8, arg, "--write") or std.mem.startsWith(u8, arg, "--write=")) write_requested = true;
     }
     if (version_requested) {
         args.version = true;
@@ -133,7 +140,7 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
             continue;
         }
         if (positional_only) {
-            try assignPositional(&args, arg, d1_requested, batch_requested, suggest_requested);
+            try assignPositional(&args, arg, d1_requested, batch_requested, suggest_requested, write_requested);
             continue;
         }
         const inline_value = splitInline(arg);
@@ -165,7 +172,12 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
             args.seed_data = try optionValue(argv, &index, inline_value);
         } else if (std.mem.eql(u8, name, "--select")) {
             if (args.select != null) return error.DuplicateOption;
+            if (args.write != null) return error.WriteRejectsSelect;
             args.select = try optionValue(argv, &index, inline_value);
+        } else if (std.mem.eql(u8, name, "--write")) {
+            if (args.write != null) return error.DuplicateOption;
+            if (args.select != null) return error.WriteRejectsSelect;
+            args.write = try optionValue(argv, &index, inline_value);
         } else if (std.mem.eql(u8, name, "--index-sql")) {
             if (args.index_sql != null) return error.DuplicateOption;
             args.index_sql = try optionValue(argv, &index, inline_value);
@@ -195,7 +207,7 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
         } else if (arg.len != 0 and arg[0] == '-') {
             return error.UnknownOption;
         } else {
-            try assignPositional(&args, arg, d1_requested, batch_requested, suggest_requested);
+            try assignPositional(&args, arg, d1_requested, batch_requested, suggest_requested, write_requested);
         }
     }
     offending.* = null;
@@ -257,6 +269,20 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
             return error.SuggestRejectsKv;
         }
     }
+    if (args.write != null) {
+        if (args.suggest) {
+            offending.* = "--write";
+            return error.WriteRejectsSuggest;
+        }
+        if (args.migration != null) {
+            offending.* = "--write";
+            return error.WriteRejectsMigration;
+        }
+        if (args.batch != null) {
+            offending.* = "--write";
+            return error.WriteRequiresSingle;
+        }
+    }
     args.binds = try binds.toOwnedSlice(allocator);
     return args;
 }
@@ -278,7 +304,7 @@ fn splitInline(arg: [:0]const u8) ?Inline {
     return .{ .name = arg[0..at], .value = arg[at + 1 ..] };
 }
 
-fn assignPositional(args: *Args, value: [:0]const u8, d1_requested: bool, batch_requested: bool, suggest_requested: bool) ParseError!void {
+fn assignPositional(args: *Args, value: [:0]const u8, d1_requested: bool, batch_requested: bool, suggest_requested: bool, write_requested: bool) ParseError!void {
     if (value.len == 0) return error.EmptyPath;
     if (batch_requested) {
         if (!d1_requested and args.db == null) {
@@ -290,6 +316,18 @@ fn assignPositional(args: *Args, value: [:0]const u8, d1_requested: bool, batch_
     if (!d1_requested and args.db == null) {
         args.db = value;
         return;
+    }
+    if (write_requested) {
+        if (args.select != null) return error.WriteRejectsSelect;
+        if (args.write == null) {
+            args.write = value;
+            return;
+        }
+        if (args.index_sql == null) {
+            args.index_sql = value;
+            return;
+        }
+        return error.TooManyPaths;
     }
     if (args.select == null) {
         args.select = value;
@@ -328,8 +366,8 @@ pub fn missingRequired(args: Args, buffer: *[required_option_count][]const u8) [
         count += 1;
     }
     if (args.batch == null) {
-        if (args.select == null) {
-            buffer[count] = "the SELECT file (a path or --select)";
+        if (args.select == null and args.write == null) {
+            buffer[count] = "the SELECT or write file (a path, --select or --write)";
             count += 1;
         }
         if (args.index_sql == null and !args.suggest) {
@@ -349,6 +387,7 @@ const long_options = [_][]const u8{
     "--migration",
     "--seed-data",
     "--select",
+    "--write",
     "--index-sql",
     "--bind",
     "--timeout-ms",
@@ -484,6 +523,10 @@ pub const suggest_usage_line = "       qenome <DB> <SELECT_FILE> --suggest [opti
 
 pub const d1_suggest_usage_line = "       qenome --d1 <BINDING> <SELECT_FILE> --suggest [options]";
 
+pub const write_usage_line = "       qenome <DB> --write <FILE> --index-sql <FILE> [options]";
+
+pub const d1_write_usage_line = "       qenome --d1 <BINDING> --write <FILE> --index-sql <FILE> [options]";
+
 pub const version = build_options.version;
 
 pub fn printVersion(writer: *Io.Writer) Io.Writer.Error!void {
@@ -491,9 +534,10 @@ pub fn printVersion(writer: *Io.Writer) Io.Writer.Error!void {
 }
 
 pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
-    try writer.writeAll(usage_line ++ "\n" ++ d1_usage_line ++ "\n" ++ batch_usage_line ++ "\n" ++ d1_batch_usage_line ++ "\n" ++ migration_usage_line ++ "\n" ++ d1_migration_usage_line ++ "\n" ++ suggest_usage_line ++ "\n" ++ d1_suggest_usage_line ++ "\n\n" ++
+    try writer.writeAll(usage_line ++ "\n" ++ d1_usage_line ++ "\n" ++ batch_usage_line ++ "\n" ++ d1_batch_usage_line ++ "\n" ++ migration_usage_line ++ "\n" ++ d1_migration_usage_line ++ "\n" ++ suggest_usage_line ++ "\n" ++ d1_suggest_usage_line ++ "\n" ++ write_usage_line ++ "\n" ++ d1_write_usage_line ++ "\n\n" ++
         \\Compares one read-only SELECT before and after one candidate CREATE INDEX
-        \\on a local SQLite database, without changing the database.
+        \\on a local SQLite database, without changing the database. With --write,
+        \\it compares one INSERT, UPDATE, DELETE, or REPLACE instead.
         \\
         \\options (a value may also be written as --option=value):
         \\  --db <PATH>          SQLite database file (required, once; not with --d1)
@@ -518,7 +562,14 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\  --suggest            ask SQLite for candidate indexes instead of
         \\                       naming them, and compare the suggestions; with
         \\                       --batch the manifest may omit candidates
-        \\  --select <FILE>      file holding one read-only SELECT (required, once)
+        \\  --select <FILE>      file holding one read-only SELECT (required, once;
+        \\                       not with --write)
+        \\  --write <FILE>       file holding one INSERT, UPDATE, DELETE, or REPLACE
+        \\                       (required, once; not with --select). The statement
+        \\                       runs in a transaction on each sandbox copy and is
+        \\                       rolled back. Rows written include secondary-index,
+        \\                       trigger, and foreign-key cascade changes. --write
+        \\                       does not take --batch, --migration, or --suggest.
         \\  --index-sql <FILE>   file holding one candidate CREATE INDEX (required, once)
         \\  --bind <N>:<TYPE>[:<VALUE>]
         \\                       typed value bound to parameter N, repeatable;
@@ -527,16 +578,20 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\                       ?NNN uses NNN; TYPE is int, real, text or null
         \\                       (null takes no value); every number in 1..parameter
         \\                       count must be given exactly once
-        \\  --timeout-ms <MS>    time limit for the index build and for each SELECT
-        \\                       run, 0 disables it (default 30000); a run can
-        \\                       wait up to the copy plus (3 + 4 x runs) limits
-        \\                       plus up to three diagnostic statement limits
+        \\  --timeout-ms <MS>    time limit for the index build, each SELECT run,
+        \\                       and each --write execution; 0 disables it
+        \\                       (default 30000); a run can wait up to the copy
+        \\                       plus (3 + 4 x runs) limits plus up to three
+        \\                       diagnostic statement limits
         \\  --runs <N>           timed rounds after a match, each timing the SELECT
         \\                       once per copy plus two baseline A/A runs; 0 skips
         \\                       the timing but keeps the row counts and verdict
         \\                       (default 10, at most
         \\                       1000); a timing that takes longer than a second
-        \\                       reports its progress on stderr
+        \\                       reports its progress on stderr. With --write, N is
+        \\                       the number of rolled-back executions per copy (at
+        \\                       least 1); every execution must report the same
+        \\                       counts
         \\  --format <FORMAT>    human (default), kv or json
         \\  --show-binds         print the bind values: human lists them in the
         \\                       summary, and kv and json add them after the
@@ -551,15 +606,17 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\  --version            print the version and exit with status 0
         \\  --help, -h           print this message and exit with status 0
         \\
-        \\The three paths may also be given by position: database, SELECT file,
-        \\CREATE INDEX file. They fill the first role not yet given. Use -- before
-        \\a path that starts with '-'.
+        \\The three paths may also be given by position: database, SELECT (or
+        \\write) file, CREATE INDEX file. They fill the first role not yet given.
+        \\Use -- before a path that starts with '-'.
         \\
         \\examples:
         \\  qenome app.db select.sql index.sql
         \\  qenome app.db select.sql index.sql --bind 1:int:1234
         \\  qenome --db app.db --select select.sql --index-sql index.sql --format kv
         \\  qenome app.db select.sql index.sql --format json
+        \\  qenome app.db --write update.sql --index-sql index.sql
+        \\  qenome --db app.db --write update.sql --index-sql index.sql --format json
         \\  qenome --d1 DB select.sql index.sql
         \\  qenome app.db --batch batch.json
         \\  qenome --db app.db --batch batch.json --format json
@@ -570,7 +627,8 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\
         \\The same paths can be given as --db, --select and --index-sql.
         \\With --d1, the two positional paths fill the SELECT and CREATE INDEX
-        \\roles, whatever the order of the paths and the option.
+        \\roles, whatever the order of the paths and the option. With --write,
+        \\a positional path fills the write file instead of the SELECT file.
         \\
         \\--d1 reads the top-level d1_databases bindings of a wrangler config and
         \\uses preview_database_id (database_id when it is not set) to find
@@ -642,6 +700,9 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\variant; the candidate index is built on the variant only. The SELECT
         \\runs on both copies and their result rows are compared. When they
         \\match, the SELECT is timed again on both copies in alternating rounds.
+        \\With --write, the statement runs once per requested round inside a
+        \\transaction on each copy and is rolled back, so the next round starts
+        \\from the same rows. The original database is never opened for writing.
         \\The directory is removed before exit.
         \\
         \\output (stdout, written once after every run; empty when an input is
@@ -694,9 +755,12 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\  summary counts those queries under needs_check. The
         \\  rows read and rows written use the same counting as local D1
         \\  (workerd patch). They are 32-bit counters that wrap past
-        \\  4294967295. The times are a reference only and never change the verdict
-        \\  or the exit status. Plan labels (kind, covering, automatic) are hints
-        \\  read from SQLite's wording; the detail text is what SQLite reported.
+        \\  4294967295. With --write, the result rows are the RETURNING rows (none
+        \\  without RETURNING) and both copies must also report the same changes
+        \\  and total_changes; a difference is a mismatch. The times are a
+        \\  reference only and never change the verdict or the exit status. Plan
+        \\  labels (kind, covering, automatic) are hints read from SQLite's
+        \\  wording; the detail text is what SQLite reported.
         \\
     );
 }
@@ -727,6 +791,10 @@ pub fn parseErrorMessage(err: ParseError) []const u8 {
         error.SuggestRejectsRuns => "--suggest does not run the timing; remove --runs (see --help)",
         error.SuggestRejectsKv => "--suggest supports --format human or --format json, not kv (see --help)",
         error.SuggestTakesTwoPaths => "--suggest takes two paths, the database and the SELECT file (see --help)",
+        error.WriteRejectsSelect => "use either --select or --write, not both (see --help)",
+        error.WriteRequiresSingle => "--write compares one statement; use --batch for a manifest (see --help)",
+        error.WriteRejectsSuggest => "--write names the statement; remove --suggest (see --help)",
+        error.WriteRejectsMigration => "--write compares one statement; remove --migration (see --help)",
         error.OutOfMemory => "out of memory",
     };
 }
@@ -1041,7 +1109,7 @@ test "missing required options keep the usage order" {
     const all = missingRequired(none, &buffer);
     try testing.expectEqual(@as(usize, 3), all.len);
     try testing.expectEqualStrings("the database (a path, --db or --d1)", all[0]);
-    try testing.expectEqualStrings("the SELECT file (a path or --select)", all[1]);
+    try testing.expectEqualStrings("the SELECT or write file (a path, --select or --write)", all[1]);
     try testing.expectEqualStrings("the CREATE INDEX file (a path or --index-sql)", all[2]);
 
     const partial = try parseArgs(testing.allocator, &.{ "Qenome", "--select", "s" });
@@ -1175,6 +1243,7 @@ test "every known long option is accepted by the parser" {
         &.{ "Qenome", "--batch", "batch.json", "--migration", "m.sql" },
         &.{ "Qenome", "--seed-data", "seed.json" },
         &.{ "Qenome", "--select", "s" },
+        &.{ "Qenome", "--write", "w" },
         &.{ "Qenome", "--index-sql", "i" },
         &.{ "Qenome", "--bind", "1:null" },
         &.{ "Qenome", "--timeout-ms", "1" },

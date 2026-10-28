@@ -13,6 +13,7 @@
 | `verify.sql` | 不変条件の検査（`sqlite3` CLI 専用） |
 | `seed.json` | `--seed-data` 用の50,000行のダミーデータ指定（Quick start で使う。fixture DB は変更しない） |
 | `cases/improved.sql` / `cases/improved.index.sql` | 改善する例の SELECT と候補DDL |
+| `cases/write.sql` | `--write` の例の INSERT（`cases/improved.index.sql` を候補に使う） |
 | `cases/no-effect.sql` / `cases/no-effect.index.sql` | 効果のない例の SELECT と候補DDL |
 | `cases/incomparable.sql` / `cases/incomparable.index.sql` | 結果を比較できない例の SELECT と候補DDL |
 | `generated/` | 生成したDBの置き場（`.gitignore` 対象。追跡しない） |
@@ -83,6 +84,21 @@ DBサイズは版によって変わりうるため検査には含めず、参考
 | 結果 | `result: incomparable`、終了コード 4、`verdict: not-judged`。SELECT は計測しない |
 
 この組は `README.md` / `README.ja.md` のクイックスタートで使う。候補DDL は比較の対象としては使われないため、改善する例と同じものを使っている。
+
+### 書き込みの例
+
+| 項目 | 値 |
+| --- | --- |
+| ファイル | `cases/write.sql` |
+| SQL | `INSERT INTO events(customer_id, status, note) VALUES (?, 'ok', 'new');` |
+| 代表バインド | 型 INTEGER・値 `1234` |
+| 候補DDL | `CREATE INDEX ix_events_customer_id ON events(customer_id);`（改善する例と同じ） |
+| 期待する書く行数 | baseline 1（テーブル1行）、variant 2（テーブル1行 + 候補インデックスの挿入1行） |
+| 期待する変更行数 | 両方 1 |
+| 結果 | `result: match`、`verdict: needs-check`、終了コード 0 |
+| 期待する読む行数 | 両方 0（INSERT ... VALUES は行を読まない） |
+
+`--write` は文をサンドボックスの各コピーで実行し、トランザクションをロールバックするので、元の DB は変わらない。書く行数は workerd の行数カウントで、テーブルの行とセカンダリインデックスの挿入、トリガーの挿入、外部キーの CASCADE を含む。セカンダリインデックスの削除は含まないため、`DELETE` では書く行数が増えないことがある。`DELETE ... WHERE` の読む行数がインデックスで減ることは、`src/cli/tests.zig` の統合テストで確認する。
 
 ## 期待値表
 

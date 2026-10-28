@@ -85,6 +85,7 @@ PRODUCTION_IMPORTS = {
     ],
     "src/cli/pair.zig": [
         "src/db.zig",
+        "src/sqlite.zig",
         "src/result.zig",
         "src/cli/comparison.zig",
         "src/cli/control.zig",

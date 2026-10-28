@@ -11,6 +11,9 @@ pub const Measurement = struct {
     plan: db.Plan,
     counters: db.Counters,
     columns: c_int,
+    changes: u64 = 0,
+    total_changes: u64 = 0,
+    executions: u32 = 0,
 };
 
 pub const Verdict = enum { match, mismatch, incomparable };
@@ -34,6 +37,41 @@ pub const Outcome = struct {
         self.reason_count += 1;
     }
 };
+
+pub fn writeIncomparable(arena: std.mem.Allocator, clues: db.Clues) ?Outcome {
+    var outcome: Outcome = .{ .verdict = .incomparable };
+    if (clues.nondeterministic_function) |name| outcome.addReason(
+        print(arena, "the write calls {s}(), whose result changes between runs", name),
+        print(arena, "compare the write without {s}()", name),
+    );
+    if (clues.time_function) |name| outcome.addReason(
+        print(arena, "the write calls {s}(), which reads the current time", name),
+        "remove the time function or bind a fixed value instead",
+    );
+    if (clues.schema_table) |name| outcome.addReason(
+        print(arena, "the write reads {s}, which differs when the candidate index exists", name),
+        "writes that read the schema tables are not compared",
+    );
+    return if (outcome.reason_count == 0) null else outcome;
+}
+
+pub fn writeRepeatMismatch(side: Side) Outcome {
+    var outcome: Outcome = .{ .verdict = .incomparable };
+    outcome.addReason(
+        if (side == .baseline)
+            "the repeated runs on the baseline reported different counts, so the write is not repeatable from the same rows"
+        else
+            "the repeated runs on the variant reported different counts, so the write is not repeatable from the same rows",
+        "use --runs 0 to measure one run, or remove the value that changes between runs",
+    );
+    return outcome;
+}
+
+pub fn writeChangesMismatch() Judgement {
+    var judgement: Judgement = .{ .verdict = .not_judged };
+    judgement.add("the two copies changed a different number of rows, so the row counts are not judged");
+    return judgement;
+}
 
 const over_budget_reason = std.fmt.comptimePrint(
     "the result rows exceed the {d} MiB kept for the comparison",

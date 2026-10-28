@@ -8,6 +8,7 @@
   "required": [
     "schema_version",
     "exit_code",
+    "statement",
     "verdict",
     "verdict_reasons",
     "result",
@@ -31,8 +32,12 @@
       "description": "A variant-only --migration comparison writes 0 and does not change the batch exit code.",
       "enum": [0, 3, 4]
     },
+    "statement": {
+      "description": "select for a SELECT comparison, write for an INSERT, UPDATE, DELETE, or REPLACE comparison.",
+      "enum": ["select", "write"]
+    },
     "verdict": {
-      "description": "regressed appears only in a --migration batch: the rows match but the migration made the query read or write more rows. not-judged also covers a variant-only --migration query whose baseline cannot prepare it.",
+      "description": "regressed appears only in a --migration batch: the rows match but the migration made the query read or write more rows. not-judged also covers a variant-only --migration query whose baseline cannot prepare it, and a --write comparison that was not run.",
       "enum": ["improved", "no-effect", "needs-check", "regressed", "not-judged"]
     },
     "verdict_reasons": { "type": "array", "items": { "type": "string" } },
@@ -209,10 +214,15 @@
     "inputs": {
       "type": "object",
       "additionalProperties": true,
-      "required": ["database", "select", "index_sql"],
+      "required": ["database", "index_sql"],
+      "anyOf": [
+        { "required": ["select"] },
+        { "required": ["write"] }
+      ],
       "properties": {
         "database": { "type": "string" },
         "select": { "type": "string" },
+        "write": { "type": "string" },
         "index_sql": { "type": "string" }
       }
     },
@@ -271,6 +281,18 @@
         "rows": { "type": "integer" },
         "plan": { "type": "array" },
         "counters": { "$ref": "#/$defs/counters" },
+        "changes": {
+          "description": "Present only for --write: sqlite3_changes for the statement (trigger and foreign-key changes excluded).",
+          "type": "integer"
+        },
+        "total_changes": {
+          "description": "Present only for --write: the difference of sqlite3_total_changes (trigger and foreign-key changes included).",
+          "type": "integer"
+        },
+        "executions": {
+          "description": "Present only for --write: the rolled-back executions per copy.",
+          "type": "integer"
+        },
         "rows_read": {
           "description": "Not emitted at this level. The implemented field is counters.rows_read.",
           "type": "integer"

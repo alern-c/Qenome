@@ -24,6 +24,7 @@ pub const Seed = struct {
 pub const Header = struct {
     database_path: []const u8,
     select_path: []const u8,
+    write_path: ?[]const u8 = null,
     index_path: []const u8,
     work_parent: []const u8,
     sqlite_version: [*:0]const u8,
@@ -117,6 +118,7 @@ pub const Report = struct {
     sizes: Sizes = .{},
     judgement: cli_comparison.Judgement,
     warnings: Warnings = .{},
+    write_runs: u32 = 0,
 };
 
 pub const Error = Io.Writer.Error || std.mem.Allocator.Error;
@@ -147,9 +149,13 @@ pub fn writeSummary(
     outcome: cli_comparison.Outcome,
     report: Report,
 ) Error!void {
-    try stdout.print("db: {s}\nselect: {s}\nindex-sql: {s}\nmeasured-on: baseline (candidate index not applied)\nrows: {d}\n", .{
-        header.database_path, header.select_path, header.index_path, before.rows,
-    });
+    try stdout.print("db: {s}\n", .{header.database_path});
+    if (header.write_path) |path| {
+        try stdout.print("write: {s}\n", .{path});
+    } else {
+        try stdout.print("select: {s}\n", .{header.select_path});
+    }
+    try stdout.print("index-sql: {s}\nmeasured-on: baseline (candidate index not applied)\nrows: {d}\n", .{ header.index_path, before.rows });
     try stdout.print("sqlite: {s}\nsqlite-source-id: {s}\n", .{
         header.sqlite_version, header.sqlite_source_id,
     });
@@ -157,11 +163,26 @@ pub fn writeSummary(
     try writePlanAndCounters(stdout, before);
     try stdout.print("measured-on: variant (candidate index applied)\nrows: {d}\n", .{after.rows});
     try writePlanAndCounters(stdout, after);
+    if (header.write_path != null) {
+        try stdout.print(
+            "write-changes-baseline: {d}\nwrite-changes-variant: {d}\nwrite-total-changes-baseline: {d}\nwrite-total-changes-variant: {d}\nwrite-runs: {d}\n",
+            .{ before.changes, after.changes, before.total_changes, after.total_changes, before.executions },
+        );
+    }
 
-    switch (outcome.verdict) {
-        .match => try stdout.writeAll("result: match (row multiset)\n"),
-        .mismatch => try stdout.writeAll("result: mismatch (row multiset; the cause is not determined)\n"),
-        .incomparable => try stdout.writeAll("result: incomparable\n"),
+    if (header.write_path != null) {
+        switch (outcome.verdict) {
+            .match => try stdout.writeAll("result: match (RETURNING rows)\n"),
+            .mismatch => try stdout.writeAll("result: mismatch (RETURNING rows; the cause is not determined)\n"),
+            .incomparable => try stdout.writeAll("result: incomparable\n"),
+        }
+        try stdout.writeAll("result-kind: returning rows (empty without RETURNING)\n");
+    } else {
+        switch (outcome.verdict) {
+            .match => try stdout.writeAll("result: match (row multiset)\n"),
+            .mismatch => try stdout.writeAll("result: mismatch (row multiset; the cause is not determined)\n"),
+            .incomparable => try stdout.writeAll("result: incomparable\n"),
+        }
     }
     for (outcome.reasons[0..outcome.reason_count]) |reason| {
         try stdout.print("incomparable-reason: {s}\n", .{reason.text});
@@ -200,18 +221,33 @@ pub fn writeFacts(stdout: *Io.Writer, allocator: std.mem.Allocator, header: Head
         try stdout.writeByte('\n');
     }
     const rounds = if (report.timing) |timing| timing.rounds else 0;
-    try stdout.print(
-        \\measure-runs: {d} per copy
-        \\measure-warmup: {s}
-        \\measure-order: {s}
-        \\measure-scope: {s}
-        \\measure-cache: {s}
-        \\work-dir-parent: {s}
-        \\zig: {s}
-        \\build-mode: {t}
-        \\os-arch: {t}-{t}
-        \\
-    , .{ rounds, measure_warmup, measure_order, measure_scope, measure_cache, header.work_parent, builtin.zig_version_string, builtin.mode, builtin.os.tag, builtin.cpu.arch });
+    if (header.write_path != null) {
+        try stdout.print(
+            \\measure-runs: {d} per copy (each run in a transaction and rolled back)
+            \\measure-warmup: {s}
+            \\measure-order: {s}
+            \\measure-scope: {s}
+            \\measure-cache: {s}
+            \\work-dir-parent: {s}
+            \\zig: {s}
+            \\build-mode: {t}
+            \\os-arch: {t}-{t}
+            \\
+        , .{ report.write_runs, write_measure_warmup, write_measure_order, write_measure_scope, write_measure_cache, header.work_parent, builtin.zig_version_string, builtin.mode, builtin.os.tag, builtin.cpu.arch });
+    } else {
+        try stdout.print(
+            \\measure-runs: {d} per copy
+            \\measure-warmup: {s}
+            \\measure-order: {s}
+            \\measure-scope: {s}
+            \\measure-cache: {s}
+            \\work-dir-parent: {s}
+            \\zig: {s}
+            \\build-mode: {t}
+            \\os-arch: {t}-{t}
+            \\
+        , .{ rounds, measure_warmup, measure_order, measure_scope, measure_cache, header.work_parent, builtin.zig_version_string, builtin.mode, builtin.os.tag, builtin.cpu.arch });
+    }
     if (header.seed) |seed| {
         try stdout.print("seed-data: {s}\nseed: {d}\nseed-rows: {d}\nseed-tables: {d}\n", .{ seed.path, seed.seed, seed.rows, seed.tables.len });
         for (seed.tables) |table| {
@@ -248,6 +284,10 @@ const measure_warmup = "1 per copy (the run whose rows were compared, not timed)
 const measure_order = "each round: baseline-baseline A/A, then alternating baseline-variant or variant-baseline (ABBA)";
 const measure_scope = "sqlite3_step from the reset statement to SQLITE_DONE with the interrupt checks; columns are not read; prepare, bind, and the plan read are not timed";
 const measure_cache = "warm; each copy reuses its connection and page cache, and its file was just written";
+const write_measure_warmup = "none (every run starts from the same rows)";
+const write_measure_order = "baseline then variant; every run is rolled back";
+const write_measure_scope = "sqlite3_step from the reset statement to SQLITE_DONE; rows written includes secondary-index inserts, triggers, and foreign-key cascades, but not secondary-index deletes";
+const write_measure_cache = "warm; each copy reuses its connection and page cache";
 
 fn writeBind(writer: *Io.Writer, bind: cli_args.BindArg, show: bool) Io.Writer.Error!void {
     try writer.print("{d}:", .{bind.number});
@@ -393,6 +433,8 @@ fn writeJsonComparison(
     try json.write(json_schema_version);
     try json.objectField("exit_code");
     try json.write(header.exit_code);
+    try json.objectField("statement");
+    try json.write(if (header.write_path != null) "write" else "select");
     try json.objectField("verdict");
     try json.write(report.judgement.verdict.text());
     try json.objectField("verdict_reasons");
@@ -418,12 +460,12 @@ fn writeJsonComparison(
     try json.write(if (before) |value| !cli_comparison.samePlan(value.plan, after.plan) else true);
     try json.objectField("baseline");
     if (before) |value| {
-        try writeJsonMeasurement(&json, allocator, value);
+        try writeJsonMeasurement(&json, allocator, value, header.write_path != null);
     } else {
         try json.write(null);
     }
     try json.objectField("variant");
-    try writeJsonMeasurement(&json, allocator, after);
+    try writeJsonMeasurement(&json, allocator, after, header.write_path != null);
     try json.objectField("timing");
     if (report.timing) |timing| {
         try writeJsonTiming(&json, timing);
@@ -461,8 +503,13 @@ fn writeJsonComparison(
     try json.beginObject();
     try json.objectField("database");
     try writeJsonText(&json, allocator, header.database_path);
-    try json.objectField("select");
-    try writeJsonText(&json, allocator, header.select_path);
+    if (header.write_path) |path| {
+        try json.objectField("write");
+        try writeJsonText(&json, allocator, path);
+    } else {
+        try json.objectField("select");
+        try writeJsonText(&json, allocator, header.select_path);
+    }
     try json.objectField("index_sql");
     try writeJsonText(&json, allocator, header.index_path);
     try json.endObject();
@@ -496,15 +543,20 @@ fn writeJsonComparison(
     try json.objectField("measurement");
     try json.beginObject();
     try json.objectField("runs_per_copy");
-    try json.write(if (report.timing) |timing| timing.rounds else 0);
+    try json.write(if (header.write_path != null)
+        report.write_runs
+    else if (report.timing) |timing|
+        timing.rounds
+    else
+        0);
     try json.objectField("warmup");
-    try json.write(measure_warmup);
+    try json.write(if (header.write_path != null) write_measure_warmup else measure_warmup);
     try json.objectField("order");
-    try json.write(measure_order);
+    try json.write(if (header.write_path != null) write_measure_order else measure_order);
     try json.objectField("scope");
-    try json.write(measure_scope);
+    try json.write(if (header.write_path != null) write_measure_scope else measure_scope);
     try json.objectField("cache");
-    try json.write(measure_cache);
+    try json.write(if (header.write_path != null) write_measure_cache else measure_cache);
     try json.endObject();
     try json.objectField("binds");
     try writeJsonBinds(&json, allocator, header);
@@ -604,6 +656,7 @@ fn writeJsonMeasurement(
     json: *std.json.Stringify,
     allocator: std.mem.Allocator,
     measurement: cli_comparison.Measurement,
+    write: bool,
 ) Error!void {
     try json.beginObject();
     try json.objectField("rows");
@@ -642,6 +695,14 @@ fn writeJsonMeasurement(
     try json.objectField("autoindex_rows");
     try json.write(measurement.counters.autoindex_rows);
     try json.endObject();
+    if (write) {
+        try json.objectField("changes");
+        try json.write(measurement.changes);
+        try json.objectField("total_changes");
+        try json.write(measurement.total_changes);
+        try json.objectField("executions");
+        try json.write(measurement.executions);
+    }
     try json.endObject();
 }
 
@@ -829,7 +890,7 @@ pub fn writeHumanSummary(
     try writeOverview(stdout, header, before, after, outcome, report);
     if (header.d1 != null) try writeD1Human(stdout, header);
     try stdout.writeByte('\n');
-    try writeSideBySide(stdout, before, after, report);
+    try writeSideBySide(stdout, before, after, report, header.write_path != null);
     try stdout.writeAll("\nQuery plan\n");
     try stdout.writeAll("  baseline (candidate index not applied)\n");
     try writePlan(stdout, before.plan);
@@ -851,6 +912,7 @@ fn writeOverview(
     report: Report,
 ) Io.Writer.Error!void {
     try stdout.writeAll("Summary\n");
+    if (header.write_path) |path| try writeField(stdout, "write", path);
     try writeField(stdout, "result rows", switch (outcome.verdict) {
         .match => "match (the same rows on both copies)",
         .mismatch => "MISMATCH (the rows differ; the cause is not determined)",
@@ -858,14 +920,37 @@ fn writeOverview(
     });
     var rows_buffer: [64]u8 = undefined;
     var rows_text = Io.Writer.fixed(&rows_buffer);
+    if (header.write_path != null) {
+        try writeRowPair(&rows_text, before.rows, after.rows);
+        try writeField(stdout, "returning rows", rows_text.buffered());
+        rows_text = Io.Writer.fixed(&rows_buffer);
+    }
     try writeRowPair(&rows_text, before.counters.rows_read, after.counters.rows_read);
     try writeField(stdout, "rows read", rows_text.buffered());
     rows_text = Io.Writer.fixed(&rows_buffer);
     try writeRowPair(&rows_text, before.counters.rows_written, after.counters.rows_written);
     try writeField(stdout, "rows written", rows_text.buffered());
+    if (header.write_path != null) {
+        rows_text = Io.Writer.fixed(&rows_buffer);
+        try writeRowPair(&rows_text, before.changes, after.changes);
+        try writeField(stdout, "rows changed", rows_text.buffered());
+        rows_text = Io.Writer.fixed(&rows_buffer);
+        try writeRowPair(&rows_text, before.total_changes, after.total_changes);
+        try writeField(stdout, "total changed", rows_text.buffered());
+        rows_text = Io.Writer.fixed(&rows_buffer);
+        try rows_text.print("{d} per copy (each run rolled back)", .{before.executions});
+        try writeField(stdout, "write runs", rows_text.buffered());
+    }
+    const writing = header.write_path != null;
     try writeField(stdout, "verdict", switch (report.judgement.verdict) {
-        .improved => "improved: the rows match, and the variant reads fewer rows",
-        .no_effect => "no-effect: the rows match, and the variant reads the same rows",
+        .improved => if (writing)
+            "improved: the RETURNING rows match, and the variant reads fewer rows without writing more"
+        else
+            "improved: the rows match, and the variant reads fewer rows",
+        .no_effect => if (writing)
+            "no-effect: the RETURNING rows match, and both copies read and write the same rows"
+        else
+            "no-effect: the rows match, and the variant reads the same rows",
         .needs_check => "needs-check:",
         .regressed => "regressed:",
         .not_judged => "not-judged:",
@@ -899,6 +984,8 @@ fn writeOverview(
         try writeDuration(&text, timing.variant.median);
         try text.writeAll("; ");
         try writeTimeAssessment(&text, timing.baseline.median, timing.variant.median, timing.evidence.effect);
+    } else if (header.write_path != null) {
+        try text.writeAll("not timed (write mode; every run is rolled back and no timing rounds are run)");
     } else {
         try text.writeAll("not measured (0 rounds; reference only)");
     }
@@ -928,11 +1015,16 @@ fn writeSideBySide(
     before: cli_comparison.Measurement,
     after: cli_comparison.Measurement,
     report: Report,
+    write: bool,
 ) Io.Writer.Error!void {
     try stdout.print("{s:<22}{s:>16}{s:>16}{s:>16}\n", .{ "Baseline vs variant", "baseline", "variant", "change" });
     try writeCountRow(stdout, "rows read", before.counters.rows_read, after.counters.rows_read);
     try writeCountRow(stdout, "rows written", before.counters.rows_written, after.counters.rows_written);
-    try writeCountRow(stdout, "result rows", before.rows, after.rows);
+    if (write) {
+        try writeCountRow(stdout, "rows changed", before.changes, after.changes);
+        try writeCountRow(stdout, "total changed", before.total_changes, after.total_changes);
+    }
+    try writeCountRow(stdout, if (write) "returning rows" else "result rows", before.rows, after.rows);
     try writeCountRow(stdout, "fullscan-steps", before.counters.fullscan_steps, after.counters.fullscan_steps);
     try writeCountRow(stdout, "vm-steps", before.counters.vm_steps, after.counters.vm_steps);
     if (before.counters.sort_ops != 0 or after.counters.sort_ops != 0) {
@@ -978,7 +1070,7 @@ fn writeTableRow(stdout: *Io.Writer, label: []const u8, baseline: []const u8, va
     try stdout.writeByte('\n');
 }
 
-fn writeRowPair(writer: *Io.Writer, baseline: u32, variant: u32) Io.Writer.Error!void {
+fn writeRowPair(writer: *Io.Writer, baseline: u64, variant: u64) Io.Writer.Error!void {
     try writeCount(writer, baseline);
     try writer.writeAll(" -> ");
     try writeCount(writer, variant);
@@ -1108,7 +1200,8 @@ fn writeExamples(stdout: *Io.Writer, label: []const u8, count: usize, examples: 
 
 fn writeLabel(stdout: *Io.Writer, label: []const u8) Io.Writer.Error!void {
     try stdout.print("  {s}", .{label});
-    try writeIndent(stdout, value_column -| (2 + label.len));
+    const used = 2 + label.len;
+    try writeIndent(stdout, if (used < value_column) value_column - used else 1);
 }
 
 fn writeField(stdout: *Io.Writer, label: []const u8, value: []const u8) Io.Writer.Error!void {

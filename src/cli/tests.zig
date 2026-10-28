@@ -93,6 +93,18 @@ const CliFixture = struct {
         return callRun(testing.allocator, argv[0 .. required.len + extra.len], self.work_parent, stdout_buffer, stderr_buffer);
     }
 
+    fn runWrite(self: *CliFixture, extra: []const [:0]const u8, stdout_buffer: []u8, stderr_buffer: []u8) RunResult {
+        return self.runWriteFormat("human", extra, stdout_buffer, stderr_buffer);
+    }
+
+    fn runWriteFormat(self: *CliFixture, format: [:0]const u8, extra: []const [:0]const u8, stdout_buffer: []u8, stderr_buffer: []u8) RunResult {
+        var argv: [26][:0]const u8 = undefined;
+        const required = [_][:0]const u8{ "Qenome", "--db", self.db_path, "--write", self.select_path, "--index-sql", self.index_path, "--format", format };
+        @memcpy(argv[0..required.len], &required);
+        @memcpy(argv[required.len..][0..extra.len], extra);
+        return callRun(testing.allocator, argv[0 .. required.len + extra.len], self.work_parent, stdout_buffer, stderr_buffer);
+    }
+
     fn writeFile(self: *CliFixture, sub_path: []const u8, data: []const u8) !void {
         try self.dir.tmp.dir.writeFile(testing.io, .{ .sub_path = sub_path, .data = data });
     }
@@ -239,7 +251,7 @@ test "a bare invocation shows the synopsis and every missing option" {
     try testing.expectEqualStrings(
         "usage: qenome <DB> <SELECT_FILE> <INDEX_FILE> [options]\n" ++
             "       qenome --d1 <BINDING> <SELECT_FILE> <INDEX_FILE> [options]\n" ++
-            "error: missing: the database (a path, --db or --d1), the SELECT file (a path or --select), the CREATE INDEX file (a path or --index-sql) (see --help)\n",
+            "error: missing: the database (a path, --db or --d1), the SELECT or write file (a path, --select or --write), the CREATE INDEX file (a path or --index-sql) (see --help)\n",
         result.stderr,
     );
 }
@@ -248,7 +260,7 @@ test "the remaining required options are listed together" {
     const cases = [_]struct { argv: []const [:0]const u8, stderr: []const u8 }{
         .{
             .argv = &.{ "Qenome", "--db", "x" },
-            .stderr = "error: missing: the SELECT file (a path or --select), the CREATE INDEX file (a path or --index-sql) (see --help)\n",
+            .stderr = "error: missing: the SELECT or write file (a path, --select or --write), the CREATE INDEX file (a path or --index-sql) (see --help)\n",
         },
         .{
             .argv = &.{ "Qenome", "--db", "x", "--select", "y" },
@@ -375,7 +387,7 @@ test "a version after the double dash is a path" {
     try testing.expectEqual(ExitCode.usage, result.code);
     try testing.expectEqualStrings("", result.stdout);
     try testing.expectEqualStrings(
-        "error: missing: the SELECT file (a path or --select), the CREATE INDEX file (a path or --index-sql) (see --help)\n",
+        "error: missing: the SELECT or write file (a path, --select or --write), the CREATE INDEX file (a path or --index-sql) (see --help)\n",
         result.stderr,
     );
 }
@@ -2435,6 +2447,36 @@ test "d1 stops with status 4 when the local database does not exist yet" {
     try testing.expect(contains(result.stderr, "no local D1 database at"));
     try testing.expect(contains(result.stderr, d1_file_name));
     try testing.expect(contains(result.stderr, "wrangler d1 execute"));
+    try fixture.expectNoLeftovers();
+}
+
+test "d1 with --write compares the local database" {
+    var fixture = try D1Fixture.init(testing.allocator, "wrangler.toml", d1_toml, true);
+    defer fixture.deinit(testing.allocator);
+    try fixture.dir.tmp.dir.writeFile(testing.io, .{ .sub_path = "select.sql", .data = "INSERT INTO t(b) VALUES ('w')" });
+
+    var stdout_buffer: [32768]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = callRun(testing.allocator, &.{
+        "Qenome",
+        "--d1",
+        "DB",
+        "--config",
+        fixture.config_path,
+        "--write",
+        fixture.select_path,
+        "--index-sql",
+        fixture.index_path,
+        "--runs",
+        "0",
+    }, fixture.work_parent, &stdout_buffer, &stderr_buffer);
+
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+    try testing.expect(contains(result.stdout, "write"));
+    try testing.expect(contains(result.stdout, "rows written  2 -> 3"));
+    try testing.expect(contains(result.stdout, "\nD1\n"));
+    try testing.expect(contains(result.stdout, "DB"));
     try fixture.expectNoLeftovers();
 }
 
@@ -4737,4 +4779,239 @@ test "a sequence keeps the values that fit even when the intermediate product do
     try testing.expectEqual(std.math.minInt(i64), try scalarOn(path, "SELECT min(v) FROM r"));
     try testing.expectEqual(@as(i64, 9223372036854775806), try scalarOn(path, "SELECT max(v) FROM r"));
     try testing.expectEqual(@as(i64, 1), try scalarOn(path, "SELECT count(*) FROM r WHERE v = -1"));
+}
+
+test "a write comparison reports the rows written on both copies" {
+    var fixture = try CliFixture.init("INSERT INTO t(b) VALUES ('w')", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+
+    var stdout_buffer: [8192]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const result = fixture.runWrite(&.{ "--runs", "0" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+    try testing.expect(contains(result.stdout, fixture.select_path));
+    try testing.expect(contains(result.stdout, "rows written  2 -> 3"));
+    try testing.expect(contains(result.stdout, "rows changed  1 -> 1"));
+    try testing.expect(contains(result.stdout, "write runs"));
+    try testing.expect(contains(result.stdout, "returning rows 0 -> 0"));
+    try testing.expect(contains(result.stdout, "verdict       needs-check"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a delete uses the candidate index for its search and keeps the write count" {
+    const schema =
+        \\CREATE TABLE t(a INTEGER, b TEXT);
+        \\WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x + 1 FROM n WHERE x < 100)
+        \\INSERT INTO t SELECT x, 'v' || x FROM n;
+    ;
+    var fixture = try CliFixture.initWithSchema("DELETE FROM t WHERE a = 1", "CREATE INDEX idx_a ON t(a)", schema);
+    defer fixture.deinit();
+
+    var stdout_buffer: [8192]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const result = fixture.runWrite(&.{ "--runs", "0" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+    try testing.expect(contains(result.stdout, "rows read     100 -> 2"));
+    try testing.expect(contains(result.stdout, "rows written  1 -> 1"));
+    try testing.expect(contains(result.stdout, "rows changed  1 -> 1"));
+    try testing.expect(contains(result.stdout, "verdict       improved"));
+    try fixture.expectNoLeftovers();
+}
+
+test "write mode repeats the same statement and reports the first run" {
+    var fixture = try CliFixture.init("INSERT INTO t(b) VALUES ('w')", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+
+    var stdout_buffer: [16384]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const result = fixture.runWriteFormat("json", &.{ "--runs", "3" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    try testing.expectEqualStrings("write", try jsonText(parsed.value, "statement"));
+    const measurement = try jsonGet(parsed.value, "measurement");
+    try testing.expectEqual(@as(i64, 3), try jsonInt(measurement, "runs_per_copy"));
+    const baseline = try jsonGet(parsed.value, "baseline");
+    const variant = try jsonGet(parsed.value, "variant");
+    try testing.expectEqual(@as(i64, 3), try jsonInt(baseline, "executions"));
+    try testing.expectEqual(@as(i64, 3), try jsonInt(variant, "executions"));
+    try testing.expectEqual(@as(i64, 1), try jsonInt(baseline, "changes"));
+    try testing.expectEqual(@as(i64, 1), try jsonInt(baseline, "total_changes"));
+    const counters = try jsonGet(baseline, "counters");
+    try testing.expectEqual(@as(i64, 2), try jsonInt(counters, "rows_written"));
+    const inputs = try jsonGet(parsed.value, "inputs");
+    try testing.expectEqualStrings(fixture.select_path, try jsonText(inputs, "write"));
+    try testing.expect(switch (inputs) {
+        .object => |object| object.get("select") == null,
+        else => false,
+    });
+    try testing.expectEqual(std.json.Value.null, try jsonGet(parsed.value, "timing"));
+}
+
+test "a write comparison leaves the source database and its wal bytes unchanged" {
+    var fixture = try CliFixture.init("INSERT INTO w(a) VALUES (4)", "CREATE INDEX idx_w ON w(a)");
+    defer fixture.deinit();
+    const wal_path = try std.fmt.allocPrintSentinel(testing.allocator, "{s}/../wal.db", .{fixture.work_parent}, 0);
+    defer testing.allocator.free(wal_path);
+    const writer = try db.openTestWriter(wal_path,
+        \\PRAGMA journal_mode=WAL;
+        \\PRAGMA wal_autocheckpoint=0;
+        \\CREATE TABLE w(a INTEGER);
+        \\INSERT INTO w VALUES (1), (2), (3);
+    );
+    defer _ = sqlite.sqlite3_close(writer);
+
+    const statements = [_][]const u8{
+        "INSERT INTO w(a) VALUES (4)",
+        "UPDATE w SET a = 9 WHERE a = 1",
+        "DELETE FROM w WHERE a = 1",
+    };
+    for (statements) |sql| {
+        try fixture.writeFile("select.sql", sql);
+        const main_before = try readFixtureFile(&fixture, "wal.db");
+        defer testing.allocator.free(main_before);
+        const wal_before = try readFixtureFile(&fixture, "wal.db-wal");
+        defer testing.allocator.free(wal_before);
+        try testing.expect(wal_before.len > 0);
+
+        var stdout_buffer: [8192]u8 = undefined;
+        var stderr_buffer: [1024]u8 = undefined;
+        const result = callRun(testing.allocator, &.{
+            "Qenome",
+            "--db",
+            wal_path,
+            "--write",
+            fixture.select_path,
+            "--index-sql",
+            fixture.index_path,
+            "--runs",
+            "0",
+        }, fixture.work_parent, &stdout_buffer, &stderr_buffer);
+        try testing.expectEqual(ExitCode.ok, result.code);
+        try testing.expectEqualStrings("", result.stderr);
+
+        const main_after = try readFixtureFile(&fixture, "wal.db");
+        defer testing.allocator.free(main_after);
+        const wal_after = try readFixtureFile(&fixture, "wal.db-wal");
+        defer testing.allocator.free(wal_after);
+        try testing.expectEqualSlices(u8, main_before, main_after);
+        try testing.expectEqualSlices(u8, wal_before, wal_after);
+    }
+    try fixture.expectNoLeftovers();
+}
+
+test "a write command accepts a trigger and includes its writes" {
+    const schema =
+        \\CREATE TABLE t(a INTEGER, b TEXT);
+        \\CREATE TABLE log(x INTEGER);
+        \\CREATE TRIGGER tr AFTER INSERT ON t BEGIN INSERT INTO log VALUES(new.a); END;
+    ;
+    var fixture = try CliFixture.initWithSchema("INSERT INTO t(a, b) VALUES (3, 'z')", "CREATE INDEX idx_a ON t(a)", schema);
+    defer fixture.deinit();
+
+    var stdout_buffer: [8192]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const result = fixture.runWrite(&.{ "--runs", "0" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+    try testing.expect(contains(result.stdout, "rows written  2 -> 3"));
+    try testing.expect(contains(result.stdout, "rows changed  1 -> 1"));
+    try testing.expectEqual(@as(i64, 0), try scalarOn(fixture.db_path, "SELECT count(*) FROM log"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a write with random, the current time, or the schema is not run" {
+    const cases = [_]struct { sql: []const u8, reason: []const u8 }{
+        .{ .sql = "INSERT INTO t SELECT a, b FROM t WHERE random() > 0", .reason = "the write calls random()" },
+        .{ .sql = "INSERT INTO t(a, b) VALUES (julianday('now'), 'x')", .reason = "the write calls julianday()" },
+        .{ .sql = "INSERT INTO t SELECT name, sql FROM sqlite_master", .reason = "the write reads sqlite_master" },
+    };
+    for (cases) |case| {
+        var fixture = try CliFixture.init(case.sql, "CREATE INDEX idx_a ON t(a)");
+        defer fixture.deinit();
+
+        var stdout_buffer: [8192]u8 = undefined;
+        var stderr_buffer: [1024]u8 = undefined;
+        const result = fixture.runWrite(&.{ "--runs", "0" }, &stdout_buffer, &stderr_buffer);
+        try testing.expectEqual(ExitCode.incomparable, result.code);
+        try testing.expectEqualStrings("", result.stderr);
+        try testing.expect(contains(result.stdout, case.reason));
+        try testing.expect(contains(result.stdout, "the write was not run, so the row counts are not judged"));
+        try testing.expect(contains(result.stdout, "rows written  0 -> 0"));
+        try fixture.expectNoLeftovers();
+    }
+}
+
+test "a returning write compares its rows and reports them" {
+    var fixture = try CliFixture.init("INSERT INTO t(a, b) VALUES (3, 'z') RETURNING a, b", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+
+    var stdout_buffer: [8192]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const result = fixture.runWrite(&.{ "--runs", "0" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+    try testing.expect(contains(result.stdout, "returning rows 1 -> 1"));
+    try testing.expect(contains(result.stdout, "rows written  2 -> 3"));
+    try testing.expect(contains(result.stdout, "returning rows 1 -> 1"));
+    try fixture.expectNoLeftovers();
+}
+
+test "write mode conflicts with the other statement inputs" {
+    const cases = [_]struct { argv: []const [:0]const u8, stderr: []const u8 }{
+        .{ .argv = &.{ "Qenome", "--write", "w", "--select", "s" }, .stderr = "error: use either --select or --write, not both (see --help)\n" },
+        .{ .argv = &.{ "Qenome", "--write", "w", "--suggest" }, .stderr = "error: --write names the statement; remove --suggest (see --help)\n" },
+        .{ .argv = &.{ "Qenome", "--write", "w", "--batch", "b" }, .stderr = "error: --write compares one statement; use --batch for a manifest (see --help)\n" },
+        .{ .argv = &.{ "Qenome", "--write", "w", "--batch", "b", "--migration", "m" }, .stderr = "error: --write compares one statement; remove --migration (see --help)\n" },
+    };
+    for (cases) |case| {
+        var stdout_buffer: [256]u8 = undefined;
+        var stderr_buffer: [512]u8 = undefined;
+        const result = callRun(testing.allocator, case.argv, null, &stdout_buffer, &stderr_buffer);
+        try testing.expectEqual(ExitCode.usage, result.code);
+        try testing.expectEqualStrings("", result.stdout);
+        try testing.expectEqualStrings(case.stderr, result.stderr);
+    }
+}
+
+test "write mode can take the write file and the index by position" {
+    var fixture = try CliFixture.init("INSERT INTO t(b) VALUES ('w')", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+
+    var stdout_buffer: [8192]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const result = callRun(testing.allocator, &.{
+        "Qenome", "--write", fixture.select_path, fixture.db_path, fixture.index_path, "--runs", "0",
+    }, fixture.work_parent, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+    try testing.expect(contains(stdout_buffer[0..stdout_buffer.len], "rows written  2 -> 3"));
+    try fixture.expectNoLeftovers();
+}
+
+test "the json comparison keeps the select contract" {
+    var fixture = try CliFixture.init("SELECT a FROM t", "CREATE INDEX idx_a ON t(a)");
+    defer fixture.deinit();
+
+    var stdout_buffer: [16384]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    const result = fixture.runFormat("json", &.{ "--runs", "0" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    try testing.expectEqualStrings("select", try jsonText(parsed.value, "statement"));
+    const inputs = try jsonGet(parsed.value, "inputs");
+    try testing.expectEqualStrings(fixture.select_path, try jsonText(inputs, "select"));
+    try testing.expectEqualStrings(fixture.index_path, try jsonText(inputs, "index_sql"));
+    const baseline = try jsonGet(parsed.value, "baseline");
+    try testing.expect(switch (baseline) {
+        .object => |object| object.get("changes") == null,
+        else => false,
+    });
 }

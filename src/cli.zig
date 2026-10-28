@@ -243,11 +243,13 @@ fn runCaptured(
         return finalExitCode(suggest_code, suggest_cleanup_failed);
     }
 
-    const select_path = args.select.?;
+    const write_path = args.write;
+    const select_path = write_path orelse args.select.?;
     const index_path = args.index_sql.?;
 
+    const option: []const u8 = if (write_path != null) "--write" else "--select";
     const select_sql = readSqlFile(io, arena, select_path) catch |err| {
-        reportSqlFileError(stderr, "--select", select_path, err) catch {};
+        reportSqlFileError(stderr, option, select_path, err) catch {};
         return .rejected;
     };
     const index_sql = readSqlFile(io, arena, index_path) catch |err| {
@@ -277,6 +279,8 @@ fn runCaptured(
             .select_path = select_path,
             .index_path = index_path,
             .select_sql = select_sql,
+            .write_path = write_path,
+            .write_sql = if (write_path != null) select_sql else null,
             .index_sql = index_sql,
             .binds = args.binds,
             .timeout_ms = args.timeout_ms,
@@ -300,6 +304,8 @@ const Inputs = struct {
     select_path: [:0]const u8,
     index_path: [:0]const u8,
     select_sql: [:0]const u8,
+    write_path: ?[:0]const u8 = null,
+    write_sql: ?[:0]const u8 = null,
     index_sql: [:0]const u8,
     binds: []const db.BindArg,
     timeout_ms: u64,
@@ -343,6 +349,7 @@ fn runChecked(
         .select_path = inputs.select_path,
         .index_path = inputs.index_path,
         .select_sql = inputs.select_sql,
+        .write_sql = inputs.write_sql,
         .index_sql = inputs.index_sql,
         .binds = inputs.binds,
         .timeout_ms = inputs.timeout_ms,
@@ -360,6 +367,7 @@ fn runChecked(
     const header: cli_report.Header = .{
         .database_path = inputs.database_path,
         .select_path = inputs.select_path,
+        .write_path = inputs.write_path,
         .index_path = inputs.index_path,
         .work_parent = inputs.work_parent,
         .sqlite_version = sqliteVersion(),

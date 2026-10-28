@@ -294,7 +294,7 @@ fn reportSelectFailure(stderr: *Io.Writer, err: db.CheckError, database: *db.Db,
     reportCheckFailure(stderr, "--select", err, database);
 }
 
-fn reportCheckFailure(stderr: *Io.Writer, option: []const u8, err: db.CheckError, database: *const db.Db) void {
+pub fn reportCheckFailure(stderr: *Io.Writer, option: []const u8, err: db.CheckError, database: *const db.Db) void {
     if (database.errorCode() != sqlite.SQLITE_OK) {
         stderr.print("error: {s}: {s}: {s}\n", .{ option, checkErrorMessage(err), database.message() }) catch {};
     } else {
@@ -306,22 +306,24 @@ pub fn openErrorMessage(err: db.OpenError) []const u8 {
     return switch (err) {
         error.OpenFailed => "the file is missing, is not a database, or is locked",
         error.NotReadOnlyConnection => "the connection is not read-only",
+        error.NotWritableConnection => "the connection is not writable",
         error.GuardSetupFailed => "the read-only guards could not be installed",
     };
 }
 
-fn checkErrorMessage(err: db.CheckError) []const u8 {
+pub fn checkErrorMessage(err: db.CheckError) []const u8 {
     return switch (err) {
         error.EmptyStatement => "the file holds no statement",
         error.MultipleStatements => "the file must hold exactly one statement",
         error.StatementRejected => "the statement is not allowed here",
         error.StatementInvalid => "the statement is not valid for this database",
         error.StatementNotReadOnly => "the statement is not read-only",
+        error.StatementNotWrite => "the statement is not one INSERT, UPDATE, DELETE, or REPLACE",
         error.StatementNotCreateIndex => "the statement is not one CREATE INDEX",
     };
 }
 
-fn bindDetail(buffer: []u8, err: db.BindError, binds: []const db.BindArg, count: c_int) []const u8 {
+pub fn bindDetail(buffer: []u8, err: db.BindError, binds: []const db.BindArg, count: c_int) []const u8 {
     var writer = Io.Writer.fixed(buffer);
     writeBindDetail(&writer, err, binds, count) catch return bindErrorMessage(err);
     return writer.buffered();
@@ -401,7 +403,7 @@ fn plural(number: u64) []const u8 {
     return if (number == 1) "" else "s";
 }
 
-fn bindErrorMessage(err: db.BindError) []const u8 {
+pub fn bindErrorMessage(err: db.BindError) []const u8 {
     return switch (err) {
         error.ParameterCountMismatch => "more values were given than the SELECT has parameters",
         error.BindNumberOutOfRange => "a bind number is outside 1..parameter count",
