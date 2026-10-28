@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `README.md` and `README.ja.md` show three recordings instead of one: `--suggest` at the top, and a candidate comparison and a `--migration` regression in the `--batch` section. They are recorded from `docs/demo-suggest.tape`, `docs/demo-candidates.tape`, and `docs/demo-migration.tape`, which take their extra inputs from `docs/demo`; `docs/demo.tape` and `docs/demo.gif` are gone.
 - `README.md` and `README.ja.md` lead with `npm install -g qenome` for the npm install, so the command is on `PATH` for every project, and keep `npx qenome` for a run without installing; `skills/qenome/SKILL.md` no longer says the npm package is added separately, because `qenome` is published on npm.
 
 ## [0.3.4] - 2026-10-28
