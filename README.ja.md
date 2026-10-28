@@ -265,7 +265,7 @@ qenome app.db --batch batch.json --suggest
 - `--suggest`: インデックスを自分で用意する代わりに、SQLite の expert に候補のインデックスを提案させ、その提案を比べる。`--batch` のときはマニフェストの `candidates` を省略できる。`--runs`、`--format kv`、インデックスのファイル（`--index-sql` または3番目の位置指定パス）とは併用できない。「候補のインデックスを提案させる（--suggest）」を参照
 - `--bind <N>:<TYPE>[:<VALUE>]`: SELECT のパラメータ N に渡す型付きの値。繰り返し指定できる。N は SQLite のパラメータ番号で、名前付きパラメータは最初に現れたときの番号を共有し、`?NNN` は NNN を使う。TYPE は int / real / text / null（null は値を取らない）。1 からパラメータ数までの各番号をちょうど1回ずつ指定する必要があり、パラメータの無い SELECT に `--bind` は付けられない。値は引数の残り全体なので、text には `:` を含められる
 - `--runs <N>`: 結果が一致したあとの計測ラウンド数。各ラウンドは各コピーで SELECT を1回計測する。既定は 10、0 で計測しないが読んだ行数と判定は残る、最大 1000。1秒を超える計測は進捗を stderr に出す
-- `--timeout-ms <MS>`: インデックス作成と SELECT 1回あたりの制限時間。既定は 30000、0 で無効。1回の実行は全体で、データベースのコピーに加えて `(3 + 4 × runs)` 回分の制限時間に加え、最大3つの診断文それぞれの制限時間までかかることがある
+- `--timeout-ms <MS>`: インデックス作成と SELECT 1回あたりの制限時間。既定は 30000、0 で無効。1回の実行は全体で、データベースのコピーに加えて `(3 + 4 × runs)` 回分の制限時間に加え、ANALYZE とサイズの診断、SELECT にパラメータがある場合の bind 依存の部分インデックス診断それぞれの制限時間までかかることがある
 - `--format <human|kv|json>`: 出力形式（既定 human）。「出力形式」を参照
 - `--show-binds`: バインド値を出す。付けない場合、human はバインドを出さず、kv と json は番号・型・テキストの長さだけを出し、値をログに残さない
 - `--show-rows`: 片方のコピーだけが返した例の行を出す。付けない場合、どの形式も件数だけを出して行の値をログに残さない。human はこのフラグで再実行するよう案内する
@@ -391,7 +391,7 @@ qenome --d1 DEMO_DB select.sql index.sql --runs 40
 
 Qenome はデータベースを1回コピーし、何かを実行する前に全 SELECT と全候補を検査します。そのあと候補をマニフェスト順に処理し、候補ごとに baseline をもう一度コピーして、そのコピーにだけインデックスを作り、全クエリを両方のコピーで実行します。baseline の SELECT は候補ごとに実行し直します。
 
-`--migration <FILE>` を付けると、variant の変更は候補インデックスではなく、マイグレーションのファイル全体になります。ファイルは 1 MiB までです。Qenome は variant を触る前にファイルを検査し、セミコロンで区切った `CREATE INDEX`・`CREATE UNIQUE INDEX`・`DROP INDEX`・`CREATE TABLE`（`AS SELECT` を除く）・`ALTER TABLE`（ADD COLUMN / RENAME COLUMN / DROP COLUMN / RENAME TO）を許可します。`INSERT`・`UPDATE`・`DELETE`・`DROP TABLE`・`ATTACH`・`PRAGMA`・その他の文は文番号付きで拒否し、variant と元のデータベースは触りません。そのあと文をファイル順に variant にだけ適用するので、列を追加してインデックスを張る、列やテーブルの名前を変える、同じ名前のインデックスを落として作り直す、といった変更ができます。各文は `--timeout-ms` の制限時間を持ちます。元のデータベースは変更しません。レポートには、human では `migration:` の節、json ではトップレベルの `migration` オブジェクトとして、パスと適用した全文を出します。マイグレーションが追加した列やテーブルを使うクエリは baseline では実行できないため、variant だけで計測し、計画と行数を判定 `not-judged` として出します。理由は `verdict_reasons` に入り、終了コードは変わりません。human は `not-judged` の summary 列と `Not judged` の一覧を追加し、JSON は `summary.not_judged` で数え、比較オブジェクトの `baseline` を `null` にします。マイグレーションが壊すクエリがあると、実行全体が止まります。マニフェストが、マイグレーションで消した・名前を変えた列やテーブルを参照していると、variant ではその `SELECT` を準備できないため、stdout には何も書かずに終了コード `1` で止まり、`error:` 行でどのクエリかとマイグレーションのファイルのパスを示します（JSON では `batch_variant_failed`）。CI もそこで 0 以外で止まります。マニフェストにはマイグレーション後の名前を書いてください。列を足す・消すと、`SELECT *` は結果の列数が変わるため比較できず、`incomparable` になり、batch は終了コード `4` で終わります。比べたいときは、必要な列を明示した `SELECT` をマニフェストに書いてください。結果の行が一致しても、マイグレーション後にクエリの読んだ行数か書いた行数が増えた場合、そのクエリの判定は `regressed` になります。human の `Results` 表は `regressed`、JSON は `results[].comparison.verdict` が `"regressed"` です。`summary` の件数キーは `needs_check` のままで、そのクエリを数えます。batch の終了コードは `6` です。結果の不一致 `3`、変更の拒否 `1`、時間切れ `124`、比較不能 `4` が優先されます。`no-effect` だけなら `0` です。ほかのモードでは同じ条件を `needs-check` と呼びます。`no_analyze_stats` と `data_too_small` の警告は、マイグレーションが複数のテーブルを触り得るため出しません。
+`--migration <FILE>` を付けると、variant の変更は候補インデックスではなく、マイグレーションのファイル全体になります。ファイルは 1 MiB までです。Qenome は variant を触る前にファイルを検査し、セミコロンで区切った `CREATE INDEX`・`CREATE UNIQUE INDEX`・`DROP INDEX`・`CREATE TABLE`（`AS SELECT` を除く）・`ALTER TABLE`（ADD COLUMN / RENAME COLUMN / DROP COLUMN / RENAME TO）を許可します。`INSERT`・`UPDATE`・`DELETE`・`DROP TABLE`・`ATTACH`・`PRAGMA`・その他の文は文番号付きで拒否し、variant と元のデータベースは触りません。そのあと文をファイル順に variant にだけ適用するので、列を追加してインデックスを張る、列やテーブルの名前を変える、同じ名前のインデックスを落として作り直す、といった変更ができます。各文は `--timeout-ms` の制限時間を持ちます。元のデータベースは変更しません。レポートには、human では `migration:` の節、json ではトップレベルの `migration` オブジェクトとして、パスと適用した全文を出します。マイグレーションが追加した列やテーブルを使うクエリは baseline では実行できないため、variant だけで計測し、計画と行数を判定 `not-judged` として出します。理由は `verdict_reasons` に入り、終了コードは変わりません。human は `not-judged` の summary 列と `Not judged` の一覧を追加し、JSON は `summary.not_judged` で数え、比較オブジェクトの `baseline` を `null` にします。マイグレーションが壊すクエリがあると、実行全体が止まります。マニフェストが、マイグレーションで消した・名前を変えた列やテーブルを参照していると、variant ではその `SELECT` を準備できないため、stdout には何も書かずに終了コード `1` で止まり、`error:` 行でどのクエリかとマイグレーションのファイルのパスを示します（JSON では `batch_variant_failed`）。CI もそこで 0 以外で止まります。マニフェストにはマイグレーション後の名前を書いてください。列を足す・消すと、`SELECT *` は結果の列数が変わるため比較できず、`incomparable` になり、batch は終了コード `4` で終わります。比べたいときは、必要な列を明示した `SELECT` をマニフェストに書いてください。結果の行が一致しても、マイグレーション後にクエリの読んだ行数か書いた行数が増えた場合、そのクエリの判定は `regressed` になります。human の `Results` 表は `regressed`、JSON は `results[].comparison.verdict` が `"regressed"` です。`summary` の件数キーは `needs_check` のままで、そのクエリを数えます。batch の終了コードは `6` です。結果の不一致 `3`、変更の拒否 `1`、時間切れ `124`、比較不能 `4` が優先されます。`no-effect` だけなら `0` です。ほかのモードでは同じ条件を `needs-check` と呼びます。`no_analyze_stats` と `data_too_small` の警告は、マイグレーションが複数のテーブルを触り得るため出しません。`bind_dependent_partial_index` の警告は variant の計画だけで判定できるため、マイグレーションでも出します。
 
 `--migration` の `size increase` は、ファイルサイズの差ではなく、使用中ページが持つバイト数（`(page_count - freelist_count) * page_size`）の差です。`DROP INDEX` はページを SQLite の freelist に移すだけでファイルを縮めないため、ファイルサイズの差は `0 B` のままですが、使用中のバイト数では解放された量が `-2.06 MiB` のような負の値で出ます。ファイル自体が縮むのは `VACUUM` の後です。`--migration` を使わない実行は、これまでどおりファイルサイズの差を出します。
 
@@ -412,7 +412,7 @@ Qenome はデータベースを1回コピーし、何かを実行する前に全
 
 human 出力は候補の表、`Recommendation:`、クエリと候補の判定表を出します。おすすめは、不一致・比較不能・`needs-check`（`--migration` では `needs_check` が `regressed` のクエリを数える）・時間切れがなく、改善が1件以上ある候補のうち、改善したクエリが最も多いものです。variant だけで計測した `not-judged` のクエリは、それだけではおすすめの条件を外しません。同じなら容量の増分が小さい順、次に入力順（マニフェストの候補の後ろに提案）です。`--format json` では [docs/json.md](docs/json.md) に書いた `batch_schema_version` 1 のオブジェクトを出します。
 
-インデックスの作成・SELECT 1回・診断文1回は、それぞれ `--timeout-ms` の制限時間を持ちます。batch は全体で、データベースのコピー1回と、候補ループの前に全クエリの baseline SELECT を1回ずつ実行する分に加えて、候補ごとにインデックスの作成1回とクエリごとの SELECT 2回、さらに最大3つの診断文それぞれの制限時間までかかることがあります。`--show-binds` と `--show-rows` は各比較オブジェクトに適用します。
+インデックスの作成・SELECT 1回・診断文1回は、それぞれ `--timeout-ms` の制限時間を持ちます。batch は全体で、データベースのコピー1回と、候補ループの前に全クエリの baseline SELECT を1回ずつ実行する分に加えて、候補ごとにインデックスの作成1回とクエリごとの SELECT 2回、さらに診断文（ANALYZE とサイズの警告に最大3つ、パラメータがあるクエリでは bind 依存の部分インデックス診断として計画1回・カタログ1回・使用インデックスごとに最大2文（テーブル名の取得と `PRAGMA index_list`））それぞれの制限時間までかかることがあります。`--show-binds` と `--show-rows` は各比較オブジェクトに適用します。
 
 </details>
 
@@ -430,7 +430,7 @@ SELECT ファイルを1本だけ渡したときは、その SELECT を batch の
 
 Qenome は baseline のコピーに2つ目の読み取り専用接続を開き、expert のサンプリングを `0` に設定します。そのため expert が利用者のデータベースから読むのはスキーマだけです。検査済みの全 SELECT を expert に渡します。expert を動かす前に、`sqlite_schema` の各行を検査します。各行は1文で、`CREATE TABLE`、`CREATE INDEX`、`CREATE UNIQUE INDEX`、`CREATE VIEW`、`CREATE TRIGGER`、`CREATE VIRTUAL TABLE` のいずれかで始まり、`expert` 仮想テーブルを使わないこと。これを満たさないデータベースは `suggest_schema_rejected`（終了コード `1`、stdout 空）で拒否し、マニフェストに候補があっても続けません。expert を動かしている間は、それが開く接続に一時的なガードを付けます。`ATTACH` と `DETACH` を拒否し、`index_list` と `index_xinfo` の PRAGMA だけを許し、接続できるデータベース数の上限を `0` にします。expert のオブジェクトを作ったあと、expert は自分の解析用コピーに独自の authorizer を設定しますが、接続できるデータベース数の上限はそこでも有効です。Qenome は expert を破棄したあとにガードを外します。ガードを設定できなければ、expert を呼ばずに止まります。これらで、細工されたスキーマがほかのデータベースファイルを作成・変更するのを防ぎます。レポートの `CREATE INDEX` は SQLite 自身の文の解析器で切り出します（引用符の中の `;` では切りません）。提案はマニフェストの候補と同じ検査を通し、落ちたものは `suggestion_rejected` の warning を付けて捨てます。ラベルは `suggested:1`、`suggested:2`… で、比べる提案は最大20件、マニフェストの候補と合わせて最大100件です。
 
-出力は batch の報告です。`summary` の各候補に `source`（`manifest` / `suggested`）と `index_sql_text` が付き、トップレベルの `warnings` に、捨てたもの・できなかったことが入ります。
+出力は batch の報告です。`summary` の各候補に `source`（`manifest` / `suggested`）と `index_sql_text` が付き、トップレベルの `warnings` に、捨てたもの・できなかったことが入ります。比較単位の警告（`bind_dependent_partial_index` を含む）は各 `results[].comparison.warnings` に入り、トップレベルの `warnings` は `--suggest` 用のままです。
 
 | warning の `code` | 意味 |
 | --- | --- |
@@ -519,7 +519,7 @@ fi
 | `environment` | `qenome_version`（`--version` と同じ、`build.zig.zon` の版） / `sqlite_version` / `sqlite_source_id` / `zig_version` / `build_mode` / `os` / `arch` / `work_dir_parent` |
 | `measurement` | 計時条件（`runs_per_copy`（各コピーの計測ラウンド数。計時しないときは 0）/ `warmup` / `order` / `scope` / `cache`） |
 | `binds` | `number` / `type`。text は `text_bytes` も持つ。`--show-binds` を付けたときだけ値が `value` に入る |
-| `warnings` | `{code, message}` の配列（`no_analyze_stats`、`data_too_small`）。判定と終了コードは変えない |
+| `warnings` | `{code, message}` の配列（`no_analyze_stats`、`data_too_small`、`bind_dependent_partial_index`）。判定と終了コードは変えない |
 | `sqlite` | 予約済みで、まだ出ない。`bundled_version` と `db_header_version`。それまでは同梱版を `environment.sqlite_version` で読む |
 
 - 文字列値では、バックスラッシュを `\\`、非 UTF-8 のバイトを `\xNN`（バイト 0xFF なら `\xff`）と書いてから JSON としてエスケープします。4文字の `\xff` は `\\xff` になり、バイト 0xFF とは別の文字列です。元のバイト列に戻すときは、`\\` をバックスラッシュ1個、`\xNN` をそのバイト、それ以外の文字をそのまま読みます。入力パス、計画の detail、理由、bind の text がこの規則です。`--show-rows` で出す例の行の TEXT も同じ規則（前後に `'`。例: `'\xff'`。JSON のテキストでは `'\\xff'`）で、BLOB は `x'00ff'` です。200 バイトを超える例の値は切り詰め、`...(N bytes)` を付けます。
@@ -588,6 +588,8 @@ Qenome は Apache License 2.0 で公開しています。全文は [LICENSE](LIC
 
 `warnings` は非計時・比較不能でも配列として出し、human/kvにも同じcode/messageを表示します。`no_analyze_stats` は候補のインデックスの対象テーブルに、baseline上で空でない sqlite_stat1 エントリがない場合。別表の統計では解消しません。鮮度・完全性は確認せず、部分インデックスの統計だけでも存在扱いです。`data_too_small` はその表の `SELECT 1 ... LIMIT 1000` が1000件未満の場合。1000件到達は「1000件以上」であり、正確な件数ではありません。結果件数・読取行数・統計推定値は使いません。1000は代表性を保証しない目安です。
 
-診断は計時後にコピーだけを読み、ANALYZE/PRAGMA optimizeを実行しません。追加実行・診断を既存rows_read/rows_writtenへ混入させません。警告は判定を止めず終了コードも変えません。診断の失敗・時間上限・中断は既存のエラー処理に従います。
+`bind_dependent_partial_index` は、variant の計画が、バインド値が部分インデックスの `WHERE` 句を満たすためにその部分インデックスを使っている場合に、そのインデックス名を出します。Qenome は variant の計画をバインド値ありで読み、次に全パラメータを `NULL` にして同じ SELECT の計画を読みます。部分インデックスが前者にあって後者にないとき、その名前を出します。`NULL` では部分インデックスの `WHERE` 句を満たすことを示せないため、この差は「バインド値のおかげで使えている」ことを意味します。別の値やパラメータの渡し方では使われなくなり、`improved` はその実行の値でだけ成り立ちます。variant の計画だけで判定できるため、variant だけで計測する `--migration` のクエリでも出します。ただし best-effort です。追加の計画やインデックスのカタログを読めないとき（時間切れ・中断を含む）は警告を出さずに比較を続け、判定・終了コード・batch の件数は変えません。batch では `results[].comparison.warnings` に入ります。
+
+診断は計時後にコピーだけを読み、ANALYZE/PRAGMA optimizeを実行しません。追加実行・診断を既存rows_read/rows_writtenへ混入させません。警告は判定を止めず終了コードも変えません。`no_analyze_stats` と `data_too_small` の診断の失敗・時間上限・中断は既存のエラー処理に従います。`bind_dependent_partial_index` は best-effort で、追加の読み取りに失敗したら警告を出さずに続けます。
 
 </details>

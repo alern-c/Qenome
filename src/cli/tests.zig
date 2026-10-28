@@ -2552,6 +2552,136 @@ test "analyzed large quoted target emits no warnings and long index names remain
     try fixture.expectNoLeftovers();
 }
 
+const bind_partial_schema: [:0]const u8 =
+    \\CREATE TABLE t(a INTEGER, b TEXT);
+    \\WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 2000)
+    \\INSERT INTO t SELECT x, 'v' || x FROM c;
+    \\CREATE INDEX idx_part ON t(b) WHERE a = 1;
+    \\ANALYZE;
+;
+
+test "bind-dependent partial index warning appears in every format and keeps the exit code" {
+    var fixture = try CliFixture.initWithSchema("SELECT b FROM t WHERE a = ?1", "CREATE INDEX idx_a ON t(a)", bind_partial_schema);
+    defer fixture.deinit();
+    var output: [65536]u8 = undefined;
+    var errors: [2048]u8 = undefined;
+
+    {
+        const result = fixture.runFormat("json", &.{ "--bind", "1:int:1", "--runs", "0" }, &output, &errors);
+        try testing.expectEqual(ExitCode.ok, result.code);
+        try testing.expectEqualStrings("", result.stderr);
+        var parsed = try parseJson(result.stdout);
+        defer parsed.deinit();
+        const warnings = try jsonItems(parsed.value, "warnings");
+        try testing.expectEqual(@as(usize, 1), warnings.len);
+        try testing.expectEqualStrings("bind_dependent_partial_index", try jsonText(warnings[0], "code"));
+        try testing.expect(contains(try jsonText(warnings[0], "message"), "idx_part"));
+        try testing.expectEqualStrings("no-effect", try jsonText(parsed.value, "verdict"));
+        try testing.expectEqual(@as(i64, 0), try jsonInt(parsed.value, "exit_code"));
+    }
+
+    for ([_][:0]const u8{ "human", "kv" }) |format| {
+        const result = fixture.runFormat(format, &.{ "--bind", "1:int:1", "--runs", "0" }, &output, &errors);
+        try testing.expectEqual(ExitCode.ok, result.code);
+        try testing.expect(contains(result.stdout, "bind_dependent_partial_index"));
+        try testing.expect(contains(result.stdout, "idx_part"));
+    }
+
+    {
+        const result = fixture.runFormat("json", &.{ "--bind", "1:int:2", "--runs", "0" }, &output, &errors);
+        try testing.expectEqual(ExitCode.ok, result.code);
+        var parsed = try parseJson(result.stdout);
+        defer parsed.deinit();
+        try testing.expectEqual(@as(usize, 0), (try jsonItems(parsed.value, "warnings")).len);
+    }
+    try fixture.expectNoLeftovers();
+}
+
+test "a batch comparison carries the bind-dependent partial index warning" {
+    var fixture = try CliFixture.initWithSchema("SELECT 1", "CREATE INDEX unused ON t(a)", bind_partial_schema);
+    defer fixture.deinit();
+    try fixture.writeFile("q.sql", "SELECT b FROM t WHERE a = ?1;");
+    try fixture.writeFile("c.sql", "CREATE INDEX idx_a ON t(a);");
+    try fixture.writeFile("batch.json",
+        \\{"queries":[{"select":"q.sql","binds":["1:int:1"]}],"candidates":[{"index_sql":"c.sql"}]}
+    );
+
+    var stdout_buffer: [131072]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = try fixture.runBatch(&.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    try testing.expectEqual(@as(usize, 0), (try jsonItems(parsed.value, "warnings")).len);
+    const results = try jsonItems(parsed.value, "results");
+    try testing.expectEqual(@as(usize, 1), results.len);
+    const comparison = try jsonGet(results[0], "comparison");
+    const warnings = try jsonItems(comparison, "warnings");
+    try testing.expectEqual(@as(usize, 1), warnings.len);
+    try testing.expectEqualStrings("bind_dependent_partial_index", try jsonText(warnings[0], "code"));
+    try testing.expect(contains(try jsonText(warnings[0], "message"), "idx_part"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a migration that adds a partial index warns for the variant-only query" {
+    var fixture = try CliFixture.initWithSchema("SELECT 1", "CREATE INDEX unused ON t(a)", bind_partial_schema);
+    defer fixture.deinit();
+    try fixture.writeFile("qc.sql", "SELECT b FROM t WHERE c = ?1;");
+    try fixture.writeFile("queries.json",
+        \\{"queries":[{"select":"qc.sql","binds":["1:int:1"]}]}
+    );
+    try fixture.writeFile("add.sql", "ALTER TABLE t ADD COLUMN c INTEGER;\nCREATE INDEX idx_part_c ON t(b) WHERE c = 1;\n");
+
+    var stdout_buffer: [131072]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = try runMigration(&fixture, "queries.json", "add.sql", &.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    const results = try jsonItems(parsed.value, "results");
+    try testing.expectEqual(@as(usize, 1), results.len);
+    const comparison = try jsonGet(results[0], "comparison");
+    try testing.expectEqualStrings("not-judged", try jsonText(comparison, "verdict"));
+    const warnings = try jsonItems(comparison, "warnings");
+    try testing.expectEqual(@as(usize, 1), warnings.len);
+    try testing.expectEqualStrings("bind_dependent_partial_index", try jsonText(warnings[0], "code"));
+    try testing.expect(contains(try jsonText(warnings[0], "message"), "idx_part_c"));
+    try fixture.expectNoLeftovers();
+}
+
+const control_index_name_schema: [:0]const u8 = "CREATE TABLE t(a INTEGER, b TEXT);\n" ++
+    "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 1000) INSERT INTO t SELECT x, 'v' || x FROM c;\n" ++
+    "CREATE INDEX \"part\x1bindex\" ON t(b) WHERE a = 1;\n" ++
+    "ANALYZE;";
+
+test "the partial index warning escapes control characters in human and kv output" {
+    var fixture = try CliFixture.initWithSchema("SELECT b FROM t WHERE a = ?1", "CREATE INDEX idx_a ON t(a)", control_index_name_schema);
+    defer fixture.deinit();
+    var output: [65536]u8 = undefined;
+    var errors: [2048]u8 = undefined;
+
+    for ([_][:0]const u8{ "human", "kv" }) |format| {
+        const result = fixture.runFormat(format, &.{ "--bind", "1:int:1", "--runs", "0" }, &output, &errors);
+        try testing.expectEqual(ExitCode.ok, result.code);
+        const at = std.mem.indexOf(u8, result.stdout, "warning: bind_dependent_partial_index") orelse return error.MissingWarning;
+        const warning = result.stdout[at..];
+        try testing.expect(!contains(warning, "\x1b"));
+        try testing.expect(contains(warning, "part\\x1bindex"));
+    }
+
+    const json_result = fixture.runFormat("json", &.{ "--bind", "1:int:1", "--runs", "0" }, &output, &errors);
+    try testing.expectEqual(ExitCode.ok, json_result.code);
+    try testing.expect(!contains(json_result.stdout, "\x1b"));
+    var parsed = try parseJson(json_result.stdout);
+    defer parsed.deinit();
+    const warnings = try jsonItems(parsed.value, "warnings");
+    try testing.expectEqual(@as(usize, 1), warnings.len);
+    try testing.expect(contains(try jsonText(warnings[0], "message"), "part"));
+    try fixture.expectNoLeftovers();
+}
+
 const migration_schema: [:0]const u8 =
     \\CREATE TABLE t(a INTEGER, b TEXT);
     \\WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 2000)

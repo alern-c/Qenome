@@ -142,6 +142,7 @@ pub fn compute(
         return .{ .failed = diagnosticFailure(err, &baseline, &control, stderr) };
     };
     report.warnings = .{ .no_analyze_stats = warnings.no_analyze_stats, .data_too_small = warnings.data_too_small };
+    report.warnings.bind_dependent_partial_index = variant.database.findBindDependentPartialIndex(arena, after.plan, inputs.select_sql, inputs.binds, &control) catch null;
     report.sizes = .{
         .baseline = fileSize(io, inputs.baseline_path, .baseline, stderr) orelse return .{ .failed = .rejected },
         .variant = fileSize(io, inputs.variant_path, .variant, stderr) orelse return .{ .failed = .rejected },

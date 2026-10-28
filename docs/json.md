@@ -32,7 +32,7 @@ On failure, read the line that starts with `{`. `human` and `kv` do not print th
 | `seed_data` | object | Present only with `--seed-data`: `path`, `seed`, `rows`, and `tables`. See [`--seed-data`](#--seed-data) |
 | `summary` | array | One object per candidate, ordered as described below. 1 to 100 entries |
 | `results` | array | One object per compared query and candidate, ordered by candidate (manifest entries first, then suggestions) and then by query (manifest order). An `index_rejected` or `index_timeout` candidate has no entries here |
-| `warnings` | array | `{ "code", "message" }` entries. Empty without `--suggest` and with `--migration`. See [`--suggest`](#--suggest) for the codes |
+| `warnings` | array | `{ "code", "message" }` entries. Empty without `--suggest` and with `--migration`. See [`--suggest`](#--suggest) for the codes. A comparison warning (including `bind_dependent_partial_index`) is in `results[].comparison.warnings`, not here |
 
 ### `summary` entries
 
@@ -72,7 +72,7 @@ A candidate qualifies for `recommended` when its status is `compared` and `misma
 - The `summary` entry for a migration has `source` `migration`, `candidate` set to the migration path, and the same `improved` / `no_effect` / `needs_check` / `mismatch` / `incomparable` / `timeout` / `not_judged` counts. A query whose rows match but whose read or written rows increased has `verdict` `regressed` in its embedded comparison and is counted under `needs_check`. `recommended` is the migration path only when it qualifies like any other candidate.
 - A migration measures `size_increase` and the `size_bytes` of each embedded comparison as the bytes in use, `(page_count - freelist_count) * page_size`, not as the file size. `DROP INDEX` moves its pages to SQLite's freelist without shrinking the file, so the file delta stays `0`; the bytes in use report the freed space as a negative number. The file shrinks only after `VACUUM`. A batch without `--migration` keeps the file size difference.
 - When the result rows match but at least one query read or wrote more rows after the migration, that query's `comparison.verdict` is `regressed`, the batch counts it under `needs_check` in `summary`, and the batch `exit_code` is `6`. A heavier result (`3` mismatch, `1` rejected change, `124` timeout, `4` incomparable) takes precedence. `no_effect` alone keeps `0`.
-- `warnings` is empty with `--migration`: the `no_analyze_stats` and `data_too_small` checks need one candidate table, and a migration can touch several.
+- The batch top-level `warnings` is empty with `--migration`: the `no_analyze_stats` and `data_too_small` checks need one candidate table, and a migration can touch several. The comparison `warnings` still carries `bind_dependent_partial_index`, which needs only the variant plan and runs for a variant-only query too.
 
 ### `--seed-data`
 
@@ -195,7 +195,7 @@ The object is indented with two spaces and ends with a newline. A missing key th
 | `seed_data` | object | Present only with `--seed-data`: `path`, `seed`, `rows`, and `tables` (each `{table, rows}`) |
 | `measurement` | object | `runs_per_copy`, `warmup`, `order`, `scope`, `cache` |
 | `binds` | array | `number`, `type`. Text also has `text_bytes`. `value` only with `--show-binds` |
-| `warnings` | array | Emitted. `{ "code": string, "message": string }`. Expected codes: `no_analyze_stats` (no ANALYZE statistics), `data_too_small` (too little data to trust the counts) |
+| `warnings` | array | Emitted. `{ "code": string, "message": string }`. Expected codes: `no_analyze_stats` (no ANALYZE statistics), `data_too_small` (too little data to trust the counts), `bind_dependent_partial_index` (the variant plan uses a partial index only because the bound values satisfy its WHERE clause) |
 | `sqlite` | object | Reserved. `bundled_version` (string), `db_header_version` (string) |
 
 `verdict` values:
@@ -336,6 +336,8 @@ Each timed round first runs the baseline SELECT twice (A/A), then runs one basel
 The interval is `null` with `unavailable_reason` `too-few-rounds` below six rounds (the widest finite interval has coverage 93.75% at n=5 and 96.875% at n=6), `zero-duration` when any timed duration is zero, or conservatively `no-observed-variation` when all paired differences are equal. These cases give `effect: insufficient-samples`, not a claim of precision at the clock resolution. Otherwise `effect` is `no-difference` if the absolute value of the median paired difference is at most the A/A noise reference or the interval includes zero; it is `faster` or `slower` only when both checks allow that direction. This auxiliary label never changes `verdict` or the exit code. Fixed A/A-before-A/B ordering, cache effects, temporal dependence, load drift, and small samples limit interpretation: nominal 95% coverage is not an exact guarantee for these machine timings or for production D1.
 
 `warnings` is always an array, including with `--runs 0` or incomparable results. Its `{code, message}` entries also appear verbatim in human and kv output. `no_analyze_stats` means the candidate index's table has no non-empty `sqlite_stat1` entry in the baseline snapshot, even if other tables have statistics. This is an absence check, not a freshness/completeness check: a partial-index entry alone counts as present. `data_too_small` means a bounded `SELECT 1 ... LIMIT 1000` on that table returned fewer than 1000 rows. Reaching 1000 only establishes at least 1000 rows; statistics estimates, partial-index cardinality, SELECT result count, and rows read do not decide this warning. The threshold is a heuristic, not proof that larger data is representative. Warnings advise a representative, separately prepared copy; they do not suppress a row verdict or change exit codes. Diagnostic reads respect the existing per-statement timeout/cancellation; failures follow the existing error path.
+
+`bind_dependent_partial_index` names a partial index that the variant plan uses only because the bound values satisfy its `WHERE` clause. Qenome reads the variant plan with the bound values and again with every parameter bound to `NULL`. If the partial index appears in the first plan and not the second, the message names it. `NULL` cannot prove a partial index's `WHERE` clause, so the difference means the index is usable because of the values: another value or parameter style can drop it, and an `improved` result then holds only for this run. The check needs only the variant plan, so it runs in every mode, including a variant-only `--migration` query, and its entry is in `warnings` for that comparison. It is best-effort: when the extra plan or the index catalog cannot be read, including a time limit or an interruption, the warning is omitted and the comparison continues. It never changes the verdict, the exit code, or a batch count. In a batch report the entry is in `results[].comparison.warnings`, not in the batch top-level `warnings`.
 
 ## Remaining reserved fields
 
