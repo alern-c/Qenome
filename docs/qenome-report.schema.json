@@ -248,7 +248,7 @@
     "measurement": { "type": "object", "additionalProperties": true },
     "binds": { "type": "array" },
     "warnings": {
-      "description": "Always emitted; advisory checks on the candidate index table in the baseline snapshot.",
+      "description": "Always emitted; advisory checks on the candidate index table in the baseline snapshot and on the variant plan.",
       "type": "array",
       "items": { "$ref": "#/$defs/warning" }
     },
@@ -311,7 +311,10 @@
       "additionalProperties": true,
       "required": ["code", "message"],
       "properties": {
-        "code": { "type": "string" },
+        "code": {
+          "description": "no_analyze_stats, data_too_small, or bind_dependent_partial_index.",
+          "type": "string"
+        },
         "message": { "type": "string" }
       }
     }

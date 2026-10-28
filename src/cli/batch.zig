@@ -638,6 +638,7 @@ pub fn run(
                 variant_report.judgement.add(reason);
                 variant_report.judgement.add("only the variant was measured, so its plan and row counts are reported without a comparison");
                 variant_report.sizes = .{ .baseline = baseline_size, .variant = variant_size };
+                variant_report.warnings.bind_dependent_partial_index = variant.database.findBindDependentPartialIndex(child, after.plan, query.sql, query.binds, &control) catch null;
 
                 const variant_header: cli_report.Header = .{
                     .database_path = inputs.database_path,
@@ -695,6 +696,7 @@ pub fn run(
                 },
             }
             report.warnings = .{ .no_analyze_stats = warnings.no_analyze_stats, .data_too_small = warnings.data_too_small };
+            report.warnings.bind_dependent_partial_index = variant.database.findBindDependentPartialIndex(child, after.plan, query.sql, query.binds, &control) catch null;
             report.sizes = .{ .baseline = baseline_size, .variant = variant_size };
 
             const header: cli_report.Header = .{

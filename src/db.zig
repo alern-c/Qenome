@@ -144,6 +144,14 @@ fn diagnosticStepError(rc: c_int, control: *StepControl) StepError {
     return error.StepFailed;
 }
 
+fn controlStopError(control: *StepControl) ?StepError {
+    if (!control.shouldStop()) return null;
+    return switch (control.reason.?) {
+        .timeout => error.Timeout,
+        .signal => error.Interrupted,
+    };
+}
+
 pub const TableWarnings = struct {
     no_analyze_stats: bool = false,
     data_too_small: bool = false,
@@ -395,7 +403,26 @@ pub const Db = struct {
         allocator: std.mem.Allocator,
         sql: [:0]const u8,
         binds: []const BindArg,
-    ) (CheckError || BindError || ExplainError || std.mem.Allocator.Error)!Plan {
+    ) (CheckError || BindError || ExplainError || StepError || std.mem.Allocator.Error)!Plan {
+        return self.explainPlanBounded(allocator, sql, binds, null);
+    }
+
+    fn explainPlanBounded(
+        self: *Db,
+        allocator: std.mem.Allocator,
+        sql: [:0]const u8,
+        binds: []const BindArg,
+        control: ?*StepControl,
+    ) (CheckError || BindError || ExplainError || StepError || std.mem.Allocator.Error)!Plan {
+        if (control) |running| {
+            running.start();
+            if (controlStopError(running)) |stop| return stop;
+            sqlite.sqlite3_progress_handler(self.connection(), progress_opcodes, progressHandler, running);
+        }
+        defer if (control != null) {
+            sqlite.sqlite3_progress_handler(self.connection(), 0, null, null);
+        };
+
         const statement = try self.prepareSelect(sql);
         defer _ = sqlite.sqlite3_finalize(statement);
         try bindAll(statement, binds);
@@ -425,8 +452,16 @@ pub const Db = struct {
                     });
                 },
                 sqlite.SQLITE_DONE => break,
-                else => return error.ExplainFailed,
+                else => |rc| {
+                    if (control) |running| {
+                        if (rc == sqlite.SQLITE_INTERRUPT) return diagnosticStepError(rc, running);
+                    }
+                    return error.ExplainFailed;
+                },
             }
+        }
+        if (control) |running| {
+            if (controlStopError(running)) |stop| return stop;
         }
         return .{ .rows = try rows.toOwnedSlice(allocator) };
     }
@@ -438,6 +473,95 @@ pub const Db = struct {
         errdefer if (capture.table) |table| allocator.free(table);
         try self.checkCreateIndex(sql);
         return capture.table orelse error.OutOfMemory;
+    }
+
+    pub fn findBindDependentPartialIndex(
+        self: *Db,
+        allocator: std.mem.Allocator,
+        plan: Plan,
+        sql: [:0]const u8,
+        binds: []const BindArg,
+        control: *StepControl,
+    ) !?[]const u8 {
+        if (binds.len == 0) return null;
+        if (!planMentionsAnyIndex(plan)) return null;
+
+        var names = self.diagnosticTexts(allocator, "SELECT name FROM main.sqlite_schema WHERE type = 'index' AND sql IS NOT NULL", &.{}, control) catch return null;
+        defer {
+            for (names.items) |name| allocator.free(name);
+            names.deinit(allocator);
+        }
+
+        var used: std.ArrayList([]const u8) = .empty;
+        defer used.deinit(allocator);
+        for (plan.rows) |row| {
+            const name = usedIndexName(row.detail, names.items) orelse continue;
+            var seen = false;
+            for (used.items) |existing| {
+                if (std.ascii.eqlIgnoreCase(existing, name)) {
+                    seen = true;
+                    break;
+                }
+            }
+            if (!seen) try used.append(allocator, name);
+        }
+        if (used.items.len == 0) return null;
+
+        const unknown_binds = try allocator.alloc(BindArg, binds.len);
+        defer allocator.free(unknown_binds);
+        for (unknown_binds, 0..) |*bind, position| bind.* = .{ .number = position + 1, .value = .null };
+
+        const saved_clues = self.clues;
+        defer self.clues = saved_clues;
+        const unknown_plan = self.explainPlanBounded(allocator, sql, unknown_binds, control) catch return null;
+        defer unknown_plan.deinit(allocator);
+
+        for (used.items) |name| {
+            if (planUsesIndex(unknown_plan, names.items, name)) continue;
+            const partial = self.indexIsPartial(allocator, name, control) catch return null;
+            if (!partial) continue;
+            return try allocator.dupe(u8, name);
+        }
+        return null;
+    }
+
+    fn indexIsPartial(self: *Db, allocator: std.mem.Allocator, name: []const u8, control: *StepControl) !bool {
+        const table = (try self.diagnosticText(allocator, "SELECT tbl_name FROM main.sqlite_schema WHERE type = 'index' AND name = ?1 COLLATE NOCASE", &.{
+            .{ .number = 1, .value = .{ .text = name } },
+        }, control)) orelse return false;
+        defer allocator.free(table);
+
+        var query: Io.Writer.Allocating = .init(allocator);
+        defer query.deinit();
+        try query.writer.writeAll("PRAGMA main.index_list(\"");
+        for (table) |byte| {
+            try query.writer.writeByte(byte);
+            if (byte == '"') try query.writer.writeByte(byte);
+        }
+        try query.writer.writeAll("\")");
+        const sql = try allocator.dupeSentinel(u8, query.written(), 0);
+        defer allocator.free(sql);
+
+        const previous = self.enterMode(.internal);
+        defer self.mode = previous;
+        const statement = (try self.prepareSingle(sql)) orelse return false;
+        defer _ = sqlite.sqlite3_finalize(statement);
+        if (sqlite.sqlite3_column_count(statement) < 5) return false;
+
+        control.start();
+        sqlite.sqlite3_progress_handler(self.connection(), progress_opcodes, progressHandler, control);
+        defer sqlite.sqlite3_progress_handler(self.connection(), 0, null, null);
+        while (true) {
+            switch (sqlite.sqlite3_step(statement)) {
+                sqlite.SQLITE_ROW => {
+                    const text = sqlite.sqlite3_column_text(statement, 1) orelse continue;
+                    const len: usize = @intCast(sqlite.sqlite3_column_bytes(statement, 1));
+                    if (std.ascii.eqlIgnoreCase(text[0..len], name)) return sqlite.sqlite3_column_int64(statement, 4) != 0;
+                },
+                sqlite.SQLITE_DONE => return false,
+                else => |rc| return diagnosticStepError(rc, control),
+            }
+        }
     }
 
     pub fn tableWarnings(self: *Db, allocator: std.mem.Allocator, table: []const u8, control: *StepControl) !TableWarnings {
@@ -455,6 +579,60 @@ pub const Db = struct {
         defer allocator.free(sql);
         const rows = try self.diagnosticInt(sql, &.{}, control);
         return .{ .no_analyze_stats = !has_stats, .data_too_small = rows < 1000 };
+    }
+
+    fn diagnosticText(self: *Db, allocator: std.mem.Allocator, sql: [:0]const u8, binds: []const BindArg, control: *StepControl) !?[]const u8 {
+        const previous = self.enterMode(.user_select);
+        const saved = self.clues;
+        defer self.mode = previous;
+        defer self.clues = saved;
+        const statement = try self.prepareSingle(sql) orelse return error.StepFailed;
+        defer _ = sqlite.sqlite3_finalize(statement);
+        try bindAll(statement, binds);
+        control.start();
+        sqlite.sqlite3_progress_handler(self.connection(), progress_opcodes, progressHandler, control);
+        defer sqlite.sqlite3_progress_handler(self.connection(), 0, null, null);
+        switch (sqlite.sqlite3_step(statement)) {
+            sqlite.SQLITE_DONE => return null,
+            sqlite.SQLITE_ROW => {},
+            else => |rc| return diagnosticStepError(rc, control),
+        }
+        const text = sqlite.sqlite3_column_text(statement, 0) orelse return null;
+        const len: usize = @intCast(sqlite.sqlite3_column_bytes(statement, 0));
+        return try allocator.dupe(u8, text[0..len]);
+    }
+
+    fn diagnosticTexts(self: *Db, allocator: std.mem.Allocator, sql: [:0]const u8, binds: []const BindArg, control: *StepControl) !std.ArrayList([]const u8) {
+        const previous = self.enterMode(.user_select);
+        const saved = self.clues;
+        defer self.mode = previous;
+        defer self.clues = saved;
+        const statement = try self.prepareSingle(sql) orelse return error.StepFailed;
+        defer _ = sqlite.sqlite3_finalize(statement);
+        try bindAll(statement, binds);
+
+        var out: std.ArrayList([]const u8) = .empty;
+        errdefer {
+            for (out.items) |item| allocator.free(item);
+            out.deinit(allocator);
+        }
+
+        control.start();
+        sqlite.sqlite3_progress_handler(self.connection(), progress_opcodes, progressHandler, control);
+        defer sqlite.sqlite3_progress_handler(self.connection(), 0, null, null);
+        while (true) {
+            switch (sqlite.sqlite3_step(statement)) {
+                sqlite.SQLITE_ROW => {
+                    const text = sqlite.sqlite3_column_text(statement, 0) orelse continue;
+                    const len: usize = @intCast(sqlite.sqlite3_column_bytes(statement, 0));
+                    const copy = try allocator.dupe(u8, text[0..len]);
+                    errdefer allocator.free(copy);
+                    try out.append(allocator, copy);
+                },
+                sqlite.SQLITE_DONE => return out,
+                else => |rc| return diagnosticStepError(rc, control),
+            }
+        }
     }
 
     fn diagnosticInt(self: *Db, sql: [:0]const u8, binds: []const BindArg, control: *StepControl) !i64 {
@@ -729,6 +907,41 @@ pub fn classifyDetail(detail: []const u8) PlanLabel {
         .covering = std.mem.startsWith(u8, rest, "COVERING INDEX"),
         .automatic = automatic,
     };
+}
+
+fn planMentionsAnyIndex(plan: Plan) bool {
+    for (plan.rows) |row| {
+        if (std.mem.indexOf(u8, row.detail, "INDEX ") != null) return true;
+    }
+    return false;
+}
+
+fn planUsesIndex(plan: Plan, names: []const []const u8, wanted: []const u8) bool {
+    for (plan.rows) |row| {
+        const used = usedIndexName(row.detail, names) orelse continue;
+        if (std.ascii.eqlIgnoreCase(used, wanted)) return true;
+    }
+    return false;
+}
+
+fn usedIndexName(detail: []const u8, names: []const []const u8) ?[]const u8 {
+    var best: ?[]const u8 = null;
+    var offset: usize = 0;
+    while (std.mem.indexOfPos(u8, detail, offset, "INDEX ")) |at| {
+        const rest = detail[at + "INDEX ".len ..];
+        for (names) |name| {
+            if (!indexReference(rest, name)) continue;
+            if (best == null or name.len > best.?.len) best = name;
+        }
+        offset = at + "INDEX ".len;
+    }
+    return best;
+}
+
+fn indexReference(rest: []const u8, name: []const u8) bool {
+    if (!std.mem.startsWith(u8, rest, name)) return false;
+    if (name.len == rest.len) return true;
+    return rest[name.len] == ' ' and name.len + 1 < rest.len and rest[name.len + 1] == '(';
 }
 
 pub const Counters = struct {
@@ -1874,6 +2087,129 @@ test "explain plan reflects bound values" {
     const suffix = try db.explainPlan(testing.allocator, sql, &.{.{ .number = 1, .value = .{ .text = "*1" } }});
     defer suffix.deinit(testing.allocator);
     try testing.expectEqual(PlanKind.scan, suffix.rows[0].label.kind);
+}
+
+test "plan detail matches the catalog index name without guessing its boundary" {
+    const names = [_][]const u8{ "idx", "idx (x)", "idx USING suffix", "(odd)", "idx_long" };
+    const cases = [_]struct { detail: []const u8, name: ?[]const u8 }{
+        .{ .detail = "SCAN t USING INDEX idx", .name = "idx" },
+        .{ .detail = "SCAN t USING COVERING INDEX idx (x)", .name = "idx (x)" },
+        .{ .detail = "SEARCH t USING COVERING INDEX idx (x) (a=?)", .name = "idx (x)" },
+        .{ .detail = "SCAN t USING COVERING INDEX idx USING suffix", .name = "idx USING suffix" },
+        .{ .detail = "SCAN t USING COVERING INDEX (odd)", .name = "(odd)" },
+        .{ .detail = "SCAN t USING COVERING INDEX idx_long", .name = "idx_long" },
+        .{ .detail = "SEARCH t USING INDEX idx (a=?)", .name = "idx" },
+        .{ .detail = "SEARCH t USING INTEGER PRIMARY KEY (rowid=?)", .name = null },
+        .{ .detail = "SEARCH t USING AUTOMATIC PARTIAL COVERING INDEX (x=?)", .name = null },
+        .{ .detail = "SCAN t", .name = null },
+        .{ .detail = "USE TEMP B-TREE FOR ORDER BY", .name = null },
+    };
+    for (cases) |case| {
+        const name = usedIndexName(case.detail, &names);
+        const rows = [_]PlanRow{.{ .id = 1, .parent = 0, .label = .{ .kind = .scan }, .detail = case.detail }};
+        const plan: Plan = .{ .rows = @constCast(&rows) };
+        if (case.name) |expected| {
+            try testing.expect(name != null);
+            try testing.expectEqualStrings(expected, name.?);
+            try testing.expect(planUsesIndex(plan, &names, expected));
+        } else {
+            try testing.expect(name == null);
+        }
+    }
+    const longer = [_]PlanRow{.{ .id = 1, .parent = 0, .label = .{ .kind = .scan }, .detail = "SCAN t USING COVERING INDEX idx_long" }};
+    try testing.expect(!planUsesIndex(.{ .rows = @constCast(&longer) }, &names, "idx"));
+    const parenthesized = [_]PlanRow{.{ .id = 1, .parent = 0, .label = .{ .kind = .scan }, .detail = "SCAN t USING COVERING INDEX idx (x)" }};
+    try testing.expect(!planUsesIndex(.{ .rows = @constCast(&parenthesized) }, &names, "idx"));
+}
+
+const partial_index_schema: [:0]const u8 =
+    \\CREATE TABLE t(a INTEGER, b TEXT);
+    \\WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 1000)
+    \\INSERT INTO t SELECT x, 'v' || x FROM c;
+    \\CREATE INDEX idx_part ON t(b) WHERE a = 1;
+    \\CREATE INDEX idx_b ON t(b);
+    \\CREATE TABLE u(x INTEGER, y TEXT);
+    \\INSERT INTO u VALUES (1, 'p'), (2, 'q');
+    \\CREATE INDEX idx_u_notnull ON u(y) WHERE x IS NOT NULL;
+    \\CREATE TABLE "odd""table"(a INTEGER, b TEXT);
+    \\WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 1000)
+    \\INSERT INTO "odd""table" SELECT x, 'v' || x FROM c;
+    \\CREATE INDEX "idx part" ON "odd""table"(b) WHERE a = 1;
+    \\CREATE TABLE v(a INTEGER, b TEXT);
+    \\WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 1000)
+    \\INSERT INTO v SELECT x, 'v' || x FROM c;
+    \\CREATE INDEX "idx USING suffix" ON v(b) WHERE a = 1;
+    \\CREATE TABLE w(a INTEGER, b TEXT);
+    \\WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 1000)
+    \\INSERT INTO w SELECT x, 'v' || x FROM c;
+    \\CREATE INDEX "(odd)" ON w(b) WHERE a = 1;
+;
+
+fn findBindDependent(db: *Db, sql: [:0]const u8, binds: []const BindArg) !?[]const u8 {
+    const plan = try db.explainPlan(testing.allocator, sql, binds);
+    defer plan.deinit(testing.allocator);
+    var cancel = std.atomic.Value(bool).init(false);
+    var control = StepControl.init(testing.io, 0, &cancel);
+    return db.findBindDependentPartialIndex(testing.allocator, plan, sql, binds, &control);
+}
+
+test "a partial index counts as bind-dependent only when the unknown values drop it" {
+    var fixture = try Fixture.initWithSchema(testing.allocator, partial_index_schema);
+    defer fixture.deinit();
+    var db: Db = .{};
+    try db.openReadOnly(fixture.path);
+    defer db.close() catch unreachable;
+
+    const matched = try findBindDependent(&db, "SELECT b FROM t WHERE a = ?1", &.{.{ .number = 1, .value = .{ .int = 1 } }});
+    defer if (matched) |name| testing.allocator.free(name);
+    try testing.expect(matched != null);
+    try testing.expectEqualStrings("idx_part", matched.?);
+
+    try testing.expect(try findBindDependent(&db, "SELECT b FROM t WHERE a = ?1", &.{.{ .number = 1, .value = .{ .int = 2 } }}) == null);
+    try testing.expect(try findBindDependent(&db, "SELECT b FROM t WHERE a = ?1", &.{.{ .number = 1, .value = .null }}) == null);
+    try testing.expect(try findBindDependent(&db, "SELECT b FROM t WHERE a = 1", &.{}) == null);
+
+    try testing.expect(try findBindDependent(&db, "SELECT b FROM t WHERE a = 1 AND b LIKE ?1", &.{.{ .number = 1, .value = .{ .text = "v1%" } }}) == null);
+    try testing.expect(try findBindDependent(&db, "SELECT y FROM u WHERE x = ?1", &.{.{ .number = 1, .value = .{ .int = 1 } }}) == null);
+    try testing.expect(try findBindDependent(&db, "SELECT a FROM t WHERE b LIKE ?1", &.{.{ .number = 1, .value = .{ .text = "v1%" } }}) == null);
+
+    const quoted = try findBindDependent(&db, "SELECT b FROM \"odd\"\"table\" WHERE a = ?1", &.{.{ .number = 1, .value = .{ .int = 1 } }});
+    defer if (quoted) |name| testing.allocator.free(name);
+    try testing.expect(quoted != null);
+    try testing.expectEqualStrings("idx part", quoted.?);
+
+    const spaced = try findBindDependent(&db, "SELECT b FROM v WHERE a = ?1", &.{.{ .number = 1, .value = .{ .int = 1 } }});
+    defer if (spaced) |name| testing.allocator.free(name);
+    try testing.expect(spaced != null);
+    try testing.expectEqualStrings("idx USING suffix", spaced.?);
+
+    const parenthesized = try findBindDependent(&db, "SELECT b FROM w WHERE a = ?1", &.{.{ .number = 1, .value = .{ .int = 1 } }});
+    defer if (parenthesized) |name| testing.allocator.free(name);
+    try testing.expect(parenthesized != null);
+    try testing.expectEqualStrings("(odd)", parenthesized.?);
+}
+
+test "a cancelled control drops the bind-dependent partial index warning" {
+    var fixture = try Fixture.initWithSchema(testing.allocator, partial_index_schema);
+    defer fixture.deinit();
+    var db: Db = .{};
+    try db.openReadOnly(fixture.path);
+    defer db.close() catch unreachable;
+
+    const sql = "SELECT b FROM t WHERE a = ?1";
+    const binds: []const BindArg = &.{.{ .number = 1, .value = .{ .int = 1 } }};
+    const plan = try db.explainPlan(testing.allocator, sql, binds);
+    defer plan.deinit(testing.allocator);
+    var cancel = std.atomic.Value(bool).init(true);
+    var control = StepControl.init(testing.io, 0, &cancel);
+    try testing.expect(try db.findBindDependentPartialIndex(testing.allocator, plan, sql, binds, &control) == null);
+
+    var live = std.atomic.Value(bool).init(false);
+    var live_control = StepControl.init(testing.io, 0, &live);
+    const recovered = try db.findBindDependentPartialIndex(testing.allocator, plan, sql, binds, &live_control);
+    defer if (recovered) |name| testing.allocator.free(name);
+    try testing.expect(recovered != null);
+    try testing.expectEqualStrings("idx_part", recovered.?);
 }
 
 test "explain plan keeps raw detail and parent links" {

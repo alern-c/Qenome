@@ -140,7 +140,7 @@ npx qenome --d1 DB --batch queries.json --migration 0002_replace_index.sql --for
 
 State `schema_version` before you interpret fields.
 
-- If stdout is a JSON object with `batch_schema_version`, it is a batch report. Read `batch_schema_version` first; it must be `1`. Read `recommended` (`null` when no candidate qualifies; with `--suggest` it can be `suggested:N`; with `--migration` it is the migration path or `null`), the `summary` entries (`candidate`, `source`, `index_sql_text`, `not_judged`; `source` can be `manifest`, `suggested`, or `migration`), the `results`, the optional top-level `migration` object (`path`, `statements`), and the top-level `warnings` (empty without `--suggest` and with `--migration`). Repeat every batch warning `code` and `message`, like the comparison warnings. The `comparison` object under each result has `schema_version` 2 and the shape below.
+- If stdout is a JSON object with `batch_schema_version`, it is a batch report. Read `batch_schema_version` first; it must be `1`. Read `recommended` (`null` when no candidate qualifies; with `--suggest` it can be `suggested:N`; with `--migration` it is the migration path or `null`), the `summary` entries (`candidate`, `source`, `index_sql_text`, `not_judged`; `source` can be `manifest`, `suggested`, or `migration`), the `results`, the optional top-level `migration` object (`path`, `statements`), and the top-level `warnings` (empty without `--suggest` and with `--migration`). Repeat every batch warning `code` and `message`, like the comparison warnings. Read each `results[].comparison.warnings` too: comparison warnings, including `bind_dependent_partial_index`, are there and not in the batch top-level `warnings`. The `comparison` object under each result has `schema_version` 2 and the shape below.
 - A top-level `seed_data` object appears in a comparison or batch object when `--seed-data` was used. Read `path`, `seed`, `rows`, and `tables`. It is an input fact and does not change the verdict.
 - If stdout is a JSON object, it is the comparison. Read `schema_version` first. If it is missing or not `2`, stop and say the output does not match this skill or `docs/json.md`. Do not guess renamed fields.
 - If stdout is empty, stderr is the error object (skip any `progress:` lines). It also has `schema_version` 2, plus `exit_code` and `error` with `code`, `message`, and `hint`. Do what `hint` says. Do not treat the failure as a verdict.
@@ -164,12 +164,14 @@ Emitted fields an agent should read:
 
 Timing now includes measured A/A `noise_band`, nullable `confidence_interval`, paired `median_difference_ns`, `effect`, and `unavailable_reason`. An unavailable interval or no-difference is not a row verdict. Warnings are always an array; repeat their codes/messages. See README for assumptions, sample limits, and heuristic thresholds.
 
+Warning codes in the comparison `warnings`: `no_analyze_stats` (no statistics on the candidate table), `data_too_small` (too little data to trust the counts), and `bind_dependent_partial_index`. `bind_dependent_partial_index` names a partial index that the variant plan uses only because the bound values satisfy its `WHERE` clause; SQLite no longer uses it when the values or the parameter style change, so an `improved` result holds only for these bound values. Tell the user that, and test the values they deploy with. The check is best-effort and never changes the verdict or the exit code.
+
 Still reserved; do not require or invent:
 
 - `sqlite.bundled_version`
 - `sqlite.db_header_version`
 
-If `warnings` is absent, say the ANALYZE-stats check and the small-data check are not in this binary yet. If `warnings` is present, repeat every `code` and `message` to the user. Warnings do not change the exit code. Do not keep a `needs-check` index or an exit `3` result because a warning might explain it.
+If `warnings` is absent, say the ANALYZE-stats check, the small-data check, and the bind-dependent partial index check are not in this binary yet. If `warnings` is present, repeat every `code` and `message` to the user. Warnings do not change the exit code. Do not keep a `needs-check` index or an exit `3` result because a warning might explain it. A `bind_dependent_partial_index` warning does not disqualify an `improved` index for the values that were tested; it says the plan is not value-independent.
 
 `rows_read` and `rows_written` live under `counters` on each side. If a future build moves them, `schema_version` stays `2` and this skill's fixture marker must be updated. See the reconciliation list in `docs/json.md`.
 
@@ -179,7 +181,7 @@ Tell the user the process exit code, `schema_version`, `result`, `verdict`, and 
 
 | Process exit | Action |
 | --- | --- |
-| 0 and `verdict` `improved` | The candidate read fewer rows and the result rows match. It is a candidate to keep on this local copy. It is not a production measurement |
+| 0 and `verdict` `improved` | The candidate read fewer rows and the result rows match. It is a candidate to keep on this local copy. It is not a production measurement. With `bind_dependent_partial_index`, the improvement holds only for the bound values; say so and test other values |
 | 0 and `verdict` `no-effect` | Do not add the index for this query. The variant did not read fewer rows |
 | 0 and `verdict` `needs-check` | Do not merge the index. Quote `verdict_reasons` |
 | 3 | Do not merge. The result rows differ. Offer `--show-rows` only if the user wants the example values in the log |

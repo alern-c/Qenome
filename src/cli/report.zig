@@ -44,6 +44,7 @@ pub const Sizes = struct {
 pub const Warnings = struct {
     no_analyze_stats: bool = false,
     data_too_small: bool = false,
+    bind_dependent_partial_index: ?[]const u8 = null,
 };
 
 const warning_codes = [_][]const u8{ "no_analyze_stats", "data_too_small" };
@@ -52,10 +53,29 @@ const warning_messages = [_][]const u8{
     "The candidate index table has fewer than 1000 rows. This heuristic does not establish representative performance; test with more representative data.",
 };
 
-fn writeWarnings(stdout: *Io.Writer, warnings: Warnings) Io.Writer.Error!void {
+const bind_dependent_partial_index_code = "bind_dependent_partial_index";
+const bind_dependent_partial_index_message = "The variant plan uses the partial index \"{s}\" only because the bound values satisfy its WHERE clause. A different bound value changes the plan, so test with the values you deploy.";
+
+fn anyWarnings(warnings: Warnings) bool {
+    return warnings.no_analyze_stats or warnings.data_too_small or warnings.bind_dependent_partial_index != null;
+}
+
+fn escapedText(allocator: std.mem.Allocator, text: []const u8) Error![]const u8 {
+    var out: Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try result.writeEscapedText(&out.writer, text);
+    return allocator.dupe(u8, out.written());
+}
+
+fn writeWarnings(stdout: *Io.Writer, allocator: std.mem.Allocator, warnings: Warnings) Error!void {
     const enabled = [_]bool{ warnings.no_analyze_stats, warnings.data_too_small };
     for (enabled, warning_codes, warning_messages) |active, code, message| {
         if (active) try stdout.print("warning: {s}: {s}\n", .{ code, message });
+    }
+    if (warnings.bind_dependent_partial_index) |name| {
+        const escaped = try escapedText(allocator, name);
+        defer allocator.free(escaped);
+        try stdout.print("warning: {s}: " ++ bind_dependent_partial_index_message ++ "\n", .{ bind_dependent_partial_index_code, escaped });
     }
 }
 
@@ -68,18 +88,28 @@ fn writeTimeEvidence(stdout: *Io.Writer, evidence: cli_timing.Evidence) Io.Write
     }
 }
 
-fn writeHumanWarnings(stdout: *Io.Writer, warnings: Warnings) Io.Writer.Error!void {
-    if (!warnings.no_analyze_stats and !warnings.data_too_small) return;
+fn writeHumanWarnings(stdout: *Io.Writer, allocator: std.mem.Allocator, warnings: Warnings) Error!void {
+    if (!anyWarnings(warnings)) return;
     try stdout.writeAll("\nWarnings\n");
-    var buffer: [4096]u8 = undefined;
-    var text = Io.Writer.fixed(&buffer);
-    try writeWarnings(&text, warnings);
-    var lines = std.mem.tokenizeScalar(u8, text.buffered(), '\n');
-    while (lines.next()) |line| {
-        try writeIndent(stdout, 2);
-        try writeWrapped(stdout, line, 2, 4);
-        try stdout.writeByte('\n');
+    const enabled = [_]bool{ warnings.no_analyze_stats, warnings.data_too_small };
+    for (enabled, warning_codes, warning_messages) |active, code, message| {
+        if (active) try writeHumanWarning(stdout, allocator, code, message);
     }
+    if (warnings.bind_dependent_partial_index) |name| {
+        const escaped = try escapedText(allocator, name);
+        defer allocator.free(escaped);
+        const message = try std.fmt.allocPrint(allocator, bind_dependent_partial_index_message, .{escaped});
+        defer allocator.free(message);
+        try writeHumanWarning(stdout, allocator, bind_dependent_partial_index_code, message);
+    }
+}
+
+fn writeHumanWarning(stdout: *Io.Writer, allocator: std.mem.Allocator, code: []const u8, message: []const u8) Error!void {
+    const line = try std.fmt.allocPrint(allocator, "warning: {s}: {s}", .{ code, message });
+    defer allocator.free(line);
+    try writeIndent(stdout, 2);
+    try writeWrapped(stdout, line, 2, 4);
+    try stdout.writeByte('\n');
 }
 
 pub const Report = struct {
@@ -102,20 +132,21 @@ pub fn writeReport(
     report: Report,
 ) Error!void {
     switch (format) {
-        .human => try writeHumanSummary(stdout, header, before, after, outcome, report),
-        .kv => try writeSummary(stdout, header, before, after, outcome, report),
+        .human => try writeHumanSummary(stdout, allocator, header, before, after, outcome, report),
+        .kv => try writeSummary(stdout, allocator, header, before, after, outcome, report),
         .json => try writeJsonReport(stdout, allocator, header, before, after, outcome, report),
     }
 }
 
 pub fn writeSummary(
     stdout: *Io.Writer,
+    allocator: std.mem.Allocator,
     header: Header,
     before: cli_comparison.Measurement,
     after: cli_comparison.Measurement,
     outcome: cli_comparison.Outcome,
     report: Report,
-) Io.Writer.Error!void {
+) Error!void {
     try stdout.print("db: {s}\nselect: {s}\nindex-sql: {s}\nmeasured-on: baseline (candidate index not applied)\nrows: {d}\n", .{
         header.database_path, header.select_path, header.index_path, before.rows,
     });
@@ -158,10 +189,10 @@ pub fn writeSummary(
     else
         "differs (reference only; rows may change order without ORDER BY or among equal ORDER BY keys, and ORDER BY itself is not checked)";
     try stdout.print("row-order: {s}\n", .{order});
-    try writeFacts(stdout, header, report);
+    try writeFacts(stdout, allocator, header, report);
 }
 
-pub fn writeFacts(stdout: *Io.Writer, header: Header, report: Report) Io.Writer.Error!void {
+pub fn writeFacts(stdout: *Io.Writer, allocator: std.mem.Allocator, header: Header, report: Report) Error!void {
     if (header.binds.len == 0) try stdout.writeAll("bind: none\n");
     for (header.binds) |bind| {
         try stdout.writeAll("bind: ");
@@ -199,7 +230,7 @@ pub fn writeFacts(stdout: *Io.Writer, header: Header, report: Report) Io.Writer.
         try writeTimeEvidence(stdout, timing.evidence);
         try stdout.print("variant-faster-rounds: {d}/{d}\n", .{ timing.variant_faster_rounds, timing.rounds });
     }
-    try writeWarnings(stdout, report.warnings);
+    try writeWarnings(stdout, allocator, report.warnings);
     const sizes = report.sizes;
     try stdout.print(
         \\db-bytes-baseline: {d} (the snapshot file)
@@ -405,6 +436,16 @@ fn writeJsonComparison(
     for (enabled, warning_codes, warning_messages) |active, code, message| {
         if (!active) continue;
         try json.write(.{ .code = code, .message = message });
+    }
+    if (report.warnings.bind_dependent_partial_index) |name| {
+        const message = try std.fmt.allocPrint(allocator, bind_dependent_partial_index_message, .{name});
+        defer allocator.free(message);
+        try json.beginObject();
+        try json.objectField("code");
+        try json.write(bind_dependent_partial_index_code);
+        try json.objectField("message");
+        try writeJsonText(&json, allocator, message);
+        try json.endObject();
     }
     try json.endArray();
     try json.objectField("size_bytes");
@@ -778,12 +819,13 @@ const row_order_differs = "differs (reference only; rows may change order withou
 
 pub fn writeHumanSummary(
     stdout: *Io.Writer,
+    allocator: std.mem.Allocator,
     header: Header,
     before: cli_comparison.Measurement,
     after: cli_comparison.Measurement,
     outcome: cli_comparison.Outcome,
     report: Report,
-) Io.Writer.Error!void {
+) Error!void {
     try writeOverview(stdout, header, before, after, outcome, report);
     if (header.d1 != null) try writeD1Human(stdout, header);
     try stdout.writeByte('\n');
@@ -797,7 +839,7 @@ pub fn writeHumanSummary(
         try stdout.writeAll("\nResult rows\n");
         try writeRowsDetail(stdout, outcome, header.show_rows);
     }
-    try writeHumanWarnings(stdout, report.warnings);
+    try writeHumanWarnings(stdout, allocator, report.warnings);
 }
 
 fn writeOverview(
@@ -1199,7 +1241,7 @@ test "the summary keeps its block order without a database" {
         .sizes = .{ .baseline = 4096, .variant = 8192 },
         .judgement = .{ .verdict = .not_judged },
     };
-    try writeSummary(&stdout, header, before, after, outcome, report);
+    try writeSummary(&stdout, testing.allocator, header, before, after, outcome, report);
 
     const keys = [_][]const u8{
         "db: db.sqlite\nselect: select.sql\nindex-sql: index.sql\n",
