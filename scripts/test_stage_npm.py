@@ -50,8 +50,8 @@ def test_version():
 def test_filenames():
     expect(
         "scoped tarball names drop the scope",
-        stage_npm.tarball_filename("@qenome/linux-x64", "1.2.3") == "qenome-linux-x64-1.2.3.tgz",
-        stage_npm.tarball_filename("@qenome/linux-x64", "1.2.3"),
+        stage_npm.tarball_filename("@qenome-cli/linux-x64", "1.2.3") == "qenome-cli-linux-x64-1.2.3.tgz",
+        stage_npm.tarball_filename("@qenome-cli/linux-x64", "1.2.3"),
     )
     expect(
         "launcher tarball name uses the package name",
@@ -185,10 +185,10 @@ def test_launcher_permissions():
     try:
         app = os.path.join(work, "app")
         os.makedirs(os.path.join(app, "bin"))
-        package = os.path.join(app, "node_modules", "@qenome", target)
+        package = os.path.join(app, "node_modules", "@qenome-cli", target)
         os.makedirs(os.path.join(package, "bin"))
         with open(os.path.join(package, "package.json"), "w", encoding="utf-8") as handle:
-            handle.write('{"name": "@qenome/' + target + '", "version": "0.0.0"}\n')
+            handle.write('{"name": "@qenome-cli/' + target + '", "version": "0.0.0"}\n')
         script = os.path.join(app, "bin", "qenome.js")
         with open(script, "wb") as handle:
             handle.write(launcher)
