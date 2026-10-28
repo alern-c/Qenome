@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const db = @import("../db.zig");
 const result_rows = @import("../result.zig");
@@ -20,6 +21,21 @@ const Measurement = cli_comparison.Measurement;
 
 const batch_schema_version: u8 = 1;
 const max_entries = 100;
+const baseline_cache_bytes: usize = result_rows.max_result_bytes;
+
+var test_baseline_selects: usize = 0;
+var test_cache_limit: ?usize = null;
+
+pub fn setTestCacheLimit(limit: ?usize) void {
+    comptime std.debug.assert(builtin.is_test);
+    test_cache_limit = limit;
+}
+
+pub fn takeTestBaselineSelects() usize {
+    comptime std.debug.assert(builtin.is_test);
+    defer test_baseline_selects = 0;
+    return test_baseline_selects;
+}
 
 pub const Query = struct {
     label: []const u8,
@@ -297,6 +313,40 @@ fn outOfMemory(stderr: *Io.Writer) ?Loaded {
     return null;
 }
 
+const BaselineEntry = struct {
+    cached: bool = false,
+    keep_rows: bool = false,
+    charged: usize = 0,
+    before: Measurement = undefined,
+    clues: db.Clues = .{},
+    budget: result_rows.Budget = .{},
+    rows: result_rows.RowCollector = undefined,
+};
+
+const BaselineCache = struct {
+    entries: []BaselineEntry,
+    used: usize = 0,
+
+    fn deinit(self: *BaselineCache, allocator: std.mem.Allocator) void {
+        for (self.entries) |*entry| {
+            if (entry.cached) entry.rows.deinit();
+        }
+        allocator.free(self.entries);
+    }
+};
+
+fn baselineCacheLimit() usize {
+    if (comptime builtin.is_test) {
+        if (test_cache_limit) |limit| return limit;
+    }
+    return baseline_cache_bytes;
+}
+
+fn baselineCacheFits(used: usize, charge: usize, limit: usize) bool {
+    if (charge > limit) return false;
+    return used <= limit - charge;
+}
+
 pub fn run(
     io: Io,
     arena: std.mem.Allocator,
@@ -359,12 +409,12 @@ pub fn run(
     }
 
     var control = db.StepControl.init(io, inputs.timeout_ms, cli_control.cancelFlag());
-    for (loaded.queries) |*query| {
-        if (!prepareQuery(&baseline, query, stderr)) return .rejected;
-        _ = baseline.run(&control, null) catch |err| {
-            return baselineStepFailure(err, &baseline, &control, query.label, stderr);
-        };
-    }
+    const cache_entries = allocator.alloc(BaselineEntry, loaded.queries.len) catch return outOfMemoryCode(stderr);
+    for (cache_entries) |*entry| entry.* = .{};
+    var baseline_cache: BaselineCache = .{ .entries = cache_entries };
+    defer baseline_cache.deinit(allocator);
+    var cache_failure: ExitCode = .rejected;
+    if (!fillBaselineCache(arena, allocator, &baseline_cache, &baseline, loaded.queries, &control, stderr, &cache_failure)) return cache_failure;
 
     const baseline_size = batchFileSize(io, inputs.baseline_path, null, stderr) orelse return .rejected;
 
@@ -452,9 +502,8 @@ pub fn run(
             }
         }
 
-        for (loaded.queries) |*query| {
+        for (loaded.queries, 0..) |*query, query_index| {
             if (cli_control.signalPending()) return cli_control.reportInterrupted(stderr);
-            if (!prepareQuery(&baseline, query, stderr)) return .rejected;
 
             var child_state = std.heap.ArenaAllocator.init(allocator);
             defer child_state.deinit();
@@ -464,11 +513,28 @@ pub fn run(
             rows.init(child);
             defer rows.deinit();
 
-            const keep_rows = !baseline.clues().alwaysIncomparable();
-            const before = switch (measureBaseline(child, &baseline, query, &control, if (keep_rows) &rows.baseline else null, stderr)) {
-                .measured => |value| value,
-                .failed => |code| return code,
-            };
+            const entry = &baseline_cache.entries[query_index];
+            var keep_rows = false;
+            var clues: db.Clues = .{};
+            var before: Measurement = undefined;
+            var baseline_rows: *result_rows.RowCollector = undefined;
+            if (entry.cached) {
+                result_rows.restoreInsertionOrder(&entry.rows);
+                keep_rows = entry.keep_rows;
+                clues = entry.clues;
+                before = entry.before;
+                baseline_rows = &entry.rows;
+                rows.budget.used = entry.charged;
+            } else {
+                if (!prepareQuery(&baseline, query, stderr)) return .rejected;
+                keep_rows = !baseline.clues().alwaysIncomparable();
+                switch (measureBaseline(child, &baseline, query, &control, if (keep_rows) &rows.baseline else null, stderr)) {
+                    .measured => |value| before = value,
+                    .failed => |code| return code,
+                }
+                clues = baseline.clues();
+                baseline_rows = &rows.baseline;
+            }
 
             if (!prepareVariant(&variant, query, candidate, stderr)) return .rejected;
             const after: Measurement = switch (measureVariant(child, &variant, query, candidate, &control, if (keep_rows) &rows.variant else null, stderr)) {
@@ -485,8 +551,8 @@ pub fn run(
                 .failed => |code| return code,
             };
 
-            const outcome = cli_comparison.decide(child, before, after, &rows.baseline, &rows.variant, .{
-                .clues = db.Clues.merge(baseline.clues(), variant.clues()),
+            const outcome = cli_comparison.decide(child, before, after, baseline_rows, &rows.variant, .{
+                .clues = db.Clues.merge(clues, variant.clues()),
                 .limit_or_offset = db.mentionsLimitOrOffset(query.sql),
             });
 
@@ -582,6 +648,51 @@ pub fn run(
         .kv => unreachable,
     }
     return code;
+}
+
+fn fillBaselineCache(
+    arena: std.mem.Allocator,
+    allocator: std.mem.Allocator,
+    cache: *BaselineCache,
+    session: *QuerySession,
+    queries: []const Query,
+    control: *db.StepControl,
+    stderr: *Io.Writer,
+    failure: *ExitCode,
+) bool {
+    for (queries, 0..) |*query, index| {
+        if (cli_control.signalPending()) {
+            failure.* = cli_control.reportInterrupted(stderr);
+            return false;
+        }
+        if (!prepareQuery(session, query, stderr)) {
+            failure.* = .rejected;
+            return false;
+        }
+        const clues = session.clues();
+        const keep_rows = !clues.alwaysIncomparable();
+        const entry = &cache.entries[index];
+        entry.rows = result_rows.RowCollector.init(allocator, &entry.budget);
+        const measured = switch (measureBaseline(arena, session, query, control, if (keep_rows) &entry.rows else null, stderr)) {
+            .measured => |value| value,
+            .failed => |code| {
+                entry.rows.deinit();
+                failure.* = code;
+                return false;
+            },
+        };
+        if (keep_rows and !baselineCacheFits(cache.used, entry.rows.charged, baselineCacheLimit())) {
+            entry.rows.deinit();
+            continue;
+        }
+        entry.before = measured;
+        entry.clues = clues;
+        entry.keep_rows = keep_rows;
+        entry.charged = entry.rows.charged;
+        entry.cached = true;
+        cache.used += entry.charged;
+    }
+    return true;
 }
 
 fn prepareQuery(session: *QuerySession, query: *const Query, stderr: *Io.Writer) bool {
@@ -749,6 +860,7 @@ fn measureBaseline(
         stderr.print("error: the batch query '{s}': the query plan could not be read: {s}\n", .{ query.label, detail }) catch {};
         return .{ .failed = .rejected };
     };
+    if (comptime builtin.is_test) test_baseline_selects += 1;
     const rows = session.run(control, rows_out) catch |err| {
         return .{ .failed = baselineStepFailure(err, session, control, query.label, stderr) };
     };

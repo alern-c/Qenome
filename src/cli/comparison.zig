@@ -246,3 +246,27 @@ test "judgeRows ignores the plan and the times" {
     after.plan = .{ .rows = @constCast(&search_line) };
     try expectJudgement(.improved, null, judgeRows(before, after));
 }
+
+test "a collector failure is incomparable with its reason" {
+    const expected = [_]struct { failure: result.CollectFailure, reason: []const u8 }{
+        .{ .failure = .over_budget, .reason = "the result rows exceed the 64 MiB" },
+        .{ .failure = .out_of_memory, .reason = "out of memory while keeping the result rows" },
+    };
+    for (expected) |entry| {
+        var budget: result.Budget = .{};
+        var baseline = result.RowCollector.init(testing.allocator, &budget);
+        defer baseline.deinit();
+        baseline.failure = entry.failure;
+        var variant = result.RowCollector.init(testing.allocator, &budget);
+        defer variant.deinit();
+
+        const outcome = decide(testing.allocator, testMeasurement(10, 0), testMeasurement(1, 0), &baseline, &variant, .{
+            .clues = .{},
+            .limit_or_offset = false,
+        });
+        try testing.expectEqual(Verdict.incomparable, outcome.verdict);
+        try testing.expect(outcome.comparison == null);
+        try testing.expectEqual(@as(usize, 1), outcome.reason_count);
+        try testing.expect(std.mem.indexOf(u8, outcome.reasons[0].text, entry.reason) != null);
+    }
+}
