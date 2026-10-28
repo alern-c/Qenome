@@ -24,6 +24,7 @@ On failure, read the line that starts with `{`. `human` and `kv` do not print th
 `--batch manifest.json` compares every SELECT in the manifest with every candidate CREATE INDEX. With `--suggest`, the manifest may omit `candidates`, and SQLite's proposed indexes join the comparison. With `--migration`, the manifest also omits `candidates`, and one SQL file with index changes is applied to the variant before the queries run. Its stdout object is a separate contract with `batch_schema_version` 1. The comparison objects under `results` keep `schema_version` 2 and the shape above. `--suggest` and `--migration` add keys to this contract without changing the version.
 
 | Key | Type | Meaning |
+| --- | --- | --- |
 | `batch_schema_version` | number | `1` |
 | `exit_code` | number | `0`, `1`, `3`, `4`, `6`, or `124`. The process can still exit `5` after this object when cleanup fails and the code is `0` |
 | `recommended` | string or `null` | The candidate label: a path from the manifest, the `--migration` path, or `suggested:N` with `--suggest`. `null` when no candidate qualifies |
@@ -36,6 +37,7 @@ On failure, read the line that starts with `{`. `human` and `kv` do not print th
 ### `summary` entries
 
 | Key | Type | Meaning |
+| --- | --- | --- |
 | `candidate` | string | The `index_sql` string from the manifest, `suggested:1`, `suggested:2`, … for a proposed index, or the `--migration` path |
 | `source` | string | `manifest`, `suggested`, or `migration` |
 | `index_sql_text` | string | The SQL text: for a manifest candidate, the contents of its file; for a suggestion, the statement SQLite reported (ending with `;`); for `--migration`, the contents of the migration file |
@@ -50,6 +52,7 @@ A candidate qualifies for `recommended` when its status is `compared` and `misma
 ### `results` entries
 
 | Key | Type | Meaning |
+| --- | --- | --- |
 | `query` | string | The `select` string from the manifest, or the SELECT path argument for a one-SELECT `--suggest` |
 | `candidate` | string | The `index_sql` string from the manifest, or `suggested:N` |
 | `status` | string | `compared` or `variant_timeout` |
@@ -108,6 +111,7 @@ A candidate qualifies for `recommended` when its status is `compared` and `misma
 - `warnings` keeps what the run dropped or could not do:
 
 | `code` | Meaning |
+| --- | --- |
 | `suggest_query_skipped` | SQLite could not analyze one SELECT; the other SELECTs continue |
 | `suggestion_rejected` | A proposed statement failed the `CREATE INDEX` check and was dropped |
 | `suggestions_truncated` | The 20 or 100 limit dropped the tail of the suggestions |
@@ -129,6 +133,7 @@ The migration statement kind check is not a candidate failure: an unsupported st
 Batch error codes:
 
 | `code` | Exit | Next step the hint points at |
+| --- | --- | --- |
 | `usage_batch_conflict` | 2 | Put the SELECT, CREATE INDEX, and binds in the manifest; use `--format human` or `json`; do not pass `--runs` |
 | `batch_manifest_unreadable` | 1 | Check the manifest path and permissions |
 | `batch_manifest_invalid` | 1 | Fix the shape, limits, repeated paths, or binds |
