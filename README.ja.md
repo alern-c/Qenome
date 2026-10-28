@@ -419,7 +419,7 @@ qenome --d1 DEMO_DB select.sql index.sql --runs 40
 - `--migration` のとき、`candidates` は省略または `[]` にし、マニフェストは `queries` だけを持つ。
 - `select` と `index_sql` はファイルのパス。カレントディレクトリではなく、マニフェストのディレクトリを基準に解決する。各ファイルは読み取り専用の SELECT 1本、または `CREATE INDEX` 1本で、1 MiBまで。
 - `binds` は任意で、`--bind` と同じ `N:TYPE:VALUE` 形式。パスとバインド値は NUL バイトを含まない JSON 文字列にする。
-- `select` と `index_sql` の文字列は、書いたとおりに報告へ出す。
+- `select` と `index_sql` の文字列は、JSON の報告には書いたとおりに出す。human の報告では、絶対パスを、同じ一覧のほかのパスと末尾が重ならない最短の部分に短くして出す（別のディレクトリにある候補は `a/x.sql` と `b/x.sql` のように区別できる）。相対パスと `suggested:N` のラベルは書いたとおりに出す。フルパスは JSON の報告に残り、`--migration` では `migration:` の行にも出る。
 
 Qenome はデータベースを1回コピーし、何かを実行する前に全 SELECT と全候補を検査します。そのあと候補をマニフェスト順に処理し、候補ごとに baseline をもう一度コピーして、そのコピーにだけインデックスを作り、全クエリを両方のコピーで実行します。baseline の SELECT は候補ごとに実行し直します。
 
@@ -442,7 +442,7 @@ Qenome はデータベースを1回コピーし、何かを実行する前に全
 
 報告を書けた場合、終了コードは、結果の不一致 `3`、インデックスまたはマイグレーションの作成失敗 `1`、候補の時間切れ `124`、比較不能 `4`、`--migration` の退行 `6`、`0` のうち一番重いものです。後片付けの失敗は `0` のときだけ `5` に置き換えます。そのため batch は、報告を書きながら `1`・`6`・`124` で終わることがあります。どれかは stdout で見分けます。
 
-human 出力は候補の表、`Recommendation:`、クエリと候補の判定表を出します。おすすめは、不一致・比較不能・`needs-check`（`--migration` では `needs_check` が `regressed` のクエリを数える）・時間切れがなく、改善が1件以上ある候補のうち、改善したクエリが最も多いものです。variant だけで計測した `not-judged` のクエリは、それだけではおすすめの条件を外しません。同じなら `bind_dependent_partial_index` 警告のない候補が先、次に容量の増分が小さい順、次に入力順（マニフェストの候補の後ろに提案）です。警告は判定・batch の件数・終了コードを変えません。human は判定表の後に `Warnings` の節を出し、比較ごとの警告を `<クエリ> -> <候補>: <code>: <message>` の形で1行ずつ示します。パスとインデックス名はほかの警告と同じ規則で制御文字を可視化します。`--format json` では [docs/json.md](docs/json.md) に書いた `batch_schema_version` 1 のオブジェクトを出します。
+human 出力は候補の表、`Recommendation:`、クエリと候補の判定表を出します。おすすめは、不一致・比較不能・`needs-check`（`--migration` では `needs_check` が `regressed` のクエリを数える）・時間切れがなく、改善が1件以上ある候補のうち、改善したクエリが最も多いものです。variant だけで計測した `not-judged` のクエリは、それだけではおすすめの条件を外しません。`Results` 表では、そのクエリの `result` 列が `variant-only`、`verdict` 列が `not-judged` になり、比較オブジェクト（JSON）の `result` は `baseline` を `null` にしたまま `incomparable` です。同じなら `bind_dependent_partial_index` 警告のない候補が先、次に容量の増分が小さい順、次に入力順（マニフェストの候補の後ろに提案）です。警告は判定・batch の件数・終了コードを変えません。human は判定表の後に `Warnings` の節を出し、比較ごとの警告を `<クエリ> -> <候補>: <code>: <message>` の形で1行ずつ示します。パスとインデックス名はほかの警告と同じ規則で制御文字を可視化し、パスは上で説明した短い表示を使います。`--format json` では [docs/json.md](docs/json.md) に書いた `batch_schema_version` 1 のオブジェクトを出します。
 
 インデックスの作成・SELECT 1回・診断文1回は、それぞれ `--timeout-ms` の制限時間を持ちます。batch は全体で、データベースのコピー1回と、候補ループの前に全クエリの baseline SELECT を1回ずつ実行する分に加えて、候補ごとにインデックスの作成1回とクエリごとの SELECT 2回、さらに診断文（ANALYZE とサイズの警告に最大3つ、パラメータがあるクエリでは bind 依存の部分インデックス診断として計画1回・カタログ1回・使用インデックスごとに最大2文（テーブル名の取得と `PRAGMA index_list`））それぞれの制限時間までかかることがあります。`--show-binds` と `--show-rows` は各比較オブジェクトに適用します。
 
