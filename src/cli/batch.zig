@@ -1443,12 +1443,30 @@ fn writeBatchHuman(
     recommended: ?usize,
     migration: ?Migration,
 ) !void {
+    const summary_labels = try allocator.alloc([]const u8, summaries.len);
+    defer allocator.free(summary_labels);
+    for (summaries, 0..) |summary, index| summary_labels[index] = summary.candidate;
+    const candidate_names = try displayNames(allocator, summary_labels);
+    defer allocator.free(candidate_names);
+
+    const query_labels = try allocator.alloc([]const u8, results.len);
+    defer allocator.free(query_labels);
+    var query_label_count: usize = 0;
+    for (results) |result| {
+        if (containsLabel(query_labels[0..query_label_count], result.query)) continue;
+        query_labels[query_label_count] = result.query;
+        query_label_count += 1;
+    }
+    const distinct_queries = query_labels[0..query_label_count];
+    const query_names = try displayNames(allocator, distinct_queries);
+    defer allocator.free(query_names);
+
     var candidate_width: usize = "candidate".len;
-    for (summaries) |summary| candidate_width = @max(candidate_width, summary.candidate.len);
+    for (candidate_names) |name| candidate_width = @max(candidate_width, name.len);
     var query_width: usize = "query".len;
-    for (results) |result| query_width = @max(query_width, result.query.len);
+    for (query_names) |name| query_width = @max(query_width, name.len);
     var result_candidate_width: usize = "candidate".len;
-    for (results) |result| result_candidate_width = @max(result_candidate_width, result.candidate.len);
+    for (results) |result| result_candidate_width = @max(result_candidate_width, displayNameOf(candidate_names, summary_labels, result.candidate).len);
 
     if (migration) |value| {
         try stdout.print(
@@ -1490,7 +1508,7 @@ fn writeBatchHuman(
     for (order) |index| {
         const summary = summaries[index];
         try stdout.writeAll("  ");
-        try writeCell(stdout, summary.candidate, candidate_width);
+        try writeCell(stdout, candidate_names[index], candidate_width);
         try stdout.writeAll("  ");
         try writeCell(stdout, @tagName(summary.status), 12);
         if (summary.status == .compared) {
@@ -1520,20 +1538,20 @@ fn writeBatchHuman(
     }
 
     var suggested_printed = false;
-    for (summaries) |summary| {
+    for (summaries, 0..) |summary, index| {
         if (summary.source != .suggested) continue;
         if (!suggested_printed) {
             try stdout.writeAll("\nSuggested by SQLite:\n");
             suggested_printed = true;
         }
-        try stdout.print("  {s}: ", .{summary.candidate});
+        try stdout.print("  {s}: ", .{candidate_names[index]});
         try result_rows.writeEscapedText(stdout, summary.index_sql_text);
         try stdout.writeByte('\n');
     }
 
     try stdout.writeAll("\nRecommendation: ");
     if (recommended) |index| {
-        try stdout.writeAll(summaries[index].candidate);
+        try stdout.writeAll(candidate_names[index]);
     } else {
         try stdout.writeAll("none");
     }
@@ -1550,9 +1568,9 @@ fn writeBatchHuman(
     try stdout.writeByte('\n');
     for (results) |result| {
         try stdout.writeAll("  ");
-        try writeCell(stdout, result.query, query_width);
+        try writeCell(stdout, displayNameOf(query_names, distinct_queries, result.query), query_width);
         try stdout.writeAll("  ");
-        try writeCell(stdout, result.candidate, result_candidate_width);
+        try writeCell(stdout, displayNameOf(candidate_names, summary_labels, result.candidate), result_candidate_width);
         try stdout.writeAll("  ");
         if (result.status == .variant_timeout) {
             try writeCell(stdout, "-", 12);
@@ -1561,7 +1579,7 @@ fn writeBatchHuman(
             try stdout.writeAll("  ");
             try writeCell(stdout, "-", 12);
         } else if (result.baseline_missing) {
-            try writeCell(stdout, "incomparable", 12);
+            try writeCell(stdout, "variant-only", 12);
             try stdout.writeAll("  ");
             try writeCell(stdout, "not-judged", 12);
             try stdout.writeAll("  ");
@@ -1594,9 +1612,9 @@ fn writeBatchHuman(
         const message = try cli_report.bindDependentPartialIndexMessage(allocator, index_name);
         defer allocator.free(message);
         try stdout.writeAll("  ");
-        try result_rows.writeEscapedText(stdout, result.query);
+        try result_rows.writeEscapedText(stdout, displayNameOf(query_names, distinct_queries, result.query));
         try stdout.writeAll(" -> ");
-        try result_rows.writeEscapedText(stdout, result.candidate);
+        try result_rows.writeEscapedText(stdout, displayNameOf(candidate_names, summary_labels, result.candidate));
         try stdout.print(": {s}: {s}\n", .{ cli_report.bind_dependent_partial_index_code, message });
     }
 
@@ -1607,7 +1625,7 @@ fn writeBatchHuman(
             try stdout.writeAll("\nNot judged\n");
             not_judged_printed = true;
         }
-        try stdout.print("  {s}: ", .{result.query});
+        try stdout.print("  {s}: ", .{displayNameOf(query_names, distinct_queries, result.query)});
         try result_rows.writeEscapedText(stdout, result.reason);
         try stdout.writeByte('\n');
     }
@@ -1620,7 +1638,7 @@ fn writeBatchHuman(
             try stdout.writeAll(if (summary.source == .migration) "\nMigration failure\n" else "\nRejected candidates\n");
             failures_printed = true;
         }
-        try stdout.print("  {s}: {s}: ", .{ summary.candidate, @tagName(summary.status) });
+        try stdout.print("  {s}: {s}: ", .{ candidate_names[index], @tagName(summary.status) });
         try result_rows.writeEscapedText(stdout, summary.failure_message);
         try stdout.writeByte('\n');
     }
@@ -1630,6 +1648,58 @@ fn writeBatchHuman(
         try result_rows.writeEscapedText(stdout, warning.message);
         try stdout.writeByte('\n');
     }
+}
+
+fn displayNames(allocator: std.mem.Allocator, labels: []const []const u8) ![][]const u8 {
+    const names = try allocator.alloc([]const u8, labels.len);
+    errdefer allocator.free(names);
+    for (labels, 0..) |label, index| names[index] = displayPath(label, labels, index);
+    return names;
+}
+
+fn displayPath(label: []const u8, labels: []const []const u8, self_index: usize) []const u8 {
+    if (!std.fs.path.isAbsolute(label)) return label;
+    var start = trailingComponentStart(label);
+    while (start < label.len) {
+        if (uniqueSuffix(label[start..], label, labels, self_index)) return label[start..];
+        start = previousComponentStart(label, start) orelse return label;
+    }
+    return label;
+}
+
+fn trailingComponentStart(path: []const u8) usize {
+    const index = std.mem.lastIndexOfScalar(u8, path, '/') orelse return path.len;
+    return index + 1;
+}
+
+fn previousComponentStart(path: []const u8, start: usize) ?usize {
+    if (start == 0) return null;
+    const index = std.mem.lastIndexOfScalar(u8, path[0 .. start - 1], '/') orelse return null;
+    return index + 1;
+}
+
+fn uniqueSuffix(candidate: []const u8, label: []const u8, labels: []const []const u8, self_index: usize) bool {
+    for (labels, 0..) |other, index| {
+        if (index == self_index) continue;
+        if (std.mem.eql(u8, other, label)) continue;
+        if (std.mem.eql(u8, other, candidate)) return false;
+        if (other.len > candidate.len and other[other.len - candidate.len - 1] == '/' and std.mem.eql(u8, other[other.len - candidate.len ..], candidate)) return false;
+    }
+    return true;
+}
+
+fn containsLabel(labels: []const []const u8, label: []const u8) bool {
+    for (labels) |other| {
+        if (std.mem.eql(u8, other, label)) return true;
+    }
+    return false;
+}
+
+fn displayNameOf(names: []const []const u8, labels: []const []const u8, label: []const u8) []const u8 {
+    for (labels, 0..) |candidate, index| {
+        if (std.mem.eql(u8, candidate, label)) return names[index];
+    }
+    return label;
 }
 
 fn word(count: usize, singular: []const u8, plural: []const u8) []const u8 {

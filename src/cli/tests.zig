@@ -161,6 +161,20 @@ fn contains(haystack: []const u8, needle: []const u8) bool {
     return std.mem.indexOf(u8, haystack, needle) != null;
 }
 
+fn section(text: []const u8, head: []const u8, tail: []const u8) ![]const u8 {
+    const start = std.mem.indexOf(u8, text, head) orelse return error.MissingSection;
+    const from = start + head.len;
+    const end = std.mem.indexOf(u8, text[from..], tail) orelse return error.MissingSection;
+    return text[from .. from + end];
+}
+
+fn lineWith(text: []const u8, needle: []const u8) ![]const u8 {
+    const at = std.mem.indexOf(u8, text, needle) orelse return error.MissingLine;
+    const start = (std.mem.lastIndexOfScalar(u8, text[0..at], '\n') orelse return error.MissingLine) + 1;
+    const end = std.mem.indexOfScalarPos(u8, text, at, '\n') orelse text.len;
+    return text[start..end];
+}
+
 fn callRun(
     allocator: std.mem.Allocator,
     argv: []const [:0]const u8,
@@ -3147,6 +3161,25 @@ test "a schema migration shows the variant-only query in human output" {
     try fixture.expectNoLeftovers();
 }
 
+test "a variant-only result is not reported as incomparable in the human results" {
+    var fixture = try initMigrationFixture();
+    defer fixture.deinit();
+
+    var stdout_buffer: [262144]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = try runMigration(&fixture, "queries_mixed.json", "schema.sql", &.{}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.incomparable, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+    const rows = try section(result.stdout, "\nResults\n", "\nNot judged\n");
+    const variant_only = try lineWith(rows, "qc.sql");
+    try testing.expect(contains(variant_only, "variant-only"));
+    try testing.expect(contains(variant_only, "not-judged"));
+    try testing.expect(!contains(variant_only, "incomparable"));
+    try testing.expect(contains(try lineWith(rows, "qrandom.sql"), "incomparable"));
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, rows, "incomparable"));
+    try fixture.expectNoLeftovers();
+}
+
 test "a schema migration can create a table for a variant-only query" {
     var fixture = try initMigrationFixture();
     defer fixture.deinit();
@@ -3433,6 +3466,58 @@ test "a batch compares every query with every candidate and recommends one" {
     try testing.expect(contains(result.stdout, "q2.sql"));
     try testing.expect(contains(result.stdout, "c1.sql"));
     try testing.expect(contains(result.stdout, "c2.sql"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a batch human report shortens absolute paths without merging names" {
+    var fixture = try initBatchHappy();
+    defer fixture.deinit();
+    try fixture.dir.tmp.dir.createDir(testing.io, "a", .default_dir);
+    try fixture.dir.tmp.dir.createDir(testing.io, "b", .default_dir);
+    try fixture.writeFile("a/x.sql", "CREATE INDEX ix_b ON t(b);");
+    try fixture.writeFile("b/x.sql", "CREATE INDEX ix_a ON t(a);");
+    const root = try fixture.dir.tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    const manifest = try std.fmt.allocPrint(testing.allocator,
+        \\{{"queries":[{{"select":"{s}/q1.sql","binds":["1:text:x"]}}],
+        \\ "candidates":[{{"index_sql":"{s}/a/x.sql"}},{{"index_sql":"{s}/b/x.sql"}}]}}
+    , .{ root, root, root });
+    defer testing.allocator.free(manifest);
+    try fixture.writeFile("absolute.json", manifest);
+    const manifest_path = try fixture.dir.tmp.dir.realPathFileAlloc(testing.io, "absolute.json", testing.allocator);
+    defer testing.allocator.free(manifest_path);
+
+    var stdout_buffer: [65536]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const human = fixture.runBatchPath(manifest_path, &.{}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, human.code);
+    try testing.expectEqualStrings("", human.stderr);
+    const summary = try section(human.stdout, "\nSummary\n", "\nRecommendation: ");
+    try testing.expect(contains(summary, "a/x.sql"));
+    try testing.expect(contains(summary, "b/x.sql"));
+    try testing.expect(!contains(summary, root));
+    try testing.expect(contains(human.stdout, "\nRecommendation: a/x.sql\n"));
+    const results_at = std.mem.indexOf(u8, human.stdout, "\nResults\n") orelse return error.MissingSection;
+    const results = human.stdout[results_at..];
+    try testing.expect(contains(results, "q1.sql"));
+    try testing.expect(contains(results, "a/x.sql"));
+    try testing.expect(contains(results, "b/x.sql"));
+    try testing.expect(!contains(results, root));
+
+    var json_buffer: [65536]u8 = undefined;
+    const json = fixture.runBatchPath(manifest_path, &.{ "--format", "json" }, &json_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, json.code);
+    var parsed = try parseJson(json.stdout);
+    defer parsed.deinit();
+    const absolute_candidate = try std.fmt.allocPrint(testing.allocator, "{s}/a/x.sql", .{root});
+    defer testing.allocator.free(absolute_candidate);
+    try testing.expectEqualStrings(absolute_candidate, try jsonText(parsed.value, "recommended"));
+    const summaries = try jsonItems(parsed.value, "summary");
+    try testing.expectEqualStrings(absolute_candidate, try jsonText(summaries[0], "candidate"));
+    const absolute_query = try std.fmt.allocPrint(testing.allocator, "{s}/q1.sql", .{root});
+    defer testing.allocator.free(absolute_query);
+    const results_json = try jsonItems(parsed.value, "results");
+    try testing.expectEqualStrings(absolute_query, try jsonText(results_json[0], "query"));
     try fixture.expectNoLeftovers();
 }
 
