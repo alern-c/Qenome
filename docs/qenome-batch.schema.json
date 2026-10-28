@@ -10,12 +10,16 @@
     "exit_code",
     "recommended",
     "summary",
-    "results"
+    "results",
+    "warnings"
   ],
   "properties": {
     "batch_schema_version": { "const": 1 },
     "exit_code": { "enum": [0, 1, 3, 4, 124] },
-    "recommended": { "type": ["string", "null"] },
+    "recommended": {
+      "description": "A manifest index_sql path, or suggested:N with --suggest. Null when no candidate qualifies.",
+      "type": ["string", "null"]
+    },
     "summary": {
       "type": "array",
       "minItems": 1,
@@ -26,6 +30,27 @@
       "type": "array",
       "maxItems": 10000,
       "items": { "$ref": "#/$defs/result" }
+    },
+    "warnings": {
+      "description": "What --suggest dropped or could not do. Empty without --suggest.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "message"],
+        "properties": {
+          "code": {
+            "enum": [
+              "suggest_query_skipped",
+              "suggestion_rejected",
+              "suggestions_truncated",
+              "no_suggestions",
+              "suggest_failed"
+            ]
+          },
+          "message": { "type": "string", "minLength": 1 }
+        }
+      }
     }
   },
   "$defs": {
@@ -34,6 +59,8 @@
       "additionalProperties": true,
       "required": [
         "candidate",
+        "source",
+        "index_sql_text",
         "status",
         "failure",
         "improved",
@@ -45,7 +72,15 @@
         "size_increase"
       ],
       "properties": {
-        "candidate": { "type": "string" },
+        "candidate": {
+          "description": "The manifest index_sql string, or suggested:N when --suggest proposed the index.",
+          "type": "string"
+        },
+        "source": { "enum": ["manifest", "suggested"] },
+        "index_sql_text": {
+          "description": "The SQL text. For a manifest candidate, the contents of its file.",
+          "type": "string"
+        },
         "status": { "enum": ["compared", "index_rejected", "index_timeout"] },
         "failure": {
           "description": "Null when the candidate was compared. Otherwise the reason the index was not built.",

@@ -55,6 +55,7 @@ pub const Args = struct {
     show_binds: bool = false,
     show_rows: bool = false,
     format: Format = .human,
+    suggest: bool = false,
     help: bool = false,
     version: bool = false,
 };
@@ -77,6 +78,10 @@ pub const ParseError = error{
     BatchRejectsBind,
     BatchRejectsRuns,
     BatchRejectsKv,
+    SuggestRejectsIndex,
+    SuggestRejectsRuns,
+    SuggestRejectsKv,
+    SuggestTakesTwoPaths,
     OutOfMemory,
 };
 
@@ -91,6 +96,7 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
     var version_requested = false;
     var d1_requested = false;
     var batch_requested = false;
+    var suggest_requested = false;
     for (rest) |arg| {
         if (std.mem.eql(u8, arg, "--")) break;
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
@@ -101,6 +107,7 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
         if (std.mem.eql(u8, arg, "--version")) version_requested = true;
         if (std.mem.eql(u8, arg, "--d1") or std.mem.startsWith(u8, arg, "--d1=")) d1_requested = true;
         if (std.mem.eql(u8, arg, "--batch") or std.mem.startsWith(u8, arg, "--batch=")) batch_requested = true;
+        if (std.mem.eql(u8, arg, "--suggest")) suggest_requested = true;
     }
     if (version_requested) {
         args.version = true;
@@ -121,7 +128,7 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
             continue;
         }
         if (positional_only) {
-            try assignPositional(&args, arg, d1_requested, batch_requested);
+            try assignPositional(&args, arg, d1_requested, batch_requested, suggest_requested);
             continue;
         }
         const inline_value = splitInline(arg);
@@ -163,6 +170,9 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
         } else if (std.mem.eql(u8, name, "--show-rows")) {
             if (inline_value != null) return error.UnexpectedValue;
             args.show_rows = true;
+        } else if (std.mem.eql(u8, name, "--suggest")) {
+            if (inline_value != null) return error.UnexpectedValue;
+            args.suggest = true;
         } else if (std.mem.eql(u8, name, "--runs")) {
             const raw = try optionValue(argv, &index, inline_value);
             args.runs = std.fmt.parseUnsigned(u32, raw, 10) catch return error.InvalidRuns;
@@ -174,7 +184,7 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
         } else if (arg.len != 0 and arg[0] == '-') {
             return error.UnknownOption;
         } else {
-            try assignPositional(&args, arg, d1_requested, batch_requested);
+            try assignPositional(&args, arg, d1_requested, batch_requested, suggest_requested);
         }
     }
     offending.* = null;
@@ -208,6 +218,20 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
             return error.BatchRejectsKv;
         }
     }
+    if (args.suggest) {
+        if (args.batch == null and args.index_sql != null) {
+            offending.* = "--index-sql";
+            return error.SuggestRejectsIndex;
+        }
+        if (args.runs_given) {
+            offending.* = "--runs";
+            return error.SuggestRejectsRuns;
+        }
+        if (args.format == .kv) {
+            offending.* = "--format";
+            return error.SuggestRejectsKv;
+        }
+    }
     args.binds = try binds.toOwnedSlice(allocator);
     return args;
 }
@@ -229,7 +253,7 @@ fn splitInline(arg: [:0]const u8) ?Inline {
     return .{ .name = arg[0..at], .value = arg[at + 1 ..] };
 }
 
-fn assignPositional(args: *Args, value: [:0]const u8, d1_requested: bool, batch_requested: bool) ParseError!void {
+fn assignPositional(args: *Args, value: [:0]const u8, d1_requested: bool, batch_requested: bool, suggest_requested: bool) ParseError!void {
     if (value.len == 0) return error.EmptyPath;
     if (batch_requested) {
         if (!d1_requested and args.db == null) {
@@ -246,6 +270,7 @@ fn assignPositional(args: *Args, value: [:0]const u8, d1_requested: bool, batch_
         args.select = value;
         return;
     }
+    if (suggest_requested) return error.SuggestTakesTwoPaths;
     if (args.index_sql == null) {
         args.index_sql = value;
         return;
@@ -282,7 +307,7 @@ pub fn missingRequired(args: Args, buffer: *[required_option_count][]const u8) [
             buffer[count] = "the SELECT file (a path or --select)";
             count += 1;
         }
-        if (args.index_sql == null) {
+        if (args.index_sql == null and !args.suggest) {
             buffer[count] = "the CREATE INDEX file (a path or --index-sql)";
             count += 1;
         }
@@ -302,6 +327,7 @@ const long_options = [_][]const u8{
     "--timeout-ms",
     "--show-binds",
     "--show-rows",
+    "--suggest",
     "--runs",
     "--format",
     "--version",
@@ -423,6 +449,10 @@ pub const batch_usage_line = "       qenome <DB> --batch <FILE> [options]";
 
 pub const d1_batch_usage_line = "       qenome --d1 <BINDING> --batch <FILE> [options]";
 
+pub const suggest_usage_line = "       qenome <DB> <SELECT_FILE> --suggest [options]";
+
+pub const d1_suggest_usage_line = "       qenome --d1 <BINDING> <SELECT_FILE> --suggest [options]";
+
 pub const version = build_options.version;
 
 pub fn printVersion(writer: *Io.Writer) Io.Writer.Error!void {
@@ -430,7 +460,7 @@ pub fn printVersion(writer: *Io.Writer) Io.Writer.Error!void {
 }
 
 pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
-    try writer.writeAll(usage_line ++ "\n" ++ d1_usage_line ++ "\n" ++ batch_usage_line ++ "\n" ++ d1_batch_usage_line ++ "\n\n" ++
+    try writer.writeAll(usage_line ++ "\n" ++ d1_usage_line ++ "\n" ++ batch_usage_line ++ "\n" ++ d1_batch_usage_line ++ "\n" ++ suggest_usage_line ++ "\n" ++ d1_suggest_usage_line ++ "\n\n" ++
         \\Compares one read-only SELECT before and after one candidate CREATE INDEX
         \\on a local SQLite database, without changing the database.
         \\
@@ -444,6 +474,9 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\  --batch <FILE>       compare every SELECT in a batch manifest with
         \\                       every candidate CREATE INDEX, instead of --select
         \\                       and --index-sql; see the batch manifest below
+        \\  --suggest            ask SQLite for candidate indexes instead of
+        \\                       naming them, and compare the suggestions; with
+        \\                       --batch the manifest may omit candidates
         \\  --select <FILE>      file holding one read-only SELECT (required, once)
         \\  --index-sql <FILE>   file holding one candidate CREATE INDEX (required, once)
         \\  --bind <N>:<TYPE>[:<VALUE>]
@@ -489,6 +522,8 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\  qenome --d1 DB select.sql index.sql
         \\  qenome app.db --batch batch.json
         \\  qenome --db app.db --batch batch.json --format json
+        \\  qenome app.db select.sql --suggest
+        \\  qenome app.db --batch batch.json --suggest
         \\
         \\The same paths can be given as --db, --select and --index-sql.
         \\With --d1, the two positional paths fill the SELECT and CREATE INDEX
@@ -509,12 +544,25 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\candidates: {"queries":[{"select":"a.sql","binds":["1:int:1"]}],
         \\"candidates":[{"index_sql":"i.sql"}]}. The paths are relative to the
         \\manifest. Each list takes 1 to 100 entries, and the same path cannot
-        \\repeat. --batch compares every query with every candidate, keeps going
+        \\repeat. --suggest lets the candidates list be omitted or empty.
+        \\--batch compares every query with every candidate, keeps going
         \\when one candidate is rejected, and prints a batch report with a
         \\recommendation. It does not time the runs and does not take --bind,
         \\--select, --index-sql, --runs or --format kv. With --batch, exit 1 and
         \\124 can still have a report on stdout; stdout is empty when the run
         \\stopped before the report.
+        \\
+        \\--suggest asks SQLite's expert for candidate indexes for the SELECT
+        \\files and compares them with the manifest candidates (with --batch) or
+        \\alone (with one SELECT file). It does not take --runs, --format kv, or
+        \\an index file. Suggestions pass the same CREATE INDEX check as
+        \\manifest candidates and are dropped with a warning when they fail.
+        \\The report adds warnings and marks each candidate's source. It keeps
+        \\at most 20 suggestions and at most 100 candidates with the manifest.
+        \\A database whose schema is not one plain CREATE statement is
+        \\rejected with status 1.
+        \\When nothing can be compared it stops with status 1 and no_candidates.
+        \\Do not use --suggest in CI gates; keep it for finding candidates.
         \\
         \\exit status: 0 result rows match, 1 rejected, 2 usage error,
         \\3 result rows differ, 4 results cannot be compared or --d1 cannot
@@ -600,6 +648,10 @@ pub fn parseErrorMessage(err: ParseError) []const u8 {
         error.BatchRejectsBind => "--batch does not take --bind; put the binds in the manifest (see --help)",
         error.BatchRejectsRuns => "--batch does not run the timing; remove --runs (see --help)",
         error.BatchRejectsKv => "--batch supports --format human or --format json, not kv (see --help)",
+        error.SuggestRejectsIndex => "--suggest suggests the index; remove --index-sql (see --help)",
+        error.SuggestRejectsRuns => "--suggest does not run the timing; remove --runs (see --help)",
+        error.SuggestRejectsKv => "--suggest supports --format human or --format json, not kv (see --help)",
+        error.SuggestTakesTwoPaths => "--suggest takes two paths, the database and the SELECT file (see --help)",
         error.OutOfMemory => "out of memory",
     };
 }
@@ -1051,6 +1103,7 @@ test "every known long option is accepted by the parser" {
         &.{ "Qenome", "--timeout-ms", "1" },
         &.{ "Qenome", "--show-binds" },
         &.{ "Qenome", "--show-rows" },
+        &.{ "Qenome", "--suggest" },
         &.{ "Qenome", "--runs", "1" },
         &.{ "Qenome", "--format", "kv" },
         &.{ "Qenome", "--version" },
@@ -1312,4 +1365,52 @@ test "the usage shows the batch synopsis and the batch option" {
     try usage(&writer);
     try testing.expect(std.mem.indexOf(u8, writer.buffered(), "--batch <FILE>") != null);
     try testing.expect(std.mem.indexOf(u8, writer.buffered(), "qenome <DB> --batch <FILE>") != null);
+}
+
+test "--suggest takes one SELECT and keeps the binds" {
+    const args = try parseArgs(testing.allocator, &.{ "Qenome", "app.db", "select.sql", "--suggest", "--bind", "1:int:1" });
+    defer testing.allocator.free(args.binds);
+    try testing.expect(args.suggest);
+    try testing.expectEqualStrings("app.db", args.db.?);
+    try testing.expectEqualStrings("select.sql", args.select.?);
+    try testing.expect(args.index_sql == null);
+    try testing.expectEqual(@as(usize, 1), args.binds.len);
+    var buffer: [required_option_count][]const u8 = undefined;
+    try testing.expectEqual(@as(usize, 0), missingRequired(args, &buffer).len);
+
+    const d1 = try parseArgs(testing.allocator, &.{ "Qenome", "--d1", "DB", "select.sql", "--suggest" });
+    defer testing.allocator.free(d1.binds);
+    try testing.expect(d1.suggest);
+    try testing.expectEqualStrings("select.sql", d1.select.?);
+
+    const with_batch = try parseArgs(testing.allocator, &.{ "Qenome", "app.db", "--batch", "batch.json", "--suggest" });
+    defer testing.allocator.free(with_batch.binds);
+    try testing.expect(with_batch.suggest);
+}
+
+test "--suggest rejects the index file, the timing, kv and a third path" {
+    const cases = [_]struct { argv: []const [:0]const u8, err: ParseError, offending: []const u8 }{
+        .{ .argv = &.{ "Qenome", "d", "s", "--suggest", "--index-sql", "i" }, .err = error.SuggestRejectsIndex, .offending = "--index-sql" },
+        .{ .argv = &.{ "Qenome", "d", "s", "i", "--suggest" }, .err = error.SuggestTakesTwoPaths, .offending = "i" },
+        .{ .argv = &.{ "Qenome", "d", "s", "--suggest", "--runs", "3" }, .err = error.SuggestRejectsRuns, .offending = "--runs" },
+        .{ .argv = &.{ "Qenome", "d", "s", "--suggest", "--format", "kv" }, .err = error.SuggestRejectsKv, .offending = "--format" },
+    };
+    for (cases) |case| {
+        var offending: ?[:0]const u8 = null;
+        try testing.expectError(case.err, parseArgsReporting(testing.allocator, case.argv, &offending));
+        try testing.expectEqualStrings(case.offending, offending.?);
+        try testing.expect(parseErrorMessage(case.err).len != 0);
+    }
+
+    var offending: ?[:0]const u8 = null;
+    try testing.expectError(error.UnexpectedValue, parseArgsReporting(testing.allocator, &.{ "Qenome", "--suggest=1" }, &offending));
+    try testing.expectEqualStrings("--suggest=1", offending.?);
+}
+
+test "the usage shows the --suggest synopsis and option" {
+    var buffer: [32768]u8 = undefined;
+    var writer = Io.Writer.fixed(&buffer);
+    try usage(&writer);
+    try testing.expect(std.mem.indexOf(u8, writer.buffered(), "qenome <DB> <SELECT_FILE> --suggest") != null);
+    try testing.expect(std.mem.indexOf(u8, writer.buffered(), "--suggest            ask SQLite") != null);
 }

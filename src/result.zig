@@ -244,13 +244,23 @@ pub fn writeText(writer: *Io.Writer, value: []const u8) Io.Writer.Error!void {
         while (shown > 0 and value[shown] & 0xc0 == 0x80) shown -= 1;
     }
     try writer.writeByte('\'');
-    var rest = value[0..shown];
+    try writeEscaped(writer, value[0..shown], true);
+    try writer.writeByte('\'');
+    if (shown != value.len) try writer.print("...({d} bytes)", .{value.len});
+}
+
+pub fn writeEscapedText(writer: *Io.Writer, value: []const u8) Io.Writer.Error!void {
+    try writeEscaped(writer, value, false);
+}
+
+fn writeEscaped(writer: *Io.Writer, value: []const u8, escape_quote: bool) Io.Writer.Error!void {
+    var rest = value;
     while (rest.len != 0) {
         const byte = rest[0];
         if (byte < 0x80) {
             switch (byte) {
                 '\\' => try writer.writeAll("\\\\"),
-                '\'' => try writer.writeAll("\\'"),
+                '\'' => if (escape_quote) try writer.writeAll("\\'") else try writer.writeByte('\''),
                 '\n' => try writer.writeAll("\\n"),
                 '\r' => try writer.writeAll("\\r"),
                 '\t' => try writer.writeAll("\\t"),
@@ -273,8 +283,6 @@ pub fn writeText(writer: *Io.Writer, value: []const u8) Io.Writer.Error!void {
         }
         rest = rest[len..];
     }
-    try writer.writeByte('\'');
-    if (shown != value.len) try writer.print("...({d} bytes)", .{value.len});
 }
 
 fn writeBlob(writer: *Io.Writer, value: []const u8) Io.Writer.Error!void {

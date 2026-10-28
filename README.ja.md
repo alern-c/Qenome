@@ -27,6 +27,7 @@
 - **結果の行も照合します。** 2つのコピーが同じ行を同じ回数返すかを多重集合として比べ、一致しない・比較できない結果は合格にせず報告します。
 - **ローカル D1 のバインディングだけで試せます。** `--d1 <BINDING>` が wrangler の設定からローカルデータベースを探し、`--config` で設定ファイルを指定できます。
 - **複数のクエリをまとめて比較。** `--batch <FILE>` は JSON のマニフェストにある全 SELECT と全候補 `CREATE INDEX` を組み合わせて、各組み合わせの判定を出します。[まとめて比べる（--batch）](#まとめて比べる--batch)を参照してください。
+- **クエリから候補のインデックスを探せます。** `--suggest` は SQLite の expert に候補のインデックスを提案させて比較するので、SELECT ファイルだけで済みます。[候補のインデックスを提案させる（--suggest）](#候補のインデックスを提案させる--suggest)を参照してください。
 - **AI エージェントと CI 向けの JSON。** `--format json` は `schema_version` 2 のレポートを出し、終了コードが一致・不一致・比較不能を分けます。
 - **判定の根拠も同じレポートに。** 実行計画、時間の中央値、データベース全体の容量の増分、助言の警告を出します。
 
@@ -166,7 +167,7 @@ D1 のスキーマを変えるエージェントは、`CREATE INDEX` を残す�
 
 ## クイックスタート
 
-この手順では、テスト用データベースを作り、Qenome をビルドし、4つの例を実行します。コマンドはリポジトリのルートで、ブロックごとに Linux か macOS で実行してください。必要なものは Zig 0.17.0（「ソースからビルド」を参照）と `sqlite3` コマンドラインツールです。`sqlite3` は SQL ファイルを新しいデータベースへ読み込みます。
+この手順では、テスト用データベースを作り、Qenome をビルドし、5つの例を実行します。コマンドはリポジトリのルートで、ブロックごとに Linux か macOS で実行してください。必要なものは Zig 0.17.0（「ソースからビルド」を参照）と `sqlite3` コマンドラインツールです。`sqlite3` は SQL ファイルを新しいデータベースへ読み込みます。
 
 `testdata/schema.sql` と `testdata/seed.sql` からテスト用データベースを作ります。`verify.sql` は17項目それぞれについて `ok` を1行出力し、期待値と違う値があればその時点で失敗します。
 
@@ -184,7 +185,7 @@ Qenome をビルドします。
 zig build
 ```
 
-4つの例は `zig-out/bin/qenome` を実行します。各コマンドの末尾には、その例が返すべき結果（Summary の `result` と `verdict`、batch では `recommended`、終了コード）を書いてあります。`python3 scripts/check_all.py` と CI の quality ワークフローは、これらの行を書いてあるとおりに実行するので、README とプログラムのずれは見つかります。`--runs 40` は、負荷のあるマシンでも中央値を安定させるための指定です（既定は `10`）。
+5つの例は `zig-out/bin/qenome` を実行します。各コマンドの末尾には、その例が返すべき結果（Summary の `result` と `verdict`、batch では `recommended`、終了コード）を書いてあります。`python3 scripts/check_all.py` と CI の quality ワークフローは、これらの行を書いてあるとおりに実行するので、README とプログラムのずれは見つかります。`--runs 40` は、負荷のあるマシンでも中央値を安定させるための指定です（既定は `10`）。
 
 全走査をなくすインデックス: 候補のインデックスで `SCAN events` が `SEARCH events USING INDEX ix_events_customer_id (customer_id=?)` に変わり、読んだ行数が 200,000 から 101 に減り、両方のコピーが同じ100行を返します。
 
@@ -210,6 +211,12 @@ batch は、複数のクエリと複数の候補のインデックスを1回の�
 ./zig-out/bin/qenome testdata/generated/qenome-fixture.db --batch testdata/batch.json  # expect: recommended=cases/improved.index.sql exit=0
 ```
 
+提案されたインデックス（インデックスのファイルなし）: `--suggest` は SQLite に、その SELECT に効くインデックスを尋ね、Qenome がその提案を同じ batch の仕組みで比べます。提案には `suggested:1` というラベルが付き、効けばおすすめになります。「候補のインデックスを提案させる（--suggest）」を参照してください。
+
+```sh
+./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/improved.sql --bind 1:int:1234 --suggest  # expect: recommended=suggested:1 exit=0
+```
+
 データベースの作成はおよそ1秒、計測する例はそれぞれ数秒で終わります。fixture・クエリ・期待する計画と件数は `testdata/README.md` に記録しています。
 
 ## 使い方
@@ -221,6 +228,8 @@ qenome --db app.db --select select.sql --index-sql index.sql --format kv
 qenome app.db select.sql index.sql --format json
 qenome --d1 DB select.sql index.sql
 qenome app.db --batch batch.json
+qenome app.db select.sql --suggest
+qenome app.db --batch batch.json --suggest
 ```
 
 パスは DB・SELECT ファイル・CREATE INDEX ファイルの順に埋まり、`--db` / `--select` / `--index-sql` でも指定できます（混在可）。位置指定のパスは、まだ指定されていない最初の役割に埋まります。`--d1` のときは、位置指定の2つのパスが SELECT と CREATE INDEX の役割に入ります。`--` の後は `-` で始まるパスとして扱います。
@@ -233,6 +242,7 @@ qenome app.db --batch batch.json
 - `--select <FILE>`: 比較する SELECT を1本書いたファイル（必須、1回だけ）
 - `--index-sql <FILE>`: 候補の CREATE INDEX を1本書いたファイル（必須、1回だけ）
 - `--batch <FILE>`: JSON のマニフェストにある全 SELECT を、全候補 CREATE INDEX と1回の実行で比べる。「まとめて比べる（--batch）」を参照。`--select` / `--index-sql` / `--bind` / 位置指定の SELECT・INDEX、`--runs`、`--format kv` とは併用できない
+- `--suggest`: インデックスを自分で用意する代わりに、SQLite の expert に候補のインデックスを提案させ、その提案を比べる。`--batch` のときはマニフェストの `candidates` を省略できる。`--runs`、`--format kv`、インデックスのファイル（`--index-sql` または3番目の位置指定パス）とは併用できない。「候補のインデックスを提案させる（--suggest）」を参照
 - `--bind <N>:<TYPE>[:<VALUE>]`: SELECT のパラメータ N に渡す型付きの値。繰り返し指定できる。N は SQLite のパラメータ番号で、名前付きパラメータは最初に現れたときの番号を共有し、`?NNN` は NNN を使う。TYPE は int / real / text / null（null は値を取らない）。1 からパラメータ数までの各番号をちょうど1回ずつ指定する必要があり、パラメータの無い SELECT に `--bind` は付けられない。値は引数の残り全体なので、text には `:` を含められる
 - `--runs <N>`: 結果が一致したあとの計測ラウンド数。各ラウンドは各コピーで SELECT を1回計測する。既定は 10、0 で計測しないが読んだ行数と判定は残る、最大 1000。1秒を超える計測は進捗を stderr に出す
 - `--timeout-ms <MS>`: インデックス作成と SELECT 1回あたりの制限時間。既定は 30000、0 で無効。1回の実行は全体で、データベースのコピーに加えて `(3 + 4 × runs)` 回分の制限時間に加え、最大3つの診断文それぞれの制限時間までかかることがある
@@ -314,7 +324,7 @@ qenome --d1 DEMO_DB select.sql index.sql --runs 40
 }
 ```
 
-- `queries` と `candidates` はそれぞれ1〜100件。マニフェストは1 MiBまで。
+- `queries` は1〜100件。`candidates` は1〜100件で、`--suggest` が提案を足すときは省略（または `[]`）できる。マニフェストは1 MiBまで。
 - 同じパスを `queries` の中で2回、または `candidates` の中で2回書くことはできない。
 - `select` と `index_sql` はファイルのパス。カレントディレクトリではなく、マニフェストのディレクトリを基準に解決する。各ファイルは読み取り専用の SELECT 1本、または `CREATE INDEX` 1本で、1 MiBまで。
 - `binds` は任意で、`--bind` と同じ `N:TYPE:VALUE` 形式。パスとバインド値は NUL バイトを含まない JSON 文字列にする。
@@ -337,11 +347,38 @@ Qenome はデータベースを1回コピーし、何かを実行する前に全
 
 報告を書けた場合、終了コードは、結果の不一致 `3`、インデックスの作成失敗 `1`、候補の時間切れ `124`、比較不能 `4`、`0` のうち一番重いものです。後片付けの失敗は `0` のときだけ `5` に置き換えます。そのため batch は、報告を書きながら `1` や `124` で終わることがあります。どちらかは stdout で見分けます。
 
-human 出力は候補の表、`Recommendation:`、クエリと候補の判定表を出します。おすすめは、不一致・比較不能・`needs-check`・時間切れがなく、改善が1件以上ある候補のうち、改善したクエリが最も多いものです。同じなら容量の増分が小さい順、次にマニフェスト順です。`--format json` では [docs/json.md](docs/json.md) に書いた `batch_schema_version` 1 のオブジェクトを出します。
+human 出力は候補の表、`Recommendation:`、クエリと候補の判定表を出します。おすすめは、不一致・比較不能・`needs-check`・時間切れがなく、改善が1件以上ある候補のうち、改善したクエリが最も多いものです。同じなら容量の増分が小さい順、次に入力順（マニフェストの候補の後ろに提案）です。`--format json` では [docs/json.md](docs/json.md) に書いた `batch_schema_version` 1 のオブジェクトを出します。
 
 インデックスの作成・SELECT 1回・診断文1回は、それぞれ `--timeout-ms` の制限時間を持ちます。batch は全体で、データベースのコピー1回と、候補ループの前に全クエリの baseline SELECT を1回ずつ実行する分に加えて、候補ごとにインデックスの作成1回とクエリごとの SELECT 2回、さらに最大3つの診断文それぞれの制限時間までかかることがあります。`--show-binds` と `--show-rows` は各比較オブジェクトに適用します。
 
 </details>
+
+### 候補のインデックスを提案させる（--suggest）
+
+`--suggest` は、SQLite の expert（同梱の SQLite ソースからビルドする sqlite3expert）に候補のインデックスを提案させ、その提案を同じ batch の仕組みで比べます。インデックスのファイルは要りません。
+
+```sh
+qenome app.db select.sql --suggest
+qenome --d1 DB select.sql --suggest --bind 1:int:1234
+qenome app.db --batch batch.json --suggest
+```
+
+SELECT ファイルを1本だけ渡したときは、その SELECT を batch のクエリ1件として扱い、`--bind` もそのクエリに適用します。`--batch` のときは、提案をマニフェストの候補の後ろに足します（`candidates` は省略しても空でもよい）。`--suggest` は `--runs`、`--format kv`、インデックスのファイルとは併用できません。
+
+Qenome は baseline のコピーに2つ目の読み取り専用接続を開き、expert のサンプリングを `0` に設定します。そのため expert が利用者のデータベースから読むのはスキーマだけです。検査済みの全 SELECT を expert に渡します。expert を動かす前に、`sqlite_schema` の各行を検査します。各行は1文で、`CREATE TABLE`、`CREATE INDEX`、`CREATE UNIQUE INDEX`、`CREATE VIEW`、`CREATE TRIGGER`、`CREATE VIRTUAL TABLE` のいずれかで始まり、`expert` 仮想テーブルを使わないこと。これを満たさないデータベースは `suggest_schema_rejected`（終了コード `1`、stdout 空）で拒否し、マニフェストに候補があっても続けません。expert を動かしている間は、それが開く接続に一時的なガードを付けます。`ATTACH` と `DETACH` を拒否し、`index_list` と `index_xinfo` の PRAGMA だけを許し、接続できるデータベース数の上限を `0` にします。expert のオブジェクトを作ったあと、expert は自分の解析用コピーに独自の authorizer を設定しますが、接続できるデータベース数の上限はそこでも有効です。Qenome は expert を破棄したあとにガードを外します。ガードを設定できなければ、expert を呼ばずに止まります。これらで、細工されたスキーマがほかのデータベースファイルを作成・変更するのを防ぎます。レポートの `CREATE INDEX` は SQLite 自身の文の解析器で切り出します（引用符の中の `;` では切りません）。提案はマニフェストの候補と同じ検査を通し、落ちたものは `suggestion_rejected` の warning を付けて捨てます。ラベルは `suggested:1`、`suggested:2`… で、比べる提案は最大20件、マニフェストの候補と合わせて最大100件です。
+
+出力は batch の報告です。`summary` の各候補に `source`（`manifest` / `suggested`）と `index_sql_text` が付き、トップレベルの `warnings` に、捨てたもの・できなかったことが入ります。
+
+| warning の `code` | 意味 |
+| `suggest_query_skipped` | 1本の SELECT を SQLite が解析できなかった。ほかの SELECT は続ける |
+| `suggestion_rejected` | 提案が `CREATE INDEX` の検査に落ちた |
+| `suggestions_truncated` | 20件または100件の上限で、提案の後ろを捨てた |
+| `no_suggestions` | SQLite の提案が0件だった。マニフェストの候補だけを比べた |
+| `suggest_failed` | expert を開始・解析できなかった。マニフェストの候補だけを比べた |
+
+比べる候補が1件も残らないときは、終了コード `1`・stdout 空・エラーコード `no_candidates` で止まります。提案は、終了コードとおすすめの判定では、マニフェストの候補と同じ重さで数えます。提案は出発点であり、判定ではありません。結果の行・読んだ行数・終了コードは、実際の比較から出ます。
+
+`--suggest` は候補を探すときに使ってください。CI の判定には `--suggest` を付けず、名前を付けたインデックスを比べます。そうすれば SQLite の助言が変わってもビルドの結果は変わりません。batch の報告は `batch_schema_version` `1` のままで、`source`、`index_sql_text`、`warnings` は追加です。
 
 ## 出力形式
 
@@ -352,6 +389,7 @@ human は判断に必要なものを出します。
 - Summary: 結果の行が一致したか、コピーごとの読んだ行数と書いた行数、判定とその理由、計画が変わったか、時間の中央値とラウンド数、容量の増分、デバッグビルドのときはその注意
 - baseline と variant の左右比較表: 読んだ行数、書いた行数、結果の行数、フルスキャン行数、VMステップ数、0 でないときはソート回数と autoindex 行数、計測したときは p25 / p75 の時間、データベースファイルのバイト数
 - 両方のコピーの実行計画。`kind` / `covering` / `automatic` は SQLite の文言から読んだヒント
+- `--suggest` のときは `Suggested by SQLite:` の節。提案ごとに `suggested:N: CREATE INDEX ...` と SQL 本文を出し、表の後ろに `warning: <code>: <message>` の行で、捨てたもの・できなかったことを出す
 - `--d1` のときは D1 ブロック: バインディング、設定ファイル、データベース id、ローカルファイル、SQLite の版の違い、本番 D1 についての注意
 
 行が一致しない・比較できない・行の順序が変わったときは、説明と片方だけの件数を足します。例の行は `--show-rows` のときだけ出し、隠しているときはそのフラグで再実行するよう案内します。`--show-binds` を付けるとバインド値も出します。

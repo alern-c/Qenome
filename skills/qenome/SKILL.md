@@ -10,7 +10,7 @@ description: >
 
 # Qenome
 
-Qenome compares one read-only `SELECT` with one candidate `CREATE INDEX` on sandbox copies. With `--batch`, it compares every SELECT in a manifest with every candidate in one run. The verdict uses the same counting as local D1 (workerd patch). The numbers have not yet been checked against production D1.
+Qenome compares one read-only `SELECT` with one candidate `CREATE INDEX` on sandbox copies. With `--batch`, it compares every SELECT in a manifest with every candidate in one run. With `--suggest`, SQLite's expert proposes the candidate indexes, so a SELECT file is enough. The verdict uses the same counting as local D1 (workerd patch). The numbers have not yet been checked against production D1.
 
 The contract is [docs/json.md](../../docs/json.md). This skill expects `schema_version` 2.
 
@@ -18,7 +18,7 @@ The contract is [docs/json.md](../../docs/json.md). This skill expects `schema_v
 
 Run Qenome before keeping a `CREATE INDEX` on a local D1 or a SQLite file. Run it when the user asks whether an index helps, whether a query got faster, or whether a schema change is safe to merge.
 
-Do not run it to change production, to apply SQL, or to estimate a bill. One comparison is one SELECT file and one CREATE INDEX file; `--batch` takes a manifest of them.
+Do not run it to change production, to apply SQL, or to estimate a bill. One comparison is one SELECT file and one CREATE INDEX file; `--batch` takes a manifest of them. `--suggest` lets SQLite propose the candidate from the SELECT file alone.
 
 ## Install and invoke
 
@@ -40,7 +40,7 @@ The npm package is added separately. If `npx qenome` does not resolve, build thi
 npx wrangler d1 execute DB --local --command "SELECT 1"
 ```
 
-4. Put the query in `select.sql` (one read-only `SELECT`) and the candidate in `index.sql` (one `CREATE INDEX`).
+4. Put the query in `select.sql` (one read-only `SELECT`). A candidate `CREATE INDEX` in `index.sql` is optional: `--suggest` asks SQLite for one instead.
 5. Take the verdict without a timing loop:
 
 ```sh
@@ -61,6 +61,18 @@ A SQLite file uses a path instead of `--d1`:
 ```sh
 npx qenome app.db select.sql index.sql --runs 0 --format json
 ```
+
+## Find candidates (--suggest)
+
+Use `--suggest` when the user has a SELECT but no candidate index. SQLite's expert proposes indexes, and Qenome compares them with the same batch machinery. `--suggest` does not take `--runs`, `--format kv`, or an index file.
+
+```sh
+npx qenome app.db select.sql --suggest --format json
+npx qenome --d1 DB select.sql --bind 1:int:1 --suggest --format json
+npx qenome app.db --batch batch.json --suggest --format json
+```
+
+The output is the batch report (see below). Proposals are labelled `suggested:1`, `suggested:2`, …; at most 20 are compared, and at most 100 with the manifest candidates. When no candidate is left, the run stops with exit `1` and `no_candidates`. Qenome checks the database schema before the expert runs and rejects a database whose `sqlite_schema` holds anything other than one plain CREATE statement (`suggest_schema_rejected`, exit `1`), even with manifest candidates. Do not retry with `--suggest` on that database; compare a named index instead. Do not use `--suggest` in a CI gate; compare a named index there.
 
 ## Compare many candidates (--batch)
 
@@ -86,7 +98,7 @@ npx qenome --d1 DB --batch batch.json --format json
 
 State `schema_version` before you interpret fields.
 
-- If stdout is a JSON object with `batch_schema_version`, it is a batch report. Read `batch_schema_version` first; it must be `1`. Read `recommended` (`null` when no candidate qualifies), the `summary` entries, and the `results`. The `comparison` object under each result has `schema_version` 2 and the shape below.
+- If stdout is a JSON object with `batch_schema_version`, it is a batch report. Read `batch_schema_version` first; it must be `1`. Read `recommended` (`null` when no candidate qualifies; with `--suggest` it can be `suggested:N`), the `summary` entries (`candidate`, `source`, `index_sql_text`), the `results`, and the top-level `warnings` (empty without `--suggest`). Repeat every batch warning `code` and `message`, like the comparison warnings. The `comparison` object under each result has `schema_version` 2 and the shape below.
 - If stdout is a JSON object, it is the comparison. Read `schema_version` first. If it is missing or not `2`, stop and say the output does not match this skill or `docs/json.md`. Do not guess renamed fields.
 - If stdout is empty, stderr is the error object (skip any `progress:` lines). It also has `schema_version` 2, plus `exit_code` and `error` with `code`, `message`, and `hint`. Do what `hint` says. Do not treat the failure as a verdict.
 - `exit_code` inside a comparison object is `0`, `3`, or `4`. The process can still exit `5` after writing that object. Trust the process exit code.
@@ -167,4 +179,8 @@ npx qenome testdata/skill/app.db testdata/skill/select.sql testdata/skill/index.
 
 ```sh
 npx qenome testdata/skill/app.db --batch testdata/skill/batch.json --format json  # qenome-ci: run exit=0 stdout=report fields=batch_schema_version,recommended,summary
+```
+
+```sh
+npx qenome testdata/skill/app.db testdata/skill/select.sql --bind 1:int:1 --suggest --format json  # qenome-ci: run exit=0 stdout=report fields=batch_schema_version,recommended,summary,warnings
 ```

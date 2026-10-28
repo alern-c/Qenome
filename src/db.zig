@@ -282,6 +282,47 @@ pub const Db = struct {
         if (sqlite.sqlite3_stmt_readonly(statement) != 0) return error.StatementNotCreateIndex;
     }
 
+    pub const SchemaEntry = struct {
+        name: []const u8,
+        sql: []const u8,
+    };
+
+    pub fn readSchemaEntries(self: *Db, allocator: std.mem.Allocator) ![]SchemaEntry {
+        const previous = self.enterMode(.user_select);
+        const saved_clues = self.clues;
+        defer self.mode = previous;
+        defer self.clues = saved_clues;
+
+        const statement = (try self.prepareSingle("SELECT name, sql FROM main.sqlite_schema WHERE sql IS NOT NULL")) orelse return error.SchemaReadFailed;
+        defer _ = sqlite.sqlite3_finalize(statement);
+
+        var entries: std.ArrayList(SchemaEntry) = .empty;
+        errdefer {
+            for (entries.items) |entry| {
+                allocator.free(entry.name);
+                allocator.free(entry.sql);
+            }
+            entries.deinit(allocator);
+        }
+        while (true) {
+            switch (sqlite.sqlite3_step(statement)) {
+                sqlite.SQLITE_ROW => {
+                    const name_text = sqlite.sqlite3_column_text(statement, 0) orelse "";
+                    const sql_text = sqlite.sqlite3_column_text(statement, 1) orelse "";
+                    const name_len: usize = @intCast(sqlite.sqlite3_column_bytes(statement, 0));
+                    const sql_len: usize = @intCast(sqlite.sqlite3_column_bytes(statement, 1));
+                    try entries.append(allocator, .{
+                        .name = try allocator.dupe(u8, name_text[0..name_len]),
+                        .sql = try allocator.dupe(u8, sql_text[0..sql_len]),
+                    });
+                },
+                sqlite.SQLITE_DONE => break,
+                else => return error.SchemaReadFailed,
+            }
+        }
+        return try entries.toOwnedSlice(allocator);
+    }
+
     pub fn stepAll(self: *Db, statement: *sqlite.sqlite3_stmt, control: *StepControl, collector: ?*result.RowCollector) StepError!u64 {
         const previous = self.enterMode(.user_select);
         defer self.mode = previous;

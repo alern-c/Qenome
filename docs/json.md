@@ -21,34 +21,60 @@ On failure, read the line that starts with `{`. `human` and `kv` do not print th
 
 ## Batch report (batch_schema_version 1)
 
-`--batch manifest.json` compares every SELECT in the manifest with every candidate CREATE INDEX. Its stdout object is a separate contract with `batch_schema_version` 1. The comparison objects under `results` keep `schema_version` 2 and the shape above.
+`--batch manifest.json` compares every SELECT in the manifest with every candidate CREATE INDEX. With `--suggest`, the manifest may omit `candidates`, and SQLite's proposed indexes join the comparison. Its stdout object is a separate contract with `batch_schema_version` 1. The comparison objects under `results` keep `schema_version` 2 and the shape above. `--suggest` adds keys to this contract without changing the version.
 
 | Key | Type | Meaning |
 | `batch_schema_version` | number | `1` |
 | `exit_code` | number | `0`, `1`, `3`, `4`, or `124`. The process can still exit `5` after this object when cleanup fails and the code is `0` |
-| `recommended` | string or `null` | The candidate path from the manifest, or `null` when no candidate qualifies |
+| `recommended` | string or `null` | The candidate label: a path from the manifest, or `suggested:N` with `--suggest`. `null` when no candidate qualifies |
 | `summary` | array | One object per candidate, ordered as described below. 1 to 100 entries |
-| `results` | array | One object per compared query and candidate, ordered by candidate (manifest order) and then by query (manifest order). An `index_rejected` or `index_timeout` candidate has no entries here |
+| `results` | array | One object per compared query and candidate, ordered by candidate (manifest entries first, then suggestions) and then by query (manifest order). An `index_rejected` or `index_timeout` candidate has no entries here |
+| `warnings` | array | `{ "code", "message" }` entries. Empty without `--suggest`. See [`--suggest`](#--suggest) for the codes |
 
 ### `summary` entries
 
 | Key | Type | Meaning |
-| `candidate` | string | The `index_sql` string from the manifest |
+| `candidate` | string | The `index_sql` string from the manifest, or `suggested:1`, `suggested:2`, … for a proposed index |
+| `source` | string | `manifest` or `suggested` |
+| `index_sql_text` | string | The SQL text: for a manifest candidate, the contents of its file; for a suggestion, the statement SQLite reported (ending with `;`) |
 | `status` | string | `compared`, `index_rejected`, or `index_timeout` |
 | `failure` | object or `null` | `null` for `compared`; otherwise `{ "code", "message" }`. `code` is `index_rejected` or `index_timeout` |
 | `improved`, `no_effect`, `needs_check`, `mismatch`, `incomparable` | number or `null` | How many queries ended in each outcome. `improved + no_effect + needs_check + mismatch + incomparable + timeout` equals the query count. `null` when the candidate was not compared |
 | `timeout` | number or `null` | Queries whose variant SELECT reached `--timeout-ms` |
 | `size_increase` | number or `null` | Variant file size minus baseline file size, in bytes (signed). `null` when the index was not built |
 
-A candidate qualifies for `recommended` when its status is `compared` and `mismatch`, `incomparable`, `needs_check`, and `timeout` are all `0` and `improved` is at least `1`. Qualifying candidates come first in `summary`, in this order: more `improved`, then smaller `size_increase`, then manifest order. The remaining `compared` candidates follow in manifest order, and the `index_rejected` / `index_timeout` candidates come last in manifest order.
+A candidate qualifies for `recommended` when its status is `compared` and `mismatch`, `incomparable`, `needs_check`, and `timeout` are all `0` and `improved` is at least `1`. Qualifying candidates come first in `summary`, in this order: more `improved`, then smaller `size_increase`, then input order. Input order is the manifest order, and suggestions follow the manifest entries. The remaining `compared` candidates follow in input order, and the `index_rejected` / `index_timeout` candidates come last in input order.
 
 ### `results` entries
 
 | Key | Type | Meaning |
-| `query` | string | The `select` string from the manifest |
-| `candidate` | string | The `index_sql` string from the manifest |
+| `query` | string | The `select` string from the manifest, or the SELECT path argument for a one-SELECT `--suggest` |
+| `candidate` | string | The `index_sql` string from the manifest, or `suggested:N` |
 | `status` | string | `compared` or `variant_timeout` |
-| `comparison` | object or `null` | `null` for `variant_timeout`; otherwise the schema_version 2 comparison object, with `inputs.select` and `inputs.index_sql` set to the manifest strings. The embedded object is minified |
+| `comparison` | object or `null` | `null` for `variant_timeout`; otherwise the schema_version 2 comparison object, with `inputs.select` and `inputs.index_sql` set to the same strings. For a one-SELECT `--suggest`, `inputs.select` is the SELECT path argument. The embedded object is minified |
+
+### `--suggest`
+
+`--suggest` asks SQLite's expert (sqlite3expert, built from the vendored SQLite source) for candidate indexes. It opens a second read-only connection to the baseline copy, sets the expert sampling to `0` so the user database is read for its schema only, and passes every checked SELECT to the expert. It then compares the proposed `CREATE INDEX` statements with the existing batch mechanism.
+
+- A suggestion passes the same one-`CREATE INDEX` check as a manifest candidate. A suggestion that fails the check is dropped, and the batch continues.
+- Before the expert runs, every `sqlite_schema` row is checked: it must be one statement and start with `CREATE TABLE`, `CREATE INDEX`, `CREATE UNIQUE INDEX`, `CREATE VIEW`, `CREATE TRIGGER`, or `CREATE VIRTUAL TABLE`. A row may not use the `expert` virtual table. A database that fails this check stops the run with exit `1`, empty stdout, and `suggest_schema_rejected`, even when the manifest has candidates.
+- While the expert runs, a temporary guard is installed on the connections it opens: `ATTACH` and `DETACH` are denied, only the `index_list` and `index_xinfo` PRAGMAs are allowed, and `SQLITE_LIMIT_ATTACHED` is `0`. After the expert object is created, the expert installs its own authorizer on its analysis copy (`dbv`); the attached-database limit stays in force there. The guard is removed after the expert is destroyed. If the guard cannot be installed, the run stops with `suggest_failed` and the expert is not called.
+- At most 20 suggestions are used, and at most 100 candidates in total with the manifest entries. Extra suggestions are dropped in report order, which is not a ranking. Candidates are labelled `suggested:1`, `suggested:2`, … in the order that remains.
+- Manifest candidates whose `index_sql` string starts with `suggested:` are rejected as an invalid manifest when `--suggest` is given, so the labels cannot collide.
+- A suggestion weighs the same as a manifest candidate: its index failure, timeout, or result mismatch enters `exit_code`.
+- `warnings` keeps what the run dropped or could not do:
+
+| `code` | Meaning |
+| `suggest_query_skipped` | SQLite could not analyze one SELECT; the other SELECTs continue |
+| `suggestion_rejected` | A proposed statement failed the `CREATE INDEX` check and was dropped |
+| `suggestions_truncated` | The 20 or 100 limit dropped the tail of the suggestions |
+| `no_suggestions` | SQLite proposed nothing; the manifest candidates were still compared |
+| `suggest_failed` | The expert could not start or analyze; the manifest candidates were still compared |
+
+- When nothing can be compared (no manifest candidate and no surviving suggestion), the run stops with exit `1`, empty stdout, and error code `no_candidates`.
+- With one SELECT file (no `--batch`), the SELECT is one batch query, `--bind` applies to it, and the report is the same batch object. `--suggest` does not take `--runs`, `--format kv`, or an index file.
+- Use `--suggest` to find candidates. For a CI gate that must not change when SQLite changes its advice, compare a named index without `--suggest`.
 
 ### Exit code and stderr
 
@@ -69,6 +95,9 @@ Batch error codes:
 | `batch_variant_timeout` | 124 | Raise `--timeout-ms` or simplify the CREATE INDEX |
 | `batch_index_failed` | 1 | Fix the candidate CREATE INDEX so it applies to this database |
 | `batch_workspace_failed` | 1 | Check the temporary directory and its permissions |
+| `no_candidates` | 1 | Check that a SELECT has a WHERE or ORDER BY clause, or write a candidate CREATE INDEX |
+| `suggest_failed` | 1 | Check that the SELECTs are valid, or drop `--suggest` and name the index |
+| `suggest_schema_rejected` | 1 | Use a database whose `sqlite_schema` holds only plain CREATE statements, or compare a named index without `--suggest` |
 
 ## Status in this tree
 
@@ -193,6 +222,7 @@ The comparison object's `exit_code` is `0`, `3`, or `4`. The process can still e
 | `usage_bind` | 2 | Use `--bind N:TYPE:VALUE` |
 | `usage_conflicting_database` | 2 | Pass `--db` or `--d1`, not both |
 | `usage_config_requires_d1` | 2 | Add `--d1`, or drop `--config` |
+| `usage_suggest_conflict` | 2 | With `--suggest`, give one SELECT file or a manifest; do not pass `--runs`, `--format kv`, or an index file |
 | `d1_config_not_found` | 4 | Pass `--config`, or run in the wrangler project |
 | `d1_config_ambiguous` | 4 | Pass `--config` naming one file |
 | `d1_config_unreadable` | 4 | Fix the path and permissions |

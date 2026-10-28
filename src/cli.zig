@@ -155,7 +155,7 @@ fn runCaptured(
     if (args.batch) |batch_path| {
         var cleanup_failed = false;
         const code = blk: {
-            const loaded = cli_batch.load(io, arena, batch_path, stderr) orelse break :blk ExitCode.rejected;
+            const loaded = cli_batch.load(io, arena, batch_path, stderr, args.suggest) orelse break :blk ExitCode.rejected;
             if (signalPending()) break :blk reportInterrupted(stderr);
             const parent_path = tempParentPath(temp_parent);
             var work = WorkDir.create(io, arena, parent_path) catch |err| {
@@ -173,10 +173,52 @@ fn runCaptured(
                 .show_binds = args.show_binds,
                 .show_rows = args.show_rows,
                 .format = args.format,
+                .suggest = args.suggest,
                 .work_parent = parent_path,
             }, loaded, stdout, stderr, &cleanup_failed, &work);
         };
         return finalExitCode(code, cleanup_failed);
+    }
+
+    if (args.suggest) {
+        const suggest_select_path = args.select.?;
+        const suggest_select_sql = readSqlFile(io, arena, suggest_select_path) catch |err| {
+            reportSqlFileError(stderr, "--select", suggest_select_path, err) catch {};
+            return .rejected;
+        };
+        if (signalPending()) return reportInterrupted(stderr);
+
+        const suggest_parent_path = tempParentPath(temp_parent);
+        var suggest_work = WorkDir.create(io, arena, suggest_parent_path) catch |err| {
+            stderr.print("error: cannot create a temporary directory under '{s}': {s}\n", .{ suggest_parent_path, fileErrorMessage(err) }) catch {};
+            return .rejected;
+        };
+
+        var suggest_cleanup_failed = false;
+        const suggest_code = blk: {
+            defer suggest_work.remove(io, stderr, &suggest_cleanup_failed);
+            if (prepareCopies(io, database_path, &suggest_work, stderr, &suggest_cleanup_failed)) |failure| break :blk failure;
+            var queries = [_]cli_batch.Query{.{
+                .label = suggest_select_path,
+                .path = suggest_select_path,
+                .sql = suggest_select_sql,
+                .binds = args.binds,
+            }};
+            break :blk cli_batch.run(io, arena, allocator, .{
+                .database_path = database_path,
+                .baseline_path = suggest_work.baseline_path,
+                .variant_path = suggest_work.variant_path,
+                .d1 = d1,
+                .timeout_ms = args.timeout_ms,
+                .show_binds = args.show_binds,
+                .show_rows = args.show_rows,
+                .format = args.format,
+                .suggest = true,
+                .manifest = false,
+                .work_parent = suggest_parent_path,
+            }, .{ .queries = &queries, .candidates = &.{} }, stdout, stderr, &suggest_cleanup_failed, &suggest_work);
+        };
+        return finalExitCode(suggest_code, suggest_cleanup_failed);
     }
 
     const select_path = args.select.?;

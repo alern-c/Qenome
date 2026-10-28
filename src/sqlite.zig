@@ -50,6 +50,8 @@ pub const SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE = 1006;
 
 pub const SQLITE_LIMIT_VARIABLE_NUMBER = 9;
 
+pub const SQLITE_LIMIT_ATTACHED = 7;
+
 pub const max_parameter_number: u32 = 32766;
 
 pub const SQLITE_CREATE_INDEX = 1;
@@ -57,6 +59,8 @@ pub const SQLITE_INSERT = 18;
 pub const SQLITE_PRAGMA = 19;
 pub const SQLITE_READ = 20;
 pub const SQLITE_SELECT = 21;
+pub const SQLITE_ATTACH = 24;
+pub const SQLITE_DETACH = 25;
 pub const SQLITE_REINDEX = 27;
 pub const SQLITE_FUNCTION = 31;
 pub const SQLITE_RECURSIVE = 33;
@@ -117,6 +121,26 @@ pub extern fn sqlite3_bind_double(stmt: ?*sqlite3_stmt, index: c_int, value: f64
 pub extern fn sqlite3_bind_null(stmt: ?*sqlite3_stmt, index: c_int) c_int;
 pub extern fn sqlite3_bind_text(stmt: ?*sqlite3_stmt, index: c_int, text: [*]const u8, bytes: c_int, destructor: DestructorPtr) c_int;
 pub extern fn sqlite3_limit(db: ?*sqlite3, id: c_int, new_value: c_int) c_int;
+
+pub const sqlite3expert = opaque {};
+
+pub const EXPERT_CONFIG_SAMPLE: c_int = 1;
+
+pub const EXPERT_REPORT_CANDIDATES: c_int = 4;
+
+pub extern fn sqlite3_expert_new(db: ?*sqlite3, pzErr: ?*?[*:0]u8) ?*sqlite3expert;
+pub extern fn sqlite3_expert_config(p: ?*sqlite3expert, op: c_int, ...) c_int;
+pub extern fn sqlite3_expert_sql(p: ?*sqlite3expert, zSql: [*:0]const u8, pzErr: ?*?[*:0]u8) c_int;
+pub extern fn sqlite3_expert_analyze(p: ?*sqlite3expert, pzErr: ?*?[*:0]u8) c_int;
+pub extern fn sqlite3_expert_report(p: ?*sqlite3expert, iStmt: c_int, eReport: c_int) ?[*:0]const u8;
+pub extern fn sqlite3_expert_destroy(p: ?*sqlite3expert) void;
+pub extern fn sqlite3_free(pointer: ?*anyopaque) void;
+pub extern fn sqlite3_complete(sql: [*:0]const u8) c_int;
+
+pub const AutoExtensionFn = *const fn (?*sqlite3, ?*?[*:0]u8, ?*const anyopaque) callconv(.c) c_int;
+
+pub extern fn sqlite3_auto_extension(entry: AutoExtensionFn) c_int;
+pub extern fn sqlite3_cancel_auto_extension(entry: AutoExtensionFn) c_int;
 
 test "vendored sqlite version matches the pinned version" {
     try std.testing.expectEqualStrings(pinned_version, std.mem.span(sqlite3_libversion()));

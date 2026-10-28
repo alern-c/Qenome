@@ -6,6 +6,7 @@ const sqlite = @import("../sqlite.zig");
 const cli = @import("../cli.zig");
 const cli_comparison = @import("comparison.zig");
 const cli_control = @import("control.zig");
+const cli_suggest = @import("suggest.zig");
 
 const run = cli.run;
 const runChecked = cli.runChecked;
@@ -2965,5 +2966,388 @@ test "a rejected first candidate leaves a clean variant for the next candidate" 
     const comparison = try jsonGet(results[0], "comparison");
     try testing.expectEqualStrings("match", try jsonText(comparison, "result"));
     try testing.expectEqualStrings("improved", try jsonText(comparison, "verdict"));
+    try fixture.expectNoLeftovers();
+}
+
+fn runBatchNamed(fixture: *CliFixture, name: []const u8, extra: []const [:0]const u8, stdout_buffer: []u8, stderr_buffer: []u8) !RunResult {
+    const manifest = try fixture.dir.tmp.dir.realPathFileAlloc(testing.io, name, testing.allocator);
+    defer testing.allocator.free(manifest);
+    return fixture.runBatchPath(manifest, extra, stdout_buffer, stderr_buffer);
+}
+
+fn runSuggest(fixture: *CliFixture, format: [:0]const u8, extra: []const [:0]const u8, stdout_buffer: []u8, stderr_buffer: []u8) RunResult {
+    var argv: [16][:0]const u8 = undefined;
+    const required = [_][:0]const u8{ "Qenome", "--db", fixture.db_path, "--select", fixture.select_path, "--suggest", "--format", format };
+    @memcpy(argv[0..required.len], &required);
+    @memcpy(argv[required.len..][0..extra.len], extra);
+    return callRun(testing.allocator, argv[0 .. required.len + extra.len], fixture.work_parent, stdout_buffer, stderr_buffer);
+}
+
+test "a one-SELECT --suggest compares what SQLite proposes with the binds" {
+    var fixture = try CliFixture.initWithSchema("SELECT a FROM t WHERE b = ?1;", "CREATE INDEX unused ON t(a)", batch_happy_schema);
+    defer fixture.deinit();
+
+    var stdout_buffer: [131072]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = runSuggest(&fixture, "json", &.{ "--bind", "1:text:x" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    const root = parsed.value;
+    try testing.expectEqual(@as(i64, 1), try jsonInt(root, "batch_schema_version"));
+    try testing.expectEqualStrings("suggested:1", try jsonText(root, "recommended"));
+    try testing.expectEqual(@as(usize, 0), (try jsonItems(root, "warnings")).len);
+
+    const summary = try jsonItems(root, "summary");
+    try testing.expectEqual(@as(usize, 1), summary.len);
+    try testing.expectEqualStrings("suggested:1", try jsonText(summary[0], "candidate"));
+    try testing.expectEqualStrings("suggested", try jsonText(summary[0], "source"));
+    const index_sql = try jsonText(summary[0], "index_sql_text");
+    try testing.expect(contains(index_sql, "CREATE INDEX"));
+    try testing.expect(contains(index_sql, "t("));
+    try testing.expect(!contains(index_sql, "stat1"));
+
+    const results = try jsonItems(root, "results");
+    try testing.expectEqual(@as(usize, 1), results.len);
+    try testing.expectEqualStrings(fixture.select_path, try jsonText(results[0], "query"));
+    const comparison = try jsonGet(results[0], "comparison");
+    try testing.expectEqualStrings("improved", try jsonText(comparison, "verdict"));
+    try testing.expectEqualStrings(fixture.select_path, try jsonText(try jsonGet(comparison, "inputs"), "select"));
+    try testing.expectEqualStrings("suggested:1", try jsonText(try jsonGet(comparison, "inputs"), "index_sql"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a one-SELECT --suggest marks the proposal in human output" {
+    var fixture = try CliFixture.initWithSchema("SELECT a FROM t WHERE b = ?1;", "CREATE INDEX unused ON t(a)", batch_happy_schema);
+    defer fixture.deinit();
+
+    var stdout_buffer: [65536]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = runSuggest(&fixture, "human", &.{ "--bind", "1:text:x" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+    try testing.expect(contains(result.stdout, "\nSuggested by SQLite:\n  suggested:1: CREATE INDEX "));
+    try testing.expect(contains(result.stdout, ";\n"));
+    try testing.expect(contains(result.stdout, "\nRecommendation: suggested:1\n"));
+    try testing.expect(!contains(result.stdout, "warning:"));
+    try fixture.expectNoLeftovers();
+}
+
+test "--suggest with nothing to compare stops with no_candidates" {
+    var fixture = try CliFixture.initWithSchema("SELECT 1", "CREATE INDEX unused ON t(a)", batch_happy_schema);
+    defer fixture.deinit();
+
+    var stdout_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = runSuggest(&fixture, "json", &.{}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try expectJsonFailure(result.stderr, "no_candidates", 1);
+    try testing.expect(contains(result.stderr, "without --suggest"));
+    try fixture.expectNoLeftovers();
+}
+
+test "--suggest with no proposal keeps the manifest candidates" {
+    var fixture = try initBatchHappy();
+    defer fixture.deinit();
+    try fixture.writeFile("q3.sql", "SELECT 1;");
+    try fixture.writeFile("batch-suggest.json",
+        \\{"queries":[{"select":"q3.sql"}],"candidates":[{"index_sql":"c1.sql"}]}
+    );
+
+    var stdout_buffer: [131072]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = try runBatchNamed(&fixture, "batch-suggest.json", &.{ "--suggest", "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    const root = parsed.value;
+    try testing.expect(try jsonGet(root, "recommended") == .null);
+    const summary = try jsonItems(root, "summary");
+    try testing.expectEqual(@as(usize, 1), summary.len);
+    try testing.expectEqualStrings("c1.sql", try jsonText(summary[0], "candidate"));
+    try testing.expectEqualStrings("manifest", try jsonText(summary[0], "source"));
+    try testing.expectEqualStrings("CREATE INDEX ix_b ON t(b);", try jsonText(summary[0], "index_sql_text"));
+    const warnings = try jsonItems(root, "warnings");
+    try testing.expectEqual(@as(usize, 1), warnings.len);
+    try testing.expectEqualStrings("no_suggestions", try jsonText(warnings[0], "code"));
+    try fixture.expectNoLeftovers();
+}
+
+test "--suggest may omit the manifest candidates and adds its proposal last" {
+    var fixture = try initBatchHappy();
+    defer fixture.deinit();
+    try fixture.writeFile("batch-two.json",
+        \\{"queries":[{"select":"q1.sql","binds":["1:text:x"]}],"candidates":[{"index_sql":"c2.sql"}]}
+    );
+    try fixture.writeFile("batch-none.json",
+        \\{"queries":[{"select":"q1.sql","binds":["1:text:x"]}]}
+    );
+
+    var stdout_buffer: [131072]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const with_manifest = try runBatchNamed(&fixture, "batch-two.json", &.{ "--suggest", "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, with_manifest.code);
+    var parsed = try parseJson(with_manifest.stdout);
+    defer parsed.deinit();
+    const root = parsed.value;
+    try testing.expectEqualStrings("suggested:1", try jsonText(root, "recommended"));
+    const summary = try jsonItems(root, "summary");
+    try testing.expectEqual(@as(usize, 2), summary.len);
+    try testing.expectEqualStrings("suggested:1", try jsonText(summary[0], "candidate"));
+    try testing.expectEqualStrings("c2.sql", try jsonText(summary[1], "candidate"));
+    try testing.expectEqualStrings("manifest", try jsonText(summary[1], "source"));
+    try testing.expectEqualStrings("CREATE INDEX ix_a ON t(a);", try jsonText(summary[1], "index_sql_text"));
+    const results = try jsonItems(root, "results");
+    try testing.expectEqual(@as(usize, 2), results.len);
+    try testing.expectEqualStrings("c2.sql", try jsonText(results[0], "candidate"));
+    try testing.expectEqualStrings("suggested:1", try jsonText(results[1], "candidate"));
+    try testing.expectEqual(@as(usize, 0), (try jsonItems(root, "warnings")).len);
+
+    stdout_buffer = undefined;
+    stderr_buffer = undefined;
+    const without_manifest = try runBatchNamed(&fixture, "batch-none.json", &.{ "--suggest", "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, without_manifest.code);
+    var second = try parseJson(without_manifest.stdout);
+    defer second.deinit();
+    try testing.expectEqualStrings("suggested:1", try jsonText(second.value, "recommended"));
+    try testing.expectEqual(@as(usize, 1), (try jsonItems(second.value, "summary")).len);
+    try fixture.expectNoLeftovers();
+}
+
+test "--suggest rejects a manifest candidate named suggested and only then" {
+    var fixture = try initBatchHappy();
+    defer fixture.deinit();
+    try fixture.writeFile("batch-bad.json",
+        \\{"queries":[{"select":"q1.sql","binds":["1:text:x"]}],"candidates":[{"index_sql":"suggested:1"}]}
+    );
+
+    var stdout_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const with_suggest = try runBatchNamed(&fixture, "batch-bad.json", &.{ "--suggest", "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, with_suggest.code);
+    try testing.expectEqualStrings("", with_suggest.stdout);
+    try expectJsonFailure(with_suggest.stderr, "batch_manifest_invalid", 1);
+    try testing.expect(contains(with_suggest.stderr, "must not start with 'suggested:'"));
+
+    stdout_buffer = undefined;
+    stderr_buffer = undefined;
+    const without_suggest = try runBatchNamed(&fixture, "batch-bad.json", &.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, without_suggest.code);
+    try expectJsonFailure(without_suggest.stderr, "batch_sql_unreadable", 1);
+    try fixture.expectNoLeftovers();
+}
+
+fn victimPath(fixture: *CliFixture, name: []const u8) ![:0]const u8 {
+    try fixture.writeFile("anchor", "");
+    const anchor = try fixture.dir.tmp.dir.realPathFileAlloc(testing.io, "anchor", testing.allocator);
+    defer testing.allocator.free(anchor);
+    const directory = std.fs.path.dirname(anchor) orelse ".";
+    return std.fmt.allocPrintSentinel(testing.allocator, "{s}/{s}", .{ directory, name }, 0);
+}
+
+fn rewriteSchemaRow(fixture: *CliFixture, payload: []const u8) !void {
+    const update = try std.fmt.allocPrintSentinel(testing.allocator, "PRAGMA writable_schema=ON; UPDATE sqlite_schema SET sql = 'CREATE TABLE t(a); {s}' WHERE name = 't';", .{payload}, 0);
+    defer testing.allocator.free(update);
+    const writer = try db.openTestWriter(fixture.db_path, update);
+    _ = sqlite.sqlite3_close(writer);
+}
+
+fn expectNoFile(path: []const u8) !void {
+    _ = Io.Dir.cwd().statFile(testing.io, path, .{}) catch |err| {
+        try testing.expectEqual(error.FileNotFound, err);
+        return;
+    };
+    return error.ExpectedMissingFile;
+}
+
+fn expectSchemaRejected(fixture: *CliFixture, victim: ?[]const u8) !void {
+    var stdout_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = runSuggest(fixture, "json", &.{}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try expectJsonFailure(result.stderr, "suggest_schema_rejected", 1);
+    try testing.expect(contains(result.stderr, "the schema entry is not allowed"));
+    if (victim) |path| try expectNoFile(path);
+    try fixture.expectNoLeftovers();
+}
+
+test "--suggest rejects a schema that attaches another database" {
+    var fixture = try CliFixture.initWithSchema("SELECT * FROM t WHERE a = 1", "CREATE INDEX unused ON t(a)", "CREATE TABLE t(a); INSERT INTO t VALUES (1);");
+    defer fixture.deinit();
+    const victim = try victimPath(&fixture, "attached.db");
+    defer testing.allocator.free(victim);
+    try expectNoFile(victim);
+    const payload = try std.fmt.allocPrintSentinel(testing.allocator, "ATTACH DATABASE ''{s}'' AS v;", .{victim}, 0);
+    defer testing.allocator.free(payload);
+    try rewriteSchemaRow(&fixture, payload);
+
+    try expectSchemaRejected(&fixture, victim);
+}
+
+test "--suggest rejects a schema that runs VACUUM INTO" {
+    var fixture = try CliFixture.initWithSchema("SELECT * FROM t WHERE a = 1", "CREATE INDEX unused ON t(a)", "CREATE TABLE t(a); INSERT INTO t VALUES (1);");
+    defer fixture.deinit();
+    const victim = try victimPath(&fixture, "vacuum.db");
+    defer testing.allocator.free(victim);
+    try expectNoFile(victim);
+    const payload = try std.fmt.allocPrintSentinel(testing.allocator, "VACUUM INTO ''{s}'';", .{victim}, 0);
+    defer testing.allocator.free(payload);
+    try rewriteSchemaRow(&fixture, payload);
+
+    try expectSchemaRejected(&fixture, victim);
+}
+
+test "--suggest rejects a schema that sets a PRAGMA" {
+    var fixture = try CliFixture.initWithSchema("SELECT * FROM t WHERE a = 1", "CREATE INDEX unused ON t(a)", "CREATE TABLE t(a); INSERT INTO t VALUES (1);");
+    defer fixture.deinit();
+    try rewriteSchemaRow(&fixture, "PRAGMA temp_store_directory=''.'';");
+
+    try expectSchemaRejected(&fixture, null);
+}
+
+test "--suggest accepts a normal schema with a trigger, a view and quoted names" {
+    var fixture = try CliFixture.initWithSchema("SELECT a FROM t WHERE \"x;y\" = 'v'", "CREATE INDEX unused ON t(a)",
+        \\CREATE TABLE t(a INTEGER, "x;y" TEXT);
+        \\CREATE VIEW v AS SELECT a FROM t;
+        \\CREATE TRIGGER tr AFTER INSERT ON t BEGIN UPDATE t SET a = a; END;
+        \\CREATE INDEX "idx;one" ON t(a);
+        \\INSERT INTO t VALUES (1, 'v'), (2, 'w');
+    );
+    defer fixture.deinit();
+
+    var stdout_buffer: [131072]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = runSuggest(&fixture, "json", &.{}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    try testing.expectEqual(@as(i64, 1), try jsonInt(parsed.value, "batch_schema_version"));
+    const summary = try jsonItems(parsed.value, "summary");
+    try testing.expectEqual(@as(usize, 1), summary.len);
+    try testing.expectEqualStrings("suggested", try jsonText(summary[0], "source"));
+    try fixture.expectNoLeftovers();
+}
+
+test "--suggest accepts the D1 example schema with the local D1 tables" {
+    const example = try std.Io.Dir.cwd().readFileAlloc(testing.io, "examples/d1-toml/schema.sql", testing.allocator, .limited(1024 * 1024));
+    defer testing.allocator.free(example);
+    const schema = try std.fmt.allocPrintSentinel(testing.allocator, "{s}\nCREATE TABLE _cf_METADATA(key TEXT PRIMARY KEY, value BLOB) WITHOUT ROWID;\nCREATE TABLE _cf_KV(key TEXT PRIMARY KEY, value BLOB) WITHOUT ROWID;", .{example}, 0);
+    defer testing.allocator.free(schema);
+    var fixture = try CliFixture.initWithSchema(
+        "SELECT id, status, note FROM events WHERE customer_id = ?1",
+        "CREATE INDEX unused ON events(customer_id)",
+        schema,
+    );
+    defer fixture.deinit();
+
+    var stdout_buffer: [131072]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = runSuggest(&fixture, "json", &.{ "--bind", "1:int:1234" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    try testing.expectEqualStrings("suggested:1", try jsonText(parsed.value, "recommended"));
+    try fixture.expectNoLeftovers();
+}
+
+test "--suggest escapes control characters in a human warning" {
+    var fixture = try CliFixture.initWithSchema("SELECT 1", "CREATE INDEX unused ON t(a)",
+        \\CREATE TABLE t(a INTEGER);
+        \\INSERT INTO t VALUES (1);
+        \\CREATE INDEX t_a ON t(a);
+        \\ANALYZE;
+    );
+    defer fixture.deinit();
+    try fixture.writeFile("q\x1b.sql", "SELECT * FROM sqlite_stat1;");
+    try fixture.writeFile("c.sql", "CREATE INDEX c ON t(a);");
+    try fixture.writeFile("batch.json",
+        \\{"queries":[{"select":"q\u001b.sql"}],"candidates":[{"index_sql":"c.sql"}]}
+    );
+
+    var stdout_buffer: [65536]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = try fixture.runBatch(&.{"--suggest"}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.incomparable, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    const at = std.mem.indexOf(u8, result.stdout, "warning: suggest_query_skipped:") orelse return error.MissingWarning;
+    const end = std.mem.indexOfScalarPos(u8, result.stdout, at, '\n') orelse result.stdout.len;
+    const line = result.stdout[at..end];
+    try testing.expect(contains(line, "q\\x1b.sql"));
+    try testing.expect(!contains(line, "\x1b"));
+    try fixture.expectNoLeftovers();
+}
+
+test "--suggest escapes control characters in a human schema error" {
+    const table = "bad\x1bname";
+    const schema: [:0]const u8 = "CREATE TABLE \"bad\x1bname\"(a INTEGER);\nINSERT INTO \"bad\x1bname\" VALUES (1);";
+    var fixture = try CliFixture.initWithSchema(
+        "SELECT * FROM \"bad\x1bname\" WHERE a = 1",
+        "CREATE INDEX unused ON t(a)",
+        schema,
+    );
+    defer fixture.deinit();
+    const victim = try victimPath(&fixture, "victim.db");
+    defer testing.allocator.free(victim);
+    const update = try std.fmt.allocPrintSentinel(testing.allocator, "PRAGMA writable_schema=ON; UPDATE sqlite_schema SET sql = 'CREATE TABLE \"{0s}\"(a INTEGER); ATTACH DATABASE ''{1s}'' AS v;' WHERE name = '{0s}';", .{ table, victim }, 0);
+    defer testing.allocator.free(update);
+    const writer = try db.openTestWriter(fixture.db_path, update);
+    _ = sqlite.sqlite3_close(writer);
+
+    var stdout_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = runSuggest(&fixture, "human", &.{}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try testing.expect(contains(result.stderr, "'bad\\x1bname'"));
+    try testing.expect(!contains(result.stderr, "\x1b"));
+    try expectNoFile(victim);
+    try fixture.expectNoLeftovers();
+}
+
+test "--suggest keeps the manifest candidates when the expert fails" {
+    var fixture = try initBatchHappy();
+    defer fixture.deinit();
+    cli_suggest.setTestExpertFailure("sqlite3expert could not analyze the queries: injected failure");
+    defer cli_suggest.setTestExpertFailure(null);
+
+    var stdout_buffer: [131072]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = try fixture.runBatch(&.{ "--suggest", "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    const warnings = try jsonItems(parsed.value, "warnings");
+    try testing.expectEqual(@as(usize, 1), warnings.len);
+    try testing.expectEqualStrings("suggest_failed", try jsonText(warnings[0], "code"));
+    try testing.expect(contains(try jsonText(warnings[0], "message"), "injected failure"));
+    try testing.expectEqual(@as(usize, 2), (try jsonItems(parsed.value, "summary")).len);
+    try testing.expectEqual(@as(usize, 4), (try jsonItems(parsed.value, "results")).len);
+    try fixture.expectNoLeftovers();
+}
+
+test "--suggest stops when the expert fails and no candidate remains" {
+    var fixture = try CliFixture.initWithSchema("SELECT a FROM t WHERE b = ?1;", "CREATE INDEX unused ON t(a)", batch_happy_schema);
+    defer fixture.deinit();
+    cli_suggest.setTestExpertFailure("sqlite3expert could not analyze the queries: injected failure");
+    defer cli_suggest.setTestExpertFailure(null);
+
+    var stdout_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = runSuggest(&fixture, "json", &.{ "--bind", "1:text:x" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try expectJsonFailure(result.stderr, "suggest_failed", 1);
+    try testing.expect(contains(result.stderr, "injected failure"));
     try fixture.expectNoLeftovers();
 }
