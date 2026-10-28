@@ -54,8 +54,14 @@ const warning_messages = [_][]const u8{
     "The candidate index table has fewer than 1000 rows. This heuristic does not establish representative performance; test with more representative data.",
 };
 
-const bind_dependent_partial_index_code = "bind_dependent_partial_index";
+pub const bind_dependent_partial_index_code = "bind_dependent_partial_index";
 const bind_dependent_partial_index_message = "The variant plan uses the partial index \"{s}\" only because the bound values satisfy its WHERE clause. A different bound value changes the plan, so test with the values you deploy.";
+
+pub fn bindDependentPartialIndexMessage(allocator: std.mem.Allocator, index_name: []const u8) Error![]const u8 {
+    const escaped = try escapedText(allocator, index_name);
+    defer allocator.free(escaped);
+    return std.fmt.allocPrint(allocator, bind_dependent_partial_index_message, .{escaped});
+}
 
 fn anyWarnings(warnings: Warnings) bool {
     return warnings.no_analyze_stats or warnings.data_too_small or warnings.bind_dependent_partial_index != null;
@@ -74,9 +80,9 @@ fn writeWarnings(stdout: *Io.Writer, allocator: std.mem.Allocator, warnings: War
         if (active) try stdout.print("warning: {s}: {s}\n", .{ code, message });
     }
     if (warnings.bind_dependent_partial_index) |name| {
-        const escaped = try escapedText(allocator, name);
-        defer allocator.free(escaped);
-        try stdout.print("warning: {s}: " ++ bind_dependent_partial_index_message ++ "\n", .{ bind_dependent_partial_index_code, escaped });
+        const message = try bindDependentPartialIndexMessage(allocator, name);
+        defer allocator.free(message);
+        try stdout.print("warning: {s}: {s}\n", .{ bind_dependent_partial_index_code, message });
     }
 }
 
@@ -97,9 +103,7 @@ fn writeHumanWarnings(stdout: *Io.Writer, allocator: std.mem.Allocator, warnings
         if (active) try writeHumanWarning(stdout, allocator, code, message);
     }
     if (warnings.bind_dependent_partial_index) |name| {
-        const escaped = try escapedText(allocator, name);
-        defer allocator.free(escaped);
-        const message = try std.fmt.allocPrint(allocator, bind_dependent_partial_index_message, .{escaped});
+        const message = try bindDependentPartialIndexMessage(allocator, name);
         defer allocator.free(message);
         try writeHumanWarning(stdout, allocator, bind_dependent_partial_index_code, message);
     }

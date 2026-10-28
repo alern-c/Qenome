@@ -2666,6 +2666,70 @@ test "a batch comparison carries the bind-dependent partial index warning" {
     try fixture.expectNoLeftovers();
 }
 
+const batch_partial_choice_schema: [:0]const u8 =
+    \\CREATE TABLE t(id INTEGER PRIMARY KEY, status INT, v TEXT);
+    \\WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 4000)
+    \\INSERT INTO t SELECT x, x % 10, 'v' || x FROM c;
+    \\ANALYZE;
+;
+
+test "a batch human report lists the warning and does not recommend the warned candidate when the improvement is equal" {
+    var fixture = try CliFixture.initWithSchema("SELECT 1", "CREATE INDEX unused ON t(id)", batch_partial_choice_schema);
+    defer fixture.deinit();
+    try fixture.writeFile("q.sql", "SELECT id FROM t WHERE status = ?1;");
+    try fixture.writeFile("p.sql", "CREATE INDEX ix_p ON t(id) WHERE status = 1;");
+    try fixture.writeFile("s.sql", "CREATE INDEX ix_s ON t(status);");
+    try fixture.writeFile("batch.json",
+        \\{"queries":[{"select":"q.sql","binds":["1:int:1"]}],"candidates":[{"index_sql":"p.sql"},{"index_sql":"s.sql"}]}
+    );
+
+    var stdout_buffer: [131072]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const human = try fixture.runBatch(&.{}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, human.code);
+    try testing.expectEqualStrings("", human.stderr);
+    try testing.expect(contains(human.stdout, "\nWarnings\n"));
+    try testing.expect(contains(human.stdout, "q.sql -> p.sql: bind_dependent_partial_index: "));
+    try testing.expect(contains(human.stdout, "ix_p"));
+    try testing.expect(!contains(human.stdout, "q.sql -> s.sql:"));
+    try testing.expect(contains(human.stdout, "\nRecommendation: s.sql\n"));
+
+    const json_result = try fixture.runBatch(&.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, json_result.code);
+    var parsed = try parseJson(json_result.stdout);
+    defer parsed.deinit();
+    try testing.expectEqualStrings("s.sql", try jsonText(parsed.value, "recommended"));
+    const summary = try jsonItems(parsed.value, "summary");
+    try testing.expectEqual(@as(usize, 2), summary.len);
+    try testing.expectEqualStrings("s.sql", try jsonText(summary[0], "candidate"));
+    try testing.expectEqualStrings("p.sql", try jsonText(summary[1], "candidate"));
+    const results = try jsonItems(parsed.value, "results");
+    const warned = try jsonItems(try jsonGet(results[0], "comparison"), "warnings");
+    try testing.expectEqual(@as(usize, 1), warned.len);
+    try testing.expectEqualStrings("bind_dependent_partial_index", try jsonText(warned[0], "code"));
+    try testing.expectEqual(@as(usize, 0), (try jsonItems(try jsonGet(results[1], "comparison"), "warnings")).len);
+    try fixture.expectNoLeftovers();
+}
+
+test "a batch human warning escapes control characters in the partial index name" {
+    var fixture = try CliFixture.initWithSchema("SELECT 1", "CREATE INDEX unused ON t(a)", control_index_name_schema);
+    defer fixture.deinit();
+    try fixture.writeFile("q.sql", "SELECT b FROM t WHERE a = ?1;");
+    try fixture.writeFile("c.sql", "CREATE INDEX idx_a ON t(a);");
+    try fixture.writeFile("batch.json",
+        \\{"queries":[{"select":"q.sql","binds":["1:int:1"]}],"candidates":[{"index_sql":"c.sql"}]}
+    );
+
+    var stdout_buffer: [131072]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = try fixture.runBatch(&.{}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expect(contains(result.stdout, "q.sql -> c.sql: bind_dependent_partial_index: "));
+    try testing.expect(!contains(result.stdout, "\x1b"));
+    try testing.expect(contains(result.stdout, "part\\x1bindex"));
+    try fixture.expectNoLeftovers();
+}
+
 test "a migration that adds a partial index warns for the variant-only query" {
     var fixture = try CliFixture.initWithSchema("SELECT 1", "CREATE INDEX unused ON t(a)", bind_partial_schema);
     defer fixture.deinit();
@@ -2690,6 +2754,16 @@ test "a migration that adds a partial index warns for the variant-only query" {
     try testing.expectEqual(@as(usize, 1), warnings.len);
     try testing.expectEqualStrings("bind_dependent_partial_index", try jsonText(warnings[0], "code"));
     try testing.expect(contains(try jsonText(warnings[0], "message"), "idx_part_c"));
+
+    var human_buffer: [131072]u8 = undefined;
+    var human_stderr: [2048]u8 = undefined;
+    const human = try runMigration(&fixture, "queries.json", "add.sql", &.{}, &human_buffer, &human_stderr);
+    try testing.expectEqual(ExitCode.ok, human.code);
+    const at = std.mem.indexOf(u8, human.stdout, ": bind_dependent_partial_index: ") orelse return error.MissingWarning;
+    const line_start = (std.mem.lastIndexOfScalar(u8, human.stdout[0..at], '\n') orelse return error.MissingWarning) + 1;
+    const line = human.stdout[line_start..];
+    try testing.expect(contains(line, "  qc.sql -> "));
+    try testing.expect(contains(line, "idx_part_c"));
     try fixture.expectNoLeftovers();
 }
 
@@ -3352,6 +3426,7 @@ test "a batch compares every query with every candidate and recommends one" {
     try testing.expectEqualStrings("", result.stderr);
     try testing.expect(contains(result.stdout, "batch: 2 queries, 2 candidates\n"));
     try testing.expect(contains(result.stdout, "Recommendation: c1.sql\n"));
+    try testing.expect(!contains(result.stdout, "\nWarnings\n"));
     try testing.expect(contains(result.stdout, "\nResults\n"));
     try testing.expect(contains(result.stdout, "q1.sql"));
     try testing.expect(contains(result.stdout, "q2.sql"));

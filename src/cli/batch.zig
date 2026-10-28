@@ -126,6 +126,7 @@ const CandidateSummary = struct {
     incomparable: u64 = 0,
     timeout: u64 = 0,
     not_judged: u64 = 0,
+    partial_index_warnings: u64 = 0,
     size_increase: i128 = 0,
 };
 
@@ -145,6 +146,7 @@ const ResultEntry = struct {
     reason: []const u8 = "",
     variant_rows: ?u64 = null,
     comparison: []const u8 = "",
+    partial_index: ?[]const u8 = null,
 };
 
 pub fn load(io: Io, arena: std.mem.Allocator, path: [:0]const u8, stderr: *Io.Writer, suggest: bool, migration: bool) ?Loaded {
@@ -638,7 +640,8 @@ pub fn run(
                 variant_report.judgement.add(reason);
                 variant_report.judgement.add("only the variant was measured, so its plan and row counts are reported without a comparison");
                 variant_report.sizes = .{ .baseline = baseline_size, .variant = variant_size };
-                variant_report.warnings.bind_dependent_partial_index = variant.database.findBindDependentPartialIndex(child, after.plan, query.sql, query.binds, &control) catch null;
+                const partial_index = variant.database.findBindDependentPartialIndex(child, after.plan, query.sql, query.binds, &control) catch null;
+                variant_report.warnings.bind_dependent_partial_index = partial_index;
 
                 const variant_header: cli_report.Header = .{
                     .database_path = inputs.database_path,
@@ -657,6 +660,7 @@ pub fn run(
                 cli_report.writeJsonVariantOnlyTo(&variant_rendered.writer, child, variant_header, after, variant_report, .minified) catch |err| return reportWriteFailure(err, stderr);
                 const variant_comparison = arena.dupe(u8, variant_rendered.written()) catch return outOfMemoryCode(stderr);
                 summary.not_judged += 1;
+                if (partial_index != null) summary.partial_index_warnings += 1;
                 results.append(arena, .{
                     .query = query.label,
                     .candidate = candidate.label,
@@ -666,6 +670,7 @@ pub fn run(
                     .reason = reason,
                     .variant_rows = @as(u64, after.counters.rows_read),
                     .comparison = variant_comparison,
+                    .partial_index = if (partial_index) |name| arena.dupe(u8, name) catch return outOfMemoryCode(stderr) else null,
                 }) catch return outOfMemoryCode(stderr);
                 continue;
             }
@@ -696,8 +701,10 @@ pub fn run(
                 },
             }
             report.warnings = .{ .no_analyze_stats = warnings.no_analyze_stats, .data_too_small = warnings.data_too_small };
-            report.warnings.bind_dependent_partial_index = variant.database.findBindDependentPartialIndex(child, after.plan, query.sql, query.binds, &control) catch null;
+            const partial_index = variant.database.findBindDependentPartialIndex(child, after.plan, query.sql, query.binds, &control) catch null;
+            report.warnings.bind_dependent_partial_index = partial_index;
             report.sizes = .{ .baseline = baseline_size, .variant = variant_size };
+            if (partial_index != null) summary.partial_index_warnings += 1;
 
             const header: cli_report.Header = .{
                 .database_path = inputs.database_path,
@@ -723,6 +730,7 @@ pub fn run(
                 .judgement = report.judgement.verdict,
                 .rows = .{ .baseline = before.counters.rows_read, .variant = after.counters.rows_read },
                 .comparison = comparison,
+                .partial_index = if (partial_index) |name| arena.dupe(u8, name) catch return outOfMemoryCode(stderr) else null,
             }) catch return outOfMemoryCode(stderr);
         }
 
@@ -762,7 +770,7 @@ pub fn run(
         .json => writeBatchJson(stdout, allocator, summaries, order, results.items, suggest_warnings.items, recommended, migration_report, inputs.seed, code) catch |err| {
             return reportWriteFailure(err, stderr);
         },
-        .human => writeBatchHuman(stdout, inputs, loaded.queries.len, summaries, order, results.items, suggest_warnings.items, recommended, migration_report) catch |err| {
+        .human => writeBatchHuman(stdout, allocator, inputs, loaded.queries.len, summaries, order, results.items, suggest_warnings.items, recommended, migration_report) catch |err| {
             return reportWriteFailure(err, stderr);
         },
         .kv => unreachable,
@@ -1224,6 +1232,9 @@ fn eligibleLessThan(summaries: []const CandidateSummary, a: usize, b: usize) boo
     const left = summaries[a];
     const right = summaries[b];
     if (left.improved != right.improved) return left.improved > right.improved;
+    const left_warned = left.partial_index_warnings != 0;
+    const right_warned = right.partial_index_warnings != 0;
+    if (left_warned != right_warned) return !left_warned;
     if (left.size_increase != right.size_increase) return left.size_increase < right.size_increase;
     return a < b;
 }
@@ -1422,6 +1433,7 @@ fn writeOptionalCount(json: *std.json.Stringify, compared: bool, value: u64) !vo
 
 fn writeBatchHuman(
     stdout: *Io.Writer,
+    allocator: std.mem.Allocator,
     inputs: Inputs,
     query_count: usize,
     summaries: []const CandidateSummary,
@@ -1570,6 +1582,22 @@ fn writeBatchHuman(
             }
         }
         try stdout.writeByte('\n');
+    }
+
+    var comparison_warnings_printed = false;
+    for (results) |result| {
+        const index_name = result.partial_index orelse continue;
+        if (!comparison_warnings_printed) {
+            try stdout.writeAll("\nWarnings\n");
+            comparison_warnings_printed = true;
+        }
+        const message = try cli_report.bindDependentPartialIndexMessage(allocator, index_name);
+        defer allocator.free(message);
+        try stdout.writeAll("  ");
+        try result_rows.writeEscapedText(stdout, result.query);
+        try stdout.writeAll(" -> ");
+        try result_rows.writeEscapedText(stdout, result.candidate);
+        try stdout.print(": {s}: {s}\n", .{ cli_report.bind_dependent_partial_index_code, message });
     }
 
     var not_judged_printed = false;
@@ -1724,6 +1752,19 @@ test "summaryOrder puts eligible candidates first by improved and size" {
     };
     const order = try summaryOrder(arena_state.allocator(), &summaries);
     try testing.expectEqualSlices(usize, &.{ 2, 1, 0, 3, 4, 5 }, order);
+    try testing.expectEqual(@as(?usize, 2), recommendedIndex(&summaries, order));
+}
+
+test "summaryOrder puts a warned candidate after an equal candidate without the warning" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    var summaries = [_]CandidateSummary{
+        .{ .candidate = "warned-small.sql", .status = .compared, .improved = 1, .no_effect = 1, .size_increase = 10, .partial_index_warnings = 1 },
+        .{ .candidate = "clean-large.sql", .status = .compared, .improved = 1, .no_effect = 1, .size_increase = 500 },
+        .{ .candidate = "warned-best.sql", .status = .compared, .improved = 2, .partial_index_warnings = 1 },
+    };
+    const order = try summaryOrder(arena_state.allocator(), &summaries);
+    try testing.expectEqualSlices(usize, &.{ 2, 1, 0 }, order);
     try testing.expectEqual(@as(?usize, 2), recommendedIndex(&summaries, order));
 }
 
