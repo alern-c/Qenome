@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "qenome-index-audit.schema.json",
+  "title": "Qenome index audit report (audit_schema_version 1)",
+  "description": "Stdout object after --batch FILE --audit-indexes. Separate from the batch report; see docs/json.md.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "audit_schema_version",
+    "exit_code",
+    "database",
+    "queries",
+    "redundancy_judged",
+    "indexes"
+  ],
+  "properties": {
+    "audit_schema_version": { "const": 1 },
+    "exit_code": {
+      "description": "0 when the report is written. The process can still exit 5 after this object when cleanup fails.",
+      "const": 0
+    },
+    "database": {
+      "description": "The --db path, or the local D1 path that --d1 resolved.",
+      "type": "string"
+    },
+    "queries": {
+      "description": "How many manifest queries were planned.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100
+    },
+    "redundancy_judged": {
+      "description": "False when a manifest SELECT uses INDEXED BY. Every redundant_by is then null.",
+      "type": "boolean"
+    },
+    "indexes": {
+      "description": "One object per index in the main schema, ordered by table and then by name.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/index" }
+    }
+  },
+  "$defs": {
+    "index": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "name",
+        "table",
+        "columns",
+        "unique",
+        "partial",
+        "expression",
+        "constraint",
+        "used",
+        "redundant_by"
+      ],
+      "properties": {
+        "name": {
+          "description": "sqlite_autoindex_* is a UNIQUE or PRIMARY KEY constraint index.",
+          "type": "string",
+          "minLength": 1
+        },
+        "table": { "type": "string", "minLength": 1 },
+        "columns": {
+          "description": "Key columns in index order. An expression key is the string <expression>.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "unique": { "type": "boolean" },
+        "partial": { "type": "boolean" },
+        "expression": {
+          "description": "At least one key column is an expression, so the report does not compare this index with others.",
+          "type": "boolean"
+        },
+        "constraint": {
+          "description": "unique or primary_key for a constraint index; null otherwise.",
+          "enum": ["unique", "primary_key", null]
+        },
+        "used": {
+          "description": "Whether a manifest plan named the index. Null for a constraint index, because a WITHOUT ROWID primary key plan says USING PRIMARY KEY instead of the index name.",
+          "type": ["boolean", "null"]
+        },
+        "redundant_by": {
+          "description": "Another index on the same table whose key columns start with this index's columns, with the same collation and ASC/DESC. INTEGER PRIMARY KEY means the rowid primary key.",
+          "type": ["string", "null"]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "constraint": { "type": "null" } },
+            "required": ["constraint"]
+          },
+          "then": {
+            "properties": { "used": { "type": "boolean" } }
+          },
+          "else": {
+            "properties": { "used": { "type": "null" } }
+          }
+        }
+      ]
+    }
+  }
+}

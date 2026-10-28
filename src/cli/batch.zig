@@ -69,6 +69,12 @@ pub const Loaded = struct {
     candidates: []const Candidate,
 };
 
+pub const ManifestOptions = struct {
+    suggest: bool = false,
+    migration: bool = false,
+    audit: bool = false,
+};
+
 const Suggested = struct {
     candidates: []const Candidate,
     rejected: usize,
@@ -149,7 +155,10 @@ const ResultEntry = struct {
     partial_index: ?[]const u8 = null,
 };
 
-pub fn load(io: Io, arena: std.mem.Allocator, path: [:0]const u8, stderr: *Io.Writer, suggest: bool, migration: bool) ?Loaded {
+pub fn load(io: Io, arena: std.mem.Allocator, path: [:0]const u8, stderr: *Io.Writer, options: ManifestOptions) ?Loaded {
+    const suggest = options.suggest;
+    const migration = options.migration;
+    const audit = options.audit;
     const data = cli_args.readSqlFile(io, arena, path) catch |err| {
         switch (err) {
             error.SqlFileTooLarge => return invalidManifest(stderr, path, "the file is larger than 1 MiB", .{}),
@@ -182,7 +191,7 @@ pub fn load(io: Io, arena: std.mem.Allocator, path: [:0]const u8, stderr: *Io.Wr
         if (suggest or migration) return invalidManifest(stderr, path, "it must have only the keys queries and candidates", .{});
         return invalidManifest(stderr, path, "it must have exactly the keys queries and candidates", .{});
     }
-    if (!suggest and !migration and root.get("candidates") == null) {
+    if (!suggest and !migration and !audit and root.get("candidates") == null) {
         return invalidManifest(stderr, path, "it must have exactly the keys queries and candidates", .{});
     }
 
@@ -251,7 +260,9 @@ pub fn load(io: Io, arena: std.mem.Allocator, path: [:0]const u8, stderr: *Io.Wr
         queries.append(arena, .{ .label = label, .path = resolved, .sql = undefined, .binds = binds.items }) catch return outOfMemory(stderr);
     }
 
-    const candidate_values: []std.json.Value = if (root.get("candidates")) |value| switch (value) {
+    const candidate_values: []std.json.Value = if (audit)
+        &.{}
+    else if (root.get("candidates")) |value| switch (value) {
         .array => |array| array.items,
         else => return invalidManifest(stderr, path, "candidates must be an array", .{}),
     } else &.{};
@@ -263,7 +274,7 @@ pub fn load(io: Io, arena: std.mem.Allocator, path: [:0]const u8, stderr: *Io.Wr
         if (candidate_values.len > max_entries) {
             return invalidManifest(stderr, path, "candidates must hold 0 to {d} entries", .{max_entries});
         }
-    } else if (candidate_values.len < 1 or candidate_values.len > max_entries) {
+    } else if (audit) {} else if (candidate_values.len < 1 or candidate_values.len > max_entries) {
         return invalidManifest(stderr, path, "candidates must hold 1 to {d} entries", .{max_entries});
     }
     for (candidate_values, 0..) |candidate_value, index| {

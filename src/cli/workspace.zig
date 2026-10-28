@@ -110,6 +110,7 @@ pub fn prepareCopies(
     database_path: [:0]const u8,
     work: *const WorkDir,
     seed: ?cli_seed.Spec,
+    needs_variant: bool,
     stderr: *Io.Writer,
     cleanup_failed: *bool,
 ) ?ExitCode {
@@ -140,10 +141,12 @@ pub fn prepareCopies(
 
     if (signalPending()) return reportInterrupted(stderr);
 
-    Io.Dir.cwd().copyFile(work.baseline_path, Io.Dir.cwd(), work.variant_path, io, .{}) catch |err| {
-        stderr.print("error: cannot copy the baseline to the variant: {s}\n", .{@errorName(err)}) catch {};
-        return .rejected;
-    };
+    if (needs_variant) {
+        Io.Dir.cwd().copyFile(work.baseline_path, Io.Dir.cwd(), work.variant_path, io, .{}) catch |err| {
+            stderr.print("error: cannot copy the baseline to the variant: {s}\n", .{@errorName(err)}) catch {};
+            return .rejected;
+        };
+    }
     return null;
 }
 
@@ -236,7 +239,7 @@ test "the work directory is private and the variant is a byte copy of the baseli
         const stat = try work.parent.statFile(testing.io, &work.name, .{});
         try testing.expectEqual(@as(std.posix.mode_t, 0o700), stat.permissions.toMode() & 0o777);
 
-        try testing.expectEqual(@as(?ExitCode, null), prepareCopies(testing.io, arena_state.allocator(), fixture.db_path, &work, null, &stderr, &cleanup_failed));
+        try testing.expectEqual(@as(?ExitCode, null), prepareCopies(testing.io, arena_state.allocator(), fixture.db_path, &work, null, true, &stderr, &cleanup_failed));
         const baseline = try Io.Dir.cwd().readFileAlloc(testing.io, work.baseline_path, testing.allocator, .unlimited);
         defer testing.allocator.free(baseline);
         const variant = try Io.Dir.cwd().readFileAlloc(testing.io, work.variant_path, testing.allocator, .unlimited);
@@ -267,7 +270,7 @@ test "applyCandidate writes the index into the variant copy only" {
     {
         defer work.remove(testing.io, &stderr, &cleanup_failed);
 
-        try testing.expectEqual(@as(?ExitCode, null), prepareCopies(testing.io, arena_state.allocator(), fixture.db_path, &work, null, &stderr, &cleanup_failed));
+        try testing.expectEqual(@as(?ExitCode, null), prepareCopies(testing.io, arena_state.allocator(), fixture.db_path, &work, null, true, &stderr, &cleanup_failed));
         const baseline_before = try Io.Dir.cwd().readFileAlloc(testing.io, work.baseline_path, testing.allocator, .unlimited);
         defer testing.allocator.free(baseline_before);
         const variant_before = try Io.Dir.cwd().readFileAlloc(testing.io, work.variant_path, testing.allocator, .unlimited);
@@ -303,6 +306,31 @@ test "applyCandidate writes the index into the variant copy only" {
     defer parent.close(testing.io);
     var entries = parent.iterate();
     try testing.expect((try entries.next(testing.io)) == null);
+    try testing.expect(!cleanup_failed);
+    try testing.expectEqualStrings("", stderr.buffered());
+}
+
+test "a baseline-only copy leaves the variant absent" {
+    var fixture = try Fixture.init();
+    defer fixture.deinit();
+    const work_parent = try fixture.workParent();
+    defer testing.allocator.free(work_parent);
+
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    var work = try WorkDir.create(testing.io, arena_state.allocator(), work_parent);
+    var stderr_buffer: [512]u8 = undefined;
+    var stderr = Io.Writer.fixed(&stderr_buffer);
+    var cleanup_failed = false;
+    {
+        defer work.remove(testing.io, &stderr, &cleanup_failed);
+
+        try testing.expectEqual(@as(?ExitCode, null), prepareCopies(testing.io, arena_state.allocator(), fixture.db_path, &work, null, false, &stderr, &cleanup_failed));
+        const baseline = try Io.Dir.cwd().readFileAlloc(testing.io, work.baseline_path, testing.allocator, .unlimited);
+        defer testing.allocator.free(baseline);
+        try testing.expect(baseline.len > 0);
+        try testing.expectError(error.FileNotFound, Io.Dir.cwd().statFile(testing.io, work.variant_path, .{}));
+    }
     try testing.expect(!cleanup_failed);
     try testing.expectEqualStrings("", stderr.buffered());
 }

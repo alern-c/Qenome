@@ -13,6 +13,7 @@ const cli_timing = @import("cli/timing.zig");
 const cli_report = @import("cli/report.zig");
 const cli_pair = @import("cli/pair.zig");
 const cli_batch = @import("cli/batch.zig");
+const cli_audit = @import("cli/audit.zig");
 const cli_record = @import("cli/record.zig");
 const cli_seed = @import("cli/seed.zig");
 
@@ -179,7 +180,11 @@ fn runCaptured(
                 };
                 migration = .{ .path = migration_path, .sql = migration_sql, .statements = &.{} };
             }
-            const loaded = cli_batch.load(io, arena, batch_path, stderr, args.suggest, args.migration != null) orelse break :blk ExitCode.rejected;
+            const loaded = cli_batch.load(io, arena, batch_path, stderr, .{
+                .suggest = args.suggest,
+                .migration = args.migration != null,
+                .audit = args.audit_indexes,
+            }) orelse break :blk ExitCode.rejected;
             if (signalPending()) break :blk reportInterrupted(stderr);
             const parent_path = tempParentPath(temp_parent);
             var work = WorkDir.create(io, arena, parent_path) catch |err| {
@@ -187,7 +192,16 @@ fn runCaptured(
                 break :blk ExitCode.rejected;
             };
             defer work.remove(io, stderr, &cleanup_failed);
-            if (prepareCopies(io, arena, database_path, &work, seed_spec, stderr, &cleanup_failed)) |failure| break :blk failure;
+            if (prepareCopies(io, arena, database_path, &work, seed_spec, !args.audit_indexes, stderr, &cleanup_failed)) |failure| break :blk failure;
+            if (args.audit_indexes) {
+                break :blk cli_audit.run(io, arena, allocator, .{
+                    .database_path = database_path,
+                    .baseline_path = work.baseline_path,
+                    .timeout_ms = args.timeout_ms,
+                    .format = args.format,
+                    .work_parent = parent_path,
+                }, loaded.queries, stdout, stderr, &cleanup_failed);
+            }
             break :blk cli_batch.run(io, arena, allocator, .{
                 .database_path = database_path,
                 .baseline_path = work.baseline_path,
@@ -223,7 +237,7 @@ fn runCaptured(
         var suggest_cleanup_failed = false;
         const suggest_code = blk: {
             defer suggest_work.remove(io, stderr, &suggest_cleanup_failed);
-            if (prepareCopies(io, arena, database_path, &suggest_work, seed_spec, stderr, &suggest_cleanup_failed)) |failure| break :blk failure;
+            if (prepareCopies(io, arena, database_path, &suggest_work, seed_spec, true, stderr, &suggest_cleanup_failed)) |failure| break :blk failure;
             var queries = [_]cli_batch.Query{.{
                 .label = suggest_select_path,
                 .path = suggest_select_path,
@@ -274,7 +288,7 @@ fn runCaptured(
     const code = blk: {
         defer work.remove(io, stderr, &cleanup_failed);
 
-        if (prepareCopies(io, arena, database_path, &work, seed_spec, stderr, &cleanup_failed)) |failure| break :blk failure;
+        if (prepareCopies(io, arena, database_path, &work, seed_spec, true, stderr, &cleanup_failed)) |failure| break :blk failure;
 
         const inputs: Inputs = .{
             .database_path = database_path,
@@ -504,6 +518,13 @@ fn reportParseError(stderr: *Io.Writer, err: ParseError, offending: ?[:0]const u
         error.BatchRejectsBind => try stderr.writeAll("error: --batch does not take --bind; put the binds in the manifest (see --help)\n"),
         error.BatchRejectsRuns => try stderr.writeAll("error: --batch does not run the timing; remove --runs (see --help)\n"),
         error.BatchRejectsKv => try stderr.writeAll("error: --batch supports --format human or --format json, not kv (see --help)\n"),
+        error.AuditConflict => {
+            if (std.mem.eql(u8, arg, "--batch")) {
+                try stderr.writeAll("error: --audit-indexes needs --batch and a manifest (see --help)\n");
+            } else {
+                try stderr.print("error: --audit-indexes does not take {s} (see --help)\n", .{arg});
+            }
+        },
         else => try stderr.print("error: {s}\n", .{parseErrorMessage(err)}),
     }
 }
@@ -512,7 +533,12 @@ fn missingArguments(stderr: *Io.Writer, args: cli_args.Args, missing: []const []
     if (args.record != null) {
         stderr.print("{s}\n", .{cli_args.record_usage_line}) catch {};
     } else if (args.batch != null) {
-        const line = if (args.d1 != null) cli_args.d1_batch_usage_line else cli_args.batch_usage_line;
+        const line: []const u8 = if (args.audit_indexes)
+            (if (args.d1 != null) cli_args.d1_audit_usage_line else cli_args.audit_usage_line)
+        else if (args.d1 != null)
+            cli_args.d1_batch_usage_line
+        else
+            cli_args.batch_usage_line;
         stderr.print("{s}\n", .{line}) catch {};
     } else if (missing.len == cli_args.required_option_count) {
         stderr.print("{s}\n{s}\n", .{ cli_args.usage_line, cli_args.d1_usage_line }) catch {};

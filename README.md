@@ -28,6 +28,7 @@ Give it one read-only `SELECT` and one `CREATE INDEX`. With `--write`, give it o
 - **See what an index costs a write.** `--write` runs one `INSERT`, `UPDATE`, `DELETE`, or `REPLACE` in a rolled-back transaction on each copy and reports the rows written on both sides, including secondary-index inserts, triggers, and foreign-key cascades. See [Comparing a write](#comparing-a-write).
 - **A local D1 binding is enough.** `--d1 <BINDING>` finds the local database from a wrangler config, and `--config` names the config.
 - **Compare many queries in one run.** `--batch <FILE>` pairs every SELECT in a JSON manifest with every candidate `CREATE INDEX` and reports each pair; see [Batch comparisons](#batch-comparisons).
+- **Find the indexes a manifest does not use.** `--batch manifest.json --audit-indexes` lists the indexes that no query plan named, the indexes whose leading columns another index or the primary key covers, and the UNIQUE and PRIMARY KEY indexes that stay for their constraint; see [Index audit (--audit-indexes)](#index-audit---audit-indexes).
 - **Build a manifest from the queries your app runs.** `qenome/d1` records the SELECTs and bind values that run against a local D1, and `--record` turns the log into a manifest you can compare; see [Recording the queries your app runs (--record)](#recording-the-queries-your-app-runs---record).
 - **Find a candidate from the query.** `--suggest` lets SQLite's expert propose candidate indexes and compares them, so a SELECT file is enough; see [Suggesting candidate indexes](#suggesting-candidate-indexes).
 - **JSON for AI agents and CI.** `--format json` gives the report with `schema_version` 2, and the exit status separates a match, a mismatch, and an incomparable result.
@@ -46,6 +47,7 @@ Give it one read-only `SELECT` and one `CREATE INDEX`. With `--write`, give it o
 - [Usage](#usage)
 - [Generating sandbox data (--seed-data)](#generating-sandbox-data)
 - [Batch comparisons](#batch-comparisons)
+- [Index audit (--audit-indexes)](#index-audit---audit-indexes)
 - [Recording the queries your app runs (--record)](#recording-the-queries-your-app-runs---record)
 - [Output formats](#output-formats)
 - [Rules](#rules)
@@ -255,6 +257,7 @@ qenome app.db select.sql index.sql --seed-data seed.json
 qenome app.db --write update.sql --index-sql index.sql
 qenome --d1 DB select.sql index.sql
 qenome app.db --batch batch.json
+qenome app.db --batch batch.json --audit-indexes
 qenome app.db --batch batch.json --migration 0002_replace_index.sql
 qenome app.db select.sql --suggest
 qenome app.db --batch batch.json --suggest
@@ -274,6 +277,7 @@ The three paths fill the roles in this order: database, SELECT (or write) file, 
 - `--write <FILE>`: a file holding one `INSERT`, `UPDATE`, `DELETE`, or `REPLACE` to compare instead of a `SELECT`; it runs in a transaction on each sandbox copy and is rolled back. See [Comparing a write](#comparing-a-write). It cannot be combined with `--select`, `--batch`, `--migration`, or `--suggest`
 - `--index-sql <FILE>`: a file holding the one candidate `CREATE INDEX` (required, once)
 - `--batch <FILE>`: compare every SELECT in a JSON manifest with every candidate `CREATE INDEX` in one run; see [Batch comparisons](#batch-comparisons). It cannot be combined with `--select`, `--index-sql`, `--bind`, positional SELECT or INDEX paths, `--runs`, or `--format kv`
+- `--audit-indexes`: with `--batch`, report the indexes that no manifest query plan used and the indexes whose leading columns another index or the primary key covers, and keep the UNIQUE and PRIMARY KEY indexes in a separate list; the manifest needs only `queries`, and `candidates` are ignored. It needs `--batch` and cannot be combined with `--suggest`, `--migration`, or `--seed-data`. See [Index audit (--audit-indexes)](#index-audit---audit-indexes)
 - `--record <FILE>`: read the records that `qenome/d1` wrote and write a manifest without candidates to `--out`; no database is needed. The manifest holds bind values, so keep it local and do not commit it. Use it with `--out`; it cannot be combined with `--db`, `--d1`, `--select`, `--write`, `--index-sql`, `--batch`, `--migration`, `--seed-data`, `--bind`, `--runs`, `--suggest`, or `--format kv` / `json`. See [Recording the queries your app runs (--record)](#recording-the-queries-your-app-runs---record)
 - `--out <DIR>`: the new directory for `--record`. It must not exist. The directory is created with mode `0700` and its files with `0600`
 - `--migration <FILE>`: apply this SQL file to the variant only before the `--batch` queries run. It needs `--batch` and a manifest without `candidates`; it cannot be combined with `--select`, `--index-sql`, `--bind`, `--runs`, `--suggest`, or `--format kv`. `CREATE INDEX`, `CREATE UNIQUE INDEX`, `DROP INDEX`, `CREATE TABLE` (a column list, not `AS SELECT`), and `ALTER TABLE` (ADD / RENAME / DROP COLUMN and RENAME TO) are accepted; data changes, `DROP TABLE`, `ATTACH`, `PRAGMA`, and other statements are rejected with the statement number. A query that uses a column or table the migration drops or renames cannot run on the variant, so the whole run stops with exit `1`; a `SELECT *` cannot be compared after a column is added or dropped, so list the columns you need. See [Batch comparisons](#batch-comparisons)
@@ -458,6 +462,24 @@ The second applies `0002_reindex.sql`, which drops `ix_events_customer_id` and c
 
 Both recordings take their extra inputs from `docs/demo`, together with the `examples/d1-toml` sample.
 
+### Index audit (--audit-indexes)
+
+`qenome app.db --batch manifest.json --audit-indexes` reports the existing indexes that the manifest queries did not use, and the ones whose key columns another index or the primary key already covers. It reads the plan of every manifest query on one read-only copy; it does not build a variant and does not change the database. The manifest needs only `queries`, so a manifest from `--record` works as it is; `candidates` are ignored.
+
+Qenome prints three lists:
+
+| List | What it holds |
+| --- | --- |
+| `Unused in this manifest` | Indexes that no plan named. A partial index is marked, because another bound value can use it |
+| `Redundant candidates` | Plain indexes whose key columns are a prefix of another index or of the primary key, with the same collation and sort order. `covered by` names that index; `INTEGER PRIMARY KEY` means the rowid primary key |
+| `Kept for constraints` | UNIQUE and PRIMARY KEY indexes. They are not removal candidates |
+
+An index can appear in both the unused and the redundant lists. The key columns come from `PRAGMA index_list` and `PRAGMA index_xinfo`. A partial index is never judged redundant, an expression index is not compared, and a different collation or ASC/DESC order is not treated as covered. A plain index is named in `Redundant candidates` only when another index or the primary key on the same table can serve the same lookups. When a manifest SELECT uses `INDEXED BY`, Qenome does not judge the redundancy list at all, so it cannot point at an index that the query forces.
+
+The report is a statement about this manifest, not a recommendation to drop an index. The plans cover the SELECTs in the manifest only, so an index used by `UPDATE`, `DELETE`, foreign-key maintenance, or a query outside the manifest is not visible here. An index used only for `ORDER BY` or `GROUP BY` does appear in these plans. An index that SQLite did not pick can still be one it could use.
+
+The run exits `0` when the report is written, even when the lists are not empty. Read stdout, not the exit status, to find indexes. `--audit-indexes` needs `--batch` and does not take `--suggest`, `--migration`, or `--seed-data`; it takes `--d1`, `--timeout-ms` (for each plan and each catalog read), and `--format human` (default) or `--format json`. With JSON the output is the `audit_schema_version` 1 object described in [docs/json.md](docs/json.md).
+
 ### Recording the queries your app runs (--record)
 
 A hand-written manifest misses the queries an ORM builds, and nothing tells you what is missing. `qenome/d1` records the SELECTs and bind values that the app actually runs against a local D1, and `--record` turns that log into a manifest. Use it only during local development and tests.
@@ -505,7 +527,7 @@ npx qenome --record qenome-record.log --out qenome-manifest
 
 `--out` gets `manifest.json` and SQL files such as `queries/q001.sql`. The directory is created with mode `0700` and the files with `0600`, and stdout never holds a bind value. The manifest does hold the values, so do not commit it, and delete the record log once the manifest exists.
 
-1. Compare the manifest. It holds only `queries`, so pair it with `--suggest` or `--migration`.
+1. Compare the manifest, or audit the indexes it uses. It holds only `queries`, so pair it with `--suggest`, `--migration`, or `--audit-indexes`.
 
 ```sh
 npx qenome --d1 DB --batch qenome-manifest/manifest.json --suggest
