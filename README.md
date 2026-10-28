@@ -42,6 +42,7 @@ Give it one read-only `SELECT` and one `CREATE INDEX`. It copies a local SQLite 
 - [Why not ...](#why-not-)
 - [Quick start](#quick-start)
 - [Usage](#usage)
+- [Generating sandbox data (--seed-data)](#generating-sandbox-data)
 - [Batch comparisons](#batch-comparisons)
 - [Output formats](#output-formats)
 - [Rules](#rules)
@@ -167,7 +168,7 @@ Point the agent at that file. `--format json` is the machine-readable report, sp
 
 ## Quick start
 
-This walkthrough creates the test database, builds Qenome, and runs five examples. Run the commands from the repository root, one block at a time, on Linux or macOS. They need Zig 0.17.0 (see [From source](#from-source)) and the `sqlite3` command-line tool, which loads the SQL files into the new database.
+This walkthrough creates the test database, builds Qenome, and runs six examples. Run the commands from the repository root, one block at a time, on Linux or macOS. They need Zig 0.17.0 (see [From source](#from-source)) and the `sqlite3` command-line tool, which loads the SQL files into the new database.
 
 Create the test database from `testdata/schema.sql` and `testdata/seed.sql`. `verify.sql` prints one `ok` line for each of its 17 checks, and fails the load when a value is not the expected one.
 
@@ -185,12 +186,18 @@ Build Qenome:
 zig build
 ```
 
-The five examples run `zig-out/bin/qenome`. Each command ends with the result it has to report: `result` and `verdict` from the Summary (or `recommended` for a batch), and the exit status. `python3 scripts/check_all.py` and the quality workflow run these lines as written, so the README and the program stay in step. `--runs 40` keeps the medians steady on a busy machine; the default is `10`.
+The six examples run `zig-out/bin/qenome`. Each command ends with the result it has to report: `result` and `verdict` from the Summary (or `recommended` for a batch), and the exit status. `python3 scripts/check_all.py` and the quality workflow run these lines as written, so the README and the program stay in step. `--runs 40` keeps the medians steady on a busy machine; the default is `10`.
 
 An index that removes the full scan. The candidate index turns `SCAN events` into `SEARCH events USING INDEX ix_events_customer_id (customer_id=?)`, the rows read fall from 200,000 to 101, and both copies return the same 100 rows.
 
 ```sh
 ./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/improved.sql testdata/cases/improved.index.sql --bind 1:int:1234 --runs 40  # expect: result=match verdict=improved exit=0
+```
+
+An index on data you choose. `--seed-data testdata/seed.json` replaces the `events` rows in the sandbox copy, with the original database unchanged, by 50,000 deterministic rows. The same query then finds row `1234` among them, and the verdict stays `improved`. See [Generating sandbox data](#generating-sandbox-data).
+
+```sh
+./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/improved.sql testdata/cases/improved.index.sql --bind 1:int:1234 --seed-data testdata/seed.json --runs 0  # expect: result=match verdict=improved exit=0
 ```
 
 An index that cannot help. The SELECT wraps the column in `lower()`, so SQLite cannot use the index on `status`, and the plan, the rows read, and the rows written stay the same.
@@ -226,6 +233,7 @@ qenome app.db select.sql index.sql
 qenome app.db select.sql index.sql --bind 1:int:1234
 qenome --db app.db --select select.sql --index-sql index.sql --format kv
 qenome app.db select.sql index.sql --format json
+qenome app.db select.sql index.sql --seed-data seed.json
 qenome --d1 DB select.sql index.sql
 qenome app.db --batch batch.json
 qenome app.db --batch batch.json --migration 0002_replace_index.sql
@@ -244,6 +252,7 @@ The three paths fill the roles in this order: database, SELECT file, CREATE INDE
 - `--index-sql <FILE>`: a file holding the one candidate `CREATE INDEX` (required, once)
 - `--batch <FILE>`: compare every SELECT in a JSON manifest with every candidate `CREATE INDEX` in one run; see [Batch comparisons](#batch-comparisons). It cannot be combined with `--select`, `--index-sql`, `--bind`, positional SELECT or INDEX paths, `--runs`, or `--format kv`
 - `--migration <FILE>`: apply this SQL file to the variant only before the `--batch` queries run. It needs `--batch` and a manifest without `candidates`; it cannot be combined with `--select`, `--index-sql`, `--bind`, `--runs`, `--suggest`, or `--format kv`. Only `CREATE INDEX`, `CREATE UNIQUE INDEX`, and `DROP INDEX` are accepted. See [Batch comparisons](#batch-comparisons)
+- `--seed-data <FILE>`: replace the tables listed in this JSON spec with deterministic dummy rows in the sandbox copy before comparing; the original database is not changed. It works with every mode, including `--batch`, `--suggest`, and `--migration`. See [Generating sandbox data](#generating-sandbox-data)
 - `--suggest`: ask SQLite's expert for candidate indexes instead of naming one, and compare the proposals. With `--batch`, the manifest may omit `candidates`. It cannot be combined with `--runs`, `--format kv`, or an index file (`--index-sql` or a third positional path). See [Suggesting candidate indexes](#suggesting-candidate-indexes)
 - `--bind <N>:<TYPE>[:<VALUE>]`: a typed value bound to parameter `N`; repeatable. `N` is SQLite's parameter number: named parameters share the number of their first appearance, and `?NNN` uses `NNN`. `TYPE` is `int`, `real`, `text`, or `null` (null takes no value). Every number in `1..parameter count` must be given exactly once, and a `SELECT` without parameters takes no `--bind`. The value is the rest of the argument, so text may contain `:`.
 - `--runs <N>`: timed rounds after the results match; each round adds two baseline A/A executions and times the `SELECT` once per copy. The default is `10`; `0` skips the timing but keeps the row counts and the verdict; the maximum is `1000`. A timing that takes longer than a second reports its progress on stderr.
@@ -256,7 +265,7 @@ The three paths fill the roles in this order: database, SELECT file, CREATE INDE
 
 Options that take a value can also be written as `--db=app.db`.
 
-Qenome opens the database read-only and copies it, through SQLite's backup API, into a private directory under `$TMPDIR` (default `/tmp`) on Linux and macOS, or under the first of `%TMP%`, `%TEMP%`, and `%USERPROFILE%` that is set on Windows. The copy is the baseline; a second copy becomes the variant, and the candidate index is built only on the variant. The `SELECT` runs on both copies, and the result rows are compared as a multiset: each distinct row must appear the same number of times. Row order is reported as a reference and is not part of the match.
+Qenome opens the database read-only and copies it, through SQLite's backup API, into a private directory under `$TMPDIR` (default `/tmp`) on Linux and macOS, or under the first of `%TMP%`, `%TEMP%`, and `%USERPROFILE%` that is set on Windows. The copy is the baseline; a second copy becomes the variant, and the candidate index is built only on the variant. With `--seed-data`, Qenome fills the baseline with the spec's rows before it makes the variant, so both copies hold the same dummy data. The `SELECT` runs on both copies, and the result rows are compared as a multiset: each distinct row must appear the same number of times. Row order is reported as a reference and is not part of the match.
 
 The rows read and the rows written come from that first run on each copy, so they cost no extra work and stay available with `--runs 0`. When the rows match and `--runs` is not `0`, the `SELECT` is timed again as a reference. Each copy gets one warm-up run whose rows were compared and that is not timed. The timed rounds alternate baseline-variant and variant-baseline (ABBA). A round times `sqlite3_step` from the reset statement to `SQLITE_DONE`, including the interrupt checks; it does not read columns and does not time prepare, bind, or the plan read. The cache is warm, since each copy reuses its connection and page cache after its file was just written. The private directory is removed before exit, whatever the result.
 
@@ -265,6 +274,43 @@ On Linux and macOS the directory is created so that only its owner can access it
 The verdict comes from the rows read, and it never changes the exit status.
 
 Rows read and rows written use the same counting as local D1 (workerd patch): Qenome builds the bundled SQLite with Cloudflare's row-count patch from `workerd`. The numbers have not yet been checked against production D1. Both counters are 32-bit: each wraps past 4,294,967,295 of its own count, so a SELECT that goes past that in one run reports a wrapped number, and the verdict compares the numbers as they were read. `NOTICE` records where the patch comes from, and `vendor/sqlite3/PROVENANCE.txt` records how to apply it again.
+
+### Generating sandbox data
+
+`--seed-data spec.json` fills the sandbox copy with deterministic dummy rows before the comparison, so an empty or small local database can still show what an index would read. The original database is opened read-only and is never changed. The rows go into the baseline copy, and that copy becomes the variant too.
+
+The spec is one JSON object. `tables` maps a table name to its `rows` and optional `columns`. A column that you leave out takes its SQLite default or the rowid; a default must be a literal value, and a column with an expression default must be listed in the spec so the generated rows are reproducible. `seed` is optional and defaults to `0`.
+
+```json
+{
+  "seed": 7,
+  "tables": {
+    "events": {
+      "rows": 50000,
+      "columns": {
+        "id": { "kind": "sequence" },
+        "customer_id": { "kind": "sequence" },
+        "status": { "kind": "ratio", "value": "ok", "ratio": 0.5, "otherwise": "failed" },
+        "note": { "kind": "fixed", "value": null }
+      }
+    }
+  }
+}
+```
+
+Each column has one `kind`:
+
+| `kind` | Keys | Meaning |
+| `fixed` | `value` | the same value on every row |
+| `uniform` | `values` | one of the values, with the same chance each |
+| `ratio` | `value`, `ratio`, optional `otherwise` | `value` on the given fraction of rows (`0` to `1`), and `otherwise` (default `null`) on the rest |
+| `sequence` | optional `from` (default `1`), optional `step` (default `1`) | an integer that increases by `step` on each row |
+
+A JSON string becomes TEXT, an integer INTEGER, a number with a fraction REAL, `true` / `false` 1 / 0, and `null` NULL. The tables in the spec are emptied first, so their row count is exactly `rows`; tables you do not list are left as they are. Qenome rejects a listed table with a trigger, because the trigger could change another table or produce values that the seed does not control, and it rejects table or column names that differ only by case. The spec is limited to 100 tables, 10,000,000 rows per table, and 20,000,000 rows in total. `--seed-data` works with every mode, including `--batch`, `--suggest`, and `--migration`.
+
+The same spec and `seed` give the same rows on every run, so a reported comparison can be repeated. Values are inserted in one transaction, and Qenome then runs `ANALYZE` on each listed table in that transaction, so the planner sees statistics for the generated rows and `no_analyze_stats` does not apply to them. A constraint violation such as a PRIMARY KEY, UNIQUE, NOT NULL, or CHECK violation stops the run with exit status `1` and the SQLite message, even when the table declares `ON CONFLICT IGNORE` or `ON CONFLICT REPLACE`. Foreign keys are not checked on the sandbox copy, which is the SQLite default, so the tables may be listed in any order. Seeding is not limited by `--timeout-ms`; Ctrl+C stops it and removes the copy. The dummy rows live only in the private copy, which is removed before exit.
+
+The human Summary adds `seed data` and `seed` lines; `kv` adds `seed-data`, `seed`, `seed-rows`, `seed-tables`, and one `seed-table` line per table; `json` adds a top-level `seed_data` object with `path`, `seed`, `rows`, and `tables`.
 
 ### D1 local databases
 
@@ -393,7 +439,7 @@ Use `--suggest` to find candidates. For a CI gate, compare a named index without
 
 `--format human` prints what a decision needs:
 
-- a Summary: whether the result rows match, how many rows each copy read and wrote, the verdict with its reasons, whether the plan changed, the median times with the direction from the paired rounds (or the median ratio when the rounds cannot judge it), the size of the change when the medians agree (`230x faster`), the size increase, and a note when the build is a debug build;
+- a Summary: whether the result rows match, how many rows each copy read and wrote, the verdict with its reasons, whether the plan changed, with `--seed-data` the `seed data` and `seed` lines, the median times with the direction from the paired rounds (or the median ratio when the rounds cannot judge it), the size of the change when the medians agree (`230x faster`), the size increase, and a note when the build is a debug build;
 - a side-by-side table of baseline and variant: rows read, rows written, result rows, full-scan steps, VM steps, sort operations and autoindex rows when they are not zero, the p25 and p75 times when timed, and the database file bytes;
 - the query plan for both copies, with `kind`, `covering`, and `automatic` as hints read from SQLite's wording;
 - a `Warnings` section with `warning: <code>: <message>` lines when an advisory warning applies;
@@ -402,15 +448,15 @@ Use `--suggest` to find candidates. For a CI gate, compare a named index without
 
 When the rows differ, cannot be compared, or come in another order, the human output adds an explanation and the one-sided counts. Example rows appear only with `--show-rows`; when they are hidden, the human output says to rerun with that flag. `--show-binds` adds the bind values.
 
-Input paths, the SQLite and Zig versions, the build mode, the OS and architecture, the work directory, and the timing conditions appear only in `kv` and `json`. The timing evidence (`effect`, `median_difference_ns`, `noise_band`, `confidence_interval`) also appears only in `kv` and `json`. With `--d1`, `human` also shows the D1 block described above.
+Input paths other than `--seed-data`, the SQLite and Zig versions, the build mode, the OS and architecture, the work directory, and the timing conditions appear only in `kv` and `json`. The timing evidence (`effect`, `median_difference_ns`, `noise_band`, `confidence_interval`) also appears only in `kv` and `json`. With `--d1`, `human` also shows the D1 block described above.
 
 ### kv
 
-`--format kv` prints every fact as one `key: value` line, for scripts and logs. It includes the inputs, the SQLite and Zig versions, the build mode, the OS and architecture, the work directory, and the timing conditions, which the human output leaves out. With `--d1` it adds `d1-binding`, `d1-config`, `d1-database-id`, `d1-local-database`, `d1-sqlite-version`, `d1-sqlite-version-note`, and `d1-caution`. `baseline-only-row` and `variant-only-row` appear only with `--show-rows`.
+`--format kv` prints every fact as one `key: value` line, for scripts and logs. It includes the inputs, the SQLite and Zig versions, the build mode, the OS and architecture, the work directory, and the timing conditions, which the human output leaves out. With `--d1` it adds `d1-binding`, `d1-config`, `d1-database-id`, `d1-local-database`, `d1-sqlite-version`, `d1-sqlite-version-note`, and `d1-caution`. With `--seed-data` it adds `seed-data`, `seed`, `seed-rows`, `seed-tables`, and one `seed-table` line per table. `baseline-only-row` and `variant-only-row` appear only with `--show-rows`.
 
 ### json
 
-`--format json` prints one JSON object with a trailing newline after a comparison finishes. With `--batch` it prints the separate `batch_schema_version` 1 object described above (see [Batch comparisons](#batch-comparisons) and [docs/json.md](docs/json.md)). The fields, including names reserved for the next core change, are specified in [docs/json.md](docs/json.md). When an input is rejected, the time limit is reached, or the run is interrupted, stdout stays empty. With `--format json`, stderr is then one JSON object (`schema_version`, `exit_code`, and `error` with `code`, `message`, and `hint`). `human` and `kv` keep the text `error:` line.
+`--format json` prints one JSON object with a trailing newline after a comparison finishes. With `--batch` it prints the separate `batch_schema_version` 1 object described above (see [Batch comparisons](#batch-comparisons) and [docs/json.md](docs/json.md)). With `--seed-data`, both objects add a top-level `seed_data` object. The fields, including names reserved for the next core change, are specified in [docs/json.md](docs/json.md). When an input is rejected, the time limit is reached, or the run is interrupted, stdout stays empty. With `--format json`, stderr is then one JSON object (`schema_version`, `exit_code`, and `error` with `code`, `message`, and `hint`). `human` and `kv` keep the text `error:` line.
 
 The verdict is in the top-level `verdict` field:
 

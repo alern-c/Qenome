@@ -204,6 +204,29 @@
       "required": ["qenome_version", "sqlite_version", "sqlite_source_id", "zig_version", "build_mode", "os", "arch", "work_dir_parent"]
     },
     "d1": { "type": "object", "additionalProperties": true },
+    "seed_data": {
+      "description": "Present only with --seed-data.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "seed", "rows", "tables"],
+      "properties": {
+        "path": { "type": "string" },
+        "seed": { "type": "integer", "minimum": 0 },
+        "rows": { "type": "integer", "minimum": 0 },
+        "tables": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["table", "rows"],
+            "properties": {
+              "table": { "type": "string" },
+              "rows": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      }
+    },
     "measurement": { "type": "object", "additionalProperties": true },
     "binds": { "type": "array" },
     "warnings": {

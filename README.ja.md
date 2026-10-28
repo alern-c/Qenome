@@ -42,6 +42,7 @@
 - [なぜ他の方法ではないのか](#なぜ他の方法ではないのか)
 - [クイックスタート](#クイックスタート)
 - [使い方](#使い方)
+- [サンドボックス用のデータを作る](#サンドボックス用のデータを作る)
 - [まとめて比べる（--batch）](#まとめて比べる--batch)
 - [出力形式](#出力形式)
 - [守るルール](#守るルール)
@@ -167,7 +168,7 @@ D1 のスキーマを変えるエージェントは、`CREATE INDEX` を残す�
 
 ## クイックスタート
 
-この手順では、テスト用データベースを作り、Qenome をビルドし、5つの例を実行します。コマンドはリポジトリのルートで、ブロックごとに Linux か macOS で実行してください。必要なものは Zig 0.17.0（「ソースからビルド」を参照）と `sqlite3` コマンドラインツールです。`sqlite3` は SQL ファイルを新しいデータベースへ読み込みます。
+この手順では、テスト用データベースを作り、Qenome をビルドし、6つの例を実行します。コマンドはリポジトリのルートで、ブロックごとに Linux か macOS で実行してください。必要なものは Zig 0.17.0（「ソースからビルド」を参照）と `sqlite3` コマンドラインツールです。`sqlite3` は SQL ファイルを新しいデータベースへ読み込みます。
 
 `testdata/schema.sql` と `testdata/seed.sql` からテスト用データベースを作ります。`verify.sql` は17項目それぞれについて `ok` を1行出力し、期待値と違う値があればその時点で失敗します。
 
@@ -185,12 +186,18 @@ Qenome をビルドします。
 zig build
 ```
 
-5つの例は `zig-out/bin/qenome` を実行します。各コマンドの末尾には、その例が返すべき結果（Summary の `result` と `verdict`、batch では `recommended`、終了コード）を書いてあります。`python3 scripts/check_all.py` と CI の quality ワークフローは、これらの行を書いてあるとおりに実行するので、README とプログラムのずれは見つかります。`--runs 40` は、負荷のあるマシンでも中央値を安定させるための指定です（既定は `10`）。
+6つの例は `zig-out/bin/qenome` を実行します。各コマンドの末尾には、その例が返すべき結果（Summary の `result` と `verdict`、batch では `recommended`、終了コード）を書いてあります。`python3 scripts/check_all.py` と CI の quality ワークフローは、これらの行を書いてあるとおりに実行するので、README とプログラムのずれは見つかります。`--runs 40` は、負荷のあるマシンでも中央値を安定させるための指定です（既定は `10`）。
 
 全走査をなくすインデックス: 候補のインデックスで `SCAN events` が `SEARCH events USING INDEX ix_events_customer_id (customer_id=?)` に変わり、読んだ行数が 200,000 から 101 に減り、両方のコピーが同じ100行を返します。
 
 ```sh
 ./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/improved.sql testdata/cases/improved.index.sql --bind 1:int:1234 --runs 40  # expect: result=match verdict=improved exit=0
+```
+
+自分で選んだデータでインデックスを試す: `--seed-data testdata/seed.json` は、元のデータベースを変えずに、サンドボックスのコピーの `events` を 50,000 行の決まったデータで置き換えます。同じクエリはその中の `1234` の行を見つけ、判定は `improved` のままです。「サンドボックス用のデータを作る」を参照してください。
+
+```sh
+./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/improved.sql testdata/cases/improved.index.sql --bind 1:int:1234 --seed-data testdata/seed.json --runs 0  # expect: result=match verdict=improved exit=0
 ```
 
 効果のないインデックス: SELECT が列を `lower()` で包むため、SQLite は `status` のインデックスを使えません。計画・読んだ行数・書いた行数は変わりません。
@@ -226,6 +233,7 @@ qenome app.db select.sql index.sql
 qenome app.db select.sql index.sql --bind 1:int:1234
 qenome --db app.db --select select.sql --index-sql index.sql --format kv
 qenome app.db select.sql index.sql --format json
+qenome app.db select.sql index.sql --seed-data seed.json
 qenome --d1 DB select.sql index.sql
 qenome app.db --batch batch.json
 qenome app.db --batch batch.json --migration 0002_replace_index.sql
@@ -244,6 +252,7 @@ qenome app.db --batch batch.json --suggest
 - `--index-sql <FILE>`: 候補の CREATE INDEX を1本書いたファイル（必須、1回だけ）
 - `--batch <FILE>`: JSON のマニフェストにある全 SELECT を、全候補 CREATE INDEX と1回の実行で比べる。「まとめて比べる（--batch）」を参照。`--select` / `--index-sql` / `--bind` / 位置指定の SELECT・INDEX、`--runs`、`--format kv` とは併用できない
 - `--migration <FILE>`: `--batch` の全クエリを実行する前に、この SQL ファイルを variant にだけ適用する。`--batch` と、`candidates` を持たないマニフェストが必要。`--select` / `--index-sql` / `--bind` / `--runs` / `--suggest` / `--format kv` とは併用できない。`CREATE INDEX`・`CREATE UNIQUE INDEX`・`DROP INDEX` だけを受け付ける。「まとめて比べる（--batch）」を参照
+- `--seed-data <FILE>`: 比較の前に、この JSON の指定に従ってサンドボックスのコピーのテーブルを決まったダミーデータで置き換える。元のデータベースは変更しない。`--batch`・`--suggest`・`--migration` を含むすべてのモードで使える。「サンドボックス用のデータを作る」を参照
 - `--suggest`: インデックスを自分で用意する代わりに、SQLite の expert に候補のインデックスを提案させ、その提案を比べる。`--batch` のときはマニフェストの `candidates` を省略できる。`--runs`、`--format kv`、インデックスのファイル（`--index-sql` または3番目の位置指定パス）とは併用できない。「候補のインデックスを提案させる（--suggest）」を参照
 - `--bind <N>:<TYPE>[:<VALUE>]`: SELECT のパラメータ N に渡す型付きの値。繰り返し指定できる。N は SQLite のパラメータ番号で、名前付きパラメータは最初に現れたときの番号を共有し、`?NNN` は NNN を使う。TYPE は int / real / text / null（null は値を取らない）。1 からパラメータ数までの各番号をちょうど1回ずつ指定する必要があり、パラメータの無い SELECT に `--bind` は付けられない。値は引数の残り全体なので、text には `:` を含められる
 - `--runs <N>`: 結果が一致したあとの計測ラウンド数。各ラウンドは各コピーで SELECT を1回計測する。既定は 10、0 で計測しないが読んだ行数と判定は残る、最大 1000。1秒を超える計測は進捗を stderr に出す
@@ -256,7 +265,7 @@ qenome app.db --batch batch.json --suggest
 
 値を取るオプションは `--db=app.db` のように `=` でも書けます。
 
-Qenome はデータベースを読み取り専用で開き、SQLite の backup API を使って、Linux と macOS では `$TMPDIR`（既定は `/tmp`）、Windows では `%TMP%`、`%TEMP%`、`%USERPROFILE%` のうち設定されている最初の場所の下にある非公開ディレクトリへコピーします。このコピーが baseline で、2つ目のコピーが variant になり、候補のインデックスは variant にだけ作ります。SELECT は両方のコピーで実行し、結果の行を多重集合として比較します（同じ行が同じ回数だけ現れること）。行の順序は参考情報として示し、一致判定には含めません。
+Qenome はデータベースを読み取り専用で開き、SQLite の backup API を使って、Linux と macOS では `$TMPDIR`（既定は `/tmp`）、Windows では `%TMP%`、`%TEMP%`、`%USERPROFILE%` のうち設定されている最初の場所の下にある非公開ディレクトリへコピーします。このコピーが baseline で、2つ目のコピーが variant になり、候補のインデックスは variant にだけ作ります。`--seed-data` を付けると、Qenome は variant を作る前に baseline へ spec の行を入れるので、両方のコピーが同じダミーデータを持ちます。SELECT は両方のコピーで実行し、結果の行を多重集合として比較します（同じ行が同じ回数だけ現れること）。行の順序は参考情報として示し、一致判定には含めません。
 
 読んだ行数と書いた行数は、この最初の1回の実行から取るので追加のコストはなく、`--runs 0` でも残ります。結果が一致し、`--runs` が 0 でないとき、SELECT をもう一度両方のコピーで参考値として計測します。各コピーには、行の比較に使った計測しないウォームアップが1回あります。計測ラウンドは baseline→variant と variant→baseline を交互に繰り返します（ABBA）。1ラウンドは reset 文から `SQLITE_DONE` までの `sqlite3_step` を、割り込みの確認を含めて計測します。列の読み取り、prepare、bind、計画の取得は計測しません。各コピーは書き込み直後の接続とページキャッシュを再利用するため、キャッシュはウォームです。非公開ディレクトリは、結果にかかわらず終了前に削除します。
 
@@ -265,6 +274,43 @@ Linux と macOS では、このディレクトリを所有者だけがアクセ�
 判定は読んだ行数から決まり、終了コードを変えません。
 
 読んだ行数と書いた行数は、ローカル D1 と同じ数え方（workerd のパッチ）です。Qenome は同梱 SQLite を `workerd` の行数カウントのパッチ付きでビルドします。この数値は、まだ本番 D1 と照合していません。どちらのカウンタも 32 ビットで、それぞれの回数が 1回の実行で 4,294,967,295 を超えると一周して小さい値に戻るため、その場合は巻き戻った値を報告し、判定もその値で比較します。パッチの出どころは `NOTICE`、当て直す手順は `vendor/sqlite3/PROVENANCE.txt` に記録しています。
+
+### サンドボックス用のデータを作る
+
+`--seed-data spec.json` は、比較の前にサンドボックスのコピーへ決まったダミーデータを入れます。ローカルのデータベースが空でも少量でも、インデックスが何行読むかを確かめられます。元のデータベースは読み取り専用で開くだけで、変更しません。ダミーデータは baseline のコピーに入り、そのコピーが variant にもなります。
+
+spec は JSON オブジェクト1個です。`tables` はテーブル名から `rows` と任意の `columns` への対応です。書かない列は SQLite の既定値か rowid になりますが、既定値はリテラルに限ります。式の既定値を持つ列は、生成する行を再現できるよう spec に書いてください。`seed` は任意で、既定は `0` です。
+
+```json
+{
+  "seed": 7,
+  "tables": {
+    "events": {
+      "rows": 50000,
+      "columns": {
+        "id": { "kind": "sequence" },
+        "customer_id": { "kind": "sequence" },
+        "status": { "kind": "ratio", "value": "ok", "ratio": 0.5, "otherwise": "failed" },
+        "note": { "kind": "fixed", "value": null }
+      }
+    }
+  }
+}
+```
+
+各列は `kind` を1つ持ちます。
+
+| `kind` | キー | 意味 |
+| `fixed` | `value` | すべての行で同じ値 |
+| `uniform` | `values` | 値のどれかを同じ確率で選ぶ |
+| `ratio` | `value`、`ratio`、任意の `otherwise` | 指定した割合（`0`〜`1`）の行で `value`、残りで `otherwise`（既定は `null`） |
+| `sequence` | 任意の `from`（既定 `1`）と `step`（既定 `1`） | 行ごとに `step` ずつ増える整数 |
+
+JSON の文字列は TEXT、整数は INTEGER、小数を含む数は REAL、`true` / `false` は 1 / 0、`null` は NULL になります。spec に書いたテーブルは先に空にしてから入れるので、行数は `rows` と正確に一致します。書かないテーブルはそのままです。spec に書いたテーブルにトリガーがあると、ほかのテーブルを変えたり seed が制御できない値を生成したりするため、Qenome はそのテーブルを拒否します。大文字小文字だけが違うテーブル名・列名も拒否します。上限は 100 テーブル、1テーブル 10,000,000 行、合計 20,000,000 行です。`--seed-data` は `--batch`・`--suggest`・`--migration` を含むすべてのモードで使えます。
+
+同じ spec と同じ `seed` なら、実行のたびに同じ行になります。レポートに残した比較を再現できます。値は1つのトランザクションで入れ、その中で spec に書いた各テーブルに `ANALYZE` を実行します。そのためプランナは生成した行の統計を見られ、`no_analyze_stats` はこれらのテーブルには当てはまりません。PRIMARY KEY・UNIQUE・NOT NULL・CHECK などの制約に違反すると、SQLite のメッセージを添えて終了コード `1` で止まります。テーブルが `ON CONFLICT IGNORE` や `ON CONFLICT REPLACE` を宣言していても同じです。外部キーはサンドボックスのコピーでは検査しません（SQLite の既定）ので、テーブルはどの順に書いてもかまいません。ダミーデータの生成は `--timeout-ms` の対象外です。Ctrl+C で止めるとコピーも削除します。ダミーデータは非公開のコピーにだけ入り、終了前に削除します。
+
+human の Summary には `seed data` と `seed` の行、kv には `seed-data`・`seed`・`seed-rows`・`seed-tables` とテーブルごとの `seed-table`、json には `path`・`seed`・`rows`・`tables` を持つトップレベルの `seed_data` が加わります。
 
 ### D1 のローカルデータベース
 
@@ -393,7 +439,7 @@ Qenome は baseline のコピーに2つ目の読み取り専用接続を開き�
 
 human は判断に必要なものを出します。
 
-- Summary: 結果の行が一致したか、コピーごとの読んだ行数と書いた行数、判定とその理由、計画が変わったか、ペアのラウンドから決めた時間の向き（判定できないときは向きを付けない中央値の比）、中央値が同じ向きのときの変化の大きさ（`230x faster`）、容量の増分、デバッグビルドのときはその注意
+- Summary: 結果の行が一致したか、コピーごとの読んだ行数と書いた行数、判定とその理由、計画が変わったか、`--seed-data` のときは `seed data` と `seed` の行、ペアのラウンドから決めた時間の向き（判定できないときは向きを付けない中央値の比）、中央値が同じ向きのときの変化の大きさ（`230x faster`）、容量の増分、デバッグビルドのときはその注意
 - baseline と variant の左右比較表: 読んだ行数、書いた行数、結果の行数、フルスキャン行数、VMステップ数、0 でないときはソート回数と autoindex 行数、計測したときは p25 / p75 の時間、データベースファイルのバイト数
 - 両方のコピーの実行計画。`kind` / `covering` / `automatic` は SQLite の文言から読んだヒント
 - 助言の警告があるときは `Warnings` の節に `warning: <code>: <message>` の行
@@ -402,15 +448,15 @@ human は判断に必要なものを出します。
 
 行が一致しない・比較できない・行の順序が変わったときは、説明と片方だけの件数を足します。例の行は `--show-rows` のときだけ出し、隠しているときはそのフラグで再実行するよう案内します。`--show-binds` を付けるとバインド値も出します。
 
-入力パス、SQLite と Zig の版、ビルド種別、OS とアーキテクチャ、作業ディレクトリ、計時条件は kv と json にだけ出ます。時間の根拠（`effect`、`median_difference_ns`、`noise_band`、`confidence_interval`）も kv と json にだけ出ます。`--d1` のときは、human も上記の D1 ブロックを出します。
+入力パスのうち `--seed-data` 以外、SQLite と Zig の版、ビルド種別、OS とアーキテクチャ、作業ディレクトリ、計時条件は kv と json にだけ出ます。時間の根拠（`effect`、`median_difference_ns`、`noise_band`、`confidence_interval`）も kv と json にだけ出ます。`--d1` のときは、human も上記の D1 ブロックを出します。
 
 ### kv
 
-kv は全項目を1行1項目の `key: value` で出し、スクリプトとログに向きます。human が出さない入力、SQLite と Zig の版、ビルド種別、OS とアーキテクチャ、作業ディレクトリ、計時条件も含みます。`--d1` のときは `d1-binding` / `d1-config` / `d1-database-id` / `d1-local-database` / `d1-sqlite-version` / `d1-sqlite-version-note` / `d1-caution` を加えます。`baseline-only-row` / `variant-only-row` は `--show-rows` のときだけ出ます。
+kv は全項目を1行1項目の `key: value` で出し、スクリプトとログに向きます。human が出さない入力、SQLite と Zig の版、ビルド種別、OS とアーキテクチャ、作業ディレクトリ、計時条件も含みます。`--d1` のときは `d1-binding` / `d1-config` / `d1-database-id` / `d1-local-database` / `d1-sqlite-version` / `d1-sqlite-version-note` / `d1-caution` を加えます。`--seed-data` のときは `seed-data` / `seed` / `seed-rows` / `seed-tables` とテーブルごとの `seed-table` を加えます。`baseline-only-row` / `variant-only-row` は `--show-rows` のときだけ出ます。
 
 ### json
 
-json は、比較が終わったときに stdout へ JSON オブジェクトを1個だけ（末尾改行付きで）出します。`--batch` のときは、上記で説明した別の `batch_schema_version` 1 のオブジェクトを出します（「まとめて比べる（--batch）」と [docs/json.md](docs/json.md) を参照）。フィールド（次のコア変更で予約している名前を含む）は [docs/json.md](docs/json.md) が仕様です。入力拒否・時間上限・中断のときは stdout を空のままにします。`--format json` のとき、stderr は JSON オブジェクト1個です（`schema_version`、`exit_code`、`error` の `code` / `message` / `hint`）。`human` と `kv` はテキストの `error:` 行のままです。
+json は、比較が終わったときに stdout へ JSON オブジェクトを1個だけ（末尾改行付きで）出します。`--batch` のときは、上記で説明した別の `batch_schema_version` 1 のオブジェクトを出します（「まとめて比べる（--batch）」と [docs/json.md](docs/json.md) を参照）。`--seed-data` のときは、どちらのオブジェクトにもトップレベルの `seed_data` が加わります。フィールド（次のコア変更で予約している名前を含む）は [docs/json.md](docs/json.md) が仕様です。入力拒否・時間上限・中断のときは stdout を空のままにします。`--format json` のとき、stderr は JSON オブジェクト1個です（`schema_version`、`exit_code`、`error` の `code` / `message` / `hint`）。`human` と `kv` はテキストの `error:` 行のままです。
 
 判定はトップレベルの `verdict` で読めます。
 

@@ -116,6 +116,7 @@ pub const LIBSQL_STMTSTATUS_ROWS_WRITTEN: c_int = LIBSQL_STMTSTATUS_BASE + 2;
 
 pub const Destructor = fn (?*anyopaque) callconv(.c) void;
 pub const DestructorPtr = ?*align(1) const Destructor;
+pub const SQLITE_STATIC: DestructorPtr = null;
 pub const SQLITE_TRANSIENT: DestructorPtr = @ptrFromInt(@as(usize, @bitCast(@as(isize, -1))));
 
 pub extern fn sqlite3_bind_parameter_count(stmt: ?*sqlite3_stmt) c_int;

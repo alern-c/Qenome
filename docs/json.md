@@ -28,6 +28,7 @@ On failure, read the line that starts with `{`. `human` and `kv` do not print th
 | `exit_code` | number | `0`, `1`, `3`, `4`, `6`, or `124`. The process can still exit `5` after this object when cleanup fails and the code is `0` |
 | `recommended` | string or `null` | The candidate label: a path from the manifest, the `--migration` path, or `suggested:N` with `--suggest`. `null` when no candidate qualifies |
 | `migration` | object | Present only with `--migration`: `path` and `statements`. See [`--migration`](#--migration) |
+| `seed_data` | object | Present only with `--seed-data`: `path`, `seed`, `rows`, and `tables`. See [`--seed-data`](#--seed-data) |
 | `summary` | array | One object per candidate, ordered as described below. 1 to 100 entries |
 | `results` | array | One object per compared query and candidate, ordered by candidate (manifest entries first, then suggestions) and then by query (manifest order). An `index_rejected` or `index_timeout` candidate has no entries here |
 | `warnings` | array | `{ "code", "message" }` entries. Empty without `--suggest` and with `--migration`. See [`--suggest`](#--suggest) for the codes |
@@ -65,6 +66,34 @@ A candidate qualifies for `recommended` when its status is `compared` and `misma
 - A migration measures `size_increase` and the `size_bytes` of each embedded comparison as the bytes in use, `(page_count - freelist_count) * page_size`, not as the file size. `DROP INDEX` moves its pages to SQLite's freelist without shrinking the file, so the file delta stays `0`; the bytes in use report the freed space as a negative number. The file shrinks only after `VACUUM`. A batch without `--migration` keeps the file size difference.
 - When the result rows match but at least one query has `needs_check` (the migration made it read or write more rows), the batch `exit_code` is `6`. A heavier result (`3` mismatch, `1` rejected change, `124` timeout, `4` incomparable) takes precedence. `no_effect` alone keeps `0`.
 - `warnings` is empty with `--migration`: the `no_analyze_stats` and `data_too_small` checks need one candidate table, and a migration can touch several.
+
+### `--seed-data`
+
+`--seed-data <FILE>` fills the sandbox baseline copy with deterministic dummy rows before the variant is copied, so the original database is never changed. It works with every mode, including `--batch`, `--suggest`, and `--migration`. The file is at most 1 MiB and is one JSON object:
+
+```json
+{
+  "seed": 7,
+  "tables": {
+    "events": {
+      "rows": 50000,
+      "columns": {
+        "id": { "kind": "sequence" },
+        "status": { "kind": "ratio", "value": "ok", "ratio": 0.5, "otherwise": "failed" },
+        "note": { "kind": "fixed", "value": null }
+      }
+    }
+  }
+}
+```
+
+- `seed` is optional and defaults to `0`. The same spec and seed give the same rows.
+- `tables` maps a table name to `rows` and optional `columns`. A column left out takes its SQLite default or rowid; a default must be a literal, and a column with an expression default must be listed in the spec. A listed table with a trigger, or table or column names that differ only by case, is rejected.
+- Each column has one `kind`: `fixed` (`value`), `uniform` (`values`), `ratio` (`value`, `ratio`, optional `otherwise`), or `sequence` (optional `from`, `step`).
+- The listed tables are emptied first, so their row count is exactly `rows`; unlisted tables are unchanged. Limits are 100 tables, 10,000,000 rows per table, and 20,000,000 rows in total.
+- A PRIMARY KEY, UNIQUE, NOT NULL, or CHECK violation stops the run with exit `1`, even when the table declares `ON CONFLICT IGNORE` or `ON CONFLICT REPLACE`. Foreign keys are not checked on the sandbox copy, which is the SQLite default.
+- Qenome runs `ANALYZE` on each listed table in the same transaction, so the plan sees statistics for the generated rows.
+- The human Summary adds `seed data` and `seed`; `kv` adds `seed-data`, `seed`, `seed-rows`, `seed-tables`, and one `seed-table` per table; `json` adds a top-level `seed_data` object. A batch report has `seed_data` at the top level, and the embedded comparison objects under `results` do not repeat it.
 
 ### `--suggest`
 
@@ -154,6 +183,7 @@ The object is indented with two spaces and ends with a newline. A missing key th
 | `inputs` | object | `database`, `select`, `index_sql` paths |
 | `environment` | object | `qenome_version`, `sqlite_version`, `sqlite_source_id`, `zig_version`, `build_mode`, `os`, `arch`, `work_dir_parent` |
 | `d1` | object | Present only with `--d1`: `binding`, `config`, `database_id`, `local_database`, `sqlite_version`, `sqlite_version_note`, `caution` |
+| `seed_data` | object | Present only with `--seed-data`: `path`, `seed`, `rows`, and `tables` (each `{table, rows}`) |
 | `measurement` | object | `runs_per_copy`, `warmup`, `order`, `scope`, `cache` |
 | `binds` | array | `number`, `type`. Text also has `text_bytes`. `value` only with `--show-binds` |
 | `warnings` | array | Emitted. `{ "code": string, "message": string }`. Expected codes: `no_analyze_stats` (no ANALYZE statistics), `data_too_small` (too little data to trust the counts) |
@@ -272,6 +302,9 @@ The comparison object's `exit_code` is `0`, `3`, or `4`. The process can still e
 | `migration_empty` | 1 | Write at least one CREATE INDEX or DROP INDEX statement |
 | `migration_statement_rejected` | 1 | Use only CREATE INDEX, CREATE UNIQUE INDEX, and DROP INDEX |
 | `migration_failed` | 1 | Fix the named statement |
+| `seed_data_unreadable` | 1 | Check the `--seed-data` path and permissions |
+| `seed_data_invalid` | 1 | Fix the JSON shape, a missing table or column, or a value that does not fit a limit |
+| `seed_data_apply_failed` | 1 | Make every value fit the column and its constraints; the original database was not changed |
 | `select_timeout` | 124 | Raise `--timeout-ms` or narrow the SELECT |
 | `out_of_memory` | 1 | Free memory and rerun |
 | `report_failed` | 1 | Rerun. The comparison finished but the report was not written |

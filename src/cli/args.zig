@@ -47,6 +47,7 @@ pub const Args = struct {
     config: ?[:0]const u8 = null,
     batch: ?[:0]const u8 = null,
     migration: ?[:0]const u8 = null,
+    seed_data: ?[:0]const u8 = null,
     select: ?[:0]const u8 = null,
     index_sql: ?[:0]const u8 = null,
     binds: []const db.BindArg = &.{},
@@ -159,6 +160,9 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
         } else if (std.mem.eql(u8, name, "--migration")) {
             if (args.migration != null) return error.DuplicateOption;
             args.migration = try optionValue(argv, &index, inline_value);
+        } else if (std.mem.eql(u8, name, "--seed-data")) {
+            if (args.seed_data != null) return error.DuplicateOption;
+            args.seed_data = try optionValue(argv, &index, inline_value);
         } else if (std.mem.eql(u8, name, "--select")) {
             if (args.select != null) return error.DuplicateOption;
             args.select = try optionValue(argv, &index, inline_value);
@@ -343,6 +347,7 @@ const long_options = [_][]const u8{
     "--config",
     "--batch",
     "--migration",
+    "--seed-data",
     "--select",
     "--index-sql",
     "--bind",
@@ -504,6 +509,10 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\                       the --batch queries run; the manifest must omit
         \\                       candidates; only CREATE INDEX and DROP INDEX
         \\                       are allowed
+        \\  --seed-data <FILE>   replace the listed tables in the sandbox copy
+        \\                       with deterministic dummy rows before comparing;
+        \\                       the original database is not changed; see the
+        \\                       README for the JSON spec
         \\  --suggest            ask SQLite for candidate indexes instead of
         \\                       naming them, and compare the suggestions; with
         \\                       --batch the manifest may omit candidates
@@ -553,6 +562,7 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\  qenome app.db --batch batch.json
         \\  qenome --db app.db --batch batch.json --format json
         \\  qenome app.db --batch batch.json --migration 0002.sql
+        \\  qenome app.db select.sql index.sql --seed-data seed.json
         \\  qenome app.db select.sql --suggest
         \\  qenome app.db --batch batch.json --suggest
         \\
@@ -592,6 +602,14 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\migration and every applied statement. If the result rows match but
         \\a query reads or writes more rows after the migration, the run exits
         \\with status 6 so that a CI gate can stop.
+        \\
+        \\--seed-data reads a JSON spec, replaces the listed tables in the
+        \\baseline copy, and copies that baseline to the variant. The tables
+        \\listed in the spec are emptied first, so their row count is exactly
+        \\the number in the spec. Each column takes kind fixed, uniform, ratio,
+        \\or sequence. The same spec and seed give the same rows, and the
+        \\original database is never changed. --seed-data works with every
+        \\mode, including --batch, --suggest, and --migration.
         \\
         \\--suggest asks SQLite's expert for candidate indexes for the SELECT
         \\files and compares them with the manifest candidates (with --batch) or
@@ -1145,6 +1163,7 @@ test "every known long option is accepted by the parser" {
         &.{ "Qenome", "--d1", "DB", "--config", "wrangler.toml" },
         &.{ "Qenome", "--batch", "batch.json" },
         &.{ "Qenome", "--batch", "batch.json", "--migration", "m.sql" },
+        &.{ "Qenome", "--seed-data", "seed.json" },
         &.{ "Qenome", "--select", "s" },
         &.{ "Qenome", "--index-sql", "i" },
         &.{ "Qenome", "--bind", "1:null" },

@@ -13,6 +13,7 @@ const cli_timing = @import("cli/timing.zig");
 const cli_report = @import("cli/report.zig");
 const cli_pair = @import("cli/pair.zig");
 const cli_batch = @import("cli/batch.zig");
+const cli_seed = @import("cli/seed.zig");
 
 pub const max_sql_bytes = cli_args.max_sql_bytes;
 pub const SqlFileError = cli_args.SqlFileError;
@@ -152,6 +153,16 @@ fn runCaptured(
         }
     } else args.db.?;
 
+    var seed_spec: ?cli_seed.Spec = null;
+    var seed_report: ?cli_report.Seed = null;
+    if (args.seed_data) |seed_path| {
+        seed_spec = cli_seed.load(io, arena, seed_path, stderr) orelse return .rejected;
+        seed_report = buildSeedReport(arena, seed_spec.?) catch {
+            stderr.writeAll("error: out of memory\n") catch {};
+            return .rejected;
+        };
+    }
+
     if (args.batch) |batch_path| {
         var cleanup_failed = false;
         const code = blk: {
@@ -171,7 +182,7 @@ fn runCaptured(
                 break :blk ExitCode.rejected;
             };
             defer work.remove(io, stderr, &cleanup_failed);
-            if (prepareCopies(io, database_path, &work, stderr, &cleanup_failed)) |failure| break :blk failure;
+            if (prepareCopies(io, arena, database_path, &work, seed_spec, stderr, &cleanup_failed)) |failure| break :blk failure;
             break :blk cli_batch.run(io, arena, allocator, .{
                 .database_path = database_path,
                 .baseline_path = work.baseline_path,
@@ -183,6 +194,7 @@ fn runCaptured(
                 .show_rows = args.show_rows,
                 .format = args.format,
                 .suggest = args.suggest,
+                .seed = seed_report,
                 .work_parent = parent_path,
             }, loaded, stdout, stderr, &cleanup_failed, &work);
         };
@@ -206,7 +218,7 @@ fn runCaptured(
         var suggest_cleanup_failed = false;
         const suggest_code = blk: {
             defer suggest_work.remove(io, stderr, &suggest_cleanup_failed);
-            if (prepareCopies(io, database_path, &suggest_work, stderr, &suggest_cleanup_failed)) |failure| break :blk failure;
+            if (prepareCopies(io, arena, database_path, &suggest_work, seed_spec, stderr, &suggest_cleanup_failed)) |failure| break :blk failure;
             var queries = [_]cli_batch.Query{.{
                 .label = suggest_select_path,
                 .path = suggest_select_path,
@@ -224,6 +236,7 @@ fn runCaptured(
                 .format = args.format,
                 .suggest = true,
                 .manifest = false,
+                .seed = seed_report,
                 .work_parent = suggest_parent_path,
             }, .{ .queries = &queries, .candidates = &.{} }, stdout, stderr, &suggest_cleanup_failed, &suggest_work);
         };
@@ -254,7 +267,7 @@ fn runCaptured(
     const code = blk: {
         defer work.remove(io, stderr, &cleanup_failed);
 
-        if (prepareCopies(io, database_path, &work, stderr, &cleanup_failed)) |failure| break :blk failure;
+        if (prepareCopies(io, arena, database_path, &work, seed_spec, stderr, &cleanup_failed)) |failure| break :blk failure;
 
         const inputs: Inputs = .{
             .database_path = database_path,
@@ -272,6 +285,7 @@ fn runCaptured(
             .show_binds = args.show_binds,
             .show_rows = args.show_rows,
             .format = args.format,
+            .seed = seed_report,
         };
         break :blk runChecked(io, arena, allocator, inputs, stdout, stderr, &cleanup_failed, &work);
     };
@@ -294,8 +308,19 @@ const Inputs = struct {
     show_binds: bool = false,
     show_rows: bool = false,
     format: cli_args.Format = .human,
+    seed: ?cli_report.Seed = null,
     progress_interval_ns: u64 = std.time.ns_per_s,
 };
+
+fn buildSeedReport(arena: std.mem.Allocator, spec: cli_seed.Spec) !cli_report.Seed {
+    const tables = try arena.alloc(cli_report.SeedTable, spec.tables.len);
+    var total: u64 = 0;
+    for (spec.tables, 0..) |table, index| {
+        tables[index] = .{ .table = table.name, .rows = table.rows };
+        total += table.rows;
+    }
+    return .{ .path = spec.path, .seed = spec.seed, .rows = total, .tables = tables };
+}
 
 fn runChecked(
     io: Io,
@@ -344,6 +369,7 @@ fn runChecked(
         .show_rows = inputs.show_rows,
         .exit_code = @backingInt(code),
         .d1 = inputs.d1,
+        .seed = inputs.seed,
     };
     writeReport(stdout, arena, inputs.format, header, computed.before, computed.after, computed.outcome, computed.report) catch |err| {
         switch (err) {

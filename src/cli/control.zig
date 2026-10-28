@@ -253,6 +253,15 @@ pub fn classifyError(message: []const u8) ErrorClass {
     if (std.mem.indexOf(u8, message, "out of memory") != null) {
         return .{ .code = "out_of_memory", .hint = "Free memory and rerun the same command." };
     }
+    if (std.mem.startsWith(u8, message, "cannot read the seed data spec")) {
+        return .{ .code = "seed_data_unreadable", .hint = "Check the --seed-data path and permissions, then rerun." };
+    }
+    if (std.mem.indexOf(u8, message, "the seed data spec") != null) {
+        return .{ .code = "seed_data_invalid", .hint = "Fix the seed spec: tables and columns are objects keyed by name, rows is a non-negative integer, and each column kind is fixed, uniform, ratio, or sequence. See the README." };
+    }
+    if (std.mem.startsWith(u8, message, "the seed data could not")) {
+        return .{ .code = "seed_data_apply_failed", .hint = "Make every value fit the column and its constraints, then rerun. The original database was not changed." };
+    }
     if (std.mem.indexOf(u8, message, "cannot read --select") != null) {
         return .{ .code = "select_unreadable", .hint = "--select takes a path to a file that holds one SELECT, not the SQL text." };
     }
