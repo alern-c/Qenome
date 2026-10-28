@@ -581,7 +581,8 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\  The default (--format human) aims at a decision: a summary (whether
         \\  the result rows match, the rows read and written on each copy, the
         \\  verdict, whether the plan changed, the median times with the
-        \\  direction of the change, the rounds, and the size increase), the
+        \\  direction from the paired rounds when they allow it, the size of
+        \\  the change when the medians agree, and the size increase), the
         \\  counters and times of both copies side by side, the query plans,
         \\  and a Warnings section when an advisory warning applies. A
         \\  difference, a comparison that is not possible, or rows in another
