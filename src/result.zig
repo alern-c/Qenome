@@ -207,6 +207,14 @@ fn sortRows(collector: *RowCollector) void {
     }.lessThan);
 }
 
+pub fn restoreInsertionOrder(collector: *RowCollector) void {
+    std.mem.sortUnstable(Span, collector.rows.items, {}, struct {
+        fn lessThan(_: void, a: Span, b: Span) bool {
+            return a.start < b.start;
+        }
+    }.lessThan);
+}
+
 pub fn writeRow(writer: *Io.Writer, row: []const u8) Io.Writer.Error!void {
     try writer.writeByte('[');
     var rest = row;
@@ -344,6 +352,45 @@ test "multiset match ignores row order and reports order as reference" {
 
     const empty = try compareQueries("SELECT 1 WHERE 0", "SELECT 1 WHERE 0");
     try testing.expect(empty.matched);
+}
+
+test "restoring the insertion order repeats the same comparison" {
+    var budget: Budget = .{};
+    var baseline = RowCollector.init(testing.allocator, &budget);
+    defer baseline.deinit();
+    try collect(&baseline, "VALUES (3, 'c'), (1, 'a'), (2, 'b')");
+
+    var reordered_budget: Budget = .{};
+    var reordered = RowCollector.init(testing.allocator, &reordered_budget);
+    defer reordered.deinit();
+    try collect(&reordered, "VALUES (1, 'a'), (2, 'b'), (3, 'c')");
+
+    const first = compare(&baseline, &reordered);
+    try testing.expect(first.matched);
+    try testing.expect(!first.same_order);
+
+    restoreInsertionOrder(&baseline);
+    var previous: usize = 0;
+    for (baseline.rows.items) |span| {
+        try testing.expect(span.start >= previous);
+        previous = span.start;
+    }
+
+    var unchanged_budget: Budget = .{};
+    var unchanged = RowCollector.init(testing.allocator, &unchanged_budget);
+    defer unchanged.deinit();
+    try collect(&unchanged, "VALUES (3, 'c'), (1, 'a'), (2, 'b')");
+
+    const second = compare(&baseline, &unchanged);
+    try testing.expect(second.matched);
+    try testing.expect(second.same_order);
+
+    restoreInsertionOrder(&baseline);
+    const third = compare(&baseline, &reordered);
+    try testing.expectEqual(first.matched, third.matched);
+    try testing.expectEqual(first.same_order, third.same_order);
+    try testing.expectEqual(first.baseline_only, third.baseline_only);
+    try testing.expectEqual(first.variant_only, third.variant_only);
 }
 
 test "mismatch lists one-sided rows with counts and capped examples" {
