@@ -4,7 +4,7 @@
 
 # Qenome
 
-**インデックスをマージする前に、そのインデックスがクエリの役に立つかを調べる CLI。**
+**候補のインデックスがクエリの役に立つかを調べる CLI。**
 
 [![npm の版](https://img.shields.io/npm/v/qenome?style=flat-square)](https://www.npmjs.com/package/qenome)
 [![ライセンス: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square)](LICENSE)
