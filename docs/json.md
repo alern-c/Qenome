@@ -1,6 +1,6 @@
 # JSON contract (schema_version 2)
 
-`--format json` is the machine-readable interface. This file is the contract for `schema_version` 2. The JSON Schema files next to it check the same shape: [qenome-report.schema.json](qenome-report.schema.json) for a finished comparison, [qenome-error.schema.json](qenome-error.schema.json) for a failure, and [qenome-batch.schema.json](qenome-batch.schema.json) for a `--batch` report (`batch_schema_version` 1).
+`--format json` is the machine-readable interface. This file is the contract for `schema_version` 2. The JSON Schema files next to it check the same shape: [qenome-report.schema.json](qenome-report.schema.json) for a finished comparison, [qenome-error.schema.json](qenome-error.schema.json) for a failure, [qenome-batch.schema.json](qenome-batch.schema.json) for a `--batch` report (`batch_schema_version` 1), and [qenome-index-audit.schema.json](qenome-index-audit.schema.json) for an `--audit-indexes` report (`audit_schema_version` 1).
 
 `schema_version` is already `2` in this tree. `1` was the time verdict. Do not treat a missing pending field as a version bump. The pending names below are part of version 2 and are reserved until the core change emits them.
 
@@ -139,6 +139,11 @@ Batch error codes:
 | `code` | Exit | Next step the hint points at |
 | --- | --- | --- |
 | `usage_batch_conflict` | 2 | Put the SELECT, CREATE INDEX, and binds in the manifest; use `--format human` or `json`; do not pass `--runs` |
+| `usage_audit_conflict` | 2 | Use `--audit-indexes` with `--batch` and a manifest that has queries; remove `--suggest`, `--migration`, and `--seed-data` |
+| `audit_query_failed` | 1 | Fix the SELECT in the manifest, or read the SQLite message |
+| `audit_query_timeout` | 124 | Raise `--timeout-ms`, or narrow the SELECT |
+| `audit_catalog_unreadable` | 1 | Read the SQLite message and check that the schema can be read |
+| `audit_catalog_timeout` | 124 | Raise `--timeout-ms`, or check the schema for a very large catalog |
 | `usage_record_conflict` | 2 | Use `--record` with `--out` only; remove the database, SQL, batch, migration, bind, runs, suggest, seed, and format options |
 | `record_log_unreadable` | 1 | Check that the record log path exists and is readable, then rerun |
 | `record_log_invalid` | 1 | Record a session with at least one SELECT, at most 100 distinct statements, and at most 1 MiB |
@@ -159,6 +164,42 @@ Batch error codes:
 | `no_candidates` | 1 | Check that a SELECT has a WHERE or ORDER BY clause, or write a candidate CREATE INDEX |
 | `suggest_failed` | 1 | Check that the SELECTs are valid, or drop `--suggest` and name the index |
 | `suggest_schema_rejected` | 1 | Use a database whose `sqlite_schema` holds only plain CREATE statements, or compare a named index without `--suggest` |
+
+## Index audit report (audit_schema_version 1)
+
+`--batch FILE --audit-indexes` writes one object with `audit_schema_version` 1 and a trailing newline. It is a separate contract from the batch report: `batch_schema_version` 1 and the comparison object above do not change. [qenome-index-audit.schema.json](qenome-index-audit.schema.json) checks the same shape.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `audit_schema_version` | number | `1` |
+| `exit_code` | number | `0`. The process can still exit `5` after this object when cleanup fails |
+| `database` | string | The `--db` path, or the local D1 path that `--d1` resolved |
+| `queries` | number | How many manifest queries were planned, 1 to 100 |
+| `redundancy_judged` | boolean | `false` when a manifest SELECT uses `INDEXED BY`; every `redundant_by` is then `null` |
+| `indexes` | array | One object per index in the main schema, ordered by table and then by name |
+
+`indexes` entries:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `name` | string | The index name. `sqlite_autoindex_*` is a UNIQUE or PRIMARY KEY constraint index |
+| `table` | string | The table |
+| `columns` | array of strings | The key columns in index order. An expression key is `"<expression>"` |
+| `unique` | boolean | The index enforces UNIQUE |
+| `partial` | boolean | The index has a `WHERE` clause |
+| `expression` | boolean | At least one key column is an expression, so the report does not compare this index with others |
+| `constraint` | string or `null` | `unique` or `primary_key` for a constraint index; `null` otherwise |
+| `used` | boolean or `null` | Whether a manifest plan named the index. `null` for a constraint index, because a WITHOUT ROWID primary key plan says `USING PRIMARY KEY` instead of the index name |
+| `redundant_by` | string or `null` | Another index on the same table whose key columns start with this index's columns, with the same collation and ASC/DESC. `INTEGER PRIMARY KEY` means the rowid primary key |
+
+Semantics and limits:
+
+- `used` false means the plans of this manifest did not name the index. It is not a drop instruction: `UPDATE`, `DELETE`, foreign-key maintenance, and queries outside the manifest are not planned. An index used only for `ORDER BY` or `GROUP BY` appears in these plans.
+- A partial index is listed as unused when no plan named it, but it is never a redundancy candidate, because its `WHERE` clause and the bound values decide whether it can replace another index.
+- An expression index is never a redundancy candidate. A different collation or ASC/DESC order is not treated as covered.
+- A redundancy candidate can be replaced by the `redundant_by` index for the lookups this index serves. Two indexes with the same key list report only the later name, so the pair is counted once.
+- Findings do not change the exit status: a written report keeps `0`. The process exits `1` when a query cannot be prepared or a catalog read fails, `2` for a usage error, and `124` when `--timeout-ms` reaches a plan or a catalog read.
+- `INDEXED BY` in any manifest SELECT suppresses the redundancy list. The query forces an index, and the audit does not try to see which other indexes could replace it.
 
 ## Status in this tree
 

@@ -136,6 +136,21 @@ pub fn classifyError(message: []const u8) ErrorClass {
     if (std.mem.startsWith(u8, message, "--suggest: the schema entry is not allowed")) {
         return .{ .code = "suggest_schema_rejected", .hint = "Use a database whose sqlite_schema holds only plain CREATE statements, or compare a named index without --suggest." };
     }
+    if (std.mem.startsWith(u8, message, "--audit-indexes")) {
+        return .{ .code = "usage_audit_conflict", .hint = "Use --audit-indexes with --batch and a manifest that has queries; remove --suggest, --migration, and --seed-data." };
+    }
+    if (std.mem.startsWith(u8, message, "the index audit query")) {
+        if (std.mem.indexOf(u8, message, "exceeded the time limit") != null) {
+            return .{ .code = "audit_query_timeout", .hint = "Raise --timeout-ms, or narrow the SELECT in the manifest." };
+        }
+        return .{ .code = "audit_query_failed", .hint = "Fix the SELECT in the manifest or read the SQLite message, then rerun." };
+    }
+    if (std.mem.startsWith(u8, message, "the index audit could not read the index catalog")) {
+        if (std.mem.indexOf(u8, message, "time limit") != null) {
+            return .{ .code = "audit_catalog_timeout", .hint = "Raise --timeout-ms, or check the database schema for a very large catalog." };
+        }
+        return .{ .code = "audit_catalog_unreadable", .hint = "Read the SQLite message and check that the database schema can be read, then rerun." };
+    }
     if (std.mem.startsWith(u8, message, "interrupted by SIGTERM")) {
         return .{ .code = "terminated", .hint = "Rerun the command. Temporary copies are removed when the signal is handled." };
     }
@@ -360,6 +375,9 @@ pub fn classifyError(message: []const u8) ErrorClass {
     }
     if (std.mem.indexOf(u8, message, "the summary could not be written") != null) {
         return .{ .code = "report_failed", .hint = "Rerun. The comparison finished, but the report could not be written." };
+    }
+    if (std.mem.indexOf(u8, message, "the index audit report could not be written") != null) {
+        return .{ .code = "report_failed", .hint = "Rerun. The index audit finished, but the report could not be written." };
     }
     return .{ .code = "unclassified", .hint = "Read the message, fix the command, and rerun. qenome --help lists the options and exit codes." };
 }
@@ -616,6 +634,12 @@ test "error text maps to a stable code and a next step" {
         .{ .message = "the batch candidate 'c/a.sql': the index could not be created: disk I/O", .code = "batch_index_failed" },
         .{ .message = "the batch candidate 'c/a.sql': --index-sql: the statement is not one CREATE INDEX", .code = "batch_index_failed" },
         .{ .message = "the batch candidate 'c/a.sql': the variant could not be removed: FileBusy", .code = "batch_workspace_failed" },
+        .{ .message = "--audit-indexes needs --batch and a manifest (see --help)", .code = "usage_audit_conflict" },
+        .{ .message = "--audit-indexes does not take --suggest (see --help)", .code = "usage_audit_conflict" },
+        .{ .message = "the index audit query 'q/a.sql': --select: the statement is not valid for this database: no such column: missing", .code = "audit_query_failed" },
+        .{ .message = "the index audit query 'q/a.sql' exceeded the time limit of 1 ms", .code = "audit_query_timeout" },
+        .{ .message = "the index audit could not read the index catalog: disk I/O", .code = "audit_catalog_unreadable" },
+        .{ .message = "the index audit could not read the index catalog within the time limit of 1 ms", .code = "audit_catalog_timeout" },
         .{ .message = "sqlite3expert could not start: out of memory", .code = "suggest_failed" },
         .{ .message = "sqlite3expert could not analyze the queries: no such table: nope", .code = "suggest_failed" },
         .{ .message = "no candidate index to compare: SQLite suggested no index for these queries", .code = "no_candidates" },
@@ -681,6 +705,7 @@ test "error text maps to a stable code and a next step" {
         .{ .message = "cannot read the size of the baseline 'a.db': FileNotFound", .code = "size_unreadable" },
         .{ .message = "the temporary directory '/tmp/q' could not be removed: FileBusy", .code = "cleanup_failed" },
         .{ .message = "the summary could not be written", .code = "report_failed" },
+        .{ .message = "the index audit report could not be written", .code = "report_failed" },
         .{ .message = "something new from the core", .code = "unclassified" },
     };
     for (cases) |case| {

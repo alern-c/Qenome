@@ -214,6 +214,87 @@ const IndexTarget = struct {
     table: ?[]const u8 = null,
 };
 
+pub const IndexOrigin = enum { created, unique_constraint, primary_key };
+
+pub const IndexColumn = struct {
+    name: []const u8,
+    collation: []const u8,
+    descending: bool,
+};
+
+pub const IndexInfo = struct {
+    name: []const u8,
+    table: []const u8,
+    origin: IndexOrigin = .created,
+    unique: bool = false,
+    partial: bool = false,
+    unreadable: bool = false,
+    columns: []IndexColumn = &.{},
+};
+
+pub const RowidPrimaryKey = struct {
+    table: []const u8,
+    column: []const u8,
+};
+
+pub const IndexCatalog = struct {
+    indexes: []IndexInfo = &.{},
+    rowid_primary_keys: []RowidPrimaryKey = &.{},
+
+    pub fn deinit(self: IndexCatalog, allocator: std.mem.Allocator) void {
+        for (self.indexes) |info| freeIndexInfo(allocator, info);
+        allocator.free(self.indexes);
+        for (self.rowid_primary_keys) |key| {
+            allocator.free(key.table);
+            allocator.free(key.column);
+        }
+        allocator.free(self.rowid_primary_keys);
+    }
+};
+
+fn freeIndexInfo(allocator: std.mem.Allocator, info: IndexInfo) void {
+    allocator.free(info.name);
+    allocator.free(info.table);
+    for (info.columns) |column| {
+        allocator.free(column.name);
+        allocator.free(column.collation);
+    }
+    allocator.free(info.columns);
+}
+
+pub const IndexCatalogError = CheckError || StepError || std.mem.Allocator.Error || error{IndexCatalogFailed};
+
+const catalog_tables = "SELECT name FROM main.sqlite_schema WHERE type = 'table' AND name NOT GLOB 'sqlite_*' ORDER BY name";
+
+const catalog_pragma_list = "PRAGMA main.index_list(";
+
+const catalog_pragma_xinfo = "PRAGMA main.index_xinfo(";
+
+const catalog_pragma_table_info = "PRAGMA main.table_info(";
+
+fn catalogPragma(allocator: std.mem.Allocator, prefix: []const u8, name: []const u8) std.mem.Allocator.Error![:0]u8 {
+    var buffer: std.ArrayList(u8) = .empty;
+    defer buffer.deinit(allocator);
+    try buffer.appendSlice(allocator, prefix);
+    try buffer.append(allocator, '"');
+    for (name) |byte| {
+        try buffer.append(allocator, byte);
+        if (byte == '"') try buffer.append(allocator, byte);
+    }
+    try buffer.appendSlice(allocator, "\")");
+    return allocator.dupeSentinel(u8, buffer.items, 0);
+}
+
+fn indexOrigin(text: ?[*:0]const u8) IndexOrigin {
+    const bytes = std.mem.span(text orelse return .created);
+    if (bytes.len == 0) return .created;
+    return switch (bytes[0]) {
+        'u' => .unique_constraint,
+        'p' => .primary_key,
+        else => .created,
+    };
+}
+
 pub const Db = struct {
     index_target: ?*IndexTarget = null,
     handle: ?*sqlite.sqlite3 = null,
@@ -498,7 +579,7 @@ pub const Db = struct {
         return self.explainPlanInMode(allocator, sql, binds, control, .user_dml);
     }
 
-    fn explainPlanBounded(
+    pub fn explainPlanBounded(
         self: *Db,
         allocator: std.mem.Allocator,
         sql: [:0]const u8,
@@ -667,6 +748,214 @@ pub const Db = struct {
                 else => |rc| return diagnosticStepError(rc, control),
             }
         }
+    }
+
+    pub fn readIndexCatalog(self: *Db, allocator: std.mem.Allocator, control: *StepControl) IndexCatalogError!IndexCatalog {
+        const previous = self.enterMode(.internal);
+        defer self.mode = previous;
+        const saved_clues = self.clues;
+        defer self.clues = saved_clues;
+
+        var tables: std.ArrayList([]const u8) = .empty;
+        defer {
+            for (tables.items) |name| allocator.free(name);
+            tables.deinit(allocator);
+        }
+        {
+            const statement = (try self.prepareSingle(catalog_tables)) orelse return error.IndexCatalogFailed;
+            defer _ = sqlite.sqlite3_finalize(statement);
+            control.start();
+            sqlite.sqlite3_progress_handler(self.connection(), progress_opcodes, progressHandler, control);
+            defer sqlite.sqlite3_progress_handler(self.connection(), 0, null, null);
+            while (true) {
+                switch (sqlite.sqlite3_step(statement)) {
+                    sqlite.SQLITE_ROW => {
+                        const text = sqlite.sqlite3_column_text(statement, 0) orelse continue;
+                        const len: usize = @intCast(sqlite.sqlite3_column_bytes(statement, 0));
+                        const name = try allocator.dupe(u8, text[0..len]);
+                        tables.append(allocator, name) catch |err| {
+                            allocator.free(name);
+                            return err;
+                        };
+                    },
+                    sqlite.SQLITE_DONE => break,
+                    else => |rc| return diagnosticStepError(rc, control),
+                }
+            }
+        }
+
+        var indexes: std.ArrayList(IndexInfo) = .empty;
+        errdefer {
+            for (indexes.items) |info| freeIndexInfo(allocator, info);
+            indexes.deinit(allocator);
+        }
+        var rowid_primary_keys: std.ArrayList(RowidPrimaryKey) = .empty;
+        errdefer {
+            for (rowid_primary_keys.items) |key| {
+                allocator.free(key.table);
+                allocator.free(key.column);
+            }
+            rowid_primary_keys.deinit(allocator);
+        }
+
+        for (tables.items) |table| {
+            var has_primary_key_index = false;
+            const list_sql = try catalogPragma(allocator, catalog_pragma_list, table);
+            defer allocator.free(list_sql);
+            {
+                const statement = (try self.prepareSingle(list_sql)) orelse return error.IndexCatalogFailed;
+                defer _ = sqlite.sqlite3_finalize(statement);
+                if (sqlite.sqlite3_column_count(statement) < 5) return error.IndexCatalogFailed;
+                control.start();
+                sqlite.sqlite3_progress_handler(self.connection(), progress_opcodes, progressHandler, control);
+                defer sqlite.sqlite3_progress_handler(self.connection(), 0, null, null);
+                while (true) {
+                    switch (sqlite.sqlite3_step(statement)) {
+                        sqlite.SQLITE_ROW => {
+                            const name_text = sqlite.sqlite3_column_text(statement, 1) orelse continue;
+                            const name_len: usize = @intCast(sqlite.sqlite3_column_bytes(statement, 1));
+                            const name = try allocator.dupe(u8, name_text[0..name_len]);
+                            const origin = indexOrigin(sqlite.sqlite3_column_text(statement, 3));
+                            if (origin == .primary_key) has_primary_key_index = true;
+                            self.appendIndex(allocator, &indexes, table, name, origin, sqlite.sqlite3_column_int64(statement, 2) != 0, sqlite.sqlite3_column_int64(statement, 4) != 0, control) catch |err| return err;
+                        },
+                        sqlite.SQLITE_DONE => break,
+                        else => |rc| return diagnosticStepError(rc, control),
+                    }
+                }
+            }
+            if (has_primary_key_index) continue;
+            const table_info_sql = try catalogPragma(allocator, catalog_pragma_table_info, table);
+            defer allocator.free(table_info_sql);
+            const statement = (try self.prepareSingle(table_info_sql)) orelse return error.IndexCatalogFailed;
+            defer _ = sqlite.sqlite3_finalize(statement);
+            if (sqlite.sqlite3_column_count(statement) < 6) return error.IndexCatalogFailed;
+            control.start();
+            sqlite.sqlite3_progress_handler(self.connection(), progress_opcodes, progressHandler, control);
+            defer sqlite.sqlite3_progress_handler(self.connection(), 0, null, null);
+            while (true) {
+                switch (sqlite.sqlite3_step(statement)) {
+                    sqlite.SQLITE_ROW => {
+                        if (sqlite.sqlite3_column_int64(statement, 5) != 1) continue;
+                        if (!std.ascii.eqlIgnoreCase(columnText(statement, 2), "INTEGER")) continue;
+                        const column = try allocator.dupe(u8, columnText(statement, 1));
+                        const table_name = allocator.dupe(u8, table) catch |err| {
+                            allocator.free(column);
+                            return err;
+                        };
+                        rowid_primary_keys.append(allocator, .{ .table = table_name, .column = column }) catch |err| {
+                            allocator.free(column);
+                            allocator.free(table_name);
+                            return err;
+                        };
+                        break;
+                    },
+                    sqlite.SQLITE_DONE => break,
+                    else => |rc| return diagnosticStepError(rc, control),
+                }
+            }
+        }
+
+        const index_slice = try indexes.toOwnedSlice(allocator);
+        errdefer {
+            for (index_slice) |info| freeIndexInfo(allocator, info);
+            allocator.free(index_slice);
+        }
+        return .{
+            .indexes = index_slice,
+            .rowid_primary_keys = try rowid_primary_keys.toOwnedSlice(allocator),
+        };
+    }
+
+    fn appendIndex(
+        self: *Db,
+        allocator: std.mem.Allocator,
+        indexes: *std.ArrayList(IndexInfo),
+        table: []const u8,
+        name: []const u8,
+        origin: IndexOrigin,
+        unique: bool,
+        partial: bool,
+        control: *StepControl,
+    ) IndexCatalogError!void {
+        errdefer allocator.free(name);
+        var columns: std.ArrayList(IndexColumn) = .empty;
+        errdefer {
+            for (columns.items) |column| {
+                allocator.free(column.name);
+                allocator.free(column.collation);
+            }
+            columns.deinit(allocator);
+        }
+        var opaque_flag = false;
+        const xinfo_sql = try catalogPragma(allocator, catalog_pragma_xinfo, name);
+        defer allocator.free(xinfo_sql);
+        {
+            const statement = (try self.prepareSingle(xinfo_sql)) orelse return error.IndexCatalogFailed;
+            defer _ = sqlite.sqlite3_finalize(statement);
+            if (sqlite.sqlite3_column_count(statement) >= 6) {
+                control.start();
+                sqlite.sqlite3_progress_handler(self.connection(), progress_opcodes, progressHandler, control);
+                defer sqlite.sqlite3_progress_handler(self.connection(), 0, null, null);
+                while (true) {
+                    switch (sqlite.sqlite3_step(statement)) {
+                        sqlite.SQLITE_ROW => {
+                            if (sqlite.sqlite3_column_int64(statement, 5) == 0) continue;
+                            const key_text = sqlite.sqlite3_column_text(statement, 2);
+                            const coll_text = sqlite.sqlite3_column_text(statement, 4);
+                            const key_name = if (key_text) |text| text[0..@intCast(sqlite.sqlite3_column_bytes(statement, 2))] else "<expression>";
+                            const collation = if (coll_text) |text| text[0..@intCast(sqlite.sqlite3_column_bytes(statement, 4))] else "";
+                            if (key_text == null) opaque_flag = true;
+                            const column_name = try allocator.dupe(u8, key_name);
+                            const column_collation = allocator.dupe(u8, collation) catch |err| {
+                                allocator.free(column_name);
+                                return err;
+                            };
+                            columns.append(allocator, .{
+                                .name = column_name,
+                                .collation = column_collation,
+                                .descending = sqlite.sqlite3_column_int64(statement, 3) != 0,
+                            }) catch |err| {
+                                allocator.free(column_name);
+                                allocator.free(column_collation);
+                                return err;
+                            };
+                        },
+                        sqlite.SQLITE_DONE => break,
+                        else => |rc| return diagnosticStepError(rc, control),
+                    }
+                }
+            } else {
+                opaque_flag = true;
+            }
+        }
+        const columns_slice = columns.toOwnedSlice(allocator) catch |err| return err;
+        const table_name = allocator.dupe(u8, table) catch |err| {
+            for (columns_slice) |column| {
+                allocator.free(column.name);
+                allocator.free(column.collation);
+            }
+            allocator.free(columns_slice);
+            return err;
+        };
+        const info: IndexInfo = .{
+            .name = name,
+            .table = table_name,
+            .origin = origin,
+            .unique = unique,
+            .partial = partial,
+            .unreadable = opaque_flag,
+            .columns = columns_slice,
+        };
+        indexes.append(allocator, info) catch |err| {
+            allocator.free(info.table);
+            for (info.columns) |column| {
+                allocator.free(column.name);
+                allocator.free(column.collation);
+            }
+            allocator.free(info.columns);
+            return err;
+        };
     }
 
     pub fn tableWarnings(self: *Db, allocator: std.mem.Allocator, table: []const u8, control: *StepControl) !TableWarnings {
@@ -1038,18 +1327,22 @@ fn planUsesIndex(plan: Plan, names: []const []const u8, wanted: []const u8) bool
     return false;
 }
 
-fn usedIndexName(detail: []const u8, names: []const []const u8) ?[]const u8 {
+pub fn usedIndexName(detail: []const u8, names: []const []const u8) ?[]const u8 {
     var best: ?[]const u8 = null;
-    var offset: usize = 0;
-    while (std.mem.indexOfPos(u8, detail, offset, "INDEX ")) |at| {
-        const rest = detail[at + "INDEX ".len ..];
-        for (names) |name| {
-            if (!indexReference(rest, name)) continue;
-            if (best == null or name.len > best.?.len) best = name;
-        }
-        offset = at + "INDEX ".len;
+    for (names) |name| {
+        if (!detailUsesIndex(detail, name)) continue;
+        if (best == null or name.len > best.?.len) best = name;
     }
     return best;
+}
+
+fn detailUsesIndex(detail: []const u8, name: []const u8) bool {
+    var offset: usize = 0;
+    while (std.mem.indexOfPos(u8, detail, offset, "INDEX ")) |at| {
+        if (indexReference(detail[at + "INDEX ".len ..], name)) return true;
+        offset = at + "INDEX ".len;
+    }
+    return false;
 }
 
 fn indexReference(rest: []const u8, name: []const u8) bool {
@@ -2267,6 +2560,98 @@ test "plan detail matches the catalog index name without guessing its boundary" 
     try testing.expect(!planUsesIndex(.{ .rows = @constCast(&longer) }, &names, "idx"));
     const parenthesized = [_]PlanRow{.{ .id = 1, .parent = 0, .label = .{ .kind = .scan }, .detail = "SCAN t USING COVERING INDEX idx (x)" }};
     try testing.expect(!planUsesIndex(.{ .rows = @constCast(&parenthesized) }, &names, "idx"));
+}
+
+const index_catalog_schema: [:0]const u8 =
+    \\CREATE TABLE t(id INTEGER PRIMARY KEY, a INTEGER, b TEXT, c TEXT UNIQUE);
+    \\CREATE INDEX ix_a ON t(a);
+    \\CREATE INDEX ix_ab ON t(a, b);
+    \\CREATE INDEX ix_p ON t(a) WHERE b = 'x';
+    \\CREATE INDEX ix_desc ON t(a DESC);
+    \\CREATE INDEX ix_nocase ON t(c COLLATE NOCASE);
+    \\CREATE INDEX ix_expr ON t(lower(c));
+    \\CREATE TABLE wr(k TEXT, v INTEGER, PRIMARY KEY(k)) WITHOUT ROWID;
+    \\CREATE INDEX ix_wr_v ON wr(v);
+    \\CREATE TABLE d(x INTEGER PRIMARY KEY DESC, v INTEGER);
+;
+
+fn catalogIndex(catalog: IndexCatalog, name: []const u8) ?IndexInfo {
+    for (catalog.indexes) |info| {
+        if (std.mem.eql(u8, info.name, name)) return info;
+    }
+    return null;
+}
+
+test "the index catalog reports the key columns, origin, and rowid primary key" {
+    var fixture = try Fixture.initWithSchema(testing.allocator, index_catalog_schema);
+    defer fixture.deinit();
+    var database: Db = .{};
+    try database.openReadOnly(fixture.path);
+    defer database.close() catch unreachable;
+
+    var cancel = std.atomic.Value(bool).init(false);
+    var control = StepControl.init(testing.io, 0, &cancel);
+    const catalog = try database.readIndexCatalog(testing.allocator, &control);
+    defer catalog.deinit(testing.allocator);
+
+    const ab = catalogIndex(catalog, "ix_ab") orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(IndexOrigin.created, ab.origin);
+    try testing.expect(!ab.unique);
+    try testing.expect(!ab.partial);
+    try testing.expect(!ab.unreadable);
+    try testing.expectEqualStrings("t", ab.table);
+    try testing.expectEqual(@as(usize, 2), ab.columns.len);
+    try testing.expectEqualStrings("a", ab.columns[0].name);
+    try testing.expectEqualStrings("BINARY", ab.columns[0].collation);
+    try testing.expect(!ab.columns[0].descending);
+    try testing.expectEqualStrings("b", ab.columns[1].name);
+
+    const nocase = catalogIndex(catalog, "ix_nocase") orelse return error.TestUnexpectedResult;
+    try testing.expectEqualStrings("NOCASE", nocase.columns[0].collation);
+
+    const desc = catalogIndex(catalog, "ix_desc") orelse return error.TestUnexpectedResult;
+    try testing.expect(desc.columns[0].descending);
+
+    const partial = catalogIndex(catalog, "ix_p") orelse return error.TestUnexpectedResult;
+    try testing.expect(partial.partial);
+    try testing.expectEqual(@as(usize, 1), partial.columns.len);
+
+    const expression = catalogIndex(catalog, "ix_expr") orelse return error.TestUnexpectedResult;
+    try testing.expect(expression.unreadable);
+    try testing.expectEqual(@as(usize, 1), expression.columns.len);
+    try testing.expectEqualStrings("<expression>", expression.columns[0].name);
+
+    const unique = catalogIndex(catalog, "sqlite_autoindex_t_1") orelse return error.TestUnexpectedResult;
+    try testing.expect(unique.unique);
+    try testing.expectEqual(IndexOrigin.unique_constraint, unique.origin);
+
+    const primary = catalogIndex(catalog, "sqlite_autoindex_wr_1") orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(IndexOrigin.primary_key, primary.origin);
+    try testing.expect(primary.unique);
+    try testing.expectEqualStrings("k", primary.columns[0].name);
+
+    try testing.expectEqual(@as(usize, 1), catalog.rowid_primary_keys.len);
+    try testing.expectEqualStrings("t", catalog.rowid_primary_keys[0].table);
+    try testing.expectEqualStrings("id", catalog.rowid_primary_keys[0].column);
+
+    const desc_primary = catalogIndex(catalog, "sqlite_autoindex_d_1") orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(IndexOrigin.primary_key, desc_primary.origin);
+}
+
+fn catalogWithAllocator(allocator: std.mem.Allocator, path: [:0]const u8) !void {
+    var database: Db = .{};
+    try database.openReadOnly(path);
+    defer database.close() catch unreachable;
+    var cancel = std.atomic.Value(bool).init(false);
+    var control = StepControl.init(testing.io, 0, &cancel);
+    const catalog = try database.readIndexCatalog(allocator, &control);
+    catalog.deinit(allocator);
+}
+
+test "the index catalog frees every allocation when memory runs out" {
+    var fixture = try Fixture.initWithSchema(testing.allocator, index_catalog_schema);
+    defer fixture.deinit();
+    try testing.checkAllAllocationFailures(testing.allocator, catalogWithAllocator, .{fixture.path});
 }
 
 const partial_index_schema: [:0]const u8 =

@@ -10,7 +10,7 @@ description: >
 
 # Qenome
 
-Qenome compares one read-only `SELECT` with one candidate `CREATE INDEX` on sandbox copies. With `--write`, it compares one `INSERT`, `UPDATE`, `DELETE`, or `REPLACE` instead, inside a transaction that is rolled back. With `--batch`, it compares every SELECT in a manifest with every candidate in one run. With `--suggest`, SQLite's expert proposes the candidate indexes, so a SELECT file is enough. With `--migration`, it applies a SQL file of index or table changes to the variant before comparing every query in a manifest. The verdict uses the same counting as local D1 (workerd patch). The numbers have not yet been checked against production D1.
+Qenome compares one read-only `SELECT` with one candidate `CREATE INDEX` on sandbox copies. With `--write`, it compares one `INSERT`, `UPDATE`, `DELETE`, or `REPLACE` instead, inside a transaction that is rolled back. With `--batch`, it compares every SELECT in a manifest with every candidate in one run. With `--batch ... --audit-indexes`, it reports the indexes that the manifest queries did not use and the indexes whose leading columns another index or the primary key covers. With `--suggest`, SQLite's expert proposes the candidate indexes, so a SELECT file is enough. With `--migration`, it applies a SQL file of index or table changes to the variant before comparing every query in a manifest. The verdict uses the same counting as local D1 (workerd patch). The numbers have not yet been checked against production D1.
 
 The contract is [docs/json.md](../../docs/json.md). This skill expects `schema_version` 2.
 
@@ -134,6 +134,24 @@ npx qenome app.db --batch batch.json --format json
 npx qenome --d1 DB --batch batch.json --format json
 ```
 
+## Audit the indexes a manifest uses (--audit-indexes)
+
+Use this when the user wants to find indexes that no query uses, or duplicate indexes, from a manifest.
+
+```sh
+npx qenome app.db --batch manifest.json --audit-indexes --format json
+npx qenome --d1 DB --batch manifest.json --audit-indexes --format json
+```
+
+- The manifest needs only `queries`; `candidates` are ignored, so a manifest from `--record` works as it is. `--suggest`, `--migration`, and `--seed-data` are not accepted with it.
+- The JSON has `audit_schema_version` `1`, `database`, `queries`, `redundancy_judged`, and one `indexes` entry per index: `name`, `table`, `columns`, `unique`, `partial`, `expression`, `constraint`, `used`, `redundant_by`.
+- `used` false means the plans of this manifest did not name the index. Do not tell the user to drop it: `UPDATE`, `DELETE`, foreign-key maintenance, and queries outside the manifest are not planned. Say "unused in this manifest".
+- `constraint` `unique` or `primary_key` indexes are kept for the constraint, not removal candidates.
+- `redundant_by` names another index on the same table whose leading columns match this index's columns with the same collation and ASC/DESC. A partial or expression index is never in this list.
+- `redundancy_judged` false means a manifest SELECT uses `INDEXED BY`; do not report redundancy then.
+- Exit `0` means the report was written, including when the lists are not empty. Do not treat findings as a failure. Exit `1`, `2`, or `124` means the input, the command, or the time limit failed.
+- Do not apply a `DROP INDEX`. Report the candidates and let the user decide.
+
 ## Record the queries the app runs (--record)
 
 Use this when the user wants a manifest from the queries the app actually runs, or when a hand-written manifest may miss ORM-built queries.
@@ -186,6 +204,7 @@ npx qenome --d1 DB --batch queries.json --migration 0002_replace_index.sql --for
 
 State `schema_version` before you interpret fields.
 
+- If stdout is a JSON object with `audit_schema_version` `1`, it is an index audit report. Read `redundancy_judged` first, then each `indexes` entry (`used`, `constraint`, `redundant_by`, `partial`, `expression`). It is not a comparison and has no `verdict`. Exit `0` can have unused and redundant entries; report them as candidates only.
 - If stdout is a JSON object with `batch_schema_version`, it is a batch report. Read `batch_schema_version` first; it must be `1`. Read `recommended` (`null` when no candidate qualifies; with `--suggest` it can be `suggested:N`; with `--migration` it is the migration path or `null`), the `summary` entries (`candidate`, `source`, `index_sql_text`, `not_judged`; `source` can be `manifest`, `suggested`, or `migration`), the `results`, the optional top-level `migration` object (`path`, `statements`), and the top-level `warnings` (empty without `--suggest` and with `--migration`). Repeat every batch warning `code` and `message`, like the comparison warnings. Read each `results[].comparison.warnings` too: comparison warnings, including `bind_dependent_partial_index`, are there and not in the batch top-level `warnings`. A `human` batch report lists each comparison warning under `Warnings` as `<query> -> <candidate>: <code>: <message>`. The `comparison` object under each result has `schema_version` 2 and the shape below.
 - A top-level `seed_data` object appears in a comparison or batch object when `--seed-data` was used. Read `path`, `seed`, `rows`, and `tables`. It is an input fact and does not change the verdict.
 - If stdout is a JSON object, it is the comparison. Read `schema_version` first. If it is missing or not `2`, stop and say the output does not match this skill or `docs/json.md`. Do not guess renamed fields.

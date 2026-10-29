@@ -5450,3 +5450,295 @@ test "record accepts a log at the size limit and refuses one byte more" {
     try testing.expectEqual(ExitCode.rejected, over.code);
     try testing.expect(contains(over.stderr, "larger than 16 MiB"));
 }
+
+const audit_schema: [:0]const u8 =
+    \\CREATE TABLE t(id INTEGER PRIMARY KEY, a INTEGER, b TEXT, c TEXT UNIQUE);
+    \\INSERT INTO t VALUES (1, 1, 'x', 'p');
+    \\CREATE INDEX ix_a ON t(a);
+    \\CREATE INDEX ix_ab ON t(a, b);
+    \\CREATE INDEX ix_b ON t(b);
+    \\CREATE INDEX ix_p ON t(a) WHERE b = 'x';
+    \\CREATE INDEX ix_desc ON t(a DESC);
+    \\CREATE INDEX ix_nocase ON t(c COLLATE NOCASE);
+    \\CREATE INDEX ix_expr ON t(lower(c));
+    \\CREATE INDEX ix_id ON t(id);
+    \\CREATE TABLE wr(k TEXT, v INTEGER, PRIMARY KEY(k)) WITHOUT ROWID;
+    \\CREATE INDEX ix_wr_k ON wr(k);
+;
+
+fn initAuditFixture() !CliFixture {
+    var fixture = try CliFixture.initWithSchema("SELECT 1", "CREATE INDEX unused ON t(a)", audit_schema);
+    errdefer fixture.deinit();
+    try fixture.writeFile("q1.sql", "SELECT * FROM t WHERE a = 1;");
+    try fixture.writeFile("qbind.sql", "SELECT * FROM t WHERE a = ?1;");
+    try fixture.writeFile("qbad.sql", "SELECT missing FROM t;");
+    try fixture.writeFile("audit.json", "{\"queries\":[{\"select\":\"q1.sql\"}]}");
+    try fixture.writeFile("audit-bind.json", "{\"queries\":[{\"select\":\"qbind.sql\",\"binds\":[\"1:int:1\"]}]}");
+    try fixture.writeFile("audit-bad.json", "{\"queries\":[{\"select\":\"qbad.sql\"}]}");
+    try fixture.writeFile("audit-candidates.json", "{\"queries\":[{\"select\":\"q1.sql\"}],\"candidates\":[{\"index_sql\":\"missing.sql\"}]}");
+    try fixture.writeFile("indexed-by.sql", "SELECT * FROM t INDEXED BY ix_a WHERE a = 1;");
+    try fixture.writeFile("indexed-comment.sql", "SELECT * FROM t INDEXED /* hint */ BY ix_a WHERE a = 1;");
+    try fixture.writeFile("audit-indexed-by.json", "{\"queries\":[{\"select\":\"indexed-by.sql\"}]}");
+    try fixture.writeFile("audit-indexed-comment.json", "{\"queries\":[{\"select\":\"indexed-comment.sql\"}]}");
+    return fixture;
+}
+
+fn runAudit(
+    fixture: *CliFixture,
+    manifest_name: []const u8,
+    extra: []const [:0]const u8,
+    stdout_buffer: []u8,
+    stderr_buffer: []u8,
+) !RunResult {
+    const manifest = try fixture.dir.tmp.dir.realPathFileAlloc(testing.io, manifest_name, testing.allocator);
+    defer testing.allocator.free(manifest);
+    var argv: [32][:0]const u8 = undefined;
+    const required = [_][:0]const u8{ "Qenome", "--db", fixture.db_path, "--batch", manifest, "--audit-indexes" };
+    @memcpy(argv[0..required.len], &required);
+    @memcpy(argv[required.len..][0..extra.len], extra);
+    return callRun(testing.allocator, argv[0 .. required.len + extra.len], fixture.work_parent, stdout_buffer, stderr_buffer);
+}
+
+fn sectionOf(stdout: []const u8, start: []const u8, end: []const u8) []const u8 {
+    const at = std.mem.indexOf(u8, stdout, start) orelse return "";
+    const from = at + start.len;
+    const finish = std.mem.indexOfPos(u8, stdout, from, end) orelse stdout.len;
+    return stdout[from..finish];
+}
+
+fn jsonIndex(items: []std.json.Value, name: []const u8) !std.json.Value {
+    for (items) |item| {
+        if (std.mem.eql(u8, try jsonText(item, "name"), name)) return item;
+    }
+    return error.TestUnexpectedResult;
+}
+
+test "an index audit reports unused, redundant, and constraint indexes" {
+    var fixture = try initAuditFixture();
+    defer fixture.deinit();
+    const before = try Io.Dir.cwd().readFileAlloc(testing.io, fixture.db_path, testing.allocator, .unlimited);
+    defer testing.allocator.free(before);
+
+    var stdout_buffer: [65536]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = try runAudit(&fixture, "audit.json", &.{}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+    try testing.expect(contains(result.stdout, "index audit: 1 query, 11 indexes\n"));
+
+    const unused = sectionOf(result.stdout, "Unused in this manifest\n", "Redundant candidates");
+    try testing.expect(contains(unused, "ix_ab"));
+    try testing.expect(contains(unused, "ix_b"));
+    try testing.expect(contains(unused, "ix_p"));
+    try testing.expect(contains(unused, "partial index; a different bound value may use it"));
+    try testing.expect(contains(unused, "ix_expr"));
+    try testing.expect(contains(unused, "expression index; not compared with other indexes"));
+    try testing.expect(contains(unused, "ix_nocase"));
+    try testing.expect(!contains(unused, "ix_desc"));
+    try testing.expect(!contains(unused, "sqlite_autoindex_t_1"));
+
+    const redundant = sectionOf(result.stdout, "Redundant candidates\n", "Kept for constraints");
+    try testing.expect(contains(redundant, "ix_a"));
+    try testing.expect(contains(redundant, "ix_ab"));
+    try testing.expect(contains(redundant, "ix_id"));
+    try testing.expect(contains(redundant, "INTEGER PRIMARY KEY"));
+    try testing.expect(contains(redundant, "ix_wr_k"));
+    try testing.expect(contains(redundant, "sqlite_autoindex_wr_1"));
+    try testing.expect(!contains(redundant, "ix_desc"));
+    try testing.expect(!contains(redundant, "ix_nocase"));
+
+    const constraints = sectionOf(result.stdout, "Kept for constraints\n", "Notes");
+    try testing.expect(contains(constraints, "sqlite_autoindex_t_1"));
+    try testing.expect(contains(constraints, "UNIQUE"));
+    try testing.expect(contains(constraints, "sqlite_autoindex_wr_1"));
+    try testing.expect(contains(constraints, "PRIMARY KEY"));
+
+    const after = try Io.Dir.cwd().readFileAlloc(testing.io, fixture.db_path, testing.allocator, .unlimited);
+    defer testing.allocator.free(after);
+    try testing.expectEqualSlices(u8, before, after);
+    try fixture.expectNoLeftovers();
+}
+
+test "an index audit JSON reports each index and keeps its own schema version" {
+    var fixture = try initAuditFixture();
+    defer fixture.deinit();
+
+    var stdout_buffer: [65536]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = try runAudit(&fixture, "audit.json", &.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    try testing.expectEqual(@as(i64, 1), try jsonInt(parsed.value, "audit_schema_version"));
+    try testing.expectEqual(@as(i64, 0), try jsonInt(parsed.value, "exit_code"));
+    try testing.expectEqual(@as(i64, 1), try jsonInt(parsed.value, "queries"));
+    try testing.expect(try jsonBool(parsed.value, "redundancy_judged"));
+
+    const indexes = try jsonItems(parsed.value, "indexes");
+    try testing.expectEqual(@as(usize, 11), indexes.len);
+
+    const ab = try jsonIndex(indexes, "ix_ab");
+    try testing.expect(!try jsonBool(ab, "used"));
+    try testing.expect((try jsonGet(ab, "constraint")) == .null);
+    try testing.expect((try jsonGet(ab, "redundant_by")) == .null);
+
+    const a = try jsonIndex(indexes, "ix_a");
+    try testing.expectEqualStrings("ix_ab", try jsonText(a, "redundant_by"));
+
+    const id = try jsonIndex(indexes, "ix_id");
+    try testing.expectEqualStrings("INTEGER PRIMARY KEY", try jsonText(id, "redundant_by"));
+
+    const desc = try jsonIndex(indexes, "ix_desc");
+    try testing.expect(try jsonBool(desc, "used"));
+    try testing.expect((try jsonGet(desc, "redundant_by")) == .null);
+
+    const partial = try jsonIndex(indexes, "ix_p");
+    try testing.expect(try jsonBool(partial, "partial"));
+    try testing.expect((try jsonGet(partial, "redundant_by")) == .null);
+
+    const expression = try jsonIndex(indexes, "ix_expr");
+    try testing.expect(try jsonBool(expression, "expression"));
+    try testing.expectEqualStrings("<expression>", (try jsonItems(expression, "columns"))[0].string);
+
+    const unique = try jsonIndex(indexes, "sqlite_autoindex_t_1");
+    try testing.expectEqualStrings("unique", try jsonText(unique, "constraint"));
+    try testing.expect((try jsonGet(unique, "used")) == .null);
+
+    const primary = try jsonIndex(indexes, "sqlite_autoindex_wr_1");
+    try testing.expectEqualStrings("primary_key", try jsonText(primary, "constraint"));
+
+    const wr_index = try jsonIndex(indexes, "ix_wr_k");
+    try testing.expectEqualStrings("sqlite_autoindex_wr_1", try jsonText(wr_index, "redundant_by"));
+    try fixture.expectNoLeftovers();
+}
+
+test "an index audit ignores candidates and accepts a queries-only manifest" {
+    var fixture = try initAuditFixture();
+    defer fixture.deinit();
+
+    var stdout_buffer: [65536]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = try runAudit(&fixture, "audit-candidates.json", &.{}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+    try testing.expect(contains(result.stdout, "index audit: 1 query, 11 indexes\n"));
+    try fixture.expectNoLeftovers();
+}
+
+test "an index audit plans a query with its manifest binds" {
+    var fixture = try initAuditFixture();
+    defer fixture.deinit();
+
+    var stdout_buffer: [65536]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = try runAudit(&fixture, "audit-bind.json", &.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    try testing.expectEqual(@as(i64, 1), try jsonInt(parsed.value, "queries"));
+    const indexes = try jsonItems(parsed.value, "indexes");
+    const desc = try jsonIndex(indexes, "ix_desc");
+    try testing.expect(try jsonBool(desc, "used"));
+    try fixture.expectNoLeftovers();
+}
+
+test "an index audit stops on a SELECT it cannot prepare" {
+    var fixture = try initAuditFixture();
+    defer fixture.deinit();
+
+    var stdout_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = try runAudit(&fixture, "audit-bad.json", &.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+    try expectJsonFailure(result.stderr, "audit_query_failed", 1);
+    try fixture.expectNoLeftovers();
+}
+
+test "an index audit leaves the redundancy list unjudged with INDEXED BY" {
+    var fixture = try initAuditFixture();
+    defer fixture.deinit();
+
+    var stdout_buffer: [65536]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const human = try runAudit(&fixture, "audit-indexed-by.json", &.{}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, human.code);
+    try testing.expectEqualStrings("", human.stderr);
+    try testing.expect(contains(human.stdout, "(not judged: a manifest SELECT uses INDEXED BY)"));
+
+    var stdout_comment: [65536]u8 = undefined;
+    var stderr_comment: [2048]u8 = undefined;
+    const commented = try runAudit(&fixture, "audit-indexed-comment.json", &.{}, &stdout_comment, &stderr_comment);
+    try testing.expectEqual(ExitCode.ok, commented.code);
+    try testing.expectEqualStrings("", commented.stderr);
+    try testing.expect(contains(commented.stdout, "(not judged: a manifest SELECT uses INDEXED BY)"));
+
+    var stdout_json: [65536]u8 = undefined;
+    var stderr_json: [2048]u8 = undefined;
+    const result = try runAudit(&fixture, "audit-indexed-by.json", &.{ "--format", "json" }, &stdout_json, &stderr_json);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    try testing.expect(!try jsonBool(parsed.value, "redundancy_judged"));
+    for (try jsonItems(parsed.value, "indexes")) |item| {
+        try testing.expect((try jsonGet(item, "redundant_by")) == .null);
+    }
+    const indexes = try jsonItems(parsed.value, "indexes");
+    const a = try jsonIndex(indexes, "ix_a");
+    try testing.expect(try jsonBool(a, "used"));
+    try fixture.expectNoLeftovers();
+}
+
+const audit_long_name_schema: [:0]const u8 =
+    \\CREATE TABLE n(a INTEGER, b INTEGER);
+    \\INSERT INTO n VALUES (1, 2);
+    \\CREATE INDEX "idx" ON n(a);
+    \\CREATE INDEX "idx (x)" ON n(b);
+;
+
+test "an index audit picks the longest matching index name" {
+    var fixture = try CliFixture.initWithSchema("SELECT 1", "CREATE INDEX unused ON n(a)", audit_long_name_schema);
+    defer fixture.deinit();
+    try fixture.writeFile("qlong.sql", "SELECT b FROM n WHERE b = 2;");
+    try fixture.writeFile("audit-long.json", "{\"queries\":[{\"select\":\"qlong.sql\"}]}");
+
+    var stdout_buffer: [65536]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = try runAudit(&fixture, "audit-long.json", &.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    const indexes = try jsonItems(parsed.value, "indexes");
+    const short = try jsonIndex(indexes, "idx");
+    const long = try jsonIndex(indexes, "idx (x)");
+    try testing.expect(!try jsonBool(short, "used"));
+    try testing.expect(try jsonBool(long, "used"));
+    try fixture.expectNoLeftovers();
+}
+
+const audit_no_index_schema: [:0]const u8 =
+    \\CREATE TABLE empty(a INTEGER);
+;
+
+test "an index audit on a database without indexes prints three empty lists" {
+    var fixture = try CliFixture.initWithSchema("SELECT 1", "CREATE INDEX unused ON empty(a)", audit_no_index_schema);
+    defer fixture.deinit();
+    try fixture.writeFile("qempty.sql", "SELECT * FROM empty;");
+    try fixture.writeFile("audit-empty.json", "{\"queries\":[{\"select\":\"qempty.sql\"}]}");
+
+    var stdout_buffer: [32768]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = try runAudit(&fixture, "audit-empty.json", &.{}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+    try testing.expect(contains(result.stdout, "index audit: 1 query, 0 indexes\n"));
+    try testing.expectEqual(@as(usize, 3), std.mem.count(u8, result.stdout, "  (none)\n"));
+    try fixture.expectNoLeftovers();
+}

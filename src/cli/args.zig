@@ -61,6 +61,7 @@ pub const Args = struct {
     show_rows: bool = false,
     format: Format = .human,
     suggest: bool = false,
+    audit_indexes: bool = false,
     help: bool = false,
     version: bool = false,
 };
@@ -83,6 +84,7 @@ pub const ParseError = error{
     BatchRejectsBind,
     BatchRejectsRuns,
     BatchRejectsKv,
+    AuditConflict,
     MigrationRequiresBatch,
     MigrationRejectsSuggest,
     MigrationRejectsIndex,
@@ -210,6 +212,9 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
         } else if (std.mem.eql(u8, name, "--suggest")) {
             if (inline_value != null) return error.UnexpectedValue;
             args.suggest = true;
+        } else if (std.mem.eql(u8, name, "--audit-indexes")) {
+            if (inline_value != null) return error.UnexpectedValue;
+            args.audit_indexes = true;
         } else if (std.mem.eql(u8, name, "--runs")) {
             const raw = try optionValue(argv, &index, inline_value);
             args.runs = std.fmt.parseUnsigned(u32, raw, 10) catch return error.InvalidRuns;
@@ -246,6 +251,7 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
             .{ .name = "--show-binds", .present = args.show_binds },
             .{ .name = "--show-rows", .present = args.show_rows },
             .{ .name = "--suggest", .present = args.suggest },
+            .{ .name = "--audit-indexes", .present = args.audit_indexes },
         };
         for (conflicts) |conflict| {
             if (!conflict.present) continue;
@@ -264,6 +270,24 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
     if (args.config != null and args.d1 == null) {
         offending.* = "--config";
         return error.ConfigRequiresD1;
+    }
+    if (args.audit_indexes) {
+        if (args.batch == null) {
+            offending.* = "--batch";
+            return error.AuditConflict;
+        }
+        if (args.suggest) {
+            offending.* = "--suggest";
+            return error.AuditConflict;
+        }
+        if (args.migration != null) {
+            offending.* = "--migration";
+            return error.AuditConflict;
+        }
+        if (args.seed_data != null) {
+            offending.* = "--seed-data";
+            return error.AuditConflict;
+        }
     }
     if (args.migration != null) {
         if (args.batch == null) {
@@ -450,6 +474,7 @@ const long_options = [_][]const u8{
     "--show-binds",
     "--show-rows",
     "--suggest",
+    "--audit-indexes",
     "--runs",
     "--format",
     "--version",
@@ -569,6 +594,10 @@ pub const d1_usage_line = "       qenome --d1 <BINDING> <SELECT_FILE> <INDEX_FIL
 
 pub const batch_usage_line = "       qenome <DB> --batch <FILE> [options]";
 
+pub const audit_usage_line = "       qenome <DB> --batch <FILE> --audit-indexes [options]";
+
+pub const d1_audit_usage_line = "       qenome --d1 <BINDING> --batch <FILE> --audit-indexes [options]";
+
 pub const d1_batch_usage_line = "       qenome --d1 <BINDING> --batch <FILE> [options]";
 
 pub const migration_usage_line = "       qenome <DB> --batch <FILE> --migration <FILE> [options]";
@@ -592,7 +621,7 @@ pub fn printVersion(writer: *Io.Writer) Io.Writer.Error!void {
 }
 
 pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
-    try writer.writeAll(usage_line ++ "\n" ++ d1_usage_line ++ "\n" ++ batch_usage_line ++ "\n" ++ d1_batch_usage_line ++ "\n" ++ migration_usage_line ++ "\n" ++ d1_migration_usage_line ++ "\n" ++ suggest_usage_line ++ "\n" ++ d1_suggest_usage_line ++ "\n" ++ write_usage_line ++ "\n" ++ d1_write_usage_line ++ "\n" ++ record_usage_line ++ "\n\n" ++
+    try writer.writeAll(usage_line ++ "\n" ++ d1_usage_line ++ "\n" ++ batch_usage_line ++ "\n" ++ d1_batch_usage_line ++ "\n" ++ audit_usage_line ++ "\n" ++ d1_audit_usage_line ++ "\n" ++ migration_usage_line ++ "\n" ++ d1_migration_usage_line ++ "\n" ++ suggest_usage_line ++ "\n" ++ d1_suggest_usage_line ++ "\n" ++ write_usage_line ++ "\n" ++ d1_write_usage_line ++ "\n" ++ record_usage_line ++ "\n\n" ++
         \\Compares one read-only SELECT before and after one candidate CREATE INDEX
         \\on a local SQLite database, without changing the database. With --write,
         \\it compares one INSERT, UPDATE, DELETE, or REPLACE instead.
@@ -607,6 +636,12 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\  --batch <FILE>       compare every SELECT in a batch manifest with
         \\                       every candidate CREATE INDEX, instead of --select
         \\                       and --index-sql; see the batch manifest below
+        \\  --audit-indexes      with --batch, report the indexes that no query in
+        \\                       the manifest used, the indexes whose leading keys
+        \\                       another index or the primary key covers, and the
+        \\                       UNIQUE and PRIMARY KEY indexes that are kept for
+        \\                       their constraint; it needs --batch and does not
+        \\                       take --suggest, --migration, or --seed-data
         \\  --record <FILE>      read the records that qenome/d1 wrote to the output
         \\                       of wrangler dev or a test run, and write a batch
         \\                       manifest without candidates to --out; no database
@@ -687,6 +722,7 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\  qenome --d1 DB select.sql index.sql
         \\  qenome app.db --batch batch.json
         \\  qenome --db app.db --batch batch.json --format json
+        \\  qenome app.db --batch batch.json --audit-indexes
         \\  qenome app.db --batch batch.json --migration 0002.sql
         \\  qenome app.db select.sql index.sql --seed-data seed.json
         \\  qenome app.db select.sql --suggest
@@ -720,6 +756,20 @@ pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
         \\--select, --index-sql, --runs or --format kv. With --batch, exit 1 and
         \\124 can still have a report on stdout; stdout is empty when the run
         \\stopped before the report.
+        \\
+        \\--audit-indexes reads the plans of the manifest queries on one
+        \\read-only copy and reports three lists: the indexes that no plan
+        \\named (Unused in this manifest), plain indexes whose key columns are
+        \\a prefix of another index or of the primary key with the same
+        \\collation and order (Redundant candidates), and UNIQUE and PRIMARY
+        \\KEY indexes (Kept for constraints). The manifest needs only queries;
+        \\candidates are ignored. The report says a fact about this manifest,
+        \\not that an index can be dropped: UPDATE, DELETE, foreign-key
+        \\maintenance, and queries outside the manifest are not planned. A
+        \\partial index depends on the bound values, and the redundancy list is
+        \\not judged when a manifest SELECT uses INDEXED BY. The run does not
+        \\change the database, writes the report with exit status 0, and takes
+        \\--format human or json, --d1, and --timeout-ms.
         \\
         \\--migration applies the file to the variant copy before the manifest
         \\queries run. It needs --batch, takes a manifest without candidates,
@@ -862,6 +912,7 @@ fn parseErrorMessageForMode(err: ParseError) []const u8 {
         error.BatchRejectsBind => "--batch does not take --bind; put the binds in the manifest (see --help)",
         error.BatchRejectsRuns => "--batch does not run the timing; remove --runs (see --help)",
         error.BatchRejectsKv => "--batch supports --format human or --format json, not kv (see --help)",
+        error.AuditConflict => "--audit-indexes needs --batch and does not take --suggest, --migration, or --seed-data (see --help)",
         error.MigrationRequiresBatch => "--migration needs --batch; put the queries in a manifest (see --help)",
         error.MigrationRejectsSuggest => "--migration applies one SQL file; remove --suggest (see --help)",
         error.MigrationRejectsIndex => "--migration replaces the index file; remove --index-sql (see --help)",
@@ -1319,6 +1370,7 @@ test "every known long option is accepted by the parser" {
         &.{ "Qenome", "--d1", "DB" },
         &.{ "Qenome", "--d1", "DB", "--config", "wrangler.toml" },
         &.{ "Qenome", "--batch", "batch.json" },
+        &.{ "Qenome", "--batch", "batch.json", "--audit-indexes" },
         &.{ "Qenome", "--record", "record.log", "--out", "manifest-dir" },
         &.{ "Qenome", "--batch", "batch.json", "--migration", "m.sql" },
         &.{ "Qenome", "--seed-data", "seed.json" },
@@ -1692,4 +1744,34 @@ test "the usage shows the --migration synopsis and option" {
     try testing.expect(std.mem.indexOf(u8, writer.buffered(), "6 a --migration query") != null);
     try testing.expect(std.mem.indexOf(u8, writer.buffered(), "CREATE TABLE") != null);
     try testing.expect(std.mem.indexOf(u8, writer.buffered(), "not-judged") != null);
+}
+
+test "--audit-indexes needs a batch manifest and rejects the comparison modes" {
+    const cases = [_]struct { argv: []const [:0]const u8, offending: [:0]const u8 }{
+        .{ .argv = &.{ "Qenome", "--db", "d", "--audit-indexes" }, .offending = "--batch" },
+        .{ .argv = &.{ "Qenome", "--db", "d", "--batch", "b.json", "--audit-indexes", "--suggest" }, .offending = "--suggest" },
+        .{ .argv = &.{ "Qenome", "--db", "d", "--batch", "b.json", "--audit-indexes", "--migration", "m.sql" }, .offending = "--migration" },
+        .{ .argv = &.{ "Qenome", "--db", "d", "--batch", "b.json", "--audit-indexes", "--seed-data", "s.json" }, .offending = "--seed-data" },
+    };
+    for (cases) |case| {
+        var offending: ?[:0]const u8 = null;
+        try testing.expectError(error.AuditConflict, parseArgsReporting(testing.allocator, case.argv, &offending));
+        try testing.expectEqualStrings(case.offending, offending.?);
+    }
+
+    const args = try parseArgs(testing.allocator, &.{ "Qenome", "--db", "d", "--batch", "b.json", "--audit-indexes", "--format", "json" });
+    defer testing.allocator.free(args.binds);
+    try testing.expect(args.audit_indexes);
+    try testing.expectEqual(Format.json, args.format);
+
+    var missing_buffer: [required_option_count][]const u8 = undefined;
+    try testing.expectEqual(@as(usize, 0), missingRequired(args, &missing_buffer).len);
+}
+
+test "the usage shows the --audit-indexes synopsis and option" {
+    var buffer: [32768]u8 = undefined;
+    var writer = Io.Writer.fixed(&buffer);
+    try usage(&writer);
+    try testing.expect(std.mem.indexOf(u8, writer.buffered(), "qenome <DB> --batch <FILE> --audit-indexes") != null);
+    try testing.expect(std.mem.indexOf(u8, writer.buffered(), "--audit-indexes      with --batch") != null);
 }

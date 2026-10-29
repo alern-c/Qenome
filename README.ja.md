@@ -28,6 +28,7 @@
 - **インデックスが書き込みに与えるコストも見られます。** `--write` は `INSERT`・`UPDATE`・`DELETE`・`REPLACE` を1本、各コピーでロールバックするトランザクションの中で実行し、セカンダリインデックスの挿入・トリガー・外部キーの CASCADE を含む書いた行数を両側で報告します。[書き込みを比べる](#書き込みを比べる)を参照してください。
 - **ローカル D1 のバインディングだけで試せます。** `--d1 <BINDING>` が wrangler の設定からローカルデータベースを探し、`--config` で設定ファイルを指定できます。
 - **複数のクエリをまとめて比較。** `--batch <FILE>` は JSON のマニフェストにある全 SELECT と全候補 `CREATE INDEX` を組み合わせて、各組み合わせの判定を出します。[まとめて比べる（--batch）](#まとめて比べる--batch)を参照してください。
+- **マニフェストで使っていないインデックスを見つけられます。** `--batch manifest.json --audit-indexes` は、どのクエリの実行計画にも出てこなかったインデックス、先頭の列がほかのインデックスや主キーに覆われているインデックス、制約のために残す UNIQUE / PRIMARY KEY のインデックスを一覧にします。[インデックスの監査（--audit-indexes）](#インデックスの監査--audit-indexes)を参照してください。
 - **アプリが実行したクエリからマニフェストを作れます。** `qenome/d1` はローカルの D1 に実際に発行された SELECT とバインド値を記録し、`--record` がそのまま比較に使えるマニフェストにします。[実際に実行されたクエリを記録する（--record）](#実際に実行されたクエリを記録する--record)を参照してください。
 - **クエリから候補のインデックスを探せます。** `--suggest` は SQLite の expert に候補のインデックスを提案させて比較するので、SELECT ファイルだけで済みます。[候補のインデックスを提案させる（--suggest）](#候補のインデックスを提案させる--suggest)を参照してください。
 - **AI エージェントと CI 向けの JSON。** `--format json` は `schema_version` 2 のレポートを出し、終了コードが一致・不一致・比較不能を分けます。
@@ -46,6 +47,7 @@
 - [使い方](#使い方)
 - [サンドボックス用のデータを作る](#サンドボックス用のデータを作る)
 - [まとめて比べる（--batch）](#まとめて比べる--batch)
+- [インデックスの監査（--audit-indexes）](#インデックスの監査--audit-indexes)
 - [実際に実行されたクエリを記録する（--record）](#実際に実行されたクエリを記録する--record)
 - [出力形式](#出力形式)
 - [守るルール](#守るルール)
@@ -255,6 +257,7 @@ qenome app.db select.sql index.sql --seed-data seed.json
 qenome app.db --write update.sql --index-sql index.sql
 qenome --d1 DB select.sql index.sql
 qenome app.db --batch batch.json
+qenome app.db --batch batch.json --audit-indexes
 qenome app.db --batch batch.json --migration 0002_replace_index.sql
 qenome app.db select.sql --suggest
 qenome app.db --batch batch.json --suggest
@@ -274,6 +277,7 @@ qenome --record qenome-record.log --out qenome-manifest
 - `--write <FILE>`: SELECT の代わりに、`INSERT`・`UPDATE`・`DELETE`・`REPLACE` を1本書いたファイル。サンドボックスの各コピーでトランザクションの中で実行してロールバックする。「書き込みを比べる」を参照。`--select`・`--batch`・`--migration`・`--suggest` とは併用できない
 - `--index-sql <FILE>`: 候補の CREATE INDEX を1本書いたファイル（必須、1回だけ）
 - `--batch <FILE>`: JSON のマニフェストにある全 SELECT を、全候補 CREATE INDEX と1回の実行で比べる。「まとめて比べる（--batch）」を参照。`--select` / `--index-sql` / `--bind` / 位置指定の SELECT・INDEX、`--runs`、`--format kv` とは併用できない
+- `--audit-indexes`: `--batch` と組み合わせて、マニフェストのどのクエリの実行計画にも使われなかったインデックスと、先頭の列がほかのインデックスや主キーに覆われているインデックスを報告し、UNIQUE と PRIMARY KEY のインデックスは別の一覧に分ける。マニフェストは `queries` だけでよく、`candidates` は無視する。`--batch` が必要で、`--suggest`・`--migration`・`--seed-data` とは併用できない。「インデックスの監査（--audit-indexes）」を参照
 - `--record <FILE>`: `qenome/d1` が出力した記録を読み、`--out` に `candidates` を持たないマニフェストを書く。データベースは要らない。マニフェストにはバインド値が入るので、ローカルに置いて commit しない。`--out` とセットで使い、`--db`・`--d1`・`--select`・`--write`・`--index-sql`・`--batch`・`--migration`・`--seed-data`・`--bind`・`--runs`・`--suggest`・`--format kv` / `json` とは併用できない。「実際に実行されたクエリを記録する（--record）」を参照
 - `--out <DIR>`: `--record` の出力先。存在しない新しいディレクトリを指定する。ディレクトリは `0700`、ファイルは `0600` で作る
 - `--migration <FILE>`: `--batch` の全クエリを実行する前に、この SQL ファイルを variant にだけ適用する。`--batch` と、`candidates` を持たないマニフェストが必要。`--select` / `--index-sql` / `--bind` / `--runs` / `--suggest` / `--format kv` とは併用できない。`CREATE INDEX`・`CREATE UNIQUE INDEX`・`DROP INDEX`・`CREATE TABLE`（`AS SELECT` を除く）・`ALTER TABLE`（ADD / RENAME / DROP COLUMN と RENAME TO）を受け付け、データ変更・`DROP TABLE`・`ATTACH`・`PRAGMA`・その他の文は文番号付きで拒否する。マイグレーションで消した・名前を変えた列やテーブルを参照するクエリがあると実行全体が終了コード `1` で止まる。列を足す・消すと `SELECT *` は結果の列数が変わるため比較できず、終了コード `4` になる。「まとめて比べる（--batch）」を参照
@@ -458,6 +462,24 @@ batch の報告を録画したものが2本あります。1本目は1本の SELE
 
 どちらの録画も、`examples/d1-toml` のサンプルに `docs/demo` の入力を組み合わせています。
 
+### インデックスの監査（--audit-indexes）
+
+`qenome app.db --batch manifest.json --audit-indexes` は、マニフェストのクエリが使わなかった既存のインデックスと、先頭の列がほかのインデックスや主キーに覆われているインデックスを報告します。読み取り専用のコピー1つで全クエリの実行計画を取るだけで、variant を作らず、データベースも変更しません。マニフェストは `queries` だけでよく、`--record` が作ったマニフェストをそのまま使えます。`candidates` は無視します。
+
+出力は3つの一覧です。
+
+| 一覧 | 内容 |
+| --- | --- |
+| `Unused in this manifest` | どの実行計画にも名前が出なかったインデックス。部分インデックスには注記を付ける（別のバインド値では使われうるため） |
+| `Redundant candidates` | キー列が、同じテーブルのほかのインデックスまたは主キーの先頭部分と、照合順序・ASC/DESC まで一致する通常のインデックス。`covered by` が覆っているインデックスの名前。`INTEGER PRIMARY KEY` は rowid の主キーを表す |
+| `Kept for constraints` | UNIQUE と PRIMARY KEY のインデックス。削除候補にはしない |
+
+同じインデックスが「未使用」と「冗長の候補」の両方に出ることがあります。キー列は `PRAGMA index_list` と `PRAGMA index_xinfo` から取ります。部分インデックスは冗長と判定せず、式インデックスは比較せず、照合順序や ASC/DESC が違うものは覆っているとみなしません。マニフェストの SELECT が `INDEXED BY` を使っているときは、そのクエリが強制するインデックスを指さないよう、冗長の一覧を判定しません。
+
+このレポートは「このマニフェストでは使われなかった」という事実で、「削除してよい」という推薦ではありません。実行計画はマニフェストの SELECT だけを対象にするので、`UPDATE`・`DELETE`・外部キーの保守・マニフェスト外のクエリで使うインデックスはここには出ません。`ORDER BY` や `GROUP BY` のためだけに使うインデックスは計画に出るので、未使用にはなりません。SQLite がその実行で選ばなかったインデックスも、使えるインデックスであり続けます。
+
+レポートを書けたときの終了コードは `0` です。一覧が空でなくても変わりません。インデックスは終了コードではなく stdout で見つけてください。`--audit-indexes` には `--batch` が必要で、`--suggest`・`--migration`・`--seed-data` とは併用できません。`--d1`、`--timeout-ms`（実行計画とカタログの読み取りごと）、`--format human`（既定）または `--format json` を使えます。JSON は [docs/json.md](docs/json.md) に書いた `audit_schema_version` 1 のオブジェクトです。
+
 ### 実際に実行されたクエリを記録する（--record）
 
 人がマニフェストを書くと、ORM が組み立てたクエリを書き漏らしても気づけません。`qenome/d1` は、アプリがローカルの D1 に実際に発行した SELECT とバインド値を記録し、`--record` がその記録からマニフェストを作ります。使うのはローカルの開発とテストの間だけにしてください。
@@ -505,7 +527,7 @@ npx qenome --record qenome-record.log --out qenome-manifest
 
 `--out` の下に `manifest.json` と `queries/q001.sql` のような SQL ファイルができます。ディレクトリは `0700`、ファイルは `0600` で作り、stdout にはバインド値を出しません。`manifest.json` には実値が入るので commit しないでください。記録に使ったログも、マニフェストを作ったあとに削除してください。
 
-1. 作ったマニフェストを比べます。`queries` だけを持つので、`--suggest` か `--migration` と組み合わせます。
+1. 作ったマニフェストを比べるか、使っているインデックスを監査します。`queries` だけを持つので、`--suggest`・`--migration`・`--audit-indexes` と組み合わせます。
 
 ```sh
 npx qenome --d1 DB --batch qenome-manifest/manifest.json --suggest
