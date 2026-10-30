@@ -1,6 +1,6 @@
 # JSON contract (schema_version 2)
 
-`--format json` is the machine-readable interface. This file is the contract for `schema_version` 2. The JSON Schema files next to it check the same shape: [qenome-report.schema.json](qenome-report.schema.json) for a finished comparison, [qenome-error.schema.json](qenome-error.schema.json) for a failure, [qenome-batch.schema.json](qenome-batch.schema.json) for a `--batch` report (`batch_schema_version` 1), and [qenome-index-audit.schema.json](qenome-index-audit.schema.json) for an `--audit-indexes` report (`audit_schema_version` 1).
+`--format json` is the machine-readable interface. This file is the contract for `schema_version` 2. The JSON Schema files next to it check the same shape: [qenome-report.schema.json](qenome-report.schema.json) for a finished comparison, [qenome-error.schema.json](qenome-error.schema.json) for a failure, [qenome-batch.schema.json](qenome-batch.schema.json) for a `--batch` report (`batch_schema_version` 1), [qenome-index-audit.schema.json](qenome-index-audit.schema.json) for an `--audit-indexes` report (`audit_schema_version` 1), and [qenome-record.schema.json](qenome-record.schema.json) for a `--record` report (`record_schema_version` 1).
 
 `schema_version` is already `2` in this tree. `1` was the time verdict. Do not treat a missing pending field as a version bump. The pending names below are part of version 2 and are reserved until the core change emits them.
 
@@ -144,9 +144,9 @@ Batch error codes:
 | `audit_query_timeout` | 124 | Raise `--timeout-ms`, or narrow the SELECT |
 | `audit_catalog_unreadable` | 1 | Read the SQLite message and check that the schema can be read |
 | `audit_catalog_timeout` | 124 | Raise `--timeout-ms`, or check the schema for a very large catalog |
-| `usage_record_conflict` | 2 | Use `--record` with `--out` only; remove the database, SQL, batch, migration, bind, runs, suggest, seed, and format options |
+| `usage_record_conflict` | 2 | Use `--record` with `--out` only, and `--format human` or `json` with `--n-plus-one-threshold`; remove the database, SQL, batch, migration, bind, runs, suggest, and seed options |
 | `record_log_unreadable` | 1 | Check that the record log path exists and is readable, then rerun |
-| `record_log_invalid` | 1 | Record a session with at least one SELECT, at most 100 distinct statements, and at most 1 MiB |
+| `record_log_invalid` | 1 | Record a session with at least one SELECT, at most 100 distinct statements, and at most 1 MiB. When the 100-statement limit stops the run, the message also names the most repeated shape and how many statements share it |
 | `record_output_failed` | 1 | Choose a new `--out` directory and check that it is writable, then rerun |
 | `batch_manifest_unreadable` | 1 | Check the manifest path and permissions |
 | `batch_manifest_invalid` | 1 | Fix the shape, limits, repeated paths, or binds |
@@ -202,6 +202,42 @@ Semantics and limits:
 - Findings do not change the exit status: a written report keeps `0`. The process exits `1` when a query cannot be prepared or a catalog read fails, `2` for a usage error, and `124` when `--timeout-ms` reaches a plan or a catalog read.
 - `INDEXED BY` in any manifest SELECT suppresses the redundancy list. The query forces an index, and the audit does not try to see which other indexes could replace it.
 - `warnings` carries `unapplied_migrations` with `--d1` when the local D1 database has not applied every migration of the wrangler config; the files and the read-only check are the same as in the comparison. The `human` report lists the entry in a `Warnings` section. It does not change the findings or the exit status.
+
+## Record report (record_schema_version 1)
+
+`--record FILE --out DIR --format json` writes one object with `record_schema_version` 1 and a trailing newline. It is a separate contract from the batch report: `schema_version` 2, `batch_schema_version` 1 and `audit_schema_version` 1 do not change. [qenome-record.schema.json](qenome-record.schema.json) checks the same shape. Without `--format json` the same facts are text lines, and the `repeated shapes:` block follows the per-query lines on stdout. [README](../README.md#recording-the-queries-your-app-runs---record) describes the command.
+
+| Key | Type | Meaning |
+| `record_schema_version` | number | `1` |
+| `exit_code` | number | `0` when the report is written. A finding never changes the exit code |
+| `manifest` | string | The `manifest.json` path under `--out` |
+| `records` | number | Record lines read, including the skipped ones |
+| `queries` | array | One `{ "select", "executions" }` object per manifest entry, in `queries/qNNN.sql` order |
+| `skipped` | object | The counters `writes`, `exec`, `other`, `blob`, `unsupported`, `nul`, `large`, `malformed` and `version`; the same numbers as the human `skipped:` line |
+| `repeated_shapes` | array | At most 20 shape objects, ordered by `distinct_values`, then `executions`, then first appearance in the log |
+| `repeated_shapes_dropped` | number | How many shapes passed the threshold and did not fit in the top 20 |
+
+`repeated_shapes` entries:
+
+| Key | Type | Meaning |
+| `kind` | string | `read` for SELECT and VALUES, `write` for INSERT, UPDATE, DELETE and REPLACE |
+| `executions` | number | Records with this shape |
+| `distinct_values` | number | Distinct combinations of bind values and inlined literals. Records from `op: "batch"` are not counted here |
+| `longest_run` | number | Longest stretch of consecutive records with this shape, in log order. A record that the report skips, such as a `PRAGMA` or an `exec`, ends the run |
+| `statements` | number | Distinct exact SQL texts with this shape. More than one shows inlined literals |
+| `batched` | number | Records with `op: "batch"`. They count in `executions` only; the human block adds `, N batched` for such a shape |
+| `example` | string | One exact SQL text of the shape. Never a bind value |
+| `previous_shape_example` | string or `null` | The SQL of the shape that most often runs right before a run of this shape, which is usually the query that drives the loop. `null` when no other shape came first |
+| `manifest_select` | string or `null` | The `queries/qNNN.sql` entry that holds a statement of this shape. A write shape has `null` |
+| `hint` | string | The fixed next step for the kind |
+
+Semantics and limits:
+
+- A shape comes from the tokens of the statement: every `number`, `string`, `blob` and `parameter` token becomes one placeholder, a parenthesised list of only placeholders after `IN` collapses to one list, word case is folded, and identifiers, quoted identifiers, operators and comments stay as tokens. `= ?`, `= ?1`, `= :id`, `= 17` and `= 'a'` share one shape, and so do `IN (?, ?)` and `IN (?, ?, ?)`; a different column, table or operator keeps a different shape. A unary sign on a number is part of the placeholder, so `= -1` matches `= 1`.
+- The detection reads every record before the read/write filter, so a loop of `INSERT`, `UPDATE`, `DELETE` or `REPLACE` is reported too.
+- A shape is reported when `distinct_values` is at least the threshold: `10` by default, or `--n-plus-one-threshold N` (0 turns the report off, otherwise 2 to 1,000,000). `op: "batch"` records are already one round trip, so they never reach the threshold.
+- The report is a hint about round trips and repeated work, not a measurement: it does not change a row count, a timing, the manifest, or the exit code.
+- Bind values never appear: only `example` and `previous_shape_example` hold SQL text.
 
 ## Status in this tree
 

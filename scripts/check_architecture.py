@@ -23,6 +23,7 @@ APPROVED_FILES = [
     "src/cli/batch_report.zig",
     "src/cli/audit.zig",
     "src/cli/record.zig",
+    "src/cli/record_shapes.zig",
     "src/cli/suggest.zig",
     "src/cli/seed.zig",
     "src/cli/skill.zig",
@@ -31,15 +32,22 @@ APPROVED_FILES = [
     "src/cli/warnings.zig",
     "src/cli/tests.zig",
     "src/cli/d1_tests.zig",
+    "src/cli/record_tests.zig",
     "src/contract/values.zig",
     "src/sql/lexer.zig",
+    "src/sql/shape.zig",
     "src/skill/diff.zig",
     "src/skill/skill.zig",
     "src/d1/config.zig",
     "src/d1/migrations.zig",
 ]
 
-TEST_FILES = ["src/cli/tests.zig", "src/cli/skill_tests.zig", "src/cli/d1_tests.zig"]
+TEST_FILES = [
+    "src/cli/tests.zig",
+    "src/cli/skill_tests.zig",
+    "src/cli/d1_tests.zig",
+    "src/cli/record_tests.zig",
+]
 
 PRODUCTION_FILES = [path for path in APPROVED_FILES if path not in TEST_FILES]
 
@@ -170,7 +178,14 @@ PRODUCTION_IMPORTS = {
     "src/cli/record.zig": [
         "src/cli/args.zig",
         "src/cli/control.zig",
+        "src/cli/record_shapes.zig",
+        "src/cli/record_tests.zig",
         "src/sql/lexer.zig",
+        "src/sql/shape.zig",
+    ],
+    "src/cli/record_shapes.zig": [
+        "src/contract/values.zig",
+        "src/cli/report.zig",
     ],
     "src/cli/seed.zig": [
         "src/sqlite.zig",
@@ -196,6 +211,7 @@ PRODUCTION_IMPORTS = {
     "src/d1/config.zig": [],
     "src/d1/migrations.zig": ["src/sqlite.zig"],
     "src/sql/lexer.zig": [],
+    "src/sql/shape.zig": ["src/sql/lexer.zig"],
 }
 
 TEST_ENTRY_IMPORTER = "src/cli.zig"
@@ -231,6 +247,10 @@ TEST_IMPORTS = {
         "src/cli.zig",
         "src/cli/skill.zig",
         "src/skill/skill.zig",
+    ],
+    "src/cli/record_tests.zig": [
+        "src/cli.zig",
+        "src/cli/record.zig",
     ],
 }
 
@@ -296,6 +316,7 @@ WRITE_DEBT = [
     "src/cli/pair.zig",
     "src/cli/query.zig",
     "src/cli/record.zig",
+    "src/cli/record_shapes.zig",
     "src/cli/seed.zig",
     "src/cli/timing.zig",
     "src/cli/report_time.zig",
@@ -308,6 +329,7 @@ CONTRACT_VALUES = [
     "schema_version",
     "batch_schema_version",
     "audit_schema_version",
+    "record_schema_version",
     "warning_codes",
     "warning_messages",
     "bind_dependent_partial_index_message",

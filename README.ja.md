@@ -238,7 +238,7 @@ qenome --record qenome-record.log --out qenome-manifest
 - `--index-sql <FILE>`: 候補の CREATE INDEX を1本書いたファイル（必須、1回だけ）
 - `--batch <FILE>`: JSON のマニフェストにある全 SELECT を、全候補 CREATE INDEX と1回の実行で比べる。「まとめて比べる（--batch）」を参照。`--select` / `--index-sql` / `--bind` / 位置指定の SELECT・INDEX、`--runs`、`--format kv` とは併用できない
 - `--audit-indexes`: `--batch` と組み合わせて、マニフェストのどのクエリの実行計画にも使われなかったインデックスと、先頭の列がほかのインデックスや主キーに覆われているインデックスを報告し、UNIQUE と PRIMARY KEY のインデックスは別の一覧に分ける。マニフェストは `queries` だけでよく、`candidates` は無視する。`--batch` が必要で、`--suggest`・`--migration`・`--seed-data` とは併用できない。「インデックスの監査（--audit-indexes）」を参照
-- `--record <FILE>`: `qenome/d1` が出力した記録を読み、`--out` に `candidates` を持たないマニフェストを書く。データベースは要らない。マニフェストにはバインド値が入るので、ローカルに置いて commit しない。`--out` とセットで使い、`--db`・`--d1`・`--select`・`--write`・`--index-sql`・`--batch`・`--migration`・`--seed-data`・`--bind`・`--runs`・`--suggest`・`--format kv` / `json` とは併用できない。「実際に実行されたクエリを記録する（--record）」を参照
+- `--record <FILE>`: `qenome/d1` が出力した記録を読み、`--out` に `candidates` を持たないマニフェストを書く。データベースは要らない。マニフェストにはバインド値が入るので、ローカルに置いて commit しない。`--out` とセットで使い、`--db`・`--d1`・`--select`・`--write`・`--index-sql`・`--batch`・`--migration`・`--seed-data`・`--bind`・`--runs`・`--suggest`・`--format kv` とは併用できない。`--format human`（既定）または `--format json` と、`--n-plus-one-threshold N` を使える。「実際に実行されたクエリを記録する（--record）」を参照
 - `--out <DIR>`: `--record` の出力先。存在しない新しいディレクトリを指定する。ディレクトリは `0700`、ファイルは `0600` で作る
 - `--migration <FILE>`: `--batch` の全クエリを実行する前に、この SQL ファイルを variant にだけ適用する。`--batch` と、`candidates` を持たないマニフェストが必要。`--select` / `--index-sql` / `--bind` / `--runs` / `--suggest` / `--format kv` とは併用できない。`CREATE INDEX`・`CREATE UNIQUE INDEX`・`DROP INDEX`・`CREATE TABLE`（`AS SELECT` を除く）・`ALTER TABLE`（ADD / RENAME / DROP COLUMN と RENAME TO）を受け付け、データ変更・`DROP TABLE`・`ATTACH`・`PRAGMA`・その他の文は文番号付きで拒否する。マイグレーションで消した・名前を変えた列やテーブルを参照するクエリがあると実行全体が終了コード `1` で止まる。列を足す・消すと `SELECT *` は結果の列数が変わるため比較できず、終了コード `4` になる。「まとめて比べる（--batch）」を参照
 - `--seed-data <FILE>`: 比較の前に、この JSON の指定に従ってサンドボックスのコピーのテーブルを決まったダミーデータで置き換える。元のデータベースは変更しない。`--batch`・`--suggest`・`--migration` を含むすべてのモードで使える。「サンドボックス用のデータを作る」を参照
@@ -502,7 +502,18 @@ npx qenome --d1 DB --batch qenome-manifest/manifest.json --suggest
 - 同じ SQL は1件にまとめます。文字列・コメントの外側の空白だけが違う SQL は同じとみなし、代表のバインド値は最初に実行された1組を使います。何回実行されたかは stdout に出ます。
 - INSERT・UPDATE・DELETE・REPLACE はマニフェストに入れず、件数だけ出します。`exec` と、BLOB・真偽値・NUL を含むテキストのバインドを使う文も入れません（BLOB は `--bind` で表せないため）。スキップした理由と件数は `skipped:` の行に出ます。
 - 異なる SELECT が100件を超える、マニフェストが 1 MiB を超える、SQL が 1 MiB を超える、記録が 16 MiB を超える場合は、`--out` を作る前に止まります。
-- `--record` はデータベースを必要とせず、`--db`・`--d1`・`--batch`・`--migration`・`--suggest`・`--seed-data`・`--bind`・`--runs` などとは併用できません。`--format human` だけを使えます。
+- `--record` はデータベースを必要とせず、`--db`・`--d1`・`--batch`・`--migration`・`--suggest`・`--seed-data`・`--bind`・`--runs` などとは併用できません。`--format human`（既定）または `--format json` と、`--n-plus-one-threshold N` を使えます。
+
+`--record` は、値だけ違う同じ「形」の文が何度も実行されたことも報告します。これは N+1 のパターンです。
+
+```text
+repeated shapes:
+  queries/q002.sql  shape: 50 executions, 50 different values, longest run 50 (possible N+1; fetch the rows in one query with IN (...) or a JOIN, or send the statements with db.batch())
+```
+
+形は値ではなく文で決まります。`WHERE post_id = ?`・`= ?1`・`= :id`・`= 17`・`= 'a'` は 1 つの形、`IN (?, ?)` と `IN (?, ?, ?)` も 1 つの形で、列・テーブル・演算子が違えば別の形です。10 種類以上の値で実行された形を報告します。`--n-plus-one-threshold N` でその数を変えられ（2〜1,000,000）、`0` で報告を止めます。報告する形は最大 20 件で、値の種類が多い順、実行回数の多い順に並べ、何件を省いたかも出します。`INSERT` や `UPDATE` のループも書き込み向けのヒント付きで報告し、`db.batch()` の記録はすでに 1 往復なので閾値には数えません。報告する形がバッチでも実行されていた場合は、その件数（`20 batched`）を行に出します。`repeated shapes: none` は、閾値を超えた形がなかったという意味です。`--format json` では同じ内容を `record_schema_version` 1 の 1 オブジェクトで出し、`repeated_shapes` 配列に上記の値と `batched`・`previous_shape_example`・`manifest_select`（その形の `queries/qNNN.sql`）・`hint` が入ります。キーの一覧は [docs/json.md](docs/json.md) にあります。どちらの形式でもバインド値は出しません。
+
+この報告は往復回数と繰り返し作業についてのヒントであり、計測ではありません。行数・実行時間・マニフェスト・終了コードは変わりません。
 
 記録はローカルの開発とテストのためだけのものです。ラッパーは記録した SQL とバインド値をそのまま出力に書くので、本番の Worker には入れないでください。`withSession` と Durable Object の中の SQL は記録しません。
 

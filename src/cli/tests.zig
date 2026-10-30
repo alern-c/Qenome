@@ -5221,6 +5221,7 @@ test "record turns a log into a private manifest that a batch accepts" {
     try testing.expect(contains(result.stdout, "queries: 2 distinct read-only statements (3 executions)\n"));
     try testing.expect(contains(result.stdout, "  queries/q001.sql  2 executions\n"));
     try testing.expect(contains(result.stdout, "skipped: 1 writes\n"));
+    try testing.expect(contains(result.stdout, "repeated shapes: none\n"));
     try testing.expect(contains(result.stdout, "warning: the manifest holds bind values"));
     try testing.expect(!contains(result.stdout, "s3cr3t"));
     try testing.expect(!contains(result.stderr, "s3cr3t"));
@@ -5303,50 +5304,6 @@ test "record refuses an existing output directory and a log without a read-only 
     try testing.expectError(error.FileNotFound, fixture.dir.tmp.dir.statFile(testing.io, "manifest-none", .{}));
 }
 
-test "record refuses more than 100 statements before it writes anything" {
-    var fixture = try CliFixture.initWithSchema("SELECT 1", "CREATE INDEX unused ON t(a)", record_schema);
-    defer fixture.deinit();
-    var log: std.ArrayList(u8) = .empty;
-    defer log.deinit(testing.allocator);
-    for (0..101) |index| {
-        try log.print(testing.allocator, "QENOME_D1_RECORD {{\"v\":1,\"op\":\"all\",\"sql\":\"SELECT {d}\",\"types\":[],\"binds\":[]}}\n", .{index});
-    }
-    const log_path = try writeRecordLog(&fixture, "many.log", log.items, 0o600);
-    defer testing.allocator.free(log_path);
-    const out_path = try recordOutputPath(&fixture, "manifest-many");
-    defer testing.allocator.free(out_path);
-
-    var stdout_buffer: [4096]u8 = undefined;
-    var stderr_buffer: [2048]u8 = undefined;
-    const result = callRun(testing.allocator, &.{ "Qenome", "--record", log_path, "--out", out_path }, fixture.work_parent, &stdout_buffer, &stderr_buffer);
-    try testing.expectEqual(ExitCode.rejected, result.code);
-    try testing.expect(contains(result.stderr, "at most 100"));
-    try testing.expectError(error.FileNotFound, fixture.dir.tmp.dir.statFile(testing.io, "manifest-many", .{}));
-}
-
-test "record reports unreadable records and counts what it skipped" {
-    var fixture = try CliFixture.initWithSchema("SELECT 1", "CREATE INDEX unused ON t(a)", record_schema);
-    defer fixture.deinit();
-    const log_path = try writeRecordLog(&fixture, "mixed.log", "QENOME_D1_RECORD not json\n" ++
-        "QENOME_D1_RECORD {\"v\":2,\"op\":\"all\",\"sql\":\"SELECT 1\",\"types\":[],\"binds\":[]}\n" ++
-        "QENOME_D1_RECORD {\"v\":1,\"op\":\"all\",\"sql\":\"SELECT ?\",\"types\":[\"blob\"],\"binds\":[null]}\n" ++
-        "QENOME_D1_RECORD {\"v\":1,\"op\":\"all\",\"sql\":\"PRAGMA foreign_keys\",\"types\":[],\"binds\":[]}\n" ++
-        "QENOME_D1_RECORD {\"v\":1,\"op\":\"all\",\"sql\":\"SELECT 1\",\"types\":[],\"binds\":[]}\n", 0o600);
-    defer testing.allocator.free(log_path);
-    const out_path = try recordOutputPath(&fixture, "manifest-mixed");
-    defer testing.allocator.free(out_path);
-
-    var stdout_buffer: [4096]u8 = undefined;
-    var stderr_buffer: [2048]u8 = undefined;
-    const result = callRun(testing.allocator, &.{ "Qenome", "--record", log_path, "--out", out_path }, fixture.work_parent, &stdout_buffer, &stderr_buffer);
-    try testing.expectEqual(ExitCode.ok, result.code);
-    try testing.expectEqualStrings("", result.stderr);
-    try testing.expect(contains(result.stdout, "1 unreadable records"));
-    try testing.expect(contains(result.stdout, "1 other versions"));
-    try testing.expect(contains(result.stdout, "1 blob binds"));
-    try testing.expect(contains(result.stdout, "1 other statements"));
-}
-
 test "record warns when the log is readable by other users" {
     if (builtin.os.tag == .windows) return;
     var fixture = try CliFixture.initWithSchema("SELECT 1", "CREATE INDEX unused ON t(a)", record_schema);
@@ -5377,78 +5334,22 @@ test "record rejects the options of the other modes" {
     try testing.expectEqual(ExitCode.usage, with_db.code);
     try testing.expect(contains(with_db.stderr, "--record does not take --db"));
 
-    const with_format = callRun(testing.allocator, &.{ "Qenome", "--record", log_path, "--out", out_path, "--format", "json" }, fixture.work_parent, &stdout_buffer, &stderr_buffer);
+    const with_format = callRun(testing.allocator, &.{ "Qenome", "--record", log_path, "--out", out_path, "--format", "kv" }, fixture.work_parent, &stdout_buffer, &stderr_buffer);
     try testing.expectEqual(ExitCode.usage, with_format.code);
-    try expectJsonFailure(with_format.stderr, "usage_record_conflict", 2);
+    try testing.expect(contains(with_format.stderr, "--record supports --format human or json, not kv"));
+
+    const threshold_only = callRun(testing.allocator, &.{ "Qenome", "--db", fixture.db_path, "--select", fixture.select_path, "--index-sql", fixture.index_path, "--n-plus-one-threshold", "3" }, fixture.work_parent, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.usage, threshold_only.code);
+    try testing.expect(contains(threshold_only.stderr, "--n-plus-one-threshold is only used with --record"));
+
+    const bad_threshold = callRun(testing.allocator, &.{ "Qenome", "--record", log_path, "--out", out_path, "--n-plus-one-threshold", "1" }, fixture.work_parent, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.usage, bad_threshold.code);
+    try testing.expect(contains(bad_threshold.stderr, "--n-plus-one-threshold expects 0 (off) or an integer from 2 to 1000000"));
+    try testing.expectError(error.FileNotFound, fixture.dir.tmp.dir.statFile(testing.io, "manifest-dir", .{}));
 
     const positional = callRun(testing.allocator, &.{ "Qenome", "--record", log_path, "--out", out_path, "select.sql" }, fixture.work_parent, &stdout_buffer, &stderr_buffer);
     try testing.expectEqual(ExitCode.usage, positional.code);
     try testing.expect(contains(positional.stderr, "--record takes no database or SQL path"));
-}
-
-test "record skips a statement at the SQL size limit and refuses a manifest over 1 MiB" {
-    var fixture = try CliFixture.initWithSchema("SELECT 1", "CREATE INDEX unused ON t(a)", record_schema);
-    defer fixture.deinit();
-    var log: std.ArrayList(u8) = .empty;
-    defer log.deinit(testing.allocator);
-    try log.appendSlice(testing.allocator, "QENOME_D1_RECORD {\"v\":1,\"op\":\"all\",\"sql\":\"");
-    try log.appendNTimes(testing.allocator, ' ', args_max_sql_bytes + 1 - "SELECT 1".len);
-    try log.appendSlice(testing.allocator, "SELECT 1\",\"types\":[],\"binds\":[]}\n");
-    const large_path = try writeRecordLog(&fixture, "large.log", log.items, 0o600);
-    defer testing.allocator.free(large_path);
-    const large_out = try recordOutputPath(&fixture, "manifest-large");
-    defer testing.allocator.free(large_out);
-
-    var stdout_buffer: [4096]u8 = undefined;
-    var stderr_buffer: [2048]u8 = undefined;
-    const large = callRun(testing.allocator, &.{ "Qenome", "--record", large_path, "--out", large_out }, fixture.work_parent, &stdout_buffer, &stderr_buffer);
-    try testing.expectEqual(ExitCode.rejected, large.code);
-    try testing.expect(contains(large.stderr, "1 large SQL"));
-
-    log.clearRetainingCapacity();
-    for (0..100) |index| {
-        try log.print(testing.allocator, "QENOME_D1_RECORD {{\"v\":1,\"op\":\"all\",\"sql\":\"SELECT {d}, ?\",\"types\":[\"text\"],\"binds\":[\"", .{index});
-        try log.appendNTimes(testing.allocator, 'a', 12_000);
-        try log.appendSlice(testing.allocator, "\"]}\n");
-    }
-    const wide_path = try writeRecordLog(&fixture, "wide.log", log.items, 0o600);
-    defer testing.allocator.free(wide_path);
-    const wide_out = try recordOutputPath(&fixture, "manifest-wide");
-    defer testing.allocator.free(wide_out);
-    const wide = callRun(testing.allocator, &.{ "Qenome", "--record", wide_path, "--out", wide_out }, fixture.work_parent, &stdout_buffer, &stderr_buffer);
-    try testing.expectEqual(ExitCode.rejected, wide.code);
-    try testing.expect(contains(wide.stderr, "manifest would be larger than 1 MiB"));
-    try testing.expectError(error.FileNotFound, fixture.dir.tmp.dir.statFile(testing.io, "manifest-wide", .{}));
-}
-
-const args_max_sql_bytes = cli.max_sql_bytes;
-
-test "record accepts a log at the size limit and refuses one byte more" {
-    var fixture = try CliFixture.initWithSchema("SELECT 1", "CREATE INDEX unused ON t(a)", record_schema);
-    defer fixture.deinit();
-    var big: std.ArrayList(u8) = .empty;
-    defer big.deinit(testing.allocator);
-    try big.appendNTimes(testing.allocator, 'x', cli_record.max_log_bytes);
-    const exact_path = try writeRecordLog(&fixture, "exact.log", big.items, 0o600);
-    defer testing.allocator.free(exact_path);
-    const exact_out = try recordOutputPath(&fixture, "manifest-exact");
-    defer testing.allocator.free(exact_out);
-
-    var stdout_buffer: [4096]u8 = undefined;
-    var stderr_buffer: [2048]u8 = undefined;
-    const exact = callRun(testing.allocator, &.{ "Qenome", "--record", exact_path, "--out", exact_out }, fixture.work_parent, &stdout_buffer, &stderr_buffer);
-    try testing.expectEqual(ExitCode.rejected, exact.code);
-    try testing.expect(contains(exact.stderr, "holds no readable records"));
-    try testing.expect(!contains(exact.stderr, "larger than 16 MiB"));
-
-    try big.append(testing.allocator, 'x');
-    const over_path = try writeRecordLog(&fixture, "over.log", big.items, 0o600);
-    defer testing.allocator.free(over_path);
-    const over_out = try recordOutputPath(&fixture, "manifest-over");
-    defer testing.allocator.free(over_out);
-    const over = callRun(testing.allocator, &.{ "Qenome", "--record", over_path, "--out", over_out }, fixture.work_parent, &stdout_buffer, &stderr_buffer);
-    try testing.expectEqual(ExitCode.rejected, over.code);
-    try testing.expect(contains(over.stderr, "larger than 16 MiB"));
 }
 
 const audit_schema: [:0]const u8 =

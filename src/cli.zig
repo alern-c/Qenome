@@ -150,7 +150,7 @@ fn runCaptured(
     }
 
     if (args.record) |record_path| {
-        return cli_record.run(io, arena, record_path, args.out.?, stdout, stderr);
+        return cli_record.run(io, arena, record_path, args.out.?, args.format, args.n_plus_one_threshold, stdout, stderr);
     }
 
     var d1: ?cli_d1.Resolved = null;
@@ -529,7 +529,10 @@ fn reportParseError(stderr: *Io.Writer, err: ParseError, offending: ?[:0]const u
             try stderr.writeAll("error: --out is only used with --record (see --help)\n");
         },
         error.RecordRejectsFormat => {
-            try stderr.writeAll("error: --record writes a human summary; remove --format (see --help)\n");
+            try stderr.writeAll("error: --record supports --format human or json, not kv (see --help)\n");
+        },
+        error.ThresholdRequiresRecord => {
+            try stderr.writeAll("error: --n-plus-one-threshold is only used with --record (see --help)\n");
         },
         error.EmptyPath => try stderr.writeAll("error: a path cannot be empty (see --help)\n"),
         error.UnexpectedValue => {
