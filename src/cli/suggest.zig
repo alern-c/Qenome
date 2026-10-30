@@ -1,5 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const contract = @import("../contract/values.zig");
+const sql_lexer = @import("../sql/lexer.zig");
 const db = @import("../db.zig");
 const sqlite = @import("../sqlite.zig");
 
@@ -158,51 +160,21 @@ const transition = [8][8]u8{
     .{ 1, 7, 5, 5, 5, 5, 5, 5 },
 };
 
+const preflight_options: sql_lexer.Options = .{ .vertical_tab_is_space = false };
+
 pub fn completeEnd(sql: []const u8) ?usize {
+    var lexer: sql_lexer.Lexer = .initWith(sql, preflight_options);
     var state: u8 = 0;
-    var index: usize = 0;
-    while (index < sql.len) {
-        const token: u8 = switch (sql[index]) {
-            ';' => 0,
-            ' ', '\r', '\t', '\n', 0x0c => 1,
-            '/' => blk: {
-                if (index + 1 >= sql.len or sql[index + 1] != '*') break :blk 2;
-                index += 2;
-                while (index < sql.len and !(sql[index] == '*' and index + 1 < sql.len and sql[index + 1] == '/')) index += 1;
-                if (index >= sql.len) return null;
-                index += 1;
-                break :blk 1;
-            },
-            '-' => blk: {
-                if (index + 1 >= sql.len or sql[index + 1] != '-') break :blk 2;
-                while (index < sql.len and sql[index] != '\n') index += 1;
-                break :blk 1;
-            },
-            '[' => blk: {
-                index += 1;
-                while (index < sql.len and sql[index] != ']') index += 1;
-                if (index >= sql.len) return null;
-                break :blk 2;
-            },
-            '`', '"', '\'' => blk: {
-                const quote = sql[index];
-                index += 1;
-                while (index < sql.len and sql[index] != quote) index += 1;
-                if (index >= sql.len) return null;
-                break :blk 2;
-            },
-            else => blk: {
-                if (!isWordByte(sql[index])) break :blk 2;
-                var end = index + 1;
-                while (end < sql.len and isWordByte(sql[end])) end += 1;
-                const token = wordToken(sql[index..end]);
-                index = end - 1;
-                break :blk token;
-            },
+    while (lexer.next()) |token| {
+        if (!token.terminated) return null;
+        const class: u8 = switch (token.kind) {
+            .comment => 1,
+            .word => wordToken(token.text),
+            .punctuator => if (std.mem.eql(u8, token.text, ";")) 0 else 2,
+            else => 2,
         };
-        state = transition[state][token];
-        if (token == 0 and state == 1) return index + 1;
-        index += 1;
+        state = transition[state][class];
+        if (class == 0 and state == 1) return token.start + 1;
     }
     return null;
 }
@@ -248,7 +220,7 @@ pub fn generate(
         if (sqlite.sqlite3_expert_sql(expert, query.sql, &err) == sqlite.SQLITE_OK) continue;
         const reason = try takeError(arena, &err);
         try warnings.append(arena, .{
-            .code = "suggest_query_skipped",
+            .code = contract.code.suggest_query_skipped,
             .message = try std.fmt.allocPrint(arena, "SQLite could not analyze the query '{s}': {s}", .{
                 query.label,
                 reason orelse "unknown error",
@@ -297,7 +269,7 @@ pub fn accept(
     const keep = @min(raw.len, limit);
     if (keep < raw.len) {
         try warnings.append(arena, .{
-            .code = "suggestions_truncated",
+            .code = contract.code.suggestions_truncated,
             .message = try std.fmt.allocPrint(arena, "kept the first {d} of {d} suggestions; dropped {d}", .{
                 keep,
                 raw.len,
@@ -312,7 +284,7 @@ pub fn accept(
         handle.checkCreateIndex(sql) catch |err| {
             rejected += 1;
             try warnings.append(arena, .{
-                .code = "suggestion_rejected",
+                .code = contract.code.suggestion_rejected,
                 .message = try std.fmt.allocPrint(arena, "\"{s}\": {s}", .{ sql, checkReason(handle, err) }),
             });
             continue;
@@ -361,106 +333,47 @@ fn checkReason(handle: *db.Db, err: db.CheckError) []const u8 {
     };
 }
 
-const Tokens = struct {
-    text: []const u8,
-    index: usize = 0,
-
-    fn skipTrivia(self: *Tokens) void {
-        while (self.index < self.text.len) {
-            const byte = self.text[self.index];
-            if (isSpace(byte)) {
-                self.index += 1;
-                continue;
-            }
-            if (byte == '-' and self.index + 1 < self.text.len and self.text[self.index + 1] == '-') {
-                self.index += 2;
-                while (self.index < self.text.len and self.text[self.index] != '\n') self.index += 1;
-                continue;
-            }
-            if (byte == '/' and self.index + 1 < self.text.len and self.text[self.index + 1] == '*') {
-                self.index += 2;
-                if (std.mem.indexOfPos(u8, self.text, self.index, "*/")) |close| {
-                    self.index = close + 2;
-                } else {
-                    self.index = self.text.len;
-                }
-                continue;
-            }
-            break;
+fn nextWord(text: []const u8, at: *usize) ?[]const u8 {
+    while (true) {
+        at.* = sql_lexer.skipTriviaWith(text, at.*, preflight_options);
+        if (at.* >= text.len) return null;
+        const word = sql_lexer.wordAt(text, at.*);
+        if (word.end != at.*) {
+            at.* = word.end;
+            return word.text;
         }
-    }
-
-    fn nextWord(self: *Tokens) ?[]const u8 {
-        while (true) {
-            self.skipTrivia();
-            if (self.index >= self.text.len) return null;
-            const start = self.index;
-            while (self.index < self.text.len and isWordByte(self.text[self.index])) self.index += 1;
-            if (self.index != start) return self.text[start..self.index];
-            if (isQuote(self.text[self.index])) {
-                _ = self.quoted();
-                continue;
-            }
-            self.index += 1;
+        if (sql_lexer.isQuote(text[at.*])) {
+            at.* = sql_lexer.quotedSpan(text, at.*).end;
+            continue;
         }
+        at.* += 1;
     }
+}
 
-    fn nextIdentifier(self: *Tokens) ?[]const u8 {
-        self.skipTrivia();
-        if (self.index >= self.text.len) return null;
-        if (isQuote(self.text[self.index])) return self.quoted();
-        const start = self.index;
-        while (self.index < self.text.len and isWordByte(self.text[self.index])) self.index += 1;
-        if (self.index == start) return null;
-        return self.text[start..self.index];
-    }
-
-    fn quoted(self: *Tokens) ?[]const u8 {
-        const close: u8 = switch (self.text[self.index]) {
-            '"' => '"',
-            '\'' => '\'',
-            '`' => '`',
-            '[' => ']',
-            else => return null,
-        };
-        const start = self.index + 1;
-        var index = start;
-        while (index < self.text.len) {
-            if (self.text[index] != close) {
-                index += 1;
-                continue;
-            }
-            if (close != ']' and index + 1 < self.text.len and self.text[index + 1] == close) {
-                index += 2;
-                continue;
-            }
-            self.index = index + 1;
-            return self.text[start..index];
+fn nextIdentifier(text: []const u8, at: *usize) ?[]const u8 {
+    at.* = sql_lexer.skipTriviaWith(text, at.*, preflight_options);
+    if (at.* >= text.len) return null;
+    if (sql_lexer.isQuote(text[at.*])) {
+        const span = sql_lexer.quotedSpan(text, at.*);
+        if (!span.terminated) {
+            at.* = span.end;
+            return null;
         }
-        self.index = self.text.len;
-        return null;
+        const inner = text[at.* + 1 .. span.end - 1];
+        at.* = span.end;
+        return inner;
     }
-};
+    const word = sql_lexer.wordAt(text, at.*);
+    if (word.end == at.*) return null;
+    at.* = word.end;
+    return word.text;
+}
 
 fn tailKind(text: []const u8) Tail {
-    var index: usize = 0;
-    while (index < text.len) {
-        const byte = text[index];
-        if (isSpace(byte)) {
-            index += 1;
-            continue;
-        }
-        if (byte == '-' and index + 1 < text.len and text[index + 1] == '-') {
-            index += 2;
-            while (index < text.len and text[index] != '\n') index += 1;
-            continue;
-        }
-        if (byte == '/' and index + 1 < text.len and text[index + 1] == '*') {
-            const close = std.mem.indexOfPos(u8, text, index + 2, "*/") orelse return .unterminated_comment;
-            index = close + 2;
-            continue;
-        }
-        return .statement;
+    var lexer: sql_lexer.Lexer = .initWith(text, preflight_options);
+    while (lexer.next()) |token| {
+        if (token.kind != .comment) return .statement;
+        if (!token.terminated) return .unterminated_comment;
     }
     return .trivia;
 }
@@ -468,60 +381,48 @@ fn tailKind(text: []const u8) Tail {
 const Tail = enum { trivia, statement, unterminated_comment };
 
 fn allowedCreate(statement: []const u8) bool {
-    var tokens: Tokens = .{ .text = statement };
-    const first = tokens.nextWord() orelse return false;
+    var at: usize = 0;
+    const first = nextWord(statement, &at) orelse return false;
     if (!std.ascii.eqlIgnoreCase(first, "CREATE")) return false;
-    const second = tokens.nextWord() orelse return false;
+    const second = nextWord(statement, &at) orelse return false;
     if (std.ascii.eqlIgnoreCase(second, "TABLE")) return true;
     if (std.ascii.eqlIgnoreCase(second, "INDEX")) return true;
     if (std.ascii.eqlIgnoreCase(second, "VIEW")) return true;
     if (std.ascii.eqlIgnoreCase(second, "TRIGGER")) return true;
-    if (std.ascii.eqlIgnoreCase(second, "UNIQUE")) return isWord(tokens.nextWord(), "INDEX");
-    if (std.ascii.eqlIgnoreCase(second, "VIRTUAL")) return isWord(tokens.nextWord(), "TABLE");
+    if (std.ascii.eqlIgnoreCase(second, "UNIQUE")) return isWord(nextWord(statement, &at), "INDEX");
+    if (std.ascii.eqlIgnoreCase(second, "VIRTUAL")) return isWord(nextWord(statement, &at), "TABLE");
     return false;
 }
 
 fn usesExpertModule(statement: []const u8) bool {
-    var tokens: Tokens = .{ .text = statement };
-    if (!isWord(tokens.nextWord(), "CREATE")) return false;
-    if (!isWord(tokens.nextWord(), "VIRTUAL")) return false;
-    if (!isWord(tokens.nextWord(), "TABLE")) return false;
+    var at: usize = 0;
+    if (!isWord(nextWord(statement, &at), "CREATE")) return false;
+    if (!isWord(nextWord(statement, &at), "VIRTUAL")) return false;
+    if (!isWord(nextWord(statement, &at), "TABLE")) return false;
 
-    const before_if = tokens.index;
-    if (isWord(tokens.nextWord(), "IF")) {
-        if (!isWord(tokens.nextWord(), "NOT")) return false;
-        if (!isWord(tokens.nextWord(), "EXISTS")) return false;
+    const before_if = at;
+    if (isWord(nextWord(statement, &at), "IF")) {
+        if (!isWord(nextWord(statement, &at), "NOT")) return false;
+        if (!isWord(nextWord(statement, &at), "EXISTS")) return false;
     } else {
-        tokens.index = before_if;
+        at = before_if;
     }
 
-    _ = tokens.nextIdentifier() orelse return false;
-    tokens.skipTrivia();
-    if (tokens.index < tokens.text.len and tokens.text[tokens.index] == '.') {
-        tokens.index += 1;
-        _ = tokens.nextIdentifier() orelse return false;
+    _ = nextIdentifier(statement, &at) orelse return false;
+    at = sql_lexer.skipTriviaWith(statement, at, preflight_options);
+    if (at < statement.len and statement[at] == '.') {
+        at += 1;
+        _ = nextIdentifier(statement, &at) orelse return false;
     }
 
-    if (!isWord(tokens.nextWord(), "USING")) return false;
-    const module = tokens.nextIdentifier() orelse return false;
+    if (!isWord(nextWord(statement, &at), "USING")) return false;
+    const module = nextIdentifier(statement, &at) orelse return false;
     return std.ascii.eqlIgnoreCase(module, "expert");
 }
 
 fn isWord(value: ?[]const u8, expected: []const u8) bool {
     const word = value orelse return false;
     return std.ascii.eqlIgnoreCase(word, expected);
-}
-
-fn isWordByte(byte: u8) bool {
-    return std.ascii.isAlphanumeric(byte) or byte == '_' or byte == '$' or byte >= 0x80;
-}
-
-fn isSpace(byte: u8) bool {
-    return byte == ' ' or byte == '\t' or byte == '\n' or byte == '\r' or byte == 0x0c;
-}
-
-fn isQuote(byte: u8) bool {
-    return byte == '"' or byte == '\'' or byte == '`' or byte == '[';
 }
 
 const testing = std.testing;
@@ -693,6 +594,8 @@ test "the preflight accepts the statements SQLite stores in the schema" {
         "CREATE\nTABLE\nt(a)",
         "/* lead */ CREATE TABLE t(a)",
         "CREATE TABLE \"CREATE\"(a)",
+        "\n]:CREATE:INDEX",
+        "@CREATE:-TABLE\x0b",
     };
     for (accepted) |sql| {
         try testing.expectEqual(@as(?[]const u8, null), try inspectSql(arena, sql));

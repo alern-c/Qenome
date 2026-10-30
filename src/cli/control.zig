@@ -1,20 +1,9 @@
 const std = @import("std");
 const Io = std.Io;
 const builtin = @import("builtin");
+const contract = @import("../contract/values.zig");
 
-pub const ExitCode = enum(u8) {
-    ok = 0,
-    rejected = 1,
-    usage = 2,
-    mismatch = 3,
-    incomparable = 4,
-    cleanup = 5,
-    regression = 6,
-    timeout = 124,
-    hangup = 129,
-    interrupted = 130,
-    terminated = 143,
-};
+pub const ExitCode = contract.ExitCode;
 
 const supports_signals = switch (builtin.os.tag) {
     .windows, .wasi => false,
@@ -111,8 +100,6 @@ pub fn receivedSignal() u8 {
     return received_signal.load(.acquire);
 }
 
-const error_schema_version: u8 = 2;
-
 const max_error_slots = 4;
 
 const ErrorClass = struct {
@@ -194,7 +181,7 @@ pub fn classifyError(message: []const u8) ErrorClass {
         return .{ .code = "batch_workspace_failed", .hint = "Check the temporary directory and its permissions, then rerun." };
     }
     if (std.mem.startsWith(u8, message, "sqlite3expert")) {
-        return .{ .code = "suggest_failed", .hint = "Check that the SELECTs are valid read-only queries, or remove --suggest and compare a candidate CREATE INDEX file." };
+        return .{ .code = contract.code.suggest_failed, .hint = "Check that the SELECTs are valid read-only queries, or remove --suggest and compare a candidate CREATE INDEX file." };
     }
     if (std.mem.startsWith(u8, message, "no candidate index to compare")) {
         return .{ .code = "no_candidates", .hint = "Check that a SELECT has a WHERE or ORDER BY clause, or write a candidate CREATE INDEX file and compare it without --suggest." };
@@ -487,7 +474,7 @@ pub const JsonStderr = struct {
         };
         try json.beginObject();
         try json.objectField("schema_version");
-        try json.write(error_schema_version);
+        try json.write(contract.schema_version);
         try json.objectField("exit_code");
         try json.write(@as(u8, @intCast(@backingInt(exit_code))));
         try json.objectField("error");
@@ -640,8 +627,8 @@ test "error text maps to a stable code and a next step" {
         .{ .message = "the index audit query 'q/a.sql' exceeded the time limit of 1 ms", .code = "audit_query_timeout" },
         .{ .message = "the index audit could not read the index catalog: disk I/O", .code = "audit_catalog_unreadable" },
         .{ .message = "the index audit could not read the index catalog within the time limit of 1 ms", .code = "audit_catalog_timeout" },
-        .{ .message = "sqlite3expert could not start: out of memory", .code = "suggest_failed" },
-        .{ .message = "sqlite3expert could not analyze the queries: no such table: nope", .code = "suggest_failed" },
+        .{ .message = "sqlite3expert could not start: out of memory", .code = contract.code.suggest_failed },
+        .{ .message = "sqlite3expert could not analyze the queries: no such table: nope", .code = contract.code.suggest_failed },
         .{ .message = "no candidate index to compare: SQLite suggested no index for these queries", .code = "no_candidates" },
         .{ .message = "no candidate index to compare: all 2 suggested indexes were rejected", .code = "no_candidates" },
         .{ .message = "--suggest does not run the timing; remove --runs (see --help)", .code = "usage_suggest_conflict" },

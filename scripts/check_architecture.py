@@ -24,6 +24,8 @@ APPROVED_FILES = [
     "src/cli/suggest.zig",
     "src/cli/seed.zig",
     "src/cli/tests.zig",
+    "src/contract/values.zig",
+    "src/sql/lexer.zig",
 ]
 
 PRODUCTION_FILES = [path for path in APPROVED_FILES if path != "src/cli/tests.zig"]
@@ -31,12 +33,14 @@ PRODUCTION_FILES = [path for path in APPROVED_FILES if path != "src/cli/tests.zi
 PRODUCTION_IMPORTS = {
     "src/sqlite.zig": [],
     "src/result.zig": ["src/sqlite.zig"],
-    "src/db.zig": ["src/sqlite.zig", "src/result.zig"],
+    "src/db.zig": ["src/sqlite.zig", "src/result.zig", "src/sql/lexer.zig"],
     "src/root.zig": [
         "src/sqlite.zig",
         "src/db.zig",
         "src/result.zig",
         "src/cli.zig",
+        "src/contract/values.zig",
+        "src/sql/lexer.zig",
     ],
     "src/main.zig": [],
     "src/cli.zig": [
@@ -56,8 +60,8 @@ PRODUCTION_IMPORTS = {
         "src/cli/record.zig",
         "src/cli/seed.zig",
     ],
-    "src/cli/args.zig": ["src/db.zig"],
-    "src/cli/control.zig": [],
+    "src/cli/args.zig": ["src/db.zig", "src/sql/lexer.zig"],
+    "src/cli/control.zig": ["src/contract/values.zig"],
     "src/cli/d1.zig": [],
     "src/cli/comparison.zig": ["src/db.zig", "src/result.zig"],
     "src/cli/query.zig": [
@@ -82,6 +86,7 @@ PRODUCTION_IMPORTS = {
     ],
     "src/cli/report.zig": [
         "src/result.zig",
+        "src/contract/values.zig",
         "src/cli/args.zig",
         "src/cli/d1.zig",
         "src/cli/comparison.zig",
@@ -101,6 +106,8 @@ PRODUCTION_IMPORTS = {
     ],
     "src/cli/audit.zig": [
         "src/db.zig",
+        "src/contract/values.zig",
+        "src/sql/lexer.zig",
         "src/result.zig",
         "src/cli/args.zig",
         "src/cli/batch.zig",
@@ -110,6 +117,7 @@ PRODUCTION_IMPORTS = {
     ],
     "src/cli/batch.zig": [
         "src/db.zig",
+        "src/contract/values.zig",
         "src/result.zig",
         "src/sqlite.zig",
         "src/cli/args.zig",
@@ -125,15 +133,20 @@ PRODUCTION_IMPORTS = {
     "src/cli/suggest.zig": [
         "src/db.zig",
         "src/sqlite.zig",
+        "src/contract/values.zig",
+        "src/sql/lexer.zig",
     ],
     "src/cli/record.zig": [
         "src/cli/args.zig",
         "src/cli/control.zig",
+        "src/sql/lexer.zig",
     ],
     "src/cli/seed.zig": [
         "src/sqlite.zig",
         "src/cli/control.zig",
     ],
+    "src/contract/values.zig": [],
+    "src/sql/lexer.zig": [],
 }
 
 TEST_ENTRY_IMPORTER = "src/cli.zig"
@@ -169,11 +182,96 @@ MODULE_IMPORTS = {
     "src/cli/args.zig": ["build_options"],
 }
 
+LAYERS = [
+    ("src/contract/", "contract"),
+    ("src/sql/", "sql"),
+    ("src/sqlite.zig", "sqlite"),
+    ("src/db.zig", "engine"),
+    ("src/result.zig", "engine"),
+    ("src/cli/", "cli"),
+    ("src/cli.zig", "cli"),
+    ("src/root.zig", "main"),
+    ("src/main.zig", "main"),
+]
+
+LAYER_RANK = {
+    "contract": 0,
+    "sqlite": 1,
+    "sql": 2,
+    "engine": 3,
+    "measure": 4,
+    "verdict": 5,
+    "sandbox": 6,
+    "modes": 7,
+    "report": 8,
+    "cli": 9,
+    "main": 10,
+}
+
+LINE_LIMITS = {
+    "src/cli/tests.zig": 5744,
+    "src/db.zig": 4055,
+    "src/cli/report.zig": 2370,
+    "src/cli/batch.zig": 1902,
+    "src/cli/args.zig": 1780,
+    "src/cli/d1.zig": 1034,
+    "src/cli/seed.zig": 977,
+    "src/cli/suggest.zig": 831,
+    "src/cli/record.zig": 827,
+}
+
+MAX_LINES = 800
+
+WRITE_ALLOWED = ["src/cli.zig", "src/cli/report.zig", "src/main.zig"]
+
+WRITE_DEBT = [
+    "src/cli/audit.zig",
+    "src/cli/batch.zig",
+    "src/cli/control.zig",
+    "src/cli/pair.zig",
+    "src/cli/query.zig",
+    "src/cli/record.zig",
+    "src/cli/seed.zig",
+    "src/cli/timing.zig",
+    "src/cli/workspace.zig",
+]
+
+CONTRACT_PREFIX = "src/contract/"
+
+CONTRACT_VALUES = [
+    "schema_version",
+    "batch_schema_version",
+    "audit_schema_version",
+    "warning_codes",
+    "warning_messages",
+    "bind_dependent_partial_index_message",
+]
+
+CONTRACT_ALIASES = ["ExitCode"]
+
+CONTRACT_CODES = [
+    "no_analyze_stats",
+    "data_too_small",
+    "bind_dependent_partial_index",
+    "suggest_query_skipped",
+    "suggestions_truncated",
+    "suggestion_rejected",
+    "suggest_failed",
+    "no_suggestions",
+]
+
 IMPORT_CANDIDATE = re.compile(r"@import\b")
 DECL_IMPORT = re.compile(r'^(?:pub )?const [A-Za-z_][A-Za-z0-9_]* = @import\("([^"\\]*)"\);\s*$')
 ENTRY_IMPORT = re.compile(r'^\s*_ = @import\("([^"\\]*)"\);\s*$')
 TEST_BLOCK_START = re.compile(r"^test \{\s*$")
+TEST_BODY_START = re.compile(r"^test\b.*\{\s*$")
 COMMENT_OR_BLANK = re.compile(r"^\s*(//.*)?$")
+WRITE_CALL = re.compile(r"\b(stdout|stderr)\.[A-Za-z_][A-Za-z0-9_]*\(")
+DECLARATION = re.compile(r"^(?:pub )?(?:const|var) ([A-Za-z_][A-Za-z0-9_]*)")
+ALIAS_DECLARATION = re.compile(
+    r"^(?:pub )?const ([A-Za-z_][A-Za-z0-9_]*) = [A-Za-z_][A-Za-z0-9_]*\.([A-Za-z_][A-Za-z0-9_]*);\s*$"
+)
+CONTRACT_CODE_TEXT = re.compile(r'"(' + "|".join(CONTRACT_CODES) + r')"')
 
 class Source:
 
@@ -182,6 +280,7 @@ class Source:
         self.lines = lines
         self.imports = []
         self.test_blocks = []
+        self.test_bodies = []
 
 def read_source(root, rel_path):
     try:
@@ -218,6 +317,21 @@ def parse(source, violations):
         if depth <= 0:
             source.test_blocks.append((start + 1, index + 1))
             start = None
+    depth = 0
+    start = None
+    for index, line in enumerate(source.lines):
+        if start is None:
+            if TEST_BODY_START.match(line):
+                start = index
+                depth = 1
+            continue
+        depth += line.count("{") - line.count("}")
+        if depth <= 0:
+            source.test_bodies.append((start + 1, index + 1))
+            start = None
+
+def inside(spans, number):
+    return any(first <= number <= last for first, last in spans)
 
 def resolve(importer, path_text):
     resolved = os.path.normpath(
@@ -257,6 +371,140 @@ def check_files(root, sources, violations):
             violations.append((rel_path, 0, "missing-file", "the approved file is missing"))
     check_directory(root, "src", violations)
     check_directory(root, "src/cli", violations)
+    check_directory(root, "src/contract", violations)
+    check_directory(root, "src/sql", violations)
+
+def layer_of(rel_path):
+    for prefix, layer in LAYERS:
+        if rel_path == prefix or rel_path.startswith(prefix):
+            return layer
+    return None
+
+def check_layers(sources, violations):
+    for rel_path, source in sorted(sources.items()):
+        layer = layer_of(rel_path)
+        if layer is None:
+            violations.append(
+                (rel_path, 0, "unknown-layer", "the rules do not place this file in a layer")
+            )
+            continue
+        modules = MODULE_IMPORTS.get(rel_path, [])
+        for number, path_text, _form in source.imports:
+            if path_text in BUILTIN_IMPORTS or path_text in modules:
+                continue
+            resolved = resolve(rel_path, path_text)
+            if resolved is None:
+                continue
+            target = layer_of(resolved)
+            if target is None:
+                continue
+            if LAYER_RANK[target] > LAYER_RANK[layer]:
+                violations.append(
+                    (
+                        rel_path,
+                        number,
+                        "layer-order",
+                        f"the {layer} layer may not import the {target} layer: {resolved}",
+                    )
+                )
+
+def count_lines(lines):
+    if lines and lines[-1] == "":
+        return len(lines) - 1
+    return len(lines)
+
+def check_sizes(sources, violations):
+    for rel_path, source in sorted(sources.items()):
+        limit = LINE_LIMITS.get(rel_path, MAX_LINES)
+        lines = count_lines(source.lines)
+        if lines > limit:
+            violations.append(
+                (
+                    rel_path,
+                    0,
+                    "file-size",
+                    f"{lines} lines is more than the limit of {limit}; split the file instead",
+                )
+            )
+
+def check_writes(sources, violations):
+    allowed = WRITE_ALLOWED + WRITE_DEBT
+    for rel_path in PRODUCTION_FILES:
+        source = sources.get(rel_path)
+        if source is None or rel_path in allowed:
+            continue
+        for number, line in enumerate(source.lines, 1):
+            if inside(source.test_bodies, number):
+                continue
+            if WRITE_CALL.search(line):
+                violations.append(
+                    (
+                        rel_path,
+                        number,
+                        "stdout-write",
+                        "only report/ and cli/ write to stdout or stderr: " + line.strip()[:72],
+                    )
+                )
+
+def check_contract(sources, violations):
+    contract = sources.get("src/contract/values.zig")
+    if contract is not None:
+        for name in CONTRACT_VALUES + CONTRACT_ALIASES:
+            found = False
+            for line in contract.lines:
+                declaration = DECLARATION.match(line)
+                if declaration is not None and declaration.group(1) == name:
+                    found = True
+                    break
+            if not found:
+                violations.append(
+                    (
+                        contract.path,
+                        0,
+                        "missing-contract",
+                        f"the contract does not define {name}",
+                    )
+                )
+    for rel_path in PRODUCTION_FILES:
+        source = sources.get(rel_path)
+        if source is None or rel_path.startswith(CONTRACT_PREFIX):
+            continue
+        for number, line in enumerate(source.lines, 1):
+            if inside(source.test_bodies, number):
+                continue
+            declaration = DECLARATION.match(line)
+            if declaration is not None:
+                name = declaration.group(1)
+                if name in CONTRACT_VALUES:
+                    violations.append(
+                        (
+                            rel_path,
+                            number,
+                            "contract-value",
+                            f"{name} is defined in the contract, not here",
+                        )
+                    )
+                if name in CONTRACT_ALIASES:
+                    alias = ALIAS_DECLARATION.match(line)
+                    if alias is None or alias.group(1) != name or alias.group(2) != name:
+                        violations.append(
+                            (
+                                rel_path,
+                                number,
+                                "contract-value",
+                                f"{name} is defined in the contract; only an alias may stay",
+                            )
+                        )
+            found = CONTRACT_CODE_TEXT.search(line)
+            if found is not None:
+                violations.append(
+                    (
+                        rel_path,
+                        number,
+                        "contract-code",
+                        f"{found.group(1)} is defined in the contract, not here",
+                    )
+                )
 
 def check_imports(sources, violations):
     for rel_path, source in sorted(sources.items()):
@@ -399,6 +647,10 @@ def run(root):
     for source in sources.values():
         parse(source, violations)
     check_imports(sources, violations)
+    check_layers(sources, violations)
+    check_sizes(sources, violations)
+    check_writes(sources, violations)
+    check_contract(sources, violations)
     check_test_entry(sources, violations)
     check_cycles(sources, violations)
     return violations

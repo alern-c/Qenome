@@ -1,4 +1,5 @@
 const std = @import("std");
+const sql_lexer = @import("../sql/lexer.zig");
 const Io = std.Io;
 const db = @import("../db.zig");
 const build_options = @import("build_options");
@@ -943,13 +944,15 @@ pub fn fileErrorMessage(err: anyerror) []const u8 {
 pub fn looksLikeSql(value: []const u8) bool {
     if (std.mem.findAny(u8, value, " \t\r\n") == null) return false;
     const trimmed = std.mem.trimStart(u8, value, " \t\r\n");
+    const first = sql_lexer.keywordAt(trimmed, 0);
     const keywords = [_][]const u8{ "SELECT", "WITH", "CREATE", "INSERT", "UPDATE", "DELETE", "PRAGMA", "EXPLAIN" };
     for (keywords) |keyword| {
-        if (trimmed.len < keyword.len) continue;
-        if (!std.ascii.eqlIgnoreCase(trimmed[0..keyword.len], keyword)) continue;
-        if (trimmed.len == keyword.len) return true;
-        const next = trimmed[keyword.len];
-        if (next == ' ' or next == '\t' or next == '\r' or next == '\n' or next == '(') return true;
+        if (!std.ascii.eqlIgnoreCase(first.text, keyword)) continue;
+        if (first.end == trimmed.len) return true;
+        return switch (trimmed[first.end]) {
+            ' ', '\t', '\r', '\n', '(' => true,
+            else => false,
+        };
     }
     return false;
 }

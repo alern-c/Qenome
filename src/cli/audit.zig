@@ -1,5 +1,7 @@
 const std = @import("std");
 const Io = std.Io;
+const contract = @import("../contract/values.zig");
+const sql_lexer = @import("../sql/lexer.zig");
 const db = @import("../db.zig");
 const result_rows = @import("../result.zig");
 const cli_args = @import("args.zig");
@@ -10,8 +12,6 @@ const cli_report = @import("report.zig");
 
 const ExitCode = cli_control.ExitCode;
 const QuerySession = cli_query.QuerySession;
-
-const audit_schema_version: u8 = 1;
 
 const rowid_primary_key_name = "INTEGER PRIMARY KEY";
 
@@ -117,43 +117,20 @@ pub fn run(
     return .ok;
 }
 
-fn isWordByte(byte: u8) bool {
+fn isBoundaryByte(byte: u8) bool {
     return std.ascii.isAlphanumeric(byte) or byte == '_';
-}
-
-fn skipSpacesAndComments(sql: []const u8, start: usize) usize {
-    var index = start;
-    while (index < sql.len) {
-        if (std.ascii.isWhitespace(sql[index])) {
-            index += 1;
-            continue;
-        }
-        if (sql[index] == '-' and index + 1 < sql.len and sql[index + 1] == '-') {
-            index += 2;
-            while (index < sql.len and sql[index] != '\n') index += 1;
-            continue;
-        }
-        if (sql[index] == '/' and index + 1 < sql.len and sql[index + 1] == '*') {
-            index += 2;
-            while (index + 1 < sql.len and !(sql[index] == '*' and sql[index + 1] == '/')) index += 1;
-            index = if (index + 1 < sql.len) index + 2 else sql.len;
-            continue;
-        }
-        break;
-    }
-    return index;
 }
 
 fn mentionsIndexedBy(sql: []const u8) bool {
     var at: usize = 0;
     while (std.ascii.findIgnoreCasePos(sql, at, "indexed")) |found| {
         at = found + 1;
-        if (found != 0 and isWordByte(sql[found - 1])) continue;
-        const index = skipSpacesAndComments(sql, found + "indexed".len);
+        if (found != 0 and isBoundaryByte(sql[found - 1])) continue;
+        const index = sql_lexer.skipTrivia(sql, found + "indexed".len);
         if (index + 2 > sql.len) continue;
         if (!std.ascii.eqlIgnoreCase(sql[index .. index + 2], "by")) continue;
         const after = index + 2;
-        if (after == sql.len or !isWordByte(sql[after])) return true;
+        if (after == sql.len or !isBoundaryByte(sql[after])) return true;
     }
     return false;
 }
@@ -492,7 +469,7 @@ fn writeJson(
     };
     try json.beginObject();
     try json.objectField("audit_schema_version");
-    try json.write(audit_schema_version);
+    try json.write(contract.audit_schema_version);
     try json.objectField("exit_code");
     try json.write(@as(u8, 0));
     try json.objectField("database");
