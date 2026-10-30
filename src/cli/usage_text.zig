@@ -25,11 +25,17 @@ pub const body =
     \\                       of wrangler dev or a test run, and write a batch
     \\                       manifest without candidates to --out; no database
     \\                       is needed; every manifest holds the bind values,
-    \\                       so keep it local and out of version control
+    \\                       so keep it local and out of version control;
+    \\                       stdout also reports the shapes that ran many
+    \\                       times with different values
     \\  --out <DIR>          new directory for --record; the command writes
     \\                       manifest.json and queries/ there, with mode 0700
     \\                       on the directory and 0600 on the files, and stops
     \\                       when the directory already exists
+    \\  --n-plus-one-threshold <N>
+    \\                       with --record, report the shapes that ran with at
+    \\                       least N different values (default 10); 0 turns
+    \\                       the report off; the range is 2 to 1000000
     \\  --migration <FILE>   apply this SQL file to the variant only before
     \\                       the --batch queries run; the manifest must omit
     \\                       candidates; CREATE INDEX, DROP INDEX, CREATE
@@ -107,6 +113,7 @@ pub const body =
     \\  qenome app.db select.sql --suggest
     \\  qenome app.db --batch batch.json --suggest
     \\  qenome --record record.log --out qenome-manifest
+    \\  qenome --record record.log --out qenome-manifest --format json
     \\
     \\The same paths can be given as --db, --select and --index-sql.
     \\With --d1, the two positional paths fill the SELECT and CREATE INDEX

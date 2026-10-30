@@ -108,8 +108,8 @@ const ErrorClass = struct {
 };
 
 pub fn classifyError(message: []const u8) ErrorClass {
-    if (std.mem.startsWith(u8, message, "--record") or std.mem.startsWith(u8, message, "--out")) {
-        return .{ .code = "usage_record_conflict", .hint = "Use --record with --out only; remove the database, SQL, batch, migration, bind, runs, suggest, seed, and format options." };
+    if (std.mem.startsWith(u8, message, "--record") or std.mem.startsWith(u8, message, "--out") or std.mem.startsWith(u8, message, "--n-plus-one-threshold")) {
+        return .{ .code = "usage_record_conflict", .hint = "Use --record with --out only, and --format human or json with --n-plus-one-threshold; remove the database, SQL, batch, migration, bind, runs, suggest, and seed options." };
     }
     if (std.mem.startsWith(u8, message, "cannot read the record log")) {
         return .{ .code = "record_log_unreadable", .hint = "Check that the record log path exists and is readable, then rerun." };

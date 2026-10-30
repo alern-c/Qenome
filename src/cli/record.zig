@@ -2,8 +2,10 @@ const std = @import("std");
 const Io = std.Io;
 const builtin = @import("builtin");
 const sql_lexer = @import("../sql/lexer.zig");
+const sql_shape = @import("../sql/shape.zig");
 const cli_args = @import("args.zig");
 const cli_control = @import("control.zig");
+const cli_record_shapes = @import("record_shapes.zig");
 
 pub const max_log_bytes: usize = 16 * 1024 * 1024;
 pub const max_sql_bytes: usize = cli_args.max_sql_bytes;
@@ -33,21 +35,7 @@ const Query = struct {
     executions: u64,
 };
 
-const Skipped = struct {
-    writes: u64 = 0,
-    exec: u64 = 0,
-    other: u64 = 0,
-    blob: u64 = 0,
-    unsupported: u64 = 0,
-    nul: u64 = 0,
-    large: u64 = 0,
-    malformed: u64 = 0,
-    version: u64 = 0,
-
-    fn total(self: Skipped) u64 {
-        return self.writes + self.exec + self.other + self.blob + self.unsupported + self.nul + self.large + self.malformed + self.version;
-    }
-};
+const Skipped = cli_record_shapes.Skipped;
 
 const Collected = struct {
     records: u64 = 0,
@@ -76,6 +64,8 @@ pub fn run(
     arena: std.mem.Allocator,
     log_path: [:0]const u8,
     out_path: [:0]const u8,
+    format: cli_args.Format,
+    threshold: u32,
     stdout: *Io.Writer,
     stderr: *Io.Writer,
 ) ExitCode {
@@ -83,6 +73,9 @@ pub fn run(
     defer token_buffer.deinit(arena);
     var key_buffer: std.ArrayList(u8) = .empty;
     defer key_buffer.deinit(arena);
+    var values_buffer: std.ArrayList(u8) = .empty;
+    defer values_buffer.deinit(arena);
+    var shapes = cli_record_shapes.Shapes.init(arena);
 
     const log = Io.Dir.cwd().readFileAllocOptions(io, log_path, arena, .limited(max_log_bytes + 1), .of(u8), 0) catch |err| {
         if (err == error.StreamTooLong) {
@@ -97,7 +90,11 @@ pub fn run(
         return .rejected;
     }
 
-    const collected = collect(arena, log, &token_buffer, &key_buffer) catch {
+    const collected = collect(arena, log, &token_buffer, &key_buffer, &values_buffer, &shapes) catch {
+        stderr.writeAll("error: out of memory\n") catch {};
+        return .rejected;
+    };
+    shapes.finish(threshold) catch {
         stderr.writeAll("error: out of memory\n") catch {};
         return .rejected;
     };
@@ -108,14 +105,11 @@ pub fn run(
     }
     if (collected.queries.len == 0) {
         stderr.writeAll("error: the record log holds no read-only statement to put in a manifest\n") catch {};
-        printSkippedSummary(stderr, collected.skipped) catch {};
+        cli_record_shapes.printSkippedSummary(stderr, collected.skipped) catch {};
         return .rejected;
     }
     if (collected.queries.len > max_queries) {
-        stderr.print(
-            "error: the record log holds {d} distinct read-only statements; a manifest holds at most {d}; narrow the session or split the log\n",
-            .{ collected.queries.len, max_queries },
-        ) catch {};
+        cli_record_shapes.printDistinctLimit(stderr, collected.queries.len, max_queries, &shapes) catch {};
         return .rejected;
     }
 
@@ -131,7 +125,7 @@ pub fn run(
     if (writeOutput(io, arena, out_path, collected.queries, manifest, stderr)) |failure| return failure;
 
     warnLogPermissions(io, log_path, stderr);
-    printSummary(stdout, out_path, collected) catch {
+    printSummary(stdout, arena, out_path, format, collected, &shapes) catch {
         stderr.writeAll("error: the summary could not be written\n") catch {};
         return .rejected;
     };
@@ -143,6 +137,8 @@ fn collect(
     log: []const u8,
     token_buffer: *std.ArrayList(Token),
     key_buffer: *std.ArrayList(u8),
+    values_buffer: *std.ArrayList(u8),
+    shapes: *cli_record_shapes.Shapes,
 ) !Collected {
     var collected: Collected = .{};
     var queries: std.ArrayList(Query) = .empty;
@@ -150,9 +146,12 @@ fn collect(
     defer index.deinit();
 
     var lines = std.mem.splitScalar(u8, log, '\n');
+    var observed = true;
     while (lines.next()) |line| {
         const at = std.mem.indexOf(u8, line, record_marker) orelse continue;
         collected.records += 1;
+        if (!observed) shapes.interrupt();
+        observed = false;
         const payload = std.mem.trimEnd(u8, line[at + record_marker.len ..], " \t\r");
         const value = std.json.parseFromSliceLeaky(std.json.Value, arena, payload, .{}) catch {
             collected.skipped.malformed += 1;
@@ -203,29 +202,50 @@ fn collect(
 
         token_buffer.clearRetainingCapacity();
         try tokenize(token_buffer, arena, record.sql);
-        switch (classify(token_buffer.items)) {
-            .read => {},
-            .write => {
-                collected.skipped.writes += 1;
-                continue;
-            },
-            .other => {
-                collected.skipped.other += 1;
-                continue;
-            },
+        const statement_kind = classify(token_buffer.items);
+        if (statement_kind == .other) {
+            collected.skipped.other += 1;
+            continue;
         }
 
         key_buffer.clearRetainingCapacity();
         try tokenKey(arena, key_buffer, token_buffer.items);
-        if (index.get(key_buffer.items)) |existing| {
-            queries.items[existing].executions += 1;
+        var manifest_index: ?usize = null;
+        if (statement_kind == .read) {
+            if (index.get(key_buffer.items)) |existing| {
+                queries.items[existing].executions += 1;
+                manifest_index = existing;
+            } else {
+                manifest_index = queries.items.len;
+                try queries.append(arena, .{ .sql = record.sql, .binds = record.binds, .executions = 1 });
+                try index.put(try arena.dupe(u8, key_buffer.items), queries.items.len - 1);
+            }
             collected.executions += 1;
-            continue;
+        } else {
+            collected.skipped.writes += 1;
         }
-        const key = try arena.dupe(u8, key_buffer.items);
-        try queries.append(arena, .{ .sql = record.sql, .binds = record.binds, .executions = 1 });
-        try index.put(key, queries.items.len - 1);
-        collected.executions += 1;
+
+        key_buffer.clearRetainingCapacity();
+        try sql_shape.key(arena, key_buffer, token_buffer.items);
+        values_buffer.clearRetainingCapacity();
+        try sql_shape.literalKey(arena, values_buffer, token_buffer.items);
+        for (record.binds) |bind| {
+            switch (bind) {
+                .int => |number| try values_buffer.print(arena, "i{d};", .{number}),
+                .real => |number| try values_buffer.print(arena, "r{d};", .{number}),
+                .text => |text| try values_buffer.print(arena, "t{d}:{s}", .{ text.len, text }),
+                .null => try values_buffer.appendSlice(arena, "n;"),
+            }
+        }
+        try shapes.add(.{
+            .shape = key_buffer.items,
+            .values = values_buffer.items,
+            .sql = record.sql,
+            .kind = if (statement_kind == .read) .read else .write,
+            .batched = std.mem.eql(u8, record.op, "batch"),
+            .manifest_index = manifest_index,
+        });
+        observed = true;
     }
 
     collected.queries = queries.items;
@@ -307,14 +327,6 @@ fn parseRecord(arena: std.mem.Allocator, object: std.json.ObjectMap) !ParsedReco
         .unsupported = unsupported,
         .nul = nul,
     };
-}
-
-fn isKnownOp(op: []const u8) bool {
-    const known = [_][]const u8{ "all", "run", "first", "raw", "batch", "exec" };
-    for (known) |name| {
-        if (std.mem.eql(u8, op, name)) return true;
-    }
-    return false;
 }
 
 fn objectString(object: std.json.ObjectMap, name: []const u8) ![]const u8 {
@@ -550,50 +562,27 @@ fn warnLogPermissions(io: Io, log_path: []const u8, stderr: *Io.Writer) void {
     ) catch {};
 }
 
-fn printSummary(stdout: *Io.Writer, out_path: []const u8, collected: Collected) !void {
-    try stdout.print("record: {d} record lines\n", .{collected.records});
-    try stdout.print("manifest: {s}/manifest.json\n", .{out_path});
-    try stdout.print(
-        "queries: {d} distinct read-only {s} ({d} {s})\n",
-        .{
-            collected.queries.len,
-            if (collected.queries.len == 1) "statement" else "statements",
-            collected.executions,
-            if (collected.executions == 1) "execution" else "executions",
-        },
-    );
+fn printSummary(
+    stdout: *Io.Writer,
+    arena: std.mem.Allocator,
+    out_path: []const u8,
+    format: cli_args.Format,
+    collected: Collected,
+    shapes: *const cli_record_shapes.Shapes,
+) !void {
+    var lines: std.ArrayList(cli_record_shapes.QueryLine) = .empty;
     for (collected.queries, 0..) |query, position| {
-        try stdout.print("  queries/q{d:0>3}.sql  {d} execution{s}\n", .{ position + 1, query.executions, if (query.executions == 1) "" else "s" });
+        try lines.append(arena, .{ .index = position, .executions = query.executions });
     }
-    try printSkippedSummary(stdout, collected.skipped);
-    try stdout.writeAll("warning: the manifest holds bind values; keep it local and do not commit it\n");
-}
-
-fn printSkippedSummary(writer: *Io.Writer, skipped: Skipped) !void {
-    try writer.writeAll("skipped: ");
-    if (skipped.total() == 0) {
-        try writer.writeAll("none\n");
-        return;
-    }
-    const labels = [_]struct { label: []const u8, count: u64 }{
-        .{ .label = "writes", .count = skipped.writes },
-        .{ .label = "exec", .count = skipped.exec },
-        .{ .label = "other statements", .count = skipped.other },
-        .{ .label = "blob binds", .count = skipped.blob },
-        .{ .label = "unsupported binds", .count = skipped.unsupported },
-        .{ .label = "NUL text", .count = skipped.nul },
-        .{ .label = "large SQL", .count = skipped.large },
-        .{ .label = "unreadable records", .count = skipped.malformed },
-        .{ .label = "other versions", .count = skipped.version },
-    };
-    var first = true;
-    for (labels) |entry| {
-        if (entry.count == 0) continue;
-        if (!first) try writer.writeAll(", ");
-        first = false;
-        try writer.print("{d} {s}", .{ entry.count, entry.label });
-    }
-    try writer.writeAll("\n");
+    try cli_record_shapes.printSummary(stdout, arena, .{
+        .out_path = out_path,
+        .json = format == .json,
+        .records = collected.records,
+        .executions = collected.executions,
+        .queries = lines.items,
+        .skipped = collected.skipped,
+        .shapes = shapes,
+    });
 }
 
 const testing = std.testing;
@@ -606,6 +595,17 @@ fn tokenKeyOf(allocator: std.mem.Allocator, sql: []const u8) ![]const u8 {
     errdefer key.deinit(allocator);
     try tokenKey(allocator, &key, tokens.items);
     return key.toOwnedSlice(allocator);
+}
+
+fn collectForTest(arena: std.mem.Allocator, log: []const u8) !Collected {
+    var tokens: std.ArrayList(Token) = .empty;
+    defer tokens.deinit(arena);
+    var key: std.ArrayList(u8) = .empty;
+    defer key.deinit(arena);
+    var values: std.ArrayList(u8) = .empty;
+    defer values.deinit(arena);
+    var shapes = cli_record_shapes.Shapes.init(arena);
+    return collect(arena, log, &tokens, &key, &values, &shapes);
 }
 
 fn expectSameKey(first: []const u8, second: []const u8) !void {
@@ -689,16 +689,12 @@ test "the collector groups the same SQL and keeps the first binds" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    var tokens: std.ArrayList(Token) = .empty;
-    defer tokens.deinit(arena);
-    var key: std.ArrayList(u8) = .empty;
-    defer key.deinit(arena);
 
     const log =
         "QENOME_D1_RECORD {\"v\":1,\"op\":\"all\",\"sql\":\"SELECT a FROM t WHERE id = ?\",\"types\":[\"int\"],\"binds\":[1]}\n" ++
         "[wrangler:info] QENOME_D1_RECORD {\"v\":1,\"op\":\"all\",\"sql\":\"SELECT a FROM t WHERE id = ?\",\"types\":[\"int\"],\"binds\":[2]}\n" ++
         "QENOME_D1_RECORD {\"v\":1,\"op\":\"first\",\"sql\":\"SELECT  a FROM t WHERE id = ?\",\"types\":[\"int\"],\"binds\":[3]}\n";
-    const collected = try collect(arena, log, &tokens, &key);
+    const collected = try collectForTest(arena, log);
     try testing.expectEqual(@as(u64, 3), collected.records);
     try testing.expectEqual(@as(u64, 3), collected.executions);
     try testing.expectEqual(@as(usize, 1), collected.queries.len);
@@ -726,7 +722,7 @@ test "the collector counts what it does not put in the manifest" {
         "QENOME_D1_RECORD not json\n" ++
         "QENOME_D1_RECORD {\"v\":1,\"op\":\"all\",\"sql\":\"SELECT 1\",\"types\":[\"int\"],\"binds\":[]}\n" ++
         "plain output\n";
-    const collected = try collect(arena, log, &tokens, &key);
+    const collected = try collectForTest(arena, log);
     try testing.expectEqual(@as(u64, 8), collected.records);
     try testing.expectEqual(@as(usize, 0), collected.queries.len);
     try testing.expectEqual(@as(u64, 1), collected.skipped.writes);
@@ -751,7 +747,7 @@ test "the collector refuses NUL text and reports a mismatch as unreadable" {
         "QENOME_D1_RECORD {\"v\":1,\"op\":\"all\",\"sql\":\"SELECT ?\",\"types\":[\"text\"],\"binds\":[\"a\\u0000b\"]}\n" ++
         "QENOME_D1_RECORD {\"v\":1,\"op\":\"all\",\"sql\":\"SELECT ?\",\"types\":[\"int\"],\"binds\":[\"x\"]}\n" ++
         "QENOME_D1_RECORD {\"v\":1,\"op\":\"all\",\"sql\":\"SELECT ?\",\"types\":[\"int\",\"int\"],\"binds\":[1]}\n";
-    const collected = try collect(arena, log, &tokens, &key);
+    const collected = try collectForTest(arena, log);
     try testing.expectEqual(@as(u64, 3), collected.records);
     try testing.expectEqual(@as(usize, 0), collected.queries.len);
     try testing.expectEqual(@as(u64, 1), collected.skipped.nul);
@@ -824,4 +820,8 @@ test "the output directory is private and the manifest is written once" {
     try testing.expect(writeOutput(testing.io, arena, out, &queries, manifest, &stderr) == .rejected);
     const unchanged = try Io.Dir.cwd().readFileAlloc(testing.io, try std.fmt.allocPrint(arena, "{s}/manifest.json", .{out}), arena, .limited(1024));
     try testing.expectEqualStrings(manifest, unchanged);
+}
+
+test {
+    _ = @import("record_tests.zig");
 }

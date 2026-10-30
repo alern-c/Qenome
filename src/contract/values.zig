@@ -6,6 +6,8 @@ pub const batch_schema_version: u8 = 1;
 
 pub const audit_schema_version: u8 = 1;
 
+pub const record_schema_version: u8 = 1;
+
 pub const ExitCode = enum(u8) {
     ok = 0,
     rejected = 1,

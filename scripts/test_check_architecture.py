@@ -60,6 +60,7 @@ CANONICAL_FILES = {
         "pub const schema_version: u8 = 2;\n"
         "pub const batch_schema_version: u8 = 1;\n"
         "pub const audit_schema_version: u8 = 1;\n"
+        "pub const record_schema_version: u8 = 1;\n"
         "pub const ExitCode = enum(u8) { ok = 0 };\n"
         'pub const warning_codes = [_][]const u8{"no_analyze_stats"};\n'
         'pub const warning_messages = [_][]const u8{"a message"};\n'
@@ -242,6 +243,20 @@ CANONICAL_FILES = {
         '    _ = @import("skill_tests.zig");\n'
         "}\n"
     ),
+    "src/cli/record_shapes.zig": (
+        'const std = @import("std");\n'
+        'const contract = @import("../contract/values.zig");\n'
+        'const cli_report = @import("report.zig");\n'
+    ),
+    "src/cli/record_tests.zig": (
+        'const std = @import("std");\n'
+        'const cli = @import("../cli.zig");\n'
+        'const cli_record = @import("record.zig");\n'
+    ),
+    "src/sql/shape.zig": (
+        'const std = @import("std");\n'
+        'const lexer = @import("lexer.zig");\n'
+    ),
     "src/cli/skill_tests.zig": (
         'const std = @import("std");\n'
         'const cli = @import("../cli.zig");\n'
@@ -304,7 +319,7 @@ def expect_rejected(name, code, output, rule, mention=None):
 def main():
     code, output = case(None)
     expect_clean("the smallest approved tree passes", code, output)
-    expect("the whole tree is checked", "(32 files checked" in output, output.strip())
+    expect("the whole tree is checked", "(35 files checked" in output, output.strip())
 
     code, output = case(lambda root: os.remove(os.path.join(root, "src/cli/tests.zig")))
     expect_rejected("a missing test file fails", code, output, "missing-file", "src/cli/tests.zig")

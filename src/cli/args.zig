@@ -37,6 +37,10 @@ pub const default_runs: u32 = 10;
 
 pub const max_runs: u32 = 1000;
 
+pub const default_n_plus_one_threshold: u32 = 10;
+
+pub const max_n_plus_one_threshold: u32 = 1_000_000;
+
 pub const Format = enum {
     human,
     kv,
@@ -62,6 +66,8 @@ pub const Args = struct {
     show_binds: bool = false,
     show_rows: bool = false,
     format: Format = .human,
+    n_plus_one_threshold: u32 = default_n_plus_one_threshold,
+    n_plus_one_threshold_given: bool = false,
     suggest: bool = false,
     audit_indexes: bool = false,
     help: bool = false,
@@ -80,6 +86,7 @@ pub const ParseError = error{
     InvalidTimeout,
     InvalidRuns,
     InvalidFormat,
+    InvalidNPlusOneThreshold,
     ConflictingDatabase,
     ConfigRequiresD1,
     BatchTakesOnlyDatabasePath,
@@ -100,6 +107,7 @@ pub const ParseError = error{
     WriteRejectsMigration,
     RecordTakesNoPaths,
     RecordConflict,
+    ThresholdRequiresRecord,
     OutRequiresRecord,
     RecordRejectsFormat,
     OutOfMemory,
@@ -225,6 +233,10 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
         } else if (std.mem.eql(u8, name, "--format")) {
             const raw = try optionValue(argv, &index, inline_value);
             args.format = std.meta.stringToEnum(Format, raw) orelse return error.InvalidFormat;
+        } else if (std.mem.eql(u8, name, "--n-plus-one-threshold")) {
+            const raw = try optionValue(argv, &index, inline_value);
+            args.n_plus_one_threshold = try parseNPlusOneThreshold(raw);
+            args.n_plus_one_threshold_given = true;
         } else if (arg.len != 0 and arg[0] == '-') {
             return error.UnknownOption;
         } else {
@@ -260,10 +272,14 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
             offending.* = conflict.name;
             return error.RecordConflict;
         }
-        if (args.format != .human) {
+        if (args.format == .kv) {
             offending.* = "--format";
             return error.RecordRejectsFormat;
         }
+    }
+    if (args.n_plus_one_threshold_given and args.record == null) {
+        offending.* = "--n-plus-one-threshold";
+        return error.ThresholdRequiresRecord;
     }
     if (args.db != null and args.d1 != null) {
         offending.* = "--d1";
@@ -479,6 +495,7 @@ const long_options = [_][]const u8{
     "--audit-indexes",
     "--runs",
     "--format",
+    "--n-plus-one-threshold",
     "--version",
 };
 
@@ -556,6 +573,12 @@ fn editDistance(a: []const u8, b: []const u8) usize {
     return previous[b.len];
 }
 
+pub fn parseNPlusOneThreshold(raw: []const u8) ParseError!u32 {
+    const value = std.fmt.parseUnsigned(u32, raw, 10) catch return error.InvalidNPlusOneThreshold;
+    if (value != 0 and (value < 2 or value > max_n_plus_one_threshold)) return error.InvalidNPlusOneThreshold;
+    return value;
+}
+
 pub fn parseBind(raw: [:0]const u8) ParseError!db.BindArg {
     const separator = std.mem.indexOfScalar(u8, raw, ':') orelse return error.InvalidBindFormat;
     const number_text = raw[0..separator];
@@ -631,7 +654,9 @@ pub fn parseErrorMessage(err: ParseError) []const u8 {
         error.RecordTakesNoPaths => "--record reads a log and writes a manifest; do not pass a database or SQL path (see --help)",
         error.RecordConflict => "--record does not take the other mode options (see --help)",
         error.OutRequiresRecord => "--out is only used with --record (see --help)",
-        error.RecordRejectsFormat => "--record writes a human summary; remove --format (see --help)",
+        error.RecordRejectsFormat => "--record supports --format human or json, not kv (see --help)",
+        error.InvalidNPlusOneThreshold => "--n-plus-one-threshold expects 0 (off) or an integer from 2 to 1000000 (see --help)",
+        error.ThresholdRequiresRecord => "--n-plus-one-threshold is only used with --record (see --help)",
         else => parseErrorMessageForMode(err),
     };
 }
@@ -667,7 +692,7 @@ fn parseErrorMessageForMode(err: ParseError) []const u8 {
         error.WriteRequiresSingle => "--write compares one statement; use --batch for a manifest (see --help)",
         error.WriteRejectsSuggest => "--write names the statement; remove --suggest (see --help)",
         error.WriteRejectsMigration => "--write compares one statement; remove --migration (see --help)",
-        error.RecordTakesNoPaths, error.RecordConflict, error.OutRequiresRecord, error.RecordRejectsFormat => unreachable,
+        error.RecordTakesNoPaths, error.RecordConflict, error.OutRequiresRecord, error.RecordRejectsFormat, error.InvalidNPlusOneThreshold, error.ThresholdRequiresRecord => unreachable,
         error.OutOfMemory => "out of memory",
     };
 }
@@ -1117,6 +1142,7 @@ test "every known long option is accepted by the parser" {
         &.{ "Qenome", "--batch", "batch.json" },
         &.{ "Qenome", "--batch", "batch.json", "--audit-indexes" },
         &.{ "Qenome", "--record", "record.log", "--out", "manifest-dir" },
+        &.{ "Qenome", "--record", "record.log", "--out", "manifest-dir", "--n-plus-one-threshold", "20" },
         &.{ "Qenome", "--batch", "batch.json", "--migration", "m.sql" },
         &.{ "Qenome", "--seed-data", "seed.json" },
         &.{ "Qenome", "--select", "s" },
