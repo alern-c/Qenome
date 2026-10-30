@@ -402,6 +402,8 @@ qenome --d1 DB select.sql index.sql --config packages/api/wrangler.toml
 
 `[env.<name>]` ごとの設定と独自の保存先（`--persist-to`）は読みません。
 
+Qenome はバインディングのマイグレーションも確認します。`d1_databases` のエントリから `migrations_dir`（既定は設定ファイルの隣の `migrations`）と `migrations_table`（既定は `d1_migrations`）を読み、そのディレクトリ直下の `.sql` ファイルを、記録表の名前と比べます。未適用のファイルがあると、`--d1` のどのモードでも `unapplied_migrations` の警告を出し、wrangler の並び順（先頭の番号、次に辞書順）でファイル名を示して、`npx wrangler d1 migrations apply DB --local` を案内します。古いスキーマに対して比べると、インデックスの効果が見えなくなるためです。メッセージに並べるファイル名は最大 10 件で、残りは件数にします。警告は判定・件数・終了コードを変えません。記録表またはディレクトリが無いとき、ローカルのデータベースを読めないとき、記録表やディレクトリが確認の上限を超えて大きいときは出しません。Qenome はローカルのデータベースを読み取り専用で開き、名前だけを読むので、元のデータベースは変わりません。`migrations_pattern` と `[env.<name>]` のバインディングは読みません。
+
 #### サンプルプロジェクトを試す
 
 `examples/d1-toml` と `examples/d1-jsonc` には、同じデータベースとクエリを `wrangler.toml` 版と `wrangler.jsonc` 版で置いています。どちらも独立した wrangler プロジェクトで、設定には `DEMO_DB` のバインディング1つだけがあり、`database_id` はデプロイしないプレースホルダーです。wrangler は `npx` で動かすため Node.js が要ります。リポジトリには何もインストールせず、`.wrangler/` は Git の追跡対象外です。
@@ -494,7 +496,7 @@ batch の報告を録画したものが2本あります。1本目は1本の SELE
 
 このレポートは「このマニフェストでは使われなかった」という事実で、「削除してよい」という推薦ではありません。実行計画はマニフェストの SELECT だけを対象にするので、`UPDATE`・`DELETE`・外部キーの保守・マニフェスト外のクエリで使うインデックスはここには出ません。`ORDER BY` や `GROUP BY` のためだけに使うインデックスは計画に出るので、未使用にはなりません。SQLite がその実行で選ばなかったインデックスも、使えるインデックスであり続けます。
 
-レポートを書けたときの終了コードは `0` です。一覧が空でなくても変わりません。インデックスは終了コードではなく stdout で見つけてください。`--audit-indexes` には `--batch` が必要で、`--suggest`・`--migration`・`--seed-data` とは併用できません。`--d1`、`--timeout-ms`（実行計画とカタログの読み取りごと）、`--format human`（既定）または `--format json` を使えます。JSON は [docs/json.md](docs/json.md) に書いた `audit_schema_version` 1 のオブジェクトです。
+レポートを書けたときの終了コードは `0` です。一覧が空でなくても変わりません。`--d1` のときは JSON に `warnings` 配列が、human に `Warnings` の節が付き、`unapplied_migrations` を出します。一覧と終了コードは変わりません。インデックスは終了コードではなく stdout で見つけてください。`--audit-indexes` には `--batch` が必要で、`--suggest`・`--migration`・`--seed-data` とは併用できません。`--d1`、`--timeout-ms`（実行計画とカタログの読み取りごと）、`--format human`（既定）または `--format json` を使えます。JSON は [docs/json.md](docs/json.md) に書いた `audit_schema_version` 1 のオブジェクトです。
 
 ### 実際に実行されたクエリを記録する（--record）
 
@@ -664,7 +666,7 @@ fi
 | `environment` | `qenome_version`（`--version` と同じ、`build.zig.zon` の版） / `sqlite_version` / `sqlite_source_id` / `zig_version` / `build_mode` / `os` / `arch` / `work_dir_parent` |
 | `measurement` | 計時条件（`runs_per_copy`（各コピーの計測ラウンド数。計時しないときは 0）/ `warmup` / `order` / `scope` / `cache`）。`--write` では `runs_per_copy` は各コピーでロールバックしながら実行する回数 |
 | `binds` | `number` / `type`。text は `text_bytes` も持つ。`--show-binds` を付けたときだけ値が `value` に入る |
-| `warnings` | `{code, message}` の配列（`no_analyze_stats`、`data_too_small`、`bind_dependent_partial_index`）。判定と終了コードは変えない |
+| `warnings` | `{code, message}` の配列（`no_analyze_stats`、`data_too_small`、`bind_dependent_partial_index`、`unapplied_migrations`）。判定と終了コードは変えない |
 | `sqlite` | 予約済みで、まだ出ない。`bundled_version` と `db_header_version`。それまでは同梱版を `environment.sqlite_version` で読む |
 
 - 文字列値では、バックスラッシュを `\\`、非 UTF-8 のバイトを `\xNN`（バイト 0xFF なら `\xff`）と書いてから JSON としてエスケープします。4文字の `\xff` は `\\xff` になり、バイト 0xFF とは別の文字列です。元のバイト列に戻すときは、`\\` をバックスラッシュ1個、`\xNN` をそのバイト、それ以外の文字をそのまま読みます。入力パス、計画の detail、理由、bind の text がこの規則です。`--show-rows` で出す例の行の TEXT も同じ規則（前後に `'`。例: `'\xff'`。JSON のテキストでは `'\\xff'`）で、BLOB は `x'00ff'` です。200 バイトを超える例の値は切り詰め、`...(N bytes)` を付けます。

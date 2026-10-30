@@ -77,7 +77,7 @@
       "items": { "$ref": "#/$defs/result" }
     },
     "warnings": {
-      "description": "What --suggest dropped or could not do. Empty without --suggest and with --migration.",
+      "description": "What --suggest dropped or could not do, plus unapplied_migrations with --d1. Empty without --suggest and without an unapplied migration.",
       "type": "array",
       "items": {
         "type": "object",
@@ -90,7 +90,8 @@
               "suggestion_rejected",
               "suggestions_truncated",
               "no_suggestions",
-              "suggest_failed"
+              "suggest_failed",
+              "unapplied_migrations"
             ]
           },
           "message": { "type": "string", "minLength": 1 }

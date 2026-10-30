@@ -6,6 +6,7 @@ const result = @import("../result.zig");
 const cli_args = @import("args.zig");
 const cli_d1 = @import("d1.zig");
 const cli_comparison = @import("comparison.zig");
+const cli_warnings = @import("warnings.zig");
 const cli_timing = @import("timing.zig");
 const PlanRow = cli_comparison.PlanRow;
 const Plan = @FieldType(cli_comparison.Measurement, "plan");
@@ -43,40 +44,7 @@ pub const Sizes = struct {
     variant: u64 = 0,
 };
 
-pub const Warnings = struct {
-    no_analyze_stats: bool = false,
-    data_too_small: bool = false,
-    bind_dependent_partial_index: ?[]const u8 = null,
-};
-
-pub fn bindDependentPartialIndexMessage(allocator: std.mem.Allocator, index_name: []const u8) Error![]const u8 {
-    const escaped = try escapedText(allocator, index_name);
-    defer allocator.free(escaped);
-    return std.fmt.allocPrint(allocator, contract.bind_dependent_partial_index_message, .{escaped});
-}
-
-fn anyWarnings(warnings: Warnings) bool {
-    return warnings.no_analyze_stats or warnings.data_too_small or warnings.bind_dependent_partial_index != null;
-}
-
-fn escapedText(allocator: std.mem.Allocator, text: []const u8) Error![]const u8 {
-    var out: Io.Writer.Allocating = .init(allocator);
-    defer out.deinit();
-    try result.writeEscapedText(&out.writer, text);
-    return allocator.dupe(u8, out.written());
-}
-
-fn writeWarnings(stdout: *Io.Writer, allocator: std.mem.Allocator, warnings: Warnings) Error!void {
-    const enabled = [_]bool{ warnings.no_analyze_stats, warnings.data_too_small };
-    for (enabled, contract.warning_codes, contract.warning_messages) |active, code, message| {
-        if (active) try stdout.print("warning: {s}: {s}\n", .{ code, message });
-    }
-    if (warnings.bind_dependent_partial_index) |name| {
-        const message = try bindDependentPartialIndexMessage(allocator, name);
-        defer allocator.free(message);
-        try stdout.print("warning: {s}: {s}\n", .{ contract.code.bind_dependent_partial_index, message });
-    }
-}
+pub const Warnings = cli_warnings.Warnings;
 
 fn writeTimeEvidence(stdout: *Io.Writer, evidence: cli_timing.Evidence) Io.Writer.Error!void {
     try stdout.print("time-effect: {s} (reference only)\ntime-median-difference-ns: {d} (variant - baseline, paired rounds)\ntime-noise-band-ns: {d} (baseline A/A absolute difference p95; {d} pairs; empirical)\n", .{ cli_timing.effectText(evidence.effect), evidence.median_difference_ns, evidence.noise_band.threshold_ns, evidence.noise_band.pairs });
@@ -88,20 +56,25 @@ fn writeTimeEvidence(stdout: *Io.Writer, evidence: cli_timing.Evidence) Io.Write
 }
 
 fn writeHumanWarnings(stdout: *Io.Writer, allocator: std.mem.Allocator, warnings: Warnings) Error!void {
-    if (!anyWarnings(warnings)) return;
+    if (!cli_warnings.anyWarnings(warnings)) return;
     try stdout.writeAll("\nWarnings\n");
     const enabled = [_]bool{ warnings.no_analyze_stats, warnings.data_too_small };
     for (enabled, contract.warning_codes, contract.warning_messages) |active, code, message| {
         if (active) try writeHumanWarning(stdout, allocator, code, message);
     }
     if (warnings.bind_dependent_partial_index) |name| {
-        const message = try bindDependentPartialIndexMessage(allocator, name);
+        const message = try cli_warnings.bindDependentPartialIndexMessage(allocator, name);
         defer allocator.free(message);
         try writeHumanWarning(stdout, allocator, contract.code.bind_dependent_partial_index, message);
     }
+    if (warnings.unapplied_migrations) |pending| {
+        const message = try cli_warnings.unappliedMigrationsText(allocator, pending);
+        defer allocator.free(message);
+        try writeHumanWarning(stdout, allocator, contract.code.unapplied_migrations, message);
+    }
 }
 
-fn writeHumanWarning(stdout: *Io.Writer, allocator: std.mem.Allocator, code: []const u8, message: []const u8) Error!void {
+pub fn writeHumanWarning(stdout: *Io.Writer, allocator: std.mem.Allocator, code: []const u8, message: []const u8) Error!void {
     const line = try std.fmt.allocPrint(allocator, "warning: {s}: {s}", .{ code, message });
     defer allocator.free(line);
     try writeIndent(stdout, 2);
@@ -262,7 +235,7 @@ pub fn writeFacts(stdout: *Io.Writer, allocator: std.mem.Allocator, header: Head
         try writeTimeEvidence(stdout, timing.evidence);
         try stdout.print("variant-faster-rounds: {d}/{d}\n", .{ timing.variant_faster_rounds, timing.rounds });
     }
-    try writeWarnings(stdout, allocator, report.warnings);
+    try cli_warnings.writeWarnings(stdout, allocator, report.warnings);
     const sizes = report.sizes;
     try stdout.print(
         \\db-bytes-baseline: {d} (the snapshot file)
@@ -479,6 +452,16 @@ fn writeJsonComparison(
         try json.beginObject();
         try json.objectField("code");
         try json.write(contract.code.bind_dependent_partial_index);
+        try json.objectField("message");
+        try writeJsonText(&json, allocator, message);
+        try json.endObject();
+    }
+    if (report.warnings.unapplied_migrations) |pending| {
+        const message = try cli_warnings.unappliedMigrationsMessage(allocator, pending);
+        defer allocator.free(message);
+        try json.beginObject();
+        try json.objectField("code");
+        try json.write(contract.code.unapplied_migrations);
         try json.objectField("message");
         try writeJsonText(&json, allocator, message);
         try json.endObject();

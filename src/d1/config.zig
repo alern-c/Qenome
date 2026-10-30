@@ -1,9 +1,15 @@
 const std = @import("std");
 
+pub const default_migrations_dir = "migrations";
+
+pub const default_migrations_table = "d1_migrations";
+
 pub const Entry = struct {
     binding: ?[]const u8 = null,
     database_id: ?[]const u8 = null,
     preview_database_id: ?[]const u8 = null,
+    migrations_dir: ?[]const u8 = null,
+    migrations_table: ?[]const u8 = null,
 };
 
 pub const Parse = union(enum) {
@@ -50,6 +56,12 @@ pub fn parseToml(allocator: std.mem.Allocator, text: []const u8) std.mem.Allocat
         } else if (std.mem.eql(u8, key, "preview_database_id")) {
             entry.preview_database_id = (try parseTomlValue(allocator, value_text)) orelse
                 return invalidLine(allocator, number, "preview_database_id must be a quoted string");
+        } else if (std.mem.eql(u8, key, "migrations_dir")) {
+            entry.migrations_dir = (try parseTomlValue(allocator, value_text)) orelse
+                return invalidLine(allocator, number, "migrations_dir must be a quoted string");
+        } else if (std.mem.eql(u8, key, "migrations_table")) {
+            entry.migrations_table = (try parseTomlValue(allocator, value_text)) orelse
+                return invalidLine(allocator, number, "migrations_table must be a quoted string");
         }
     }
     return .{ .entries = try entries.toOwnedSlice(allocator) };
@@ -251,6 +263,14 @@ pub fn parseJsonc(allocator: std.mem.Allocator, text: []const u8) std.mem.Alloca
             .string => |value_text| entry.preview_database_id = value_text,
             else => return .{ .invalid = try std.fmt.allocPrint(allocator, "d1_databases[{d}].preview_database_id is not a string", .{at}) },
         };
+        if (item_object.get("migrations_dir")) |field| switch (field) {
+            .string => |value_text| entry.migrations_dir = value_text,
+            else => return .{ .invalid = try std.fmt.allocPrint(allocator, "d1_databases[{d}].migrations_dir is not a string", .{at}) },
+        };
+        if (item_object.get("migrations_table")) |field| switch (field) {
+            .string => |value_text| entry.migrations_table = value_text,
+            else => return .{ .invalid = try std.fmt.allocPrint(allocator, "d1_databases[{d}].migrations_table is not a string", .{at}) },
+        };
         try entries.append(allocator, entry);
     }
     return .{ .entries = try entries.toOwnedSlice(allocator) };
@@ -426,6 +446,62 @@ test "toml rejects a malformed d1 table" {
     switch (try parseToml(arena.allocator(), text)) {
         .entries => return error.TestUnexpectedResult,
         .invalid => |reason| try testing.expect(std.mem.startsWith(u8, reason, "line 2:")),
+    }
+}
+
+test "toml reads the migrations settings" {
+    const text =
+        \\[[d1_databases]]
+        \\binding = "DB"
+        \\database_id = "x"
+        \\migrations_dir = "db/migrations"
+        \\migrations_table = "app_migrations"
+        \\
+    ;
+    var arena = Arena.init();
+    defer arena.deinit();
+    const entries = try entriesOf(try parseToml(arena.allocator(), text));
+    try testing.expectEqualStrings("db/migrations", entries[0].migrations_dir.?);
+    try testing.expectEqualStrings("app_migrations", entries[0].migrations_table.?);
+}
+
+test "toml rejects a migrations setting that is not a quoted string" {
+    const text =
+        \\[[d1_databases]]
+        \\binding = "DB"
+        \\migrations_dir = 3
+        \\
+    ;
+    var arena = Arena.init();
+    defer arena.deinit();
+    switch (try parseToml(arena.allocator(), text)) {
+        .entries => return error.TestUnexpectedResult,
+        .invalid => |reason| try testing.expect(std.mem.indexOf(u8, reason, "migrations_dir") != null),
+    }
+}
+
+test "jsonc reads the migrations settings" {
+    const text =
+        \\{
+        \\  "d1_databases": [
+        \\    { "binding": "DB", "database_id": "x", "migrations_dir": "db/migrations", "migrations_table": "app_migrations" },
+        \\  ],
+        \\}
+        \\
+    ;
+    var arena = Arena.init();
+    defer arena.deinit();
+    const entries = try entriesOf(try parseJsonc(arena.allocator(), text));
+    try testing.expectEqualStrings("db/migrations", entries[0].migrations_dir.?);
+    try testing.expectEqualStrings("app_migrations", entries[0].migrations_table.?);
+}
+
+test "jsonc rejects a migrations setting that is not a string" {
+    var arena = Arena.init();
+    defer arena.deinit();
+    switch (try parseJsonc(arena.allocator(), "{\"d1_databases\":[{\"binding\":\"DB\",\"migrations_table\":3}]}")) {
+        .entries => return error.TestUnexpectedResult,
+        .invalid => |reason| try testing.expect(std.mem.indexOf(u8, reason, "migrations_table") != null),
     }
 }
 

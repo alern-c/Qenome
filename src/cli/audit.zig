@@ -4,11 +4,13 @@ const contract = @import("../contract/values.zig");
 const sql_lexer = @import("../sql/lexer.zig");
 const db = @import("../db.zig");
 const result_rows = @import("../result.zig");
+const cli_d1_migrations = @import("../d1/migrations.zig");
 const cli_args = @import("args.zig");
 const cli_batch = @import("batch.zig");
 const cli_control = @import("control.zig");
 const cli_query = @import("query.zig");
 const cli_report = @import("report.zig");
+const cli_warnings = @import("warnings.zig");
 
 const ExitCode = cli_control.ExitCode;
 const QuerySession = cli_query.QuerySession;
@@ -18,6 +20,7 @@ const rowid_primary_key_name = "INTEGER PRIMARY KEY";
 pub const Inputs = struct {
     database_path: [:0]const u8,
     baseline_path: [:0]const u8,
+    unapplied_migrations: ?cli_d1_migrations.Pending = null,
     timeout_ms: u64,
     format: cli_args.Format = .human,
     work_parent: []const u8,
@@ -451,6 +454,12 @@ fn writeHuman(
         \\  key columns are a prefix of that index with the same collation and order.
         \\
     );
+
+    if (inputs.unapplied_migrations) |pending| {
+        try stdout.writeAll("\nWarnings\n");
+        const message = try cli_warnings.unappliedMigrationsText(allocator, pending);
+        try cli_report.writeHumanWarning(stdout, allocator, contract.code.unapplied_migrations, message);
+    }
 }
 
 fn writeJson(
@@ -505,6 +514,19 @@ fn writeJson(
         if (constraint != null) try json.write(null) else try json.write(entry.used);
         try json.objectField("redundant_by");
         if (entry.redundant_by) |name| try cli_report.writeJsonText(&json, allocator, name) else try json.write(null);
+        try json.endObject();
+    }
+    try json.endArray();
+    try json.objectField("warnings");
+    try json.beginArray();
+    if (inputs.unapplied_migrations) |pending| {
+        const message = try cli_warnings.unappliedMigrationsMessage(allocator, pending);
+        defer allocator.free(message);
+        try json.beginObject();
+        try json.objectField("code");
+        try json.write(contract.code.unapplied_migrations);
+        try json.objectField("message");
+        try cli_report.writeJsonText(&json, allocator, message);
         try json.endObject();
     }
     try json.endArray();

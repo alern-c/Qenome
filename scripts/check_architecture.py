@@ -26,15 +26,18 @@ APPROVED_FILES = [
     "src/cli/skill.zig",
     "src/cli/skill_tests.zig",
     "src/cli/usage_text.zig",
+    "src/cli/warnings.zig",
     "src/cli/tests.zig",
+    "src/cli/d1_tests.zig",
     "src/contract/values.zig",
     "src/sql/lexer.zig",
     "src/skill/diff.zig",
     "src/skill/skill.zig",
     "src/d1/config.zig",
+    "src/d1/migrations.zig",
 ]
 
-TEST_FILES = ["src/cli/tests.zig", "src/cli/skill_tests.zig"]
+TEST_FILES = ["src/cli/tests.zig", "src/cli/skill_tests.zig", "src/cli/d1_tests.zig"]
 
 PRODUCTION_FILES = [path for path in APPROVED_FILES if path not in TEST_FILES]
 
@@ -68,10 +71,11 @@ PRODUCTION_IMPORTS = {
         "src/cli/record.zig",
         "src/cli/seed.zig",
         "src/cli/skill.zig",
+        "src/d1/migrations.zig",
     ],
     "src/cli/args.zig": ["src/db.zig", "src/sql/lexer.zig", "src/cli/usage_text.zig"],
     "src/cli/control.zig": ["src/contract/values.zig"],
-    "src/cli/d1.zig": ["src/d1/config.zig"],
+    "src/cli/d1.zig": ["src/d1/config.zig", "src/cli/d1_tests.zig"],
     "src/cli/comparison.zig": ["src/db.zig", "src/result.zig"],
     "src/cli/query.zig": [
         "src/db.zig",
@@ -100,6 +104,7 @@ PRODUCTION_IMPORTS = {
         "src/cli/d1.zig",
         "src/cli/comparison.zig",
         "src/cli/timing.zig",
+        "src/cli/warnings.zig",
     ],
     "src/cli/pair.zig": [
         "src/db.zig",
@@ -108,6 +113,7 @@ PRODUCTION_IMPORTS = {
         "src/cli/comparison.zig",
         "src/cli/control.zig",
         "src/cli/d1.zig",
+        "src/d1/migrations.zig",
         "src/cli/query.zig",
         "src/cli/report.zig",
         "src/cli/timing.zig",
@@ -121,8 +127,10 @@ PRODUCTION_IMPORTS = {
         "src/cli/args.zig",
         "src/cli/batch.zig",
         "src/cli/control.zig",
+        "src/d1/migrations.zig",
         "src/cli/query.zig",
         "src/cli/report.zig",
+        "src/cli/warnings.zig",
     ],
     "src/cli/batch.zig": [
         "src/db.zig",
@@ -133,10 +141,12 @@ PRODUCTION_IMPORTS = {
         "src/cli/comparison.zig",
         "src/cli/control.zig",
         "src/cli/d1.zig",
+        "src/d1/migrations.zig",
         "src/cli/pair.zig",
         "src/cli/query.zig",
         "src/cli/report.zig",
         "src/cli/suggest.zig",
+        "src/cli/warnings.zig",
         "src/cli/workspace.zig",
     ],
     "src/cli/suggest.zig": [
@@ -162,10 +172,17 @@ PRODUCTION_IMPORTS = {
         "src/skill/skill.zig",
     ],
     "src/cli/usage_text.zig": [],
+    "src/cli/warnings.zig": [
+        "src/contract/values.zig",
+        "src/result.zig",
+        "src/d1/migrations.zig",
+        "src/cli/suggest.zig",
+    ],
     "src/skill/skill.zig": ["src/skill/diff.zig"],
     "src/skill/diff.zig": [],
     "src/contract/values.zig": [],
     "src/d1/config.zig": [],
+    "src/d1/migrations.zig": ["src/sqlite.zig"],
     "src/sql/lexer.zig": [],
 }
 
@@ -173,6 +190,11 @@ TEST_ENTRY_IMPORTER = "src/cli.zig"
 TEST_ENTRY_TARGET = "src/cli/tests.zig"
 TEST_ENTRY_PATH_TEXT = "cli/tests.zig"
 TEST_IMPORTS = {
+    "src/cli/d1_tests.zig": [
+        "src/cli.zig",
+        "src/db.zig",
+        "src/contract/values.zig",
+    ],
     "src/cli/tests.zig": [
         "src/cli.zig",
         "src/db.zig",
@@ -240,10 +262,10 @@ LAYER_RANK = {
 LINE_LIMITS = {
     "src/cli/tests.zig": 5744,
     "src/db.zig": 4055,
-    "src/cli/report.zig": 2370,
-    "src/cli/batch.zig": 1902,
+    "src/cli/report.zig": 2353,
+    "src/cli/batch.zig": 1901,
     "src/cli/args.zig": 1780,
-    "src/cli/d1.zig": 1034,
+    "src/cli/d1.zig": 566,
     "src/cli/seed.zig": 977,
     "src/cli/suggest.zig": 831,
     "src/cli/record.zig": 827,
@@ -251,7 +273,7 @@ LINE_LIMITS = {
 
 MAX_LINES = 800
 
-WRITE_ALLOWED = ["src/cli.zig", "src/cli/report.zig", "src/main.zig"]
+WRITE_ALLOWED = ["src/cli.zig", "src/cli/report.zig", "src/cli/warnings.zig", "src/main.zig"]
 
 WRITE_DEBT = [
     "src/cli/audit.zig",
@@ -275,6 +297,7 @@ CONTRACT_VALUES = [
     "warning_codes",
     "warning_messages",
     "bind_dependent_partial_index_message",
+    "unapplied_migrations_message",
 ]
 
 CONTRACT_ALIASES = ["ExitCode"]
@@ -283,6 +306,7 @@ CONTRACT_CODES = [
     "no_analyze_stats",
     "data_too_small",
     "bind_dependent_partial_index",
+    "unapplied_migrations",
     "suggest_query_skipped",
     "suggestions_truncated",
     "suggestion_rejected",

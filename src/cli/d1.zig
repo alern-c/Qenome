@@ -37,6 +37,8 @@ pub const Resolved = struct {
     config_path: []const u8,
     database_id: []const u8,
     local_path: []const u8,
+    migrations_dir: []const u8,
+    migrations_table: []const u8,
 };
 
 pub const Outcome = union(enum) {
@@ -171,6 +173,8 @@ pub fn resolve(
         .config_path = config_path,
         .database_id = database_id,
         .local_path = local_path,
+        .migrations_dir = entry.migrations_dir orelse config.default_migrations_dir,
+        .migrations_table = entry.migrations_table orelse config.default_migrations_table,
     } };
 }
 
@@ -235,6 +239,10 @@ pub fn localDatabasePath(allocator: std.mem.Allocator, config_path: []const u8, 
 }
 
 const testing = std.testing;
+
+test {
+    _ = @import("d1_tests.zig");
+}
 
 const Arena = struct {
     state: std.heap.ArenaAllocator,
@@ -329,6 +337,8 @@ test "resolve finds the local database from a toml config" {
     try testing.expectEqualStrings("DB", resolved.binding);
     try testing.expectEqualStrings("wrangler.toml", resolved.config_path);
     try testing.expectEqualStrings(database_id, resolved.database_id);
+    try testing.expectEqualStrings(config.default_migrations_dir, resolved.migrations_dir);
+    try testing.expectEqualStrings(config.default_migrations_table, resolved.migrations_table);
     const expected = try writeFactory(allocator, database_id);
     defer allocator.free(expected);
     try testing.expectEqualStrings(expected, resolved.local_path);
@@ -359,6 +369,32 @@ test "resolve finds the local database from a jsonc config" {
     };
     try testing.expectEqualStrings("wrangler.jsonc", resolved.config_path);
     try testing.expectEqualStrings(database_id, resolved.database_id);
+}
+
+test "resolve keeps the migrations settings of the binding" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena = Arena.init();
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const database_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "wrangler.toml", .data =
+        \\[[d1_databases]]
+        \\binding = "DB"
+        \\database_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        \\migrations_dir = "db/migrations"
+        \\migrations_table = "app_migrations"
+        \\
+    });
+    try addLocalDatabase(tmp.dir, allocator, database_id);
+
+    const outcome = try resolve(testing.io, allocator, tmp.dir, "DB", null);
+    const resolved = switch (outcome) {
+        .resolved => |resolved| resolved,
+        .failure => return error.TestUnexpectedResult,
+    };
+    try testing.expectEqualStrings("db/migrations", resolved.migrations_dir);
+    try testing.expectEqualStrings("app_migrations", resolved.migrations_table);
 }
 
 test "resolve uses the directory of an explicit config" {
