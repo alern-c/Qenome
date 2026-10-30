@@ -121,6 +121,14 @@ def test_stage(version):
             os.path.isfile(module) and os.path.getsize(module) > 0,
             module,
         )
+        source_skill = os.path.join(ROOT, "skills", "qenome", "SKILL.md")
+        staged_skill = os.path.join(dest, "qenome", "skills", "qenome", "SKILL.md")
+        expect(
+            "staged launcher ships the bundled skill",
+            os.path.isfile(staged_skill)
+            and open(staged_skill, "rb").read() == open(source_skill, "rb").read(),
+            staged_skill,
+        )
         for platform in stage_npm.PLATFORMS:
             manifest = stage_npm.load_json(os.path.join(dest, platform["dir"], "package.json"))
             binary = os.path.join(dest, platform["dir"], "bin", "qenome")

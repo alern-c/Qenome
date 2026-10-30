@@ -22,6 +22,11 @@ pub fn tempParent(environ: *const std.process.Environ.Map) ?[]const u8 {
     return windowsTempParent(environ.get("TMP"), environ.get("TEMP"), environ.get("USERPROFILE"));
 }
 
+pub fn home(environ: *const std.process.Environ.Map) ?[]const u8 {
+    if (builtin.os.tag != .windows) return environ.get("HOME");
+    return environ.get("USERPROFILE") orelse environ.get("HOME");
+}
+
 pub fn windowsTempParent(tmp: ?[]const u8, temp: ?[]const u8, userprofile: ?[]const u8) ?[]const u8 {
     const candidates = [_]?[]const u8{ tmp, temp, userprofile };
     for (candidates) |candidate| {

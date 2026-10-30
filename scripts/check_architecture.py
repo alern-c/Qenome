@@ -23,12 +23,19 @@ APPROVED_FILES = [
     "src/cli/record.zig",
     "src/cli/suggest.zig",
     "src/cli/seed.zig",
+    "src/cli/skill.zig",
+    "src/cli/skill_tests.zig",
+    "src/cli/usage_text.zig",
     "src/cli/tests.zig",
     "src/contract/values.zig",
     "src/sql/lexer.zig",
+    "src/skill/diff.zig",
+    "src/skill/skill.zig",
 ]
 
-PRODUCTION_FILES = [path for path in APPROVED_FILES if path != "src/cli/tests.zig"]
+TEST_FILES = ["src/cli/tests.zig", "src/cli/skill_tests.zig"]
+
+PRODUCTION_FILES = [path for path in APPROVED_FILES if path not in TEST_FILES]
 
 PRODUCTION_IMPORTS = {
     "src/sqlite.zig": [],
@@ -59,8 +66,9 @@ PRODUCTION_IMPORTS = {
         "src/cli/audit.zig",
         "src/cli/record.zig",
         "src/cli/seed.zig",
+        "src/cli/skill.zig",
     ],
-    "src/cli/args.zig": ["src/db.zig", "src/sql/lexer.zig"],
+    "src/cli/args.zig": ["src/db.zig", "src/sql/lexer.zig", "src/cli/usage_text.zig"],
     "src/cli/control.zig": ["src/contract/values.zig"],
     "src/cli/d1.zig": [],
     "src/cli/comparison.zig": ["src/db.zig", "src/result.zig"],
@@ -145,6 +153,16 @@ PRODUCTION_IMPORTS = {
         "src/sqlite.zig",
         "src/cli/control.zig",
     ],
+    "src/cli/skill.zig": [
+        "src/cli/args.zig",
+        "src/cli/control.zig",
+        "src/cli/workspace.zig",
+        "src/cli/skill_tests.zig",
+        "src/skill/skill.zig",
+    ],
+    "src/cli/usage_text.zig": [],
+    "src/skill/skill.zig": ["src/skill/diff.zig"],
+    "src/skill/diff.zig": [],
     "src/contract/values.zig": [],
     "src/sql/lexer.zig": [],
 }
@@ -173,6 +191,11 @@ TEST_IMPORTS = {
         "src/cli/seed.zig",
         "src/cli/record.zig",
     ],
+    "src/cli/skill_tests.zig": [
+        "src/cli.zig",
+        "src/cli/skill.zig",
+        "src/skill/skill.zig",
+    ],
 }
 
 BUILTIN_IMPORTS = ["std", "builtin"]
@@ -184,6 +207,7 @@ MODULE_IMPORTS = {
 
 LAYERS = [
     ("src/contract/", "contract"),
+    ("src/skill/", "skill"),
     ("src/sql/", "sql"),
     ("src/sqlite.zig", "sqlite"),
     ("src/db.zig", "engine"),
@@ -196,6 +220,7 @@ LAYERS = [
 
 LAYER_RANK = {
     "contract": 0,
+    "skill": 0,
     "sqlite": 1,
     "sql": 2,
     "engine": 3,
@@ -226,6 +251,7 @@ WRITE_ALLOWED = ["src/cli.zig", "src/cli/report.zig", "src/main.zig"]
 
 WRITE_DEBT = [
     "src/cli/audit.zig",
+    "src/cli/skill.zig",
     "src/cli/batch.zig",
     "src/cli/control.zig",
     "src/cli/pair.zig",

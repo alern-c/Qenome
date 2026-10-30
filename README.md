@@ -170,6 +170,22 @@ An agent that changes a D1 schema should run Qenome before it keeps a `CREATE IN
 
 Point the agent at that file. `--format json` is the machine-readable report, specified in [docs/json.md](docs/json.md).
 
+Install the skill into an agent's skills directory:
+
+```sh
+npx qenome skill install
+```
+
+It copies `skills/qenome/SKILL.md` into each detected agent directory: Claude Code (`~/.claude/skills/qenome/`) and the cross-agent location that Codex, Cursor, and Gemini CLI read (`~/.agents/skills/qenome/`). `--project` writes under the current directory instead, `--target claude` or `--target agents` picks one, `--dry-run` shows what would change, and `--yes` overwrites without asking. `qenome skill status` shows whether the installed copy is up to date, `qenome skill uninstall` removes only the copy that qenome installed, and `qenome skill print` writes the skill to stdout.
+
+Without qenome, the skills CLI installs the same file from GitHub:
+
+```sh
+npx skills add alern-c/Qenome --skill qenome -g
+```
+
+The npm package ships `skills/`, so the same file is also inside `npx qenome`.
+
 ## Why not ...
 
 **EXPLAIN QUERY PLAN.** The plan says whether SQLite expects to touch an index. It does not run the `SELECT` on a copy of the data, so it cannot show that the result rows changed, how many rows were read or written, or how much the database file grew. Qenome runs the statement on both sandbox copies and counts with the same counting as local D1 (workerd patch).
