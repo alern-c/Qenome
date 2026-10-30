@@ -303,6 +303,11 @@ def main():
     code, output = case(lambda root: write_file(root, "src/extra.zig", "// new\n"))
     expect_rejected("an unknown file under src fails", code, output, "unknown-file", "src/extra.zig")
 
+    code, output = case(lambda root: write_file(root, "src/skill/rogue.zig", "// new\n"))
+    expect_rejected(
+        "an unknown file under src/skill fails", code, output, "unknown-file", "src/skill/rogue.zig"
+    )
+
     code, output = case(lambda root: shutil.rmtree(os.path.join(root, "src/cli")))
     expect_rejected("a missing src/cli directory fails", code, output, "missing-file", "src/cli/args.zig")
 

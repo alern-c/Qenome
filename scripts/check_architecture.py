@@ -398,6 +398,7 @@ def check_files(root, sources, violations):
     check_directory(root, "src", violations)
     check_directory(root, "src/cli", violations)
     check_directory(root, "src/contract", violations)
+    check_directory(root, "src/skill", violations)
     check_directory(root, "src/sql", violations)
 
 def layer_of(rel_path):
