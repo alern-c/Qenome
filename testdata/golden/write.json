@@ -1,0 +1,89 @@
+{
+  "schema_version": 2,
+  "exit_code": 0,
+  "statement": "write",
+  "verdict": "needs-check",
+  "verdict_reasons": [
+    "the rows match and both copies read the same number of rows, but the variant writes more rows"
+  ],
+  "result": "match",
+  "row_order": "same",
+  "result_reasons": [],
+  "row_differences": {
+    "baseline_only": 0,
+    "variant_only": 0,
+    "baseline_only_examples": [],
+    "variant_only_examples": []
+  },
+  "plan_changed": false,
+  "baseline": {
+    "rows": 0,
+    "plan": [],
+    "counters": {
+      "rows_read": 0,
+      "rows_written": 1,
+      "fullscan_steps": 0,
+      "vm_steps": 13,
+      "sort_ops": 0,
+      "autoindex_rows": 0
+    },
+    "changes": 1,
+    "total_changes": 1,
+    "executions": 1
+  },
+  "variant": {
+    "rows": 0,
+    "plan": [],
+    "counters": {
+      "rows_read": 0,
+      "rows_written": 2,
+      "fullscan_steps": 0,
+      "vm_steps": 19,
+      "sort_ops": 0,
+      "autoindex_rows": 0
+    },
+    "changes": 1,
+    "total_changes": 1,
+    "executions": 1
+  },
+  "timing": null,
+  "warnings": [
+    {
+      "code": "no_analyze_stats",
+      "message": "The candidate index table has no non-empty sqlite_stat1 entry. Test an ANALYZE'd copy with representative data; this check does not run ANALYZE."
+    }
+  ],
+  "size_bytes": {
+    "baseline": 5087232,
+    "variant": 7258112,
+    "increase": 2170880
+  },
+  "inputs": {
+    "database": "testdata/generated/qenome-fixture.db",
+    "write": "testdata/cases/write.sql",
+    "index_sql": "testdata/cases/improved.index.sql"
+  },
+  "environment": {
+    "qenome_version": "<version>",
+    "sqlite_version": "3.53.4",
+    "sqlite_source_id": "2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc",
+    "zig_version": "0.17.0",
+    "build_mode": "<build-mode>",
+    "os": "<os>",
+    "arch": "<arch>",
+    "work_dir_parent": "<work-dir-parent>"
+  },
+  "measurement": {
+    "runs_per_copy": 1,
+    "warmup": "none (every run starts from the same rows)",
+    "order": "baseline then variant; every run is rolled back",
+    "scope": "sqlite3_step from the reset statement to SQLITE_DONE; rows written includes secondary-index inserts, triggers, and foreign-key cascades, but not secondary-index deletes",
+    "cache": "warm; each copy reuses its connection and page cache"
+  },
+  "binds": [
+    {
+      "number": 1,
+      "type": "int"
+    }
+  ]
+}
