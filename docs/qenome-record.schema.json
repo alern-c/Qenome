@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "qenome-record.schema.json",
+  "title": "Qenome record report (record_schema_version 1)",
+  "description": "Stdout object after --record FILE --out DIR --format json. Separate from the batch report; see docs/json.md.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "record_schema_version",
+    "exit_code",
+    "manifest",
+    "records",
+    "queries",
+    "skipped",
+    "repeated_shapes",
+    "repeated_shapes_dropped"
+  ],
+  "properties": {
+    "record_schema_version": { "const": 1 },
+    "exit_code": {
+      "description": "0 when the report is written.",
+      "const": 0
+    },
+    "manifest": {
+      "description": "The manifest path that --out now holds.",
+      "type": "string",
+      "minLength": 1
+    },
+    "records": {
+      "description": "Record lines read from the log, including the ones that were skipped.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "queries": {
+      "description": "One object per manifest entry, in queries/qNNN.sql order.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100,
+      "items": { "$ref": "#/$defs/query" }
+    },
+    "skipped": {
+      "description": "Counters for the records that did not become a manifest entry or a shape.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "writes",
+        "exec",
+        "other",
+        "blob",
+        "unsupported",
+        "nul",
+        "large",
+        "malformed",
+        "version"
+      ],
+      "properties": {
+        "writes": { "description": "INSERT, UPDATE, DELETE and REPLACE records.", "type": "integer", "minimum": 0 },
+        "exec": { "description": "op: exec records.", "type": "integer", "minimum": 0 },
+        "other": { "description": "Statements that are neither read nor write.", "type": "integer", "minimum": 0 },
+        "blob": { "description": "Records with a BLOB bind.", "type": "integer", "minimum": 0 },
+        "unsupported": { "description": "Records with a bind type that --bind cannot express.", "type": "integer", "minimum": 0 },
+        "nul": { "description": "Records whose SQL or text bind holds a NUL byte.", "type": "integer", "minimum": 0 },
+        "large": { "description": "Records whose SQL is larger than 1 MiB.", "type": "integer", "minimum": 0 },
+        "malformed": { "description": "Record lines that are not a record_version 1 object.", "type": "integer", "minimum": 0 },
+        "version": { "description": "Records with another record_version.", "type": "integer", "minimum": 0 }
+      }
+    },
+    "repeated_shapes": {
+      "description": "At most 20 shapes, ordered by distinct_values, then executions, then first appearance.",
+      "type": "array",
+      "maxItems": 20,
+      "items": { "$ref": "#/$defs/shape" }
+    },
+    "repeated_shapes_dropped": {
+      "description": "How many shapes passed the threshold and did not fit in the top 20.",
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "$defs": {
+    "query": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["select", "executions"],
+      "properties": {
+        "select": {
+          "description": "The SQL file under --out.",
+          "type": "string",
+          "pattern": "^queries/q[0-9]{3}\\.sql$"
+        },
+        "executions": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "shape": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "kind",
+        "executions",
+        "distinct_values",
+        "longest_run",
+        "statements",
+        "batched",
+        "example",
+        "previous_shape_example",
+        "manifest_select",
+        "hint"
+      ],
+      "properties": {
+        "kind": {
+          "description": "read for SELECT and VALUES, write for INSERT, UPDATE, DELETE and REPLACE.",
+          "enum": ["read", "write"]
+        },
+        "executions": {
+          "description": "Records with this shape.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "distinct_values": {
+          "description": "Distinct combinations of bind values and inlined literals. Records from op: batch are not counted here.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "longest_run": {
+          "description": "Longest stretch of consecutive records with this shape in log order. A record that the report skips, such as a PRAGMA or an exec, ends the run.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "statements": {
+          "description": "Distinct exact SQL texts with this shape; more than one shows inlined literals.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "batched": {
+          "description": "Records with op: batch. They count in executions only.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "example": {
+          "description": "One exact SQL text of the shape. Never a bind value.",
+          "type": "string",
+          "minLength": 1
+        },
+        "previous_shape_example": {
+          "description": "The SQL of the shape that most often runs right before a run of this shape, which is likely the parent query. Null when no other shape came first.",
+          "type": ["string", "null"]
+        },
+        "manifest_select": {
+          "description": "The queries/qNNN.sql entry that holds a statement of this shape. Null for a shape that is not in the manifest.",
+          "type": ["string", "null"],
+          "pattern": "^queries/q[0-9]{3}\\.sql$"
+        },
+        "hint": {
+          "description": "The fixed next step for the kind: one query with IN (...) or a JOIN, a multi-row INSERT, or db.batch().",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

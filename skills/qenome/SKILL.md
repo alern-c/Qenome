@@ -186,7 +186,8 @@ npx qenome --d1 DB --batch qenome-manifest/manifest.json --suggest --format json
 - The same SQL in the log becomes one query. SQL that differs only in whitespace outside strings and comments counts as the same. The first execution supplies the bind values, and human output shows the execution count.
 - `INSERT`, `UPDATE`, `DELETE`, `REPLACE`, `exec`, and statements that bind a BLOB, a boolean, or text with a NUL are skipped and counted in the `skipped:` line.
 - The manifest holds bind values. Keep it local, do not commit it, and delete the record log after the manifest exists.
-- `--record` needs no database, prints a human summary only, and cannot be combined with the comparison options.
+- After writing a data-access loop, run `npx qenome --record qenome-record.log --out qenome-manifest --format json` and read `repeated_shapes`: each entry is a statement that ran many times with different values (a possible N+1), with `manifest_select` and a `hint`. It is a hint, not a measurement, and it never changes the exit code. `--n-plus-one-threshold N` changes the default of 10 different values; `0` turns the report off.
+- `--record` needs no database, takes `--format human` (default) or `--format json`, and cannot be combined with the comparison options.
 - Do not put the wrapper in production code: it writes the SQL and the bind values to the output. SQL inside `withSession` and Durable Objects is not recorded.
 
 ## Compare a migration (--migration)
@@ -212,6 +213,7 @@ npx qenome --d1 DB --batch queries.json --migration 0002_replace_index.sql --for
 
 State `schema_version` before you interpret fields.
 
+- If stdout is a JSON object with `record_schema_version` `1`, it is a `--record` report. Read `records`, `queries`, `skipped`, `repeated_shapes`, and `repeated_shapes_dropped`. It is not a comparison and has no `verdict`; the exit code is `0` when the object is written.
 - If stdout is a JSON object with `audit_schema_version` `1`, it is an index audit report. Read `redundancy_judged` first, then each `indexes` entry (`used`, `constraint`, `redundant_by`, `partial`, `expression`). It is not a comparison and has no `verdict`. Exit `0` can have unused and redundant entries; report them as candidates only.
 - If stdout is a JSON object with `batch_schema_version`, it is a batch report. Read `batch_schema_version` first; it must be `1`. Read `recommended` (`null` when no candidate qualifies; with `--suggest` it can be `suggested:N`; with `--migration` it is the migration path or `null`), the `summary` entries (`candidate`, `source`, `index_sql_text`, `not_judged`; `source` can be `manifest`, `suggested`, or `migration`), the `results`, the optional top-level `migration` object (`path`, `statements`), and the top-level `warnings` (the `--suggest` entries, plus `unapplied_migrations` with `--d1`). Repeat every batch warning `code` and `message`, like the comparison warnings. Read each `results[].comparison.warnings` too: comparison warnings, including `bind_dependent_partial_index`, are there and not in the batch top-level `warnings`. A `human` batch report lists each comparison warning under `Warnings` as `<query> -> <candidate>: <code>: <message>`. The `comparison` object under each result has `schema_version` 2 and the shape below.
 - A top-level `seed_data` object appears in a comparison or batch object when `--seed-data` was used. Read `path`, `seed`, `rows`, and `tables`. It is an input fact and does not change the verdict.
