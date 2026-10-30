@@ -529,6 +529,9 @@ pub fn run(
             };
         }
 
+        summary.no_analyze_stats = warnings.no_analyze_stats;
+        summary.data_too_small = warnings.data_too_small;
+
         var variant: QuerySession = .{};
         var variant_done = false;
         defer if (!variant_done) variant.deinit(.variant, stderr, cleanup_failed);
@@ -669,8 +672,6 @@ pub fn run(
                 },
             }
             report.warnings = .{ .no_analyze_stats = warnings.no_analyze_stats, .data_too_small = warnings.data_too_small };
-            summary.no_analyze_stats = warnings.no_analyze_stats;
-            summary.data_too_small = warnings.data_too_small;
             const partial_index = variant.database.findBindDependentPartialIndex(child, after.plan, query.sql, query.binds, &control) catch null;
             report.warnings.bind_dependent_partial_index = partial_index;
             report.sizes = .{ .baseline = baseline_size, .variant = variant_size };
@@ -1744,11 +1745,11 @@ test "batchExitCode keeps 3 > 1 > 124 > 4 > 6 > 0" {
     try testing.expectEqual(ExitCode.mismatch, batchExitCode(&regressed, &everything, true));
 }
 
-test "candidate warnings list each active warning once per compared candidate" {
+test "a compared candidate keeps its warnings even when every query timed out" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     const summaries = [_]CandidateSummary{
-        .{ .candidate = "a.sql", .status = .compared, .no_analyze_stats = true, .data_too_small = true },
+        .{ .candidate = "a.sql", .status = .compared, .timeout = 1, .no_analyze_stats = true, .data_too_small = true },
         .{ .candidate = "b.sql", .status = .index_rejected, .no_analyze_stats = true },
         .{ .candidate = "c.sql", .status = .compared, .data_too_small = true },
     };
@@ -1764,4 +1765,27 @@ test "candidate warnings list each active warning once per compared candidate" {
     try testing.expectEqualStrings(contract.code.data_too_small, list.items[1].code);
     try testing.expectEqualStrings("c.sql", list.items[2].candidate);
     try testing.expectEqualStrings(contract.code.data_too_small, list.items[2].code);
+}
+
+test "the human batch report keeps the warnings of a candidate whose queries all timed out" {
+    var buffer: [8192]u8 = undefined;
+    var stdout = Io.Writer.fixed(&buffer);
+    const summaries = [_]CandidateSummary{.{
+        .candidate = "slow.sql",
+        .status = .compared,
+        .timeout = 1,
+        .no_analyze_stats = true,
+        .data_too_small = true,
+    }};
+    const order = [_]usize{0};
+    try writeBatchHuman(&stdout, testing.allocator, .{
+        .database_path = "db.sqlite",
+        .baseline_path = "",
+        .variant_path = "",
+        .timeout_ms = 0,
+        .work_parent = "/tmp",
+    }, 1, &summaries, &order, &.{}, &.{}, null, null);
+    const output = stdout.buffered();
+    try testing.expect(std.mem.indexOf(u8, output, "slow.sql: no_analyze_stats: ") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "slow.sql: data_too_small: ") != null);
 }
