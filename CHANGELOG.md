@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `README.md` and `README.ja.md` name the `time noise` line of the human Summary: the empirical A/A p95 and the number of pairs, shown only when timed, for reference only, and never changing the verdict or the exit code.
+
 ## [0.3.7] - 2026-10-31
 
 ### Added

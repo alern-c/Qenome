@@ -551,7 +551,7 @@ Qenome は baseline のコピーに2つ目の読み取り専用接続を開き�
 
 human は判断に必要なものを出します。
 
-- Summary: 結果の行が一致したか、コピーごとの読んだ行数と書いた行数、判定とその理由、計画が変わったか、`--seed-data` のときは `seed data` と `seed` の行、ペアのラウンドから決めた時間の向き（判定できないときは向きを付けない中央値の比）、計時したときは A/A ノイズ幅、中央値が同じ向きのときの変化の大きさ（`230x faster`）、容量の増分、デバッグビルドのときはその注意。`--write` では `write` のファイル、`returning rows`、`rows changed`、`total changed`、`write runs` を足し、左右比較表にも `rows changed` と `total changed` を足す
+- Summary: 結果の行が一致したか、コピーごとの読んだ行数と書いた行数、判定とその理由、計画が変わったか、`--seed-data` のときは `seed data` と `seed` の行、ペアのラウンドから決めた時間の向き（判定できないときは向きを付けない中央値の比）、計時したときだけ出る `time noise` の行（baseline の A/A 2回の絶対時間差の経験的95パーセンタイルとペア数。参考値であり、判定も終了コードも変えない。詳細は[英語版の `timing.noise_band`](README.md#timing-evidence-and-advisory-warnings)）、中央値が同じ向きのときの変化の大きさ（`230x faster`）、容量の増分、デバッグビルドのときはその注意。`--write` では `write` のファイル、`returning rows`、`rows changed`、`total changed`、`write runs` を足し、左右比較表にも `rows changed` と `total changed` を足す
 - baseline と variant の左右比較表: 読んだ行数、書いた行数、結果の行数、フルスキャン行数、VMステップ数、0 でないときはソート回数と autoindex 行数、計測したときは p25 / p75 の時間、データベースファイルのバイト数
 - 両方のコピーの実行計画。`kind` / `covering` / `automatic` は SQLite の文言から読んだヒント
 - 助言の警告があるときは `Warnings` の節に `warning: <code>: <message>` の行
