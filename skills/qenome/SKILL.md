@@ -1,11 +1,15 @@
 ---
 name: qenome
 description: >
-  Decide whether a CREATE INDEX helps a local Cloudflare D1 or SQLite SELECT
-  before merging. Use when the user has a wrangler d1_databases binding, asks
-  if an index helps, or wants a qenome verdict, exit code, JSON report, or
-  warning. Reads schema_version 2. Does not apply the index to the original
-  database.
+  Decide whether a CREATE INDEX helps a local Cloudflare D1 or SQLite query
+  before merging. Compares one read-only SELECT, or one write, before and after
+  a candidate index on sandbox copies, and reports the rows read and written,
+  the verdict, the exit code, and a JSON report (schema_version 2). Use when a
+  D1 or SQLite query is slow, when its plan reads many rows, when the user asks
+  whether an index helps or which index is missing, or when a migration that
+  adds, drops, or replaces an index or a column must be checked before merge.
+  Needs a wrangler d1_databases binding or a SQLite file. Does not apply the
+  index to the original database.
 ---
 
 # Qenome
@@ -13,6 +17,10 @@ description: >
 Qenome compares one read-only `SELECT` with one candidate `CREATE INDEX` on sandbox copies. With `--write`, it compares one `INSERT`, `UPDATE`, `DELETE`, or `REPLACE` instead, inside a transaction that is rolled back. With `--batch`, it compares every SELECT in a manifest with every candidate in one run. With `--batch ... --audit-indexes`, it reports the indexes that the manifest queries did not use and the indexes whose leading columns another index or the primary key covers. With `--suggest`, SQLite's expert proposes the candidate indexes, so a SELECT file is enough. With `--migration`, it applies a SQL file of index or table changes to the variant before comparing every query in a manifest. The verdict uses the same counting as local D1 (workerd patch). The numbers have not yet been checked against production D1.
 
 The contract is [docs/json.md](../../docs/json.md). This skill expects `schema_version` 2.
+
+## Install this skill
+
+`qenome skill install` copies this file into an AI agent's skills directory: Claude Code `~/.claude/skills/qenome/`, or the cross-agent `~/.agents/skills/qenome/` that Codex, Cursor, and Gemini CLI read. `--project` writes under the current directory, `qenome skill status` shows whether the installed copy is up to date, and `qenome skill uninstall` removes it. `qenome skill print` writes the file to stdout. The links below point at the repository; when you read an installed copy, use https://github.com/alern-c/Qenome for them.
 
 ## When to run
 

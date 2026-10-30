@@ -6,13 +6,13 @@
 
 | ディレクトリ | npm の名前 | 中身 |
 | --- | --- | --- |
-| `npm/qenome` | `qenome` | Node のランチャー（`bin` は `qenome`）と、`qenome/d1` で公開する記録用の `lib/d1.mjs` |
+| `npm/qenome` | `qenome` | Node のランチャー（`bin` は `qenome`）、`qenome/d1` で公開する記録用の `lib/d1.mjs`、`qenome skill install` が使う `skills/qenome/SKILL.md` |
 | `npm/linux-x64` | `@qenome-cli/linux-x64` | Linux x64 のバイナリ |
 | `npm/linux-arm64` | `@qenome-cli/linux-arm64` | Linux arm64 のバイナリ |
 | `npm/darwin-x64` | `@qenome-cli/darwin-x64` | macOS x64 のバイナリ |
 | `npm/darwin-arm64` | `@qenome-cli/darwin-arm64` | macOS arm64 のバイナリ |
 
-ランチャーの `optionalDependencies` に4つのバイナリパッケージを、`build.zig.zon` と同じ版で書く。`package.json` の `files` に `lib` を入れ、`exports` の `./d1` を `./lib/d1.mjs` に向ける。`scripts/stage_npm.py` は `lib/d1.mjs` を公開用ツリーに写し、`npm pack` の tarball にそれが入っていることを確かめる。各バイナリパッケージは `os` と `cpu` を持つので、npm はそのマシンに合うものだけを入れる。ランチャーは `process.platform` と `process.arch` から `@qenome-cli/<platform>-<arch>` を探し、その中の `bin/qenome` を起動する。
+ランチャーの `optionalDependencies` に4つのバイナリパッケージを、`build.zig.zon` と同じ版で書く。`package.json` の `files` に `lib` と `skills` を入れ、`exports` の `./d1` を `./lib/d1.mjs` に向ける。`scripts/stage_npm.py` は `lib/d1.mjs` と `skills/qenome/SKILL.md` を公開用ツリーに写し、`npm pack` の tarball にそれらが入っていることを確かめる。各バイナリパッケージは `os` と `cpu` を持つので、npm はそのマシンに合うものだけを入れる。ランチャーは `process.platform` と `process.arch` から `@qenome-cli/<platform>-<arch>` を探し、その中の `bin/qenome` を起動する。
 
 この形は esbuild と biome と同じ。一つのパッケージに全バイナリを入れると、使わない OS のバイナリまで落ちる。postinstall でダウンロードすると、npm 以外の配布場所が要る。optionalDependencies なら `npx qenome` の1回で足りる。
 

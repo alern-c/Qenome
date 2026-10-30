@@ -97,6 +97,7 @@ CANONICAL_FILES = {
         'const db = @import("../db.zig");\n'
         'const sql_lexer = @import("../sql/lexer.zig");\n'
         'const build_options = @import("build_options");\n'
+        'const usage_text = @import("usage_text.zig");\n'
     ),
     "src/cli/control.zig": (
         'const std = @import("std");\n'
@@ -208,6 +209,29 @@ CANONICAL_FILES = {
         'const cli_seed = @import("seed.zig");\n'
         'const cli_record = @import("record.zig");\n'
     ),
+    "src/cli/usage_text.zig": 'pub const body = "";\n',
+    "src/cli/skill.zig": (
+        'const std = @import("std");\n'
+        'const cli_args = @import("args.zig");\n'
+        'const cli_control = @import("control.zig");\n'
+        'const cli_workspace = @import("workspace.zig");\n'
+        'const skill = @import("../skill/skill.zig");\n'
+        "\n"
+        "test {\n"
+        '    _ = @import("skill_tests.zig");\n'
+        "}\n"
+    ),
+    "src/cli/skill_tests.zig": (
+        'const std = @import("std");\n'
+        'const cli = @import("../cli.zig");\n'
+        'const cli_skill = @import("skill.zig");\n'
+        'const skill = @import("../skill/skill.zig");\n'
+    ),
+    "src/skill/skill.zig": (
+        'const std = @import("std");\n'
+        'const diff = @import("diff.zig");\n'
+    ),
+    "src/skill/diff.zig": 'const std = @import("std");\n',
 }
 
 def write_file(root, rel_path, text):
@@ -259,7 +283,7 @@ def expect_rejected(name, code, output, rule, mention=None):
 def main():
     code, output = case(None)
     expect_clean("the smallest approved tree passes", code, output)
-    expect("the whole tree is checked", "(23 files checked" in output, output.strip())
+    expect("the whole tree is checked", "(28 files checked" in output, output.strip())
 
     code, output = case(lambda root: os.remove(os.path.join(root, "src/cli/tests.zig")))
     expect_rejected("a missing test file fails", code, output, "missing-file", "src/cli/tests.zig")
@@ -278,6 +302,11 @@ def main():
 
     code, output = case(lambda root: write_file(root, "src/extra.zig", "// new\n"))
     expect_rejected("an unknown file under src fails", code, output, "unknown-file", "src/extra.zig")
+
+    code, output = case(lambda root: write_file(root, "src/skill/rogue.zig", "// new\n"))
+    expect_rejected(
+        "an unknown file under src/skill fails", code, output, "unknown-file", "src/skill/rogue.zig"
+    )
 
     code, output = case(lambda root: shutil.rmtree(os.path.join(root, "src/cli")))
     expect_rejected("a missing src/cli directory fails", code, output, "missing-file", "src/cli/args.zig")

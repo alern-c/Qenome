@@ -184,7 +184,7 @@ fn callRun(
 ) RunResult {
     var stdout = Io.Writer.fixed(stdout_buffer);
     var stderr = Io.Writer.fixed(stderr_buffer);
-    const code = run(testing.io, allocator, argv, temp_parent, &stdout, &stderr);
+    const code = run(testing.io, allocator, argv, .{ .temp_parent = temp_parent }, &stdout, &stderr);
     return .{ .code = code, .stdout = stdout.buffered(), .stderr = stderr.buffered() };
 }
 

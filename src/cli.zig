@@ -16,6 +16,7 @@ const cli_batch = @import("cli/batch.zig");
 const cli_audit = @import("cli/audit.zig");
 const cli_record = @import("cli/record.zig");
 const cli_seed = @import("cli/seed.zig");
+const cli_skill = @import("cli/skill.zig");
 
 pub const max_sql_bytes = cli_args.max_sql_bytes;
 pub const SqlFileError = cli_args.SqlFileError;
@@ -33,6 +34,7 @@ pub const finalExitCode = cli_control.finalExitCode;
 
 const tempParentPath = cli_workspace.tempParentPath;
 pub const tempParent = cli_workspace.tempParent;
+pub const home = cli_workspace.home;
 const WorkDir = cli_workspace.WorkDir;
 const prepareCopies = cli_workspace.prepareCopies;
 const fileSize = cli_workspace.fileSize;
@@ -61,23 +63,30 @@ fn resultExitCode(outcome: cli_comparison.Outcome) ExitCode {
     };
 }
 
+pub const Context = struct {
+    temp_parent: ?[]const u8 = null,
+    home: ?[]const u8 = null,
+    stdin: ?*Io.Reader = null,
+};
+
 pub fn run(
     io: Io,
     allocator: std.mem.Allocator,
     argv: []const [:0]const u8,
-    temp_parent: ?[]const u8,
+    context: Context,
     stdout: *Io.Writer,
     stderr: *Io.Writer,
 ) ExitCode {
     const json_errors = argvRequestsJson(argv);
     var bridge: cli_control.JsonStderr = .init(stderr);
     const sink = if (json_errors) &bridge.writer else stderr;
-    const code = runCaptured(io, allocator, argv, temp_parent, stdout, sink);
+    const code = runCaptured(io, allocator, argv, context, stdout, sink);
     if (json_errors) bridge.finish(code);
     return code;
 }
 
 fn argvRequestsJson(argv: []const [:0]const u8) bool {
+    if (argv.len > 1 and std.mem.eql(u8, argv[1], "skill")) return false;
     var wants = false;
     var index: usize = 1;
     while (index < argv.len) : (index += 1) {
@@ -100,7 +109,7 @@ fn runCaptured(
     io: Io,
     allocator: std.mem.Allocator,
     argv: []const [:0]const u8,
-    temp_parent: ?[]const u8,
+    context: Context,
     stdout: *Io.Writer,
     stderr: *Io.Writer,
 ) ExitCode {
@@ -110,6 +119,12 @@ fn runCaptured(
     var arena_state = std.heap.ArenaAllocator.init(allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
+
+    if (argv.len > 1 and std.mem.eql(u8, argv[1], "skill")) {
+        return cli_skill.run(io, arena, argv[2..], context.home, context.stdin, Io.Dir.cwd(), stdout, stderr);
+    }
+
+    const temp_parent = context.temp_parent;
 
     var offending: ?[:0]const u8 = null;
     const args = cli_args.parseArgsReporting(arena, argv, &offending) catch |err| {
@@ -580,7 +595,7 @@ test "the compatibility re-exports keep the public names and signatures" {
     const read_file: *const fn (Io, std.mem.Allocator, []const u8) (SqlFileError || Io.Dir.ReadFileAllocError)![:0]u8 = readSqlFile;
     const parse_args: *const fn (std.mem.Allocator, []const [:0]const u8) ParseError!Args = parseArgs;
     const print_usage: *const fn (*Io.Writer) Io.Writer.Error!void = usage;
-    const run_cli: *const fn (Io, std.mem.Allocator, []const [:0]const u8, ?[]const u8, *Io.Writer, *Io.Writer) ExitCode = run;
+    const run_cli: *const fn (Io, std.mem.Allocator, []const [:0]const u8, Context, *Io.Writer, *Io.Writer) ExitCode = run;
     const final_code: *const fn (ExitCode, bool) ExitCode = finalExitCode;
     _ = read_file;
     _ = parse_args;

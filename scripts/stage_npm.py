@@ -147,6 +147,8 @@ def validate_sources(root):
         raise ValueError("launcher bin must be bin/qenome.js")
     if "lib" not in manifest.get("files", []):
         raise ValueError("launcher files must include lib")
+    if "skills" not in manifest.get("files", []):
+        raise ValueError("launcher files must include skills")
     exports = manifest.get("exports") or {}
     if exports.get("./d1") != "./lib/d1.mjs":
         raise ValueError("launcher exports must map ./d1 to ./lib/d1.mjs")
@@ -197,6 +199,9 @@ def readme_text(manifest):
             "```sh\n"
             "npx qenome --version\n"
             "```\n"
+            "\n"
+            "`qenome skill install` copies the bundled Agent Skill into an AI agent's "
+            "skills directory, and `qenome skill print` writes it to stdout.\n"
             "\n"
             "This package is a launcher. npm installs one of `@qenome-cli/linux-x64`, "
             "`@qenome-cli/linux-arm64`, `@qenome-cli/darwin-x64`, or `@qenome-cli/darwin-arm64` "
@@ -311,6 +316,10 @@ def stage_distribution(root, dest, binaries=None):
     os.makedirs(os.path.dirname(module), exist_ok=True)
     shutil.copyfile(os.path.join(root, "npm", MAIN_DIR, "lib", "d1.mjs"), module)
     os.chmod(module, 0o644)
+    skill = os.path.join(directory, "skills", "qenome", "SKILL.md")
+    os.makedirs(os.path.dirname(skill), exist_ok=True)
+    shutil.copyfile(os.path.join(root, "skills", "qenome", "SKILL.md"), skill)
+    os.chmod(skill, 0o644)
     print("stage_npm: staged " + version + " in " + dest, flush=True)
     return version
 
@@ -335,6 +344,7 @@ def check_tarball(path, manifest):
         if manifest["name"] == "qenome":
             binary = "package/bin/qenome.js"
             required.append("package/lib/d1.mjs")
+            required.append("package/skills/qenome/SKILL.md")
         else:
             binary = "package/bin/qenome"
         required.append(binary)

@@ -16,6 +16,8 @@ pub fn build(b: *std.Build) void {
     build_options.addOption([]const u8, "version", zon.version);
     mod.addOptions("build_options", build_options);
 
+    mod.addAnonymousImport("qenome_skill", .{ .root_source_file = b.path("skills/qenome/SKILL.md") });
+
     mod.addCSourceFiles(.{
         .files = &.{ "vendor/sqlite3/sqlite3.c", "vendor/sqlite3/sqlite3expert.c" },
         .flags = &.{

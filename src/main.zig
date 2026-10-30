@@ -15,8 +15,15 @@ pub fn main(init: std.process.Init) !void {
     var stderr_file_writer: Io.File.Writer = .init(.stderr(), io, &stderr_buffer);
     const stderr = &stderr_file_writer.interface;
 
-    const temp_parent = Qenome.cli.tempParent(init.environ_map);
-    const code = Qenome.cli.run(io, init.gpa, argv, temp_parent, stdout, stderr);
+    var stdin_buffer: [1024]u8 = undefined;
+    var stdin_file_reader: Io.File.Reader = .init(.stdin(), io, &stdin_buffer);
+
+    const context: Qenome.cli.Context = .{
+        .temp_parent = Qenome.cli.tempParent(init.environ_map),
+        .home = Qenome.cli.home(init.environ_map),
+        .stdin = &stdin_file_reader.interface,
+    };
+    const code = Qenome.cli.run(io, init.gpa, argv, context, stdout, stderr);
 
     try stdout.flush();
     stderr.flush() catch {};
