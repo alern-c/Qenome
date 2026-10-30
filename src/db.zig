@@ -1652,14 +1652,14 @@ pub fn mentionsLimitOrOffset(sql: []const u8) bool {
         switch (c) {
             '\'', '"', '`', '[' => i = sql_lexer.quotedSpan(sql, i).end,
             '-', '/' => i = sql_lexer.commentSpan(sql, i).end,
+            '?' => i = std.mem.findNonePos(u8, sql, i + 1, "0123456789") orelse sql.len,
             else => {
                 if (!sql_lexer.isWordByte(c) and c != ':' and c != '@') {
                     i += 1;
                     continue;
                 }
                 const start = i;
-                i += 1;
-                i = sql_lexer.wordAt(sql, i).end;
+                i = sql_lexer.wordAt(sql, i + 1).end;
                 const word = sql[start..i];
                 if (std.ascii.eqlIgnoreCase(word, "limit") or std.ascii.eqlIgnoreCase(word, "offset")) return true;
             },
@@ -3704,7 +3704,6 @@ test "limit scan skips strings, comments, quoted identifiers, and bind names" {
         "SELECT * FROM t WHERE a = :1limit",
         "SELECT * FROM t WHERE a = @1limit",
         "SELECT * FROM t WHERE a = $1limit",
-        "SELECT a FROM t WHERE a > ?1LIMIT 2",
         "SELECT 1limit",
         "SELECT 0x1Flimit",
         "SELECT limited, offsets FROM t",
@@ -3721,6 +3720,7 @@ test "limit scan skips strings, comments, quoted identifiers, and bind names" {
         "SELECT 'x' FROM t LIMIT(1)",
         "SELECT a FROM t LIMIT:n",
         "SELECT a FROM t LIMIT 1 OFFSET@o",
+        "SELECT a FROM t WHERE a > ?1LIMIT 2",
     };
     for (with) |sql| try testing.expect(mentionsLimitOrOffset(sql));
 }

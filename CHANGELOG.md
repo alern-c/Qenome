@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A SELECT that writes a numbered parameter directly before `LIMIT`, such as `?1LIMIT 2`, now counts as having LIMIT or OFFSET. SQLite ends the parameter at the digits and reads the characters after them as `LIMIT`, so it applies the limit, while Qenome read `1LIMIT` as one word and found no LIMIT or OFFSET: when the rows differed, the reason "the rows differ, and the SELECT has LIMIT or OFFSET, which can pick other rows when the order changes" was missing, and the run reported `MISMATCH` with exit `3` (the `mismatch` column and exit `3` in `--batch`) instead of `INCOMPARABLE` with exit `4` and that reason in the Result rows section. `:1limit`, `@1limit`, and `$1limit` stay one parameter each and are still not read as a LIMIT, because SQLite reads them that way; strings, comments, and quoted identifiers are skipped as before.
+
 ## [0.3.6] - 2026-10-29
 
 ### Added
