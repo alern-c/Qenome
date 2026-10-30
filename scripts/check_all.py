@@ -98,11 +98,19 @@ def main():
             command([sys.executable, "scripts/test_record_wrapper.py"]),
         ),
         (
+            "Test the golden checker",
+            command([sys.executable, "scripts/test_check_golden.py"]),
+        ),
+        (
+            "Check the golden output",
+            command([sys.executable, "scripts/check_golden.py"]),
+        ),
+        (
             "Test the Quick start checker",
             command([sys.executable, "scripts/test_check_quick_start.py"]),
         ),
         (
-            "Run the README Quick start",
+            "Run the CONTRIBUTING Quick start",
             command([sys.executable, "scripts/check_quick_start.py"]),
         ),
     ]
