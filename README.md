@@ -4,7 +4,7 @@
 
 # Qenome
 
-**Check whether a candidate index helps a query.**
+**Did the rows read or written spike? Check the index before you merge it.**
 
 [![npm version](https://img.shields.io/npm/v/qenome?style=flat-square)](https://www.npmjs.com/package/qenome)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square)](LICENSE)
@@ -17,6 +17,24 @@ English | [日本語](README.ja.md)
 </div>
 
 <p align="center"><sub>The recording comes from <a href="#try-the-sample-project"><code>examples/d1-toml</code></a>; the sample runs on your machine with two commands.</sub></p>
+
+From a wrangler project with a local D1 database, one command asks SQLite for a candidate index and compares it on a sandbox copy:
+
+```sh
+npx qenome --d1 DEMO_DB select.sql --suggest
+```
+
+The sample project (`examples/d1-toml`) returns this result:
+
+```text
+Recommendation: suggested:1
+
+Results
+  query       candidate    result        verdict       rows read
+  select.sql  suggested:1  match         improved      200000 -> 101
+```
+
+Rows read fell from 200,000 to 101, and the exit status is 0. The original database is not changed. The recording above is the same run. See [Try the sample project](#try-the-sample-project) for the two setup commands.
 
 Give it one read-only `SELECT` and one `CREATE INDEX`. With `--write`, give it one `INSERT`, `UPDATE`, `DELETE`, or `REPLACE` instead. It copies a local SQLite file, or a local Cloudflare D1 database (`--d1 <BINDING>`, `--config`), into sandbox snapshots and compares them. The original database is never modified.
 
@@ -43,7 +61,6 @@ Give it one read-only `SELECT` and one `CREATE INDEX`. With `--write`, give it o
 - [Check a local D1](#check-a-local-d1)
 - [Use with AI agents](#use-with-ai-agents)
 - [Why not ...](#why-not-)
-- [Quick start](#quick-start)
 - [Usage](#usage)
 - [Generating sandbox data (--seed-data)](#generating-sandbox-data)
 - [Batch comparisons](#batch-comparisons)
@@ -51,7 +68,7 @@ Give it one read-only `SELECT` and one `CREATE INDEX`. With `--write`, give it o
 - [Recording the queries your app runs (--record)](#recording-the-queries-your-app-runs---record)
 - [Output formats](#output-formats)
 - [Rules](#rules)
-- [Development checks](#development-checks)
+- [Contributing](#contributing)
 - [License](#license)
 
 From this README, a D1 developer or their AI agent can get that verdict on a local D1 in a few minutes. See [Check a local D1](#check-a-local-d1) and [Use with AI agents](#use-with-ai-agents).
@@ -133,14 +150,7 @@ If macOS refuses to run the binary because it is not notarized, allow it in Syst
 
 ### From source
 
-Qenome needs Zig 0.17.0, the `minimum_zig_version` in `build.zig.zon` (CI builds with exactly this version). SQLite is vendored in `vendor/sqlite3` and compiled in, so no system SQLite is needed.
-
-```sh
-zig build
-./zig-out/bin/qenome --version
-```
-
-`zig build` writes the binary to `zig-out/bin/qenome` (`zig-out\bin\qenome.exe` on Windows). For timings that match a release build, build with `zig build -Doptimize=ReleaseFast`.
+To build the binary from source, follow [Build from source](CONTRIBUTING.md#build-from-source). It needs Zig 0.17.0; SQLite is vendored, so no system SQLite is needed.
 
 ## Check a local D1
 
@@ -195,72 +205,6 @@ The npm package ships `skills/`, so the same file is also inside `npx qenome`.
 **Production D1 metrics.** The numbers have not yet been checked against production D1. Qenome measures the local database only.
 
 **Applying the index and watching the app.** That writes the index into the database you ship. Qenome tries it on a sandbox copy, so a candidate that does not help can be dropped before the merge.
-
-## Quick start
-
-This walkthrough creates the test database, builds Qenome, and runs seven examples. Run the commands from the repository root, one block at a time, on Linux or macOS. They need Zig 0.17.0 (see [From source](#from-source)) and the `sqlite3` command-line tool, which loads the SQL files into the new database.
-
-Create the test database from `testdata/schema.sql` and `testdata/seed.sql`. `verify.sql` prints one `ok` line for each of its 17 checks, and fails the load when a value is not the expected one.
-
-```sh
-mkdir -p testdata/generated
-rm -f testdata/generated/qenome-fixture.db
-sqlite3 testdata/generated/qenome-fixture.db ".read testdata/schema.sql"
-sqlite3 testdata/generated/qenome-fixture.db ".read testdata/seed.sql"
-sqlite3 testdata/generated/qenome-fixture.db ".read testdata/verify.sql"
-```
-
-Build Qenome:
-
-```sh
-zig build
-```
-
-The seven examples run `zig-out/bin/qenome`. Each command ends with the result it has to report: `result` and `verdict` from the Summary (or `recommended` for a batch), and the exit status. `python3 scripts/check_all.py` and the quality workflow run these lines as written, so the README and the program stay in step. `--runs 40` keeps the medians steady on a busy machine; the default is `10`.
-
-An index that removes the full scan. The candidate index turns `SCAN events` into `SEARCH events USING INDEX ix_events_customer_id (customer_id=?)`, the rows read fall from 200,000 to 101, and both copies return the same 100 rows.
-
-```sh
-./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/improved.sql testdata/cases/improved.index.sql --bind 1:int:1234 --runs 40  # expect: result=match verdict=improved exit=0
-```
-
-An index on data you choose. `--seed-data testdata/seed.json` replaces the `events` rows in the sandbox copy, with the original database unchanged, by 50,000 deterministic rows. The same query then finds row `1234` among them, and the verdict stays `improved`. See [Generating sandbox data](#generating-sandbox-data).
-
-```sh
-./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/improved.sql testdata/cases/improved.index.sql --bind 1:int:1234 --seed-data testdata/seed.json --runs 0  # expect: result=match verdict=improved exit=0
-```
-
-An index that cannot help. The SELECT wraps the column in `lower()`, so SQLite cannot use the index on `status`, and the plan, the rows read, and the rows written stay the same.
-
-```sh
-./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/no-effect.sql testdata/cases/no-effect.index.sql --bind 1:text:ok --runs 40  # expect: result=match verdict=no-effect exit=0
-```
-
-An INSERT that a new index makes more expensive. `--write` compares one `INSERT`, `UPDATE`, `DELETE`, or `REPLACE` on both sandbox copies, inside a transaction that is rolled back. The candidate index on `customer_id` is not used by this INSERT, but each inserted row also updates the index: the rows written rise from 1 to 2, while both copies change the same row. The verdict is `needs-check` because the variant writes more, and the exit status stays 0. The original database is not changed.
-
-```sh
-./zig-out/bin/qenome testdata/generated/qenome-fixture.db --write testdata/cases/write.sql --index-sql testdata/cases/improved.index.sql --bind 1:int:1234 --runs 0  # expect: result=match verdict=needs-check exit=0
-```
-
-A SELECT whose rows cannot be compared. `ORDER BY random()` picks other rows on every run, so Qenome reports the rows as incomparable instead of claiming that they match, and it does not judge the comparison. The exit status 4 is the expected result here, not an error.
-
-```sh
-./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/incomparable.sql testdata/cases/incomparable.index.sql  # expect: result=incomparable verdict=not-judged exit=4
-```
-
-A batch compares several queries with several candidate indexes in one run. `testdata/batch.json` pairs the improved and no-effect queries with both candidate indexes. Qenome reports one row per pair and recommends the candidate that helps without a mismatch, so only `cases/improved.index.sql` qualifies. See [Batch comparisons](#batch-comparisons).
-
-```sh
-./zig-out/bin/qenome testdata/generated/qenome-fixture.db --batch testdata/batch.json  # expect: recommended=cases/improved.index.sql exit=0
-```
-
-A proposed index, without an index file. `--suggest` asks SQLite which index would help the SELECT, and Qenome compares that proposal with the same batch machinery. The proposal is labelled `suggested:1` and becomes the recommendation when it helps. See [Suggesting candidate indexes](#suggesting-candidate-indexes).
-
-```sh
-./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/improved.sql --bind 1:int:1234 --suggest  # expect: recommended=suggested:1 exit=0
-```
-
-The first database build takes about a second, and each timed example a few seconds. `testdata/README.md` records the fixture, the queries, and their expected plan and counters.
 
 ## Usage
 
@@ -417,7 +361,7 @@ qenome --d1 DEMO_DB select.sql index.sql --runs 40
 
 The first command writes the local database into `.wrangler/` and loads 200,000 rows. The second compares `select.sql` with the candidate index in `index.sql`: `result rows` is `match`, `verdict` is `improved`, the plan changes from `SCAN events` to `SEARCH events USING INDEX ix_events_customer_id (customer_id=?)`, and the D1 block reports the SQLite versions and the caution. The exit status is 0.
 
-`schema.sql` recreates `events`, so it can be run again at any time. Nothing is deployed. The commands use `qenome` from `PATH`; right after [From source](#from-source) it is `./zig-out/bin/qenome`. `4.152.0` is the wrangler version the sample was checked with.
+`schema.sql` recreates `events`, so it can be run again at any time. Nothing is deployed. The commands use `qenome` from `PATH`; right after [Build from source](CONTRIBUTING.md#build-from-source) it is `./zig-out/bin/qenome`. `4.152.0` is the wrangler version the sample was checked with.
 
 ### Batch comparisons
 
@@ -464,7 +408,7 @@ A failure that affects the whole run stops it before any report is written and l
 
 When the report is written, the exit status is the heaviest of a result mismatch (`3`), a rejected index or migration (`1`), a candidate time limit (`124`), an incomparable result (`4`), a `--migration` regression (`6`), and `0`. Cleanup failure replaces `0` with `5`. A batch can therefore write a report and still exit `1`, `6`, or `124`; read stdout to tell the cases apart.
 
-The `human` output has a table of candidates, a `Recommendation:`, and a table of query and candidate verdicts. The recommendation is the candidate with the most improved queries among those with no mismatch, no incomparable result, no `needs-check` (`needs_check` counts the `regressed` queries in a `--migration` run), no timeout, and at least one improvement. A query measured on the variant only is `not-judged` and does not disqualify the migration by itself; in the `Results` table its `result` column says `variant-only` and its `verdict` column `not-judged`, while the embedded JSON comparison keeps `result` `incomparable` with `baseline` `null`. Ties go to the candidate without a `bind_dependent_partial_index` warning, then to the smaller size increase, then to manifest order. A warning never changes a verdict, a batch count, or the exit status. The `human` output lists each comparison warning after the results table in a `Warnings` section, as `<query> -> <candidate>: <code>: <message>`; the paths and the index name are escaped like the other warnings, and the paths use the short form described above. With `--format json` the output is the `batch_schema_version` 1 object described in [docs/json.md](docs/json.md).
+The `human` output has a table of candidates, a `Recommendation:`, and a table of query and candidate verdicts. The recommendation is the candidate with the most improved queries among those with no mismatch, no incomparable result, no `needs-check` (`needs_check` counts the `regressed` queries in a `--migration` run), no timeout, and at least one improvement. A query measured on the variant only is `not-judged` and does not disqualify the migration by itself; in the `Results` table its `result` column says `variant-only` and its `verdict` column `not-judged`, while the embedded JSON comparison keeps `result` `incomparable` with `baseline` `null`. Ties go to the candidate without a `bind_dependent_partial_index` warning, then to the smaller size increase, then to manifest order. A warning never changes a verdict, a batch count, or the exit status. The `human` output lists the candidate warnings after the results table in a `Warnings` section, as `<candidate>: <code>: <message>` for `no_analyze_stats` and `data_too_small`, and each comparison warning as `<query> -> <candidate>: <code>: <message>` for `bind_dependent_partial_index`; the paths and the index name are escaped like the other warnings, and the paths use the short form described above. The batch top-level `warnings` (the `--suggest` entries and `unapplied_migrations`) are printed after that as `warning: <code>: <message>`. With `--format json` the output is the `batch_schema_version` 1 object described in [docs/json.md](docs/json.md).
 
 Each index build, each SELECT run, and each diagnostic statement has its own `--timeout-ms` limit. A batch can take one database copy, one baseline SELECT run per query before the candidate loop, and then, for every candidate, one index build and two SELECT runs per query plus the diagnostic statements: up to three for the ANALYZE and size warnings, and, for a query with parameters, the bind-dependent partial index check (one plan, one catalog read, and up to two statements per used index: a table-name lookup and a `PRAGMA index_list`), each with its own time limit. `--show-binds` and `--show-rows` apply to every comparison object.
 
@@ -576,7 +520,7 @@ With one SELECT file, the SELECT becomes one batch query and `--bind` applies to
 
 Qenome opens a second read-only connection to the baseline copy and sets the expert sampling to `0`, so the expert reads the schema only. Every checked SELECT is passed to it. Before the expert starts, every `sqlite_schema` row is checked: each must be one statement and start with `CREATE TABLE`, `CREATE INDEX`, `CREATE UNIQUE INDEX`, `CREATE VIEW`, `CREATE TRIGGER`, or `CREATE VIRTUAL TABLE`, and none may use the `expert` virtual table. A database that fails this check is rejected with `suggest_schema_rejected` (exit `1`, empty stdout), even when the manifest has candidates. While the expert runs, a temporary guard is installed on the connections it opens: `ATTACH` and `DETACH` are denied, only the `index_list` and `index_xinfo` PRAGMAs are allowed, and the attached-database limit is `0`. After the expert object is created, the expert installs its own authorizer on its analysis copy; the attached-database limit stays in force there. Qenome removes the guard after the expert is destroyed. If the guard cannot be installed, Qenome stops before calling the expert. Together they keep a crafted schema from creating or changing another database file. The `CREATE INDEX` statements in its report are split with SQLite's own statement parser, so a `;` inside a quoted name does not split one. Each proposal passes the same check as a manifest candidate and is dropped with a `suggestion_rejected` warning when it fails. Labels are `suggested:1`, `suggested:2`, …; at most 20 proposals are compared, and at most 100 candidates with the manifest entries.
 
-The output is the batch report. Each `summary` entry adds `source` (`manifest` or `suggested`) and `index_sql_text`, and the top-level `warnings` array lists what was dropped or could not be done. Each `results[].comparison` keeps the comparison `warnings`, including `bind_dependent_partial_index`; the batch top-level `warnings` stays for `--suggest`. The `human` report lists each comparison warning with its query and candidate.
+The output is the batch report. Each `summary` entry adds `source` (`manifest` or `suggested`) and `index_sql_text`, and the top-level `warnings` array lists what was dropped or could not be done. Each `results[].comparison` keeps the comparison `warnings`, including `bind_dependent_partial_index`; the batch top-level `warnings` stays for `--suggest`. The `human` report lists each candidate warning with its candidate and each comparison warning with its query and candidate.
 
 | Warning `code` | Meaning |
 | --- | --- |
@@ -596,7 +540,7 @@ Use `--suggest` to find candidates. For a CI gate, compare a named index without
 
 `--format human` prints what a decision needs:
 
-- a Summary: whether the result rows match, how many rows each copy read and wrote, the verdict with its reasons, whether the plan changed, with `--seed-data` the `seed data` and `seed` lines, the median times with the direction from the paired rounds (or the median ratio when the rounds cannot judge it), the size of the change when the medians agree (`230x faster`), and the size increase, and a note when the build is a debug build. With `--write`, the Summary adds the `write` file, `returning rows`, `rows changed`, `total changed`, and `write runs`, and the side-by-side table adds `rows changed` and `total changed`;
+- a Summary: whether the result rows match, how many rows each copy read and wrote, the verdict with its reasons, whether the plan changed, with `--seed-data` the `seed data` and `seed` lines, the median times with the direction from the paired rounds (or the median ratio when the rounds cannot judge it), the A/A noise band when timed, the size of the change when the medians agree (`230x faster`), and the size increase, and a note when the build is a debug build. With `--write`, the Summary adds the `write` file, `returning rows`, `rows changed`, `total changed`, and `write runs`, and the side-by-side table adds `rows changed` and `total changed`;
 - a side-by-side table of baseline and variant: rows read, rows written, result rows, full-scan steps, VM steps, sort operations and autoindex rows when they are not zero, the p25 and p75 times when timed, and the database file bytes;
 - the query plan for both copies, with `kind`, `covering`, and `automatic` as hints read from SQLite's wording;
 - a `Warnings` section with `warning: <code>: <message>` lines when an advisory warning applies;
@@ -605,7 +549,7 @@ Use `--suggest` to find candidates. For a CI gate, compare a named index without
 
 When the rows differ, cannot be compared, or come in another order, the human output adds an explanation and the one-sided counts. Example rows appear only with `--show-rows`; when they are hidden, the human output says to rerun with that flag. `--show-binds` adds the bind values.
 
-Input paths other than `--seed-data`, the SQLite and Zig versions, the build mode, the OS and architecture, the work directory, and the timing conditions appear only in `kv` and `json`. The timing evidence (`effect`, `median_difference_ns`, `noise_band`, `confidence_interval`) also appears only in `kv` and `json`. With `--d1`, `human` also shows the D1 block described above.
+Input paths other than `--seed-data`, the SQLite and Zig versions, the build mode, the OS and architecture, the work directory, and the timing conditions appear only in `kv` and `json`. The timing evidence fields (`effect`, `median_difference_ns`, `confidence_interval`) appear only in `kv` and `json`; the human Summary shows the median times, the direction, and the A/A noise band. With `--d1`, `human` also shows the D1 block described above.
 
 ### kv
 
@@ -707,7 +651,7 @@ Each timed round first runs the baseline SELECT twice (A/A), then runs one basel
 
 The interval is `null` with `unavailable_reason` `too-few-rounds` below six rounds (the widest finite interval has coverage 93.75% at n=5 and 96.875% at n=6), `zero-duration` when any timed duration is zero, or conservatively `no-observed-variation` when all paired differences are equal. These cases give `effect: insufficient-samples`, not a claim of precision at the clock resolution. Otherwise `effect` is `no-difference` if the absolute value of the median paired difference is at most the A/A noise reference or the interval includes zero; it is `faster` or `slower` only when both checks allow that direction. This auxiliary label never changes `verdict` or the exit code. Fixed A/A-before-A/B ordering, cache effects, temporal dependence, load drift, and small samples limit interpretation: nominal 95% coverage is not an exact guarantee for these machine timings or for production D1. The human output shows the median times and the direction from the paired rounds; it adds the size of the change only when the medians point the same way. When the paired rounds cannot judge the direction, it shows the median ratio without a direction and says that the direction is not determined. The evidence fields above stay in `kv` and `json`.
 
-`warnings` is always an array, including with `--runs 0` or incomparable results. Its `{code, message}` entries also appear verbatim in human and kv output. `no_analyze_stats` means the candidate index's table has no non-empty `sqlite_stat1` entry in the baseline snapshot, even if other tables have statistics. This is an absence check, not a freshness/completeness check: a partial-index entry alone counts as present. `data_too_small` means a bounded `SELECT 1 ... LIMIT 1000` on that table returned fewer than 1000 rows. Reaching 1000 only establishes at least 1000 rows; statistics estimates, partial-index cardinality, SELECT result count, and rows read do not decide this warning. The threshold is a heuristic, not proof that larger data is representative. Warnings advise a representative, separately prepared copy; they do not suppress a row verdict or change exit codes. Diagnostic reads respect the existing per-statement timeout/cancellation; failures follow the existing error path.
+`warnings` is always an array, including with `--runs 0` or incomparable results. Its `{code, message}` entries also appear verbatim in human and kv output. A batch or `--suggest` human report lists `no_analyze_stats` and `data_too_small` once per candidate in its `Warnings` section, and `bind_dependent_partial_index` with the query and candidate that produced it. `no_analyze_stats` means the candidate index's table has no non-empty `sqlite_stat1` entry in the baseline snapshot, even if other tables have statistics. This is an absence check, not a freshness/completeness check: a partial-index entry alone counts as present. `data_too_small` means a bounded `SELECT 1 ... LIMIT 1000` on that table returned fewer than 1000 rows. Reaching 1000 only establishes at least 1000 rows; statistics estimates, partial-index cardinality, SELECT result count, and rows read do not decide this warning. The threshold is a heuristic, not proof that larger data is representative. Warnings advise a representative, separately prepared copy; they do not suppress a row verdict or change exit codes. Diagnostic reads respect the existing per-statement timeout/cancellation; failures follow the existing error path.
 
 `bind_dependent_partial_index` names a partial index that the variant plan uses only because the bound values satisfy its `WHERE` clause. Qenome reads the variant plan with the bound values and again with every parameter bound to `NULL`. If the partial index appears in the first plan and not the second, the message names it. `NULL` cannot prove a partial index's `WHERE` clause, so the difference means the index is usable because of the values: another value or parameter style can drop it, and an `improved` result then holds only for this run. The check needs only the variant plan, so it runs in every mode, including a variant-only `--migration` query. It is best-effort: when the extra plan or the index catalog cannot be read, including a time limit or an interruption, the warning is omitted and the comparison continues. It never changes the verdict, the exit code, or a batch count. In a batch report the entry is in `results[].comparison.warnings`, and the batch `human` output lists it under `Warnings` with the query and candidate.
 
@@ -723,17 +667,9 @@ The interval is `null` with `unavailable_reason` `too-few-rounds` below six roun
 - Clean up connections and temporary files on success, failure, and interruption.
 - Do not guess a D1 database file: stop when the binding does not resolve to exactly one file.
 
-## Development checks
+## Contributing
 
-```sh
-python3 scripts/check_all.py
-```
-
-The quality workflow in CI runs the same script. It checks the effective Zig version, runs `zig fmt --check .`, the build, the tests, and the architecture and comment checks in order, and stops at the first stage that fails. The last two stages check the [Quick start](#quick-start): `scripts/check_quick_start.py` runs the commands in this README as written and compares each result with its `# expect:` marker, and `README.ja.md` must hold the same commands. An example added to the Quick start needs that marker, so that CI checks it too, and the section keeps a checked example for `improved`, `no-effect`, and `incomparable`. Both Quick start stages run on Linux and macOS; on Windows they print a skip and the other stages still run.
-
-The codebase carries no comments: explanations live in the README, and the checks are the source of truth for the rules they enforce.
-
-`docs/demo-suggest.gif`, `docs/demo-candidates.gif`, and `docs/demo-migration.gif` are recorded with `vhs docs/demo-suggest.tape`, `vhs docs/demo-candidates.tape`, and `vhs docs/demo-migration.tape` from the repository root, after `zig build -Doptimize=ReleaseFast`. Each tape copies `examples/d1-toml` and `docs/demo` into a temporary directory and silences the terminal echo while it loads the sample, so the recording holds only the Qenome command and its output.
+The build-from-source Quick start, the development checks, and how to update the golden test output are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
