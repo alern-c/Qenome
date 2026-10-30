@@ -66,6 +66,10 @@ def main():
         ("Verify the effective Zig version", verify_zig_version),
         ("Check formatting", command(["zig", "fmt", "--check", "."])),
         ("Build", command(["zig", "build", "--summary", "all"])),
+        (
+            "Check the accuracy corpus",
+            command([sys.executable, "scripts/check_accuracy.py", "--repeat", "3"]),
+        ),
         ("Test", command(["zig", "build", "test", "--summary", "all"])),
         ("Show the Python version", command([sys.executable, "--version"])),
         (
@@ -104,6 +108,10 @@ def main():
         (
             "Check the golden output",
             command([sys.executable, "scripts/check_golden.py"]),
+        ),
+        (
+            "Test the accuracy checker",
+            command([sys.executable, "scripts/test_check_accuracy.py"]),
         ),
         (
             "Test the Quick start checker",

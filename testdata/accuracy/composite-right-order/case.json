@@ -1,0 +1,29 @@
+{
+  "description": "The same query with the equality column first in the composite index.",
+  "args": [
+    "--bind",
+    "1:int:7",
+    "--bind",
+    "2:int:1"
+  ],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "verdict": "improved",
+    "plan_changed": true,
+    "variant_plan": {
+      "contains": [
+        "SEARCH events USING INDEX idx_customer_created (customer_id=? AND created_at>?)"
+      ],
+      "excludes": [
+        "SCAN events"
+      ]
+    },
+    "rows_read": {
+      "direction": "decrease",
+      "max_ratio": 0.01
+    },
+    "rows_written": "same"
+  }
+}

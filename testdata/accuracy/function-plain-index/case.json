@@ -1,0 +1,24 @@
+{
+  "description": "A function on the column hides it from a plain index.",
+  "args": [
+    "--bind",
+    "1:text:name-19"
+  ],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "verdict": "no-effect",
+    "plan_changed": true,
+    "variant_plan": {
+      "contains": [
+        "SCAN events USING COVERING INDEX idx_name"
+      ],
+      "excludes": [
+        "SEARCH events"
+      ]
+    },
+    "rows_read": "same",
+    "rows_written": "same"
+  }
+}

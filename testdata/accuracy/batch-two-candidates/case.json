@@ -1,0 +1,20 @@
+{
+  "description": "A batch with an improving and a redundant candidate: recommended and the counts of the first entry.",
+  "args": [],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "batch": {
+      "recommended": "idx_customer.sql",
+      "counts": {
+        "improved": 1,
+        "no_effect": 0,
+        "needs_check": 0,
+        "mismatch": 0,
+        "incomparable": 0,
+        "timeout": 0,
+        "not_judged": 0
+      }
+    }
+  }
+}

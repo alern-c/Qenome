@@ -1,0 +1,33 @@
+{
+  "description": "A migration that drops the used index makes the query read more: regressed and batch exit 6.",
+  "args": [],
+  "expect": {
+    "exit": 6,
+    "exit_code": 6,
+    "result": "match",
+    "verdict": "regressed",
+    "plan_changed": true,
+    "baseline_plan": {
+      "contains": [
+        "SEARCH events USING INDEX idx_customer (customer_id=?)"
+      ]
+    },
+    "variant_plan": {
+      "contains": [
+        "SCAN events"
+      ],
+      "excludes": [
+        "USING INDEX"
+      ]
+    },
+    "rows_read": "increase",
+    "rows_written": "same",
+    "batch": {
+      "recommended": null,
+      "counts": {
+        "improved": 0,
+        "needs_check": 1
+      }
+    }
+  }
+}

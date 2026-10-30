@@ -1,0 +1,29 @@
+{
+  "seed": 11,
+  "tables": {
+    "events": {
+      "rows": 20000,
+      "columns": {
+        "id": {
+          "kind": "sequence"
+        },
+        "customer_id": {
+          "kind": "sequence"
+        },
+        "status": {
+          "kind": "ratio",
+          "value": "ok",
+          "ratio": 0.5,
+          "otherwise": "failed"
+        },
+        "created_at": {
+          "kind": "sequence"
+        },
+        "note": {
+          "kind": "fixed",
+          "value": null
+        }
+      }
+    }
+  }
+}

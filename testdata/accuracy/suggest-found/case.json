@@ -1,0 +1,29 @@
+{
+  "description": "SQLite proposes an index for the lookup, and the recommended suggestion leads with the column.",
+  "args": [
+    "--suggest",
+    "--bind",
+    "1:int:1235"
+  ],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "verdict": "improved",
+    "plan_changed": true,
+    "rows_read": {
+      "direction": "decrease",
+      "max_ratio": 0.01
+    },
+    "rows_written": "same",
+    "batch": {
+      "recommended": "suggested:1"
+    },
+    "suggest": {
+      "recommended": true,
+      "leads_with": [
+        "customer_id"
+      ]
+    }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "description": "A composite index whose leading column is not the equality column cannot narrow the range.",
+  "args": [
+    "--bind",
+    "1:int:7",
+    "--bind",
+    "2:int:1"
+  ],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "verdict": "no-effect",
+    "plan_changed": true,
+    "baseline_plan": {
+      "contains": [
+        "SCAN events"
+      ]
+    },
+    "variant_plan": {
+      "contains": [
+        "SEARCH events USING INDEX idx_created_customer (created_at>?)"
+      ],
+      "excludes": [
+        "SCAN events"
+      ]
+    },
+    "rows_read": "same",
+    "rows_written": "same"
+  }
+}

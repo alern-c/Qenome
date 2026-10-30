@@ -1,0 +1,25 @@
+{
+  "description": "A bare column beside GROUP BY: the index changes which row SQLite picks, so the rows differ.",
+  "args": [],
+  "expect": {
+    "exit": 3,
+    "exit_code": 3,
+    "result": "mismatch",
+    "verdict": "not-judged",
+    "plan_changed": true,
+    "baseline_plan": {
+      "contains": [
+        "USE TEMP B-TREE FOR GROUP BY"
+      ]
+    },
+    "variant_plan": {
+      "contains": [
+        "SCAN events USING COVERING INDEX idx_status_note"
+      ],
+      "excludes": [
+        "USE TEMP B-TREE FOR GROUP BY"
+      ]
+    },
+    "rows_written": "same"
+  }
+}

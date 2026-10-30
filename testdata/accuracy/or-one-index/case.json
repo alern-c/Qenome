@@ -1,0 +1,26 @@
+{
+  "description": "An OR over two columns with only one side indexed keeps the full scan.",
+  "args": [
+    "--bind",
+    "1:int:7",
+    "--bind",
+    "2:int:19001"
+  ],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "verdict": "no-effect",
+    "plan_changed": false,
+    "variant_plan": {
+      "contains": [
+        "SCAN events"
+      ],
+      "excludes": [
+        "MULTI-INDEX OR"
+      ]
+    },
+    "rows_read": "same",
+    "rows_written": "same"
+  }
+}

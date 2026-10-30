@@ -1,0 +1,29 @@
+{
+  "description": "The column is already indexed: the duplicate changes only the index name in the plan, not the rows.",
+  "args": [
+    "--bind",
+    "1:int:1235"
+  ],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "verdict": "no-effect",
+    "plan_changed": true,
+    "baseline_plan": {
+      "contains": [
+        "SEARCH events USING INDEX idx_customer"
+      ]
+    },
+    "rows_read": "same",
+    "rows_written": "same",
+    "variant_plan": {
+      "contains": [
+        "SEARCH events USING INDEX idx_customer_again (customer_id=?)"
+      ],
+      "excludes": [
+        "SCAN events"
+      ]
+    }
+  }
+}

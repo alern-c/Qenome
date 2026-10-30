@@ -1,0 +1,36 @@
+{
+  "description": "An index on the inner table of a JOIN replaces the scan of the outer table.",
+  "args": [
+    "--bind",
+    "1:text:user4321@example.test"
+  ],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "verdict": "improved",
+    "plan_changed": true,
+    "baseline_plan": {
+      "contains": [
+        "SCAN o"
+      ],
+      "excludes": [
+        "USING INDEX idx_orders_customer"
+      ]
+    },
+    "variant_plan": {
+      "contains": [
+        "SCAN c",
+        "SEARCH o USING INDEX idx_orders_customer (customer_id=?)"
+      ],
+      "excludes": [
+        "SCAN o"
+      ]
+    },
+    "rows_read": {
+      "direction": "decrease",
+      "max_ratio": 0.2
+    },
+    "rows_written": "same"
+  }
+}

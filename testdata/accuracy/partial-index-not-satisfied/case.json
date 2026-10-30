@@ -1,0 +1,28 @@
+{
+  "description": "The same partial index does not apply when the bound status is another value.",
+  "args": [
+    "--bind",
+    "1:text:failed",
+    "--bind",
+    "2:int:1235"
+  ],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "verdict": "no-effect",
+    "plan_changed": false,
+    "variant_plan": {
+      "contains": [
+        "SCAN events"
+      ]
+    },
+    "rows_read": "same",
+    "rows_written": "same",
+    "warnings": {
+      "excludes": [
+        "bind_dependent_partial_index"
+      ]
+    }
+  }
+}

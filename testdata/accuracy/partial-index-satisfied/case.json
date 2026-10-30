@@ -1,0 +1,31 @@
+{
+  "description": "A partial index is used because the bound status satisfies its WHERE clause.",
+  "args": [
+    "--bind",
+    "1:text:ok",
+    "--bind",
+    "2:int:1235"
+  ],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "verdict": "improved",
+    "plan_changed": true,
+    "variant_plan": {
+      "contains": [
+        "SEARCH events USING INDEX idx_ok_customer (customer_id=?)"
+      ]
+    },
+    "rows_read": {
+      "direction": "decrease",
+      "max_ratio": 0.01
+    },
+    "rows_written": "same",
+    "warnings": {
+      "contains": [
+        "bind_dependent_partial_index"
+      ]
+    }
+  }
+}

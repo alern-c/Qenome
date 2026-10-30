@@ -1,0 +1,27 @@
+{
+  "description": "Data without ANALYZE: no_analyze_stats is reported and the verdict is still improved.",
+  "args": [
+    "--bind",
+    "1:int:1235"
+  ],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "verdict": "improved",
+    "plan_changed": true,
+    "rows_read": {
+      "direction": "decrease",
+      "max_ratio": 0.01
+    },
+    "rows_written": "same",
+    "warnings": {
+      "contains": [
+        "no_analyze_stats"
+      ],
+      "excludes": [
+        "data_too_small"
+      ]
+    }
+  }
+}

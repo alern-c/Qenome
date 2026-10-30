@@ -1,0 +1,33 @@
+{
+  "description": "A migration that adds an index for each side of the OR gives SQLite a MULTI-INDEX OR plan.",
+  "args": [],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "verdict": "improved",
+    "plan_changed": true,
+    "variant_plan": {
+      "contains": [
+        "MULTI-INDEX OR",
+        "SEARCH events USING INDEX idx_customer",
+        "SEARCH events USING INDEX idx_created"
+      ],
+      "excludes": [
+        "SCAN events"
+      ]
+    },
+    "rows_read": {
+      "direction": "decrease",
+      "max_ratio": 0.01
+    },
+    "rows_written": "same",
+    "batch": {
+      "recommended": "migration.sql",
+      "counts": {
+        "improved": 1,
+        "needs_check": 0
+      }
+    }
+  }
+}
