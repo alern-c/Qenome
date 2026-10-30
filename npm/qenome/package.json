@@ -3,6 +3,16 @@
   "version": "0.0.0",
   "private": true,
   "description": "Compare one read-only SQLite SELECT before and after one candidate CREATE INDEX.",
+  "keywords": [
+    "cloudflare",
+    "d1",
+    "sqlite",
+    "query",
+    "index",
+    "explain",
+    "rows-read",
+    "cli"
+  ],
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
