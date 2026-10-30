@@ -193,3 +193,39 @@ sqlite3 "$d/baseline.db" "SELECT count(*), count(note), sum(length(note)), min(n
 - **版依存**: 期待値は基準版で導出した値。版が変わったら再導出する
 - **バイト一致は保証しない**: DBファイルの内容のバイト一致は判定に使わない。`verify.sql` の不変条件で判定する
 - **`LIMIT` だけでは比較不能にならない**: `LIMIT` / `OFFSET` を含む SELECT も、行が一致すれば `match` のまま比較と計測を続ける（`LIMIT` / `OFFSET` は行が不一致だったときの理由にだけ現れる）。比較不能になるのは `random()` などの非決定的な関数や schema テーブルを読む SELECT（`src/db.zig` の `alwaysIncomparable`）
+
+## Accuracy corpus (`testdata/accuracy/`)
+
+`testdata/accuracy/` holds known-answer cases for the verdict. `scripts/check_accuracy.py` builds a fresh database for each case in a temporary directory, runs `zig-out/bin/qenome --format json`, and compares the JSON with the answer in `case.json`. It runs each case several times (`--repeat N`, default 3) and fails when the exit status, the report `exit_code`, `result`, `verdict`, `plan_changed`, a plan step detail, or a counter differs between the runs. Every comparison in a batch report is checked, and a batch report also has its `recommended` and summary counts compared. Timing is not compared unless a case opts in with `"timing": "stable"`.
+
+One directory per case, `testdata/accuracy/<case>/`:
+
+| Path | Role |
+| --- | --- |
+| `schema.sql` | Tables and existing indexes; the harness applies it to a new database |
+| `data.sql` | Optional deterministic rows and `ANALYZE`; the harness applies it with Python's `sqlite3` module |
+| `seed.json` | Optional `--seed-data` spec instead of `data.sql`; the harness passes it to qenome |
+| `select.sql` or `write.sql` | The statement to compare |
+| `index.sql` | The candidate index for one comparison or `--write` |
+| `batch.json` | A `--batch` manifest; a batch case has no `index.sql` |
+| `migration.sql` | A migration applied on the variant with `--batch`; a manifest here must omit `candidates` |
+| `case.json` | `description`, `args` and `expect`; `known_wrong` and `timing` are optional |
+
+No database file is committed. The harness infers the mode from the files: a `batch.json` means `--batch` (with `--migration` when `migration.sql` exists), a `write.sql` means `--write`, `--suggest` in `args` means one SELECT without `index.sql`, and anything else is one SELECT with `index.sql`. `args` holds only extra qenome options such as `--bind`; the harness adds `--format json` and `--runs 0` (the last one is skipped for a batch, `--suggest`, or a case with `--runs`). A case with `--runs` needs `"timing": "stable"`, and a timing case needs at least 6 rounds.
+
+`expect` keys (an unknown key is an error):
+
+- `exit` (the process status) and `exit_code` (the same field in the JSON report).
+- `result` (`match`, `mismatch`, `incomparable`), `verdict`, and `plan_changed`.
+- `baseline_plan` / `variant_plan`: `contains` and `excludes` substrings of a plan step `detail`.
+- `rows_read` / `rows_written`: `decrease`, `same`, or `increase`, or an object with `direction` and an optional `max_ratio` (the upper bound of variant / baseline).
+- `warnings`: warning `code`s that must be in `contains` or `excludes`.
+- `batch`: `recommended` and `counts` for `summary[0]` (`improved`, `no_effect`, `needs_check`, `mismatch`, `incomparable`, `timeout`, `not_judged`).
+- `suggest`: `recommended` (true or false) and `leads_with` (the leading columns of the recommended index).
+- `error`: the `code` of the error object on stderr, for a run that stops before the report.
+
+For one comparison the report itself is the comparison object; for `--batch`, `--migration`, and `--suggest` it is `results[0].comparison`, so a case that checks the comparison holds exactly one result. Run the corpus with `python3 scripts/check_accuracy.py [--case NAME] [--repeat N] [--binary PATH]`.
+
+To add a case, create the directory with the files above, put the explanation in `description` (the SQL files must not hold comments), and run `python3 scripts/check_accuracy.py --case <case>`. A case that finds a wrong verdict today is marked `"known_wrong": "<issue link>"`: the harness reports it as `known-wrong` instead of `ok`, and fails once the case starts passing so that the marker gets removed. The corpus depends only on the JSON contracts in `docs/json.md` (comparison `schema_version` 2, `batch_schema_version` 1); a new SQLite version can change a plan text or a counter, so recheck the expected values then.
+
+Two measured limits shape the cases. `rows_read` counts the rows the sorter reads, so an index that removes an `ORDER BY` sort also lowers the counter; the corpus has no case where the sort disappears and the counter stays the same. A `mismatch` needs a query whose result rows SQL itself leaves open: `group-by-bare-column` uses a bare column beside `GROUP BY`, where the index changes the row SQLite picks. A different collation does not change the rows on the same data, so it cannot produce one.
