@@ -31,6 +31,7 @@ APPROVED_FILES = [
     "src/sql/lexer.zig",
     "src/skill/diff.zig",
     "src/skill/skill.zig",
+    "src/d1/config.zig",
 ]
 
 TEST_FILES = ["src/cli/tests.zig", "src/cli/skill_tests.zig"]
@@ -70,7 +71,7 @@ PRODUCTION_IMPORTS = {
     ],
     "src/cli/args.zig": ["src/db.zig", "src/sql/lexer.zig", "src/cli/usage_text.zig"],
     "src/cli/control.zig": ["src/contract/values.zig"],
-    "src/cli/d1.zig": [],
+    "src/cli/d1.zig": ["src/d1/config.zig"],
     "src/cli/comparison.zig": ["src/db.zig", "src/result.zig"],
     "src/cli/query.zig": [
         "src/db.zig",
@@ -164,6 +165,7 @@ PRODUCTION_IMPORTS = {
     "src/skill/skill.zig": ["src/skill/diff.zig"],
     "src/skill/diff.zig": [],
     "src/contract/values.zig": [],
+    "src/d1/config.zig": [],
     "src/sql/lexer.zig": [],
 }
 
@@ -210,6 +212,7 @@ LAYERS = [
     ("src/skill/", "skill"),
     ("src/sql/", "sql"),
     ("src/sqlite.zig", "sqlite"),
+    ("src/d1/", "d1"),
     ("src/db.zig", "engine"),
     ("src/result.zig", "engine"),
     ("src/cli/", "cli"),
@@ -221,6 +224,7 @@ LAYERS = [
 LAYER_RANK = {
     "contract": 0,
     "skill": 0,
+    "d1": 1,
     "sqlite": 1,
     "sql": 2,
     "engine": 3,
@@ -399,6 +403,7 @@ def check_files(root, sources, violations):
     check_directory(root, "src/cli", violations)
     check_directory(root, "src/contract", violations)
     check_directory(root, "src/skill", violations)
+    check_directory(root, "src/d1", violations)
     check_directory(root, "src/sql", violations)
 
 def layer_of(rel_path):
