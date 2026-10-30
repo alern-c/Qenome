@@ -2,7 +2,9 @@ const std = @import("std");
 const Io = std.Io;
 const builtin = @import("builtin");
 const cli = @import("../cli.zig");
+const contract = @import("../contract/values.zig");
 const cli_record = @import("record.zig");
+const cli_record_shapes = @import("record_shapes.zig");
 
 const testing = std.testing;
 
@@ -360,6 +362,11 @@ test "record writes one record object in json without bind values" {
     try testing.expectEqual(@as(i64, 0), try jsonInt(skipped, "malformed"));
     try testing.expectEqual(@as(i64, 0), try jsonInt(skipped, "version"));
 
+    const warnings = try jsonItems(parsed.value, "warnings");
+    try testing.expectEqual(@as(usize, 1), warnings.len);
+    try testing.expectEqualStrings(contract.code.record_manifest_binds, try jsonText(warnings[0], "code"));
+    try testing.expectEqualStrings(contract.record_manifest_binds_message, try jsonText(warnings[0], "message"));
+
     const shapes = try jsonItems(parsed.value, "repeated_shapes");
     try testing.expectEqual(@as(usize, 1), shapes.len);
     try testing.expectEqualStrings("read", try jsonText(shapes[0], "kind"));
@@ -373,6 +380,117 @@ test "record writes one record object in json without bind values" {
     try testing.expectEqualStrings("queries/q002.sql", try jsonText(shapes[0], "manifest_select"));
     try testing.expect(contains(try jsonText(shapes[0], "hint"), "db.batch()"));
     try testing.expectEqual(@as(i64, 0), try jsonInt(parsed.value, "repeated_shapes_dropped"));
+}
+
+test "record json reports a world-readable log and the manifest binds as warnings" {
+    if (builtin.os.tag == .windows) return;
+    var fixture = try RecordFixture.init();
+    defer fixture.deinit();
+    const log_path = try fixture.writeLog("json-loose.log", "QENOME_D1_RECORD {\"v\":1,\"op\":\"all\",\"sql\":\"SELECT 1\",\"types\":[],\"binds\":[]}\n", 0o644);
+    defer testing.allocator.free(log_path);
+    const out_path = try fixture.path("manifest-json-loose");
+    defer testing.allocator.free(out_path);
+
+    var stdout_buffer: [8192]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = fixture.call(&.{ "Qenome", "--record", log_path, "--out", out_path, "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    const warnings = try jsonItems(parsed.value, "warnings");
+    try testing.expectEqual(@as(usize, 2), warnings.len);
+    try testing.expectEqualStrings(contract.code.record_log_permissions, try jsonText(warnings[0], "code"));
+    const message = try jsonText(warnings[0], "message");
+    try testing.expect(contains(message, "readable by other users"));
+    try testing.expect(contains(message, log_path));
+    try testing.expectEqualStrings(contract.code.record_manifest_binds, try jsonText(warnings[1], "code"));
+    try testing.expectEqualStrings(contract.record_manifest_binds_message, try jsonText(warnings[1], "message"));
+}
+
+test "record json escapes a non UTF-8 log path in the warnings" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var shapes = cli_record_shapes.Shapes.init(arena);
+    const queries = [_]cli_record_shapes.QueryLine{.{ .index = 0, .executions = 1 }};
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout = Io.Writer.fixed(&stdout_buffer);
+    try cli_record_shapes.printSummary(&stdout, arena, .{
+        .out_path = "manifest",
+        .log_path = "log-\xff.log",
+        .log_permissions = true,
+        .json = true,
+        .records = 1,
+        .executions = 1,
+        .queries = &queries,
+        .skipped = .{},
+        .shapes = &shapes,
+    });
+
+    var parsed = try parseJson(stdout.buffered());
+    defer parsed.deinit();
+    const warnings = try jsonItems(parsed.value, "warnings");
+    try testing.expectEqual(@as(usize, 2), warnings.len);
+    const message = try jsonText(warnings[0], "message");
+    try testing.expect(contains(message, "readable by other users"));
+    try testing.expect(contains(message, "\\xff"));
+}
+
+test "record json keeps the skipped breakdown when the log holds no SELECT" {
+    var fixture = try RecordFixture.init();
+    defer fixture.deinit();
+    const log_path = try fixture.writeLog("json-no-select.log", "QENOME_D1_RECORD {\"v\":1,\"op\":\"run\",\"sql\":\"INSERT INTO t VALUES (1)\",\"types\":[],\"binds\":[]}\n", 0o600);
+    defer testing.allocator.free(log_path);
+    const out_path = try fixture.path("manifest-json-no-select");
+    defer testing.allocator.free(out_path);
+
+    var stdout_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = fixture.call(&.{ "Qenome", "--record", log_path, "--out", out_path, "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, result.code);
+    try testing.expectEqualStrings("", result.stdout);
+
+    var parsed = try parseJson(result.stderr);
+    defer parsed.deinit();
+    try testing.expectEqual(@as(i64, 2), try jsonInt(parsed.value, "schema_version"));
+    try testing.expectEqual(@as(i64, 1), try jsonInt(parsed.value, "exit_code"));
+    const failure = try jsonGet(parsed.value, "error");
+    try testing.expectEqualStrings("record_log_invalid", try jsonText(failure, "code"));
+    const message = try jsonText(failure, "message");
+    try testing.expect(contains(message, "holds no read-only statement"));
+    try testing.expect(contains(message, "skipped: 1 writes"));
+    try testing.expectError(error.FileNotFound, fixture.tmp.dir.statFile(testing.io, "manifest-json-no-select", .{}));
+}
+
+test "record classifies an invalid threshold apart from the record conflict" {
+    var fixture = try RecordFixture.init();
+    defer fixture.deinit();
+    const log_path = try fixture.writeLog("threshold.log", "QENOME_D1_RECORD {\"v\":1,\"op\":\"all\",\"sql\":\"SELECT 1\",\"types\":[],\"binds\":[]}\n", 0o600);
+    defer testing.allocator.free(log_path);
+    const out_path = try fixture.path("manifest-threshold");
+    defer testing.allocator.free(out_path);
+
+    var stdout_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const invalid = fixture.call(&.{ "Qenome", "--record", log_path, "--out", out_path, "--n-plus-one-threshold", "1", "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.usage, invalid.code);
+    var parsed = try parseJson(invalid.stderr);
+    defer parsed.deinit();
+    const failure = try jsonGet(parsed.value, "error");
+    try testing.expectEqualStrings("usage_n_plus_one_threshold", try jsonText(failure, "code"));
+    const hint = try jsonText(failure, "hint");
+    try testing.expect(contains(hint, "Use 0 to turn the report off"));
+    try testing.expect(contains(hint, "2 to 1000000"));
+
+    const without_record = fixture.call(&.{ "Qenome", "--n-plus-one-threshold", "5", "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.usage, without_record.code);
+    var conflict = try parseJson(without_record.stderr);
+    defer conflict.deinit();
+    const conflict_failure = try jsonGet(conflict.value, "error");
+    try testing.expectEqualStrings("usage_record_conflict", try jsonText(conflict_failure, "code"));
+    try testing.expect(contains(try jsonText(conflict_failure, "hint"), "--record"));
 }
 
 test "record refuses more than 100 statements before it writes anything" {

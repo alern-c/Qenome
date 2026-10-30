@@ -108,6 +108,9 @@ const ErrorClass = struct {
 };
 
 pub fn classifyError(message: []const u8) ErrorClass {
+    if (std.mem.startsWith(u8, message, "--n-plus-one-threshold expects")) {
+        return .{ .code = "usage_n_plus_one_threshold", .hint = "Use 0 to turn the report off, or an integer from 2 to 1000000." };
+    }
     if (std.mem.startsWith(u8, message, "--record") or std.mem.startsWith(u8, message, "--out") or std.mem.startsWith(u8, message, "--n-plus-one-threshold")) {
         return .{ .code = "usage_record_conflict", .hint = "Use --record with --out only, and --format human or json with --n-plus-one-threshold; remove the database, SQL, batch, migration, bind, runs, suggest, and seed options." };
     }

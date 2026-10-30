@@ -145,6 +145,7 @@ Batch error codes:
 | `audit_catalog_unreadable` | 1 | Read the SQLite message and check that the schema can be read |
 | `audit_catalog_timeout` | 124 | Raise `--timeout-ms`, or check the schema for a very large catalog |
 | `usage_record_conflict` | 2 | Use `--record` with `--out` only, and `--format human` or `json` with `--n-plus-one-threshold`; remove the database, SQL, batch, migration, bind, runs, suggest, and seed options |
+| `usage_n_plus_one_threshold` | 2 | Use `0` to turn the report off, or an integer from 2 to 1,000,000 |
 | `record_log_unreadable` | 1 | Check that the record log path exists and is readable, then rerun |
 | `record_log_invalid` | 1 | Record a session with at least one SELECT, at most 100 distinct statements, and at most 1 MiB. When the 100-statement limit stops the run, the message also names the most repeated shape and how many statements share it |
 | `record_output_failed` | 1 | Choose a new `--out` directory and check that it is writable, then rerun |
@@ -214,6 +215,7 @@ Semantics and limits:
 | `records` | number | Record lines read, including the skipped ones |
 | `queries` | array | One `{ "select", "executions" }` object per manifest entry, in `queries/qNNN.sql` order |
 | `skipped` | object | The counters `writes`, `exec`, `other`, `blob`, `unsupported`, `nul`, `large`, `malformed` and `version`; the same numbers as the human `skipped:` line |
+| `warnings` | array | Emitted. `{ "code", "message" }` entries: `record_log_permissions` first when the log is readable by other users, then `record_manifest_binds`, which is always present. The messages are the body of the human `warning:` lines |
 | `repeated_shapes` | array | At most 20 shape objects, ordered by `distinct_values`, then `executions`, then first appearance in the log |
 | `repeated_shapes_dropped` | number | How many shapes passed the threshold and did not fit in the top 20 |
 
@@ -237,6 +239,8 @@ Semantics and limits:
 - The detection reads every record before the read/write filter, so a loop of `INSERT`, `UPDATE`, `DELETE` or `REPLACE` is reported too.
 - A shape is reported when `distinct_values` is at least the threshold: `10` by default, or `--n-plus-one-threshold N` (0 turns the report off, otherwise 2 to 1,000,000). `op: "batch"` records are already one round trip, so they never reach the threshold.
 - The report is a hint about round trips and repeated work, not a measurement: it does not change a row count, a timing, the manifest, or the exit code.
+- `warnings` carries the two advisory warnings of the human report: `record_manifest_binds` is always present because the manifest holds the bind values, and `record_log_permissions` names the log path when its mode lets other users read it. Neither changes the exit code. The human report writes the log warning to stderr before the summary and the manifest warning on stdout at the end, so its text is unchanged.
+- When the log holds no read-only statement, `--format json` writes the `skipped:` breakdown into the `message` of the `record_log_invalid` error object instead of dropping it; the human report writes the same breakdown on the next line. The JSON error contract (`schema_version` 2) does not change.
 - Bind values never appear: only `example` and `previous_shape_example` hold SQL text.
 
 ## Status in this tree

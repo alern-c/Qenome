@@ -251,6 +251,8 @@ TEST_IMPORTS = {
     "src/cli/record_tests.zig": [
         "src/cli.zig",
         "src/cli/record.zig",
+        "src/cli/record_shapes.zig",
+        "src/contract/values.zig",
     ],
 }
 
@@ -348,6 +350,8 @@ CONTRACT_CODES = [
     "suggestion_rejected",
     "suggest_failed",
     "no_suggestions",
+    "record_log_permissions",
+    "record_manifest_binds",
 ]
 
 IMPORT_CANDIDATE = re.compile(r"@import\b")
