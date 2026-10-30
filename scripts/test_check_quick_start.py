@@ -78,17 +78,15 @@ def make_executable(path):
     os.chmod(path, mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
-def readme(commands, heading):
+def contributing(commands):
     return (
-        "# Sample\n"
+        "# Contributing\n"
         "\n"
-        "## Installation\n"
+        "## Build from source\n"
         "\n"
         "Build it first.\n"
         "\n"
-        "## "
-        + heading
-        + "\n"
+        "## Quick start\n"
         "\n"
         "Prepare the database:\n"
         "\n"
@@ -101,10 +99,15 @@ def readme(commands, heading):
         + "\n"
         "```\n"
         "\n"
-        "## Usage\n"
+        "## Development checks\n"
         "\n"
         "Nothing else.\n"
     )
+
+
+README = "# Sample\n\nSee [CONTRIBUTING.md](CONTRIBUTING.md) for the Quick start.\n"
+
+README_JA = "# サンプル\n\nQuick start は [CONTRIBUTING.md](CONTRIBUTING.md) を参照してください。\n"
 
 
 def run_checker(root, args=None):
@@ -140,6 +143,13 @@ def insert_before(rel_path, anchor, text):
     return mutate
 
 
+def remove_file(rel_path):
+    def mutate(root):
+        os.remove(os.path.join(root, rel_path))
+
+    return mutate
+
+
 def rewrite(rel_path, text):
     def mutate(root):
         write_file(root, rel_path, text)
@@ -151,9 +161,10 @@ def case(mutate=None):
     root = tempfile.mkdtemp(prefix="qenome-quick-start-")
     try:
         write_file(root, "tools/qenome", FAKE_QENOME)
-        make_executable(os.path.join(root, "tools/qenome"))
-        write_file(root, "README.md", readme(COMMANDS, "Quick start"))
-        write_file(root, "README.ja.md", readme(COMMANDS, "クイックスタート"))
+        make_executable(os.path.join(root, "tools", "qenome"))
+        write_file(root, "CONTRIBUTING.md", contributing(COMMANDS))
+        write_file(root, "README.md", README)
+        write_file(root, "README.ja.md", README_JA)
         if mutate is not None:
             mutate(root)
         return run_checker(root)
@@ -211,18 +222,18 @@ def main():
 
     code, output = case(
         patch(
-            "README.md",
+            "CONTRIBUTING.md",
             "# expect: result=match verdict=no-effect exit=0",
             "# expect: result=match verdict=improved exit=0",
         )
     )
     expect_rejected(
-        "a verdict that differs fails", code, output, "the verdict differs: the README expects"
+        "a verdict that differs fails", code, output, "the verdict differs: the CONTRIBUTING.md expects"
     )
 
     code, output = case(
         patch(
-            "README.md",
+            "CONTRIBUTING.md",
             "# expect: result=match verdict=improved exit=0",
             "# expect: result=match verdict=improved exit=3",
         )
@@ -231,7 +242,7 @@ def main():
 
     code, output = case(
         patch(
-            "README.md",
+            "CONTRIBUTING.md",
             "# expect: recommended=cases/improved.index.sql exit=0",
             "# expect: recommended=cases/no-effect.index.sql exit=0",
         )
@@ -239,18 +250,16 @@ def main():
     expect_rejected("a recommendation that differs fails", code, output, "the recommendation differs")
 
     code, output = case(
-        patch("README.md", "# expect: result=incomparable", "# expect: result=mismatch")
+        patch("CONTRIBUTING.md", "# expect: result=incomparable", "# expect: result=mismatch")
     )
     expect_rejected("a result that differs fails", code, output, "the result differs")
 
-    code, output = case(
-        rewrite("README.md", readme((COMMANDS[0], COMMANDS[2]), "Quick start"))
-    )
+    code, output = case(rewrite("CONTRIBUTING.md", contributing(COMMANDS[0:2])))
     expect_rejected(
         "a missing required result fails",
         code,
         output,
-        "needs a checked example with result=match verdict=no-effect exit=0",
+        "needs a checked example with result=incomparable verdict=not-judged exit=4",
     )
 
     replaced = (
@@ -260,11 +269,7 @@ def main():
         "# expect: result=match verdict=improved exit=0",
     )
 
-    def replace_both(root):
-        write_file(root, "README.md", readme(replaced, "Quick start"))
-        write_file(root, "README.ja.md", readme(replaced, "クイックスタート"))
-
-    code, output = case(replace_both)
+    code, output = case(rewrite("CONTRIBUTING.md", contributing(replaced)))
     expect_rejected(
         "an example replaced by the same verdict fails",
         code,
@@ -272,45 +277,32 @@ def main():
         "needs a checked example with result=incomparable verdict=not-judged exit=4",
     )
 
-    def unmark_japanese(root):
-        text = read_file(root, "README.ja.md")
-        write_file(
-            root,
-            "README.ja.md",
-            text.replace("  # expect: result=match verdict=no-effect exit=0", ""),
+    code, output = case(
+        patch(
+            "CONTRIBUTING.md",
+            "  # expect: result=match verdict=no-effect exit=0",
+            "",
         )
-
-    code, output = case(unmark_japanese)
+    )
     expect_rejected(
-        "a marker on one side only fails", code, output, "the expect marker differs"
-    )
-    expect(
-        "a marker on one side only is named",
-        "<no expect marker>" in output,
-        output.strip(),
+        "a qenome command without a marker fails", code, output, 'has no "# expect:'
     )
 
-    def fence_both(root):
-        for name in ("README.md", "README.ja.md"):
-            text = read_file(root, name)
-            write_file(
-                root,
-                name,
-                text.replace(
-                    "```sh\n./tools/qenome result=match verdict=improved",
-                    "```bash\n./tools/qenome result=match verdict=improved",
-                ),
-            )
-
-    code, output = case(fence_both)
+    code, output = case(
+        patch(
+            "CONTRIBUTING.md",
+            "```sh\n./tools/qenome result=match verdict=improved",
+            "```bash\n./tools/qenome result=match verdict=improved",
+        )
+    )
     expect_rejected(
         "a block that is not sh fails", code, output, 'the code block is not "```sh"'
     )
 
     code, output = case(
         insert_before(
-            "README.md",
-            "## Usage",
+            "CONTRIBUTING.md",
+            "## Development checks",
             "```\n./tools/qenome result=match verdict=improved code=0\n```\n\n",
         )
     )
@@ -322,32 +314,9 @@ def main():
     )
 
     code, output = case(
-        patch(
-            "README.ja.md",
-            "./tools/qenome result=match verdict=improved code=0",
-            "./tools/qenome result=match verdict=improved code=1",
-        )
-    )
-    expect_rejected("a Japanese command that differs fails", code, output, "the command differs from")
-
-    code, output = case(
-        patch(
-            "README.ja.md",
-            "# expect: result=match verdict=no-effect exit=0",
-            "# expect: result=match verdict=no-effect exit=5",
-        )
-    )
-    expect_rejected(
-        "a Japanese expect marker that differs fails", code, output, "the expect marker differs"
-    )
-
-    code, output = case(rewrite("README.ja.md", readme(COMMANDS[0:2], "クイックスタート")))
-    expect_rejected("a Japanese section with fewer commands fails", code, output, "has 3 command(s)")
-
-    code, output = case(
         insert_before(
-            "README.md",
-            "## Usage",
+            "CONTRIBUTING.md",
+            "## Development checks",
             "```sh\n./tools/qenome result=match verdict=improved code=0\n```\n\n",
         )
     )
@@ -355,21 +324,23 @@ def main():
 
     code, output = case(
         insert_before(
-            "README.md",
-            "## Usage",
+            "CONTRIBUTING.md",
+            "## Development checks",
             "```sh\nmkdir -p work  # expect: result=match verdict=improved exit=0\n```\n\n",
         )
     )
     expect_rejected("a marker on a setup command fails", code, output, "belongs on a qenome command")
 
-    code, output = case(insert_before("README.md", "## Usage", "```sh\nfalse\n```\n\n"))
+    code, output = case(
+        insert_before("CONTRIBUTING.md", "## Development checks", "```sh\nfalse\n```\n\n")
+    )
     expect_rejected(
         "a setup command that fails stops the check", code, output, "the setup command exited with 1"
     )
 
     code, output = case(
         patch(
-            "README.md",
+            "CONTRIBUTING.md",
             "./tools/qenome result=match verdict=improved code=0",
             "./tools/qenome result=match verdict=improved code=0 summary=0",
         )
@@ -378,7 +349,7 @@ def main():
 
     code, output = case(
         patch(
-            "README.md",
+            "CONTRIBUTING.md",
             "# expect: result=match verdict=improved exit=0",
             "# expect: result=match verdict=improved",
         )
@@ -387,7 +358,7 @@ def main():
 
     code, output = case(
         patch(
-            "README.md",
+            "CONTRIBUTING.md",
             "# expect: result=match verdict=improved exit=0",
             "# expect: result=match verdict=improved exit=many",
         )
@@ -396,7 +367,7 @@ def main():
 
     code, output = case(
         patch(
-            "README.md",
+            "CONTRIBUTING.md",
             "# expect: result=match verdict=improved exit=0",
             "# expect: result=match verdict=improved exit=0 extra=1",
         )
@@ -404,29 +375,22 @@ def main():
     expect_rejected("an expect marker with a bad token fails", code, output, "needs result=")
 
     code, output = case(
-        insert_before("README.md", "## Usage", "```sh\necho one \\\n  two\n```\n\n")
+        insert_before("CONTRIBUTING.md", "## Development checks", "```sh\necho one \\\n  two\n```\n\n")
     )
     expect_rejected(
         "a command that continues on the next line fails", code, output, "continues on the next line"
     )
 
-    code, output = case(insert_before("README.md", "## Usage", "```sh\necho open\n"))
+    code, output = case(insert_before("CONTRIBUTING.md", "## Development checks", "```sh\necho open\n"))
     expect_unusable("an unclosed code block is unusable", code, output, "is not closed")
 
-    code, output = case(rewrite("README.md", readme(COMMANDS, "Getting started")))
+    missing_heading = contributing(COMMANDS).replace("## Quick start", "## Getting started")
+    code, output = case(rewrite("CONTRIBUTING.md", missing_heading))
     expect_unusable(
         "a missing Quick start section is unusable", code, output, 'has no "## Quick start"'
     )
 
-    code, output = case(rewrite("README.ja.md", readme(COMMANDS, "Quick start")))
-    expect_unusable(
-        "a Japanese file without its heading is unusable",
-        code,
-        output,
-        'has no "## クイックスタート"',
-    )
-
-    code, output = case(rewrite("README.md", readme(("mkdir -p work",), "Quick start")))
+    code, output = case(rewrite("CONTRIBUTING.md", contributing(("mkdir -p work",))))
     expect_rejected(
         "a section without a checked command fails",
         code,
@@ -434,10 +398,16 @@ def main():
         'no command with an "# expect:" marker',
     )
 
-    code, output = case(
-        append_to("README.md", "\n```sh\n./tools/qenome result=match\n```\n")
-    )
+    code, output = case(append_to("CONTRIBUTING.md", "\n```sh\n./tools/qenome result=match\n```\n"))
     expect_clean("a command outside the section is ignored", code, output)
+
+    code, output = case(patch("README.ja.md", "[CONTRIBUTING.md](CONTRIBUTING.md)", "the guide"))
+    expect_rejected(
+        "a README without the link fails", code, output, "the README must link to CONTRIBUTING.md"
+    )
+
+    code, output = case(remove_file("CONTRIBUTING.md"))
+    expect_unusable("a missing CONTRIBUTING.md is unusable", code, output, "cannot read")
 
     root = tempfile.mkdtemp(prefix="qenome-quick-start-")
     try:

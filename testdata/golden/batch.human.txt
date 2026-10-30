@@ -1,0 +1,22 @@
+batch: 2 queries, 2 candidates
+database: testdata/generated/qenome-fixture.db
+sqlite: 3.53.4
+work-dir-parent: <work-dir-parent>
+
+Summary
+  candidate                  status        improved      no-effect     needs-check   mismatch      incomparable  timeout       size increase
+  cases/improved.index.sql   compared      1             1             0             0             0             0             2.07 MiB
+  cases/no-effect.index.sql  compared      0             2             0             0             0             0             2.46 MiB
+
+Recommendation: cases/improved.index.sql
+
+Results
+  query                candidate                  result        verdict       rows read
+  cases/improved.sql   cases/improved.index.sql   match         improved      200000 -> 101
+  cases/no-effect.sql  cases/improved.index.sql   match         no-effect     200000 -> 200000
+  cases/improved.sql   cases/no-effect.index.sql  match         no-effect     200000 -> 200000
+  cases/no-effect.sql  cases/no-effect.index.sql  match         no-effect     200000 -> 200000
+
+Warnings
+  cases/improved.index.sql: no_analyze_stats: The candidate index table has no non-empty sqlite_stat1 entry. Test an ANALYZE'd copy with representative data; this check does not run ANALYZE.
+  cases/no-effect.index.sql: no_analyze_stats: The candidate index table has no non-empty sqlite_stat1 entry. Test an ANALYZE'd copy with representative data; this check does not run ANALYZE.

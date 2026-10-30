@@ -1,0 +1,99 @@
+{
+  "schema_version": 2,
+  "exit_code": 0,
+  "statement": "select",
+  "verdict": "improved",
+  "verdict_reasons": [],
+  "result": "match",
+  "row_order": "same",
+  "result_reasons": [],
+  "row_differences": {
+    "baseline_only": 0,
+    "variant_only": 0,
+    "baseline_only_examples": [],
+    "variant_only_examples": []
+  },
+  "plan_changed": true,
+  "baseline": {
+    "rows": 100,
+    "plan": [
+      {
+        "id": 2,
+        "parent": 0,
+        "kind": "scan",
+        "covering": false,
+        "automatic": false,
+        "detail": "SCAN events"
+      }
+    ],
+    "counters": {
+      "rows_read": 200000,
+      "rows_written": 0,
+      "fullscan_steps": 199999,
+      "vm_steps": 600407,
+      "sort_ops": 0,
+      "autoindex_rows": 0
+    }
+  },
+  "variant": {
+    "rows": 100,
+    "plan": [
+      {
+        "id": 3,
+        "parent": 0,
+        "kind": "search",
+        "covering": false,
+        "automatic": false,
+        "detail": "SEARCH events USING INDEX ix_events_customer_id (customer_id=?)"
+      }
+    ],
+    "counters": {
+      "rows_read": 101,
+      "rows_written": 0,
+      "fullscan_steps": 0,
+      "vm_steps": 710,
+      "sort_ops": 0,
+      "autoindex_rows": 0
+    }
+  },
+  "timing": null,
+  "warnings": [
+    {
+      "code": "no_analyze_stats",
+      "message": "The candidate index table has no non-empty sqlite_stat1 entry. Test an ANALYZE'd copy with representative data; this check does not run ANALYZE."
+    }
+  ],
+  "size_bytes": {
+    "baseline": 5087232,
+    "variant": 7258112,
+    "increase": 2170880
+  },
+  "inputs": {
+    "database": "testdata/generated/qenome-fixture.db",
+    "select": "testdata/cases/improved.sql",
+    "index_sql": "testdata/cases/improved.index.sql"
+  },
+  "environment": {
+    "qenome_version": "<version>",
+    "sqlite_version": "3.53.4",
+    "sqlite_source_id": "2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc",
+    "zig_version": "0.17.0",
+    "build_mode": "<build-mode>",
+    "os": "<os>",
+    "arch": "<arch>",
+    "work_dir_parent": "<work-dir-parent>"
+  },
+  "measurement": {
+    "runs_per_copy": 0,
+    "warmup": "1 per copy (the run whose rows were compared, not timed)",
+    "order": "each round: baseline-baseline A/A, then alternating baseline-variant or variant-baseline (ABBA)",
+    "scope": "sqlite3_step from the reset statement to SQLITE_DONE with the interrupt checks; columns are not read; prepare, bind, and the plan read are not timed",
+    "cache": "warm; each copy reuses its connection and page cache, and its file was just written"
+  },
+  "binds": [
+    {
+      "number": 1,
+      "type": "int"
+    }
+  ]
+}

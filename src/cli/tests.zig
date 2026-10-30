@@ -3460,7 +3460,7 @@ test "a batch compares every query with every candidate and recommends one" {
     try testing.expectEqualStrings("", result.stderr);
     try testing.expect(contains(result.stdout, "batch: 2 queries, 2 candidates\n"));
     try testing.expect(contains(result.stdout, "Recommendation: c1.sql\n"));
-    try testing.expect(!contains(result.stdout, "\nWarnings\n"));
+    try testing.expect(contains(result.stdout, "c1.sql: data_too_small: "));
     try testing.expect(contains(result.stdout, "\nResults\n"));
     try testing.expect(contains(result.stdout, "q1.sql"));
     try testing.expect(contains(result.stdout, "q2.sql"));

@@ -7,6 +7,7 @@ const cli_args = @import("args.zig");
 const cli_d1 = @import("d1.zig");
 const cli_comparison = @import("comparison.zig");
 const cli_warnings = @import("warnings.zig");
+const cli_report_time = @import("report_time.zig");
 const cli_timing = @import("timing.zig");
 const PlanRow = cli_comparison.PlanRow;
 const Plan = @FieldType(cli_comparison.Measurement, "plan");
@@ -45,15 +46,6 @@ pub const Sizes = struct {
 };
 
 pub const Warnings = cli_warnings.Warnings;
-
-fn writeTimeEvidence(stdout: *Io.Writer, evidence: cli_timing.Evidence) Io.Writer.Error!void {
-    try stdout.print("time-effect: {s} (reference only)\ntime-median-difference-ns: {d} (variant - baseline, paired rounds)\ntime-noise-band-ns: {d} (baseline A/A absolute difference p95; {d} pairs; empirical)\n", .{ cli_timing.effectText(evidence.effect), evidence.median_difference_ns, evidence.noise_band.threshold_ns, evidence.noise_band.pairs });
-    if (evidence.confidence_interval) |ci| {
-        try stdout.print("time-confidence-interval-ns: [{d}, {d}] (paired median difference; nominal 95%, binomial coverage {d:.6}; assumes independent identically distributed rounds)\n", .{ ci.lower_ns, ci.upper_ns, ci.coverage });
-    } else {
-        try stdout.print("time-confidence-interval-ns: unavailable ({s})\n", .{evidence.unavailable_reason orelse "unavailable"});
-    }
-}
 
 fn writeHumanWarnings(stdout: *Io.Writer, allocator: std.mem.Allocator, warnings: Warnings) Error!void {
     if (!cli_warnings.anyWarnings(warnings)) return;
@@ -232,7 +224,7 @@ pub fn writeFacts(stdout: *Io.Writer, allocator: std.mem.Allocator, header: Head
             const ratio = @as(f64, @floatFromInt(timing.variant.median)) / @as(f64, @floatFromInt(timing.baseline.median));
             try stdout.print("time-ratio: {d:.3} (variant median / baseline median)\n", .{ratio});
         }
-        try writeTimeEvidence(stdout, timing.evidence);
+        try cli_report_time.writeEvidence(stdout, timing.evidence);
         try stdout.print("variant-faster-rounds: {d}/{d}\n", .{ timing.variant_faster_rounds, timing.rounds });
     }
     try cli_warnings.writeWarnings(stdout, allocator, report.warnings);
@@ -942,7 +934,6 @@ fn writeOverview(
         "the same on both copies"
     else
         "changed on the variant");
-
     if (header.seed) |seed| {
         try writeField(stdout, "seed data", seed.path);
         var seed_buffer: [256]u8 = undefined;
@@ -967,6 +958,13 @@ fn writeOverview(
         try text.writeAll("not measured (0 rounds; reference only)");
     }
     try writeField(stdout, "time", text.buffered());
+    if (report.timing) |timing| {
+        text = Io.Writer.fixed(&buffer);
+        try text.writeAll("A/A p95 ");
+        try writeDuration(&text, timing.evidence.noise_band.threshold_ns);
+        try text.print(" over {d} pairs (empirical; reference only)", .{timing.evidence.noise_band.pairs});
+        try writeField(stdout, "time noise", text.buffered());
+    }
 
     text = Io.Writer.fixed(&buffer);
     const increase = @as(i128, report.sizes.variant) - @as(i128, report.sizes.baseline);
@@ -1419,6 +1417,7 @@ test "the human summary puts the conclusion first and the copies side by side" {
         \\  verdict       improved: the rows match, and the variant reads fewer rows
         \\  query plan    changed on the variant
         \\  time          median 4.33 ms -> 37.29 us; 116x faster (reference only)
+        \\  time noise    A/A p95 0 ns over 0 pairs (empirical; reference only)
         \\  db size       +2,170,880 bytes (+2.07 MiB; the whole database file, not the
         \\                index alone)
         \\
@@ -1458,7 +1457,7 @@ test "the human summary puts the conclusion first and the copies side by side" {
     while (lines.next()) |line| try testing.expect(line.len <= line_width);
 }
 
-test "the human summary keeps the timing evidence and warnings out of the summary" {
+test "the human summary keeps the timing evidence fields and warnings out of the summary" {
     var buffer: [8192]u8 = undefined;
     var stdout = Io.Writer.fixed(&buffer);
     const header: Header = .{
@@ -1485,7 +1484,7 @@ test "the human summary keeps the timing evidence and warnings out of the summar
             .variant = .{ .median = 37_292, .p25 = 33_198, .p75 = 40_417, .min = 28_583, .max = 71_583 },
             .rounds = 10,
             .variant_faster_rounds = 10,
-            .evidence = .{ .effect = .faster },
+            .evidence = .{ .effect = .faster, .noise_band = .{ .threshold_ns = 500_000, .pairs = 10 } },
         },
         .sizes = .{ .baseline = 4096, .variant = 4096 },
         .judgement = .{ .verdict = .no_effect },
@@ -1503,6 +1502,7 @@ test "the human summary keeps the timing evidence and warnings out of the summar
         try testing.expect(std.mem.indexOf(u8, line, "warning:") == null);
     }
     try testing.expect(std.mem.indexOf(u8, output, "  time          median 4.33 ms -> 37.29 us; 116x faster") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "  time noise    A/A p95 500.00 us over 10 pairs (empirical; reference only)") != null);
     try testing.expect(std.mem.indexOf(u8, output, "time-effect:") == null);
     try testing.expect(std.mem.indexOf(u8, output, "time-median-difference-ns:") == null);
     try testing.expect(std.mem.indexOf(u8, output, "time-noise-band-ns:") == null);

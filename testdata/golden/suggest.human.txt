@@ -1,0 +1,20 @@
+batch: 1 query, 1 candidate
+database: testdata/generated/qenome-fixture.db
+sqlite: 3.53.4
+work-dir-parent: <work-dir-parent>
+
+Summary
+  candidate    status        improved      no-effect     needs-check   mismatch      incomparable  timeout       size increase
+  suggested:1  compared      1             0             0             0             0             0             2.07 MiB
+
+Suggested by SQLite:
+  suggested:1: CREATE INDEX events_idx_38e08b36 ON events(customer_id);
+
+Recommendation: suggested:1
+
+Results
+  query                        candidate    result        verdict       rows read
+  testdata/cases/improved.sql  suggested:1  match         improved      200000 -> 101
+
+Warnings
+  suggested:1: no_analyze_stats: The candidate index table has no non-empty sqlite_stat1 entry. Test an ANALYZE'd copy with representative data; this check does not run ANALYZE.
