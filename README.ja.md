@@ -4,7 +4,7 @@
 
 # Qenome
 
-**候補のインデックスがクエリの役に立つかを調べる CLI。**
+**読んだ行数や書いた行数が増えていませんか？マージする前にインデックスを確かめましょう。**
 
 [![npm の版](https://img.shields.io/npm/v/qenome?style=flat-square)](https://www.npmjs.com/package/qenome)
 [![ライセンス: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square)](LICENSE)
@@ -17,6 +17,24 @@
 </div>
 
 <p align="center"><sub>この録画は <a href="#サンプルプロジェクトを試す"><code>examples/d1-toml</code></a> のもの。サンプルは手元でコマンド2本で再現できます。</sub></p>
+
+ローカルの D1 データベースがある wrangler プロジェクトで、次の1コマンドを実行すると、SQLite に候補のインデックスを尋ね、サンドボックスのコピーで比べます。
+
+```sh
+npx qenome --d1 DEMO_DB select.sql --suggest
+```
+
+サンプルプロジェクト（`examples/d1-toml`）では、次の結果になります。
+
+```text
+Recommendation: suggested:1
+
+Results
+  query       candidate    result        verdict       rows read
+  select.sql  suggested:1  match         improved      200000 -> 101
+```
+
+読んだ行数は 200,000 から 101 に減り、終了コードは 0 です。元のデータベースは変更しません。上の録画も同じ実行です。セットアップの2コマンドは[サンプルプロジェクトを試す](#サンプルプロジェクトを試す)を参照してください。
 
 読み取り専用の `SELECT` を1本と、候補の `CREATE INDEX` を1本渡します。`--write` を付けると、代わりに `INSERT`・`UPDATE`・`DELETE`・`REPLACE` を1本渡します。ローカルの SQLite ファイル、またはローカルの Cloudflare D1（`--d1 <BINDING>` と `--config`）をサンドボックスのコピーにして比較します。元のデータベースは変更しません。
 
@@ -43,7 +61,6 @@
 - [ローカル D1 を調べる](#ローカル-d1-を調べる)
 - [AI エージェントと使う](#ai-エージェントと使う)
 - [なぜ他の方法ではないのか](#なぜ他の方法ではないのか)
-- [クイックスタート](#クイックスタート)
 - [使い方](#使い方)
 - [サンドボックス用のデータを作る](#サンドボックス用のデータを作る)
 - [まとめて比べる（--batch）](#まとめて比べる--batch)
@@ -51,7 +68,7 @@
 - [実際に実行されたクエリを記録する（--record）](#実際に実行されたクエリを記録する--record)
 - [出力形式](#出力形式)
 - [守るルール](#守るルール)
-- [開発時の検査](#開発時の検査)
+- [コントリビュート](#コントリビュート)
 - [ライセンス](#ライセンス)
 
 この README だけで、D1 の開発者またはその AI エージェントは、数分でローカル D1 の判定を取れます。[ローカル D1 を調べる](#ローカル-d1-を調べる)と [AI エージェントと使う](#ai-エージェントと使う)を見てください。
@@ -133,14 +150,7 @@ macOS で、公証されていないバイナリという理由で実行を拒�
 
 ### ソースからビルド
 
-必要な Zig は 0.17.0 です（`build.zig.zon` の `minimum_zig_version`。CI もこの版でビルドします）。SQLite は `vendor/sqlite3` に同梱してコンパイルするため、システムの SQLite は不要です。
-
-```sh
-zig build
-./zig-out/bin/qenome --version
-```
-
-`zig build` はバイナリを `zig-out/bin/qenome`（Windows は `zig-out\bin\qenome.exe`）に書き出します。リリースビルドに近い時間を測るには `zig build -Doptimize=ReleaseFast` でビルドしてください。
+ソースからビルドする手順は [CONTRIBUTING.md](CONTRIBUTING.md) の [Build from source](CONTRIBUTING.md#build-from-source) にあります。Zig 0.17.0 が必要で、SQLite は同梱しているためシステムの SQLite は不要です。
 
 ## ローカル D1 を調べる
 
@@ -195,72 +205,6 @@ npm パッケージにも `skills/` が入っているので、同じファイ�
 **本番 D1 のメトリクス。** この数値は、まだ本番 D1 と照合していません。Qenome が測るのはローカルのデータベースだけです。
 
 **インデックスを入れてアプリを見る。** それは出荷するデータベースへインデックスを書き込みます。Qenome はサンドボックスのコピーで試すので、役に立たない候補はマージの前に捨てられます。
-
-## クイックスタート
-
-この手順では、テスト用データベースを作り、Qenome をビルドし、7つの例を実行します。コマンドはリポジトリのルートで、ブロックごとに Linux か macOS で実行してください。必要なものは Zig 0.17.0（「ソースからビルド」を参照）と `sqlite3` コマンドラインツールです。`sqlite3` は SQL ファイルを新しいデータベースへ読み込みます。
-
-`testdata/schema.sql` と `testdata/seed.sql` からテスト用データベースを作ります。`verify.sql` は17項目それぞれについて `ok` を1行出力し、期待値と違う値があればその時点で失敗します。
-
-```sh
-mkdir -p testdata/generated
-rm -f testdata/generated/qenome-fixture.db
-sqlite3 testdata/generated/qenome-fixture.db ".read testdata/schema.sql"
-sqlite3 testdata/generated/qenome-fixture.db ".read testdata/seed.sql"
-sqlite3 testdata/generated/qenome-fixture.db ".read testdata/verify.sql"
-```
-
-Qenome をビルドします。
-
-```sh
-zig build
-```
-
-7つの例は `zig-out/bin/qenome` を実行します。各コマンドの末尾には、その例が返すべき結果（Summary の `result` と `verdict`、batch では `recommended`、終了コード）を書いてあります。`python3 scripts/check_all.py` と CI の quality ワークフローは、これらの行を書いてあるとおりに実行するので、README とプログラムのずれは見つかります。`--runs 40` は、負荷のあるマシンでも中央値を安定させるための指定です（既定は `10`）。
-
-全走査をなくすインデックス: 候補のインデックスで `SCAN events` が `SEARCH events USING INDEX ix_events_customer_id (customer_id=?)` に変わり、読んだ行数が 200,000 から 101 に減り、両方のコピーが同じ100行を返します。
-
-```sh
-./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/improved.sql testdata/cases/improved.index.sql --bind 1:int:1234 --runs 40  # expect: result=match verdict=improved exit=0
-```
-
-自分で選んだデータでインデックスを試す: `--seed-data testdata/seed.json` は、元のデータベースを変えずに、サンドボックスのコピーの `events` を 50,000 行の決まったデータで置き換えます。同じクエリはその中の `1234` の行を見つけ、判定は `improved` のままです。「サンドボックス用のデータを作る」を参照してください。
-
-```sh
-./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/improved.sql testdata/cases/improved.index.sql --bind 1:int:1234 --seed-data testdata/seed.json --runs 0  # expect: result=match verdict=improved exit=0
-```
-
-効果のないインデックス: SELECT が列を `lower()` で包むため、SQLite は `status` のインデックスを使えません。計画・読んだ行数・書いた行数は変わりません。
-
-```sh
-./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/no-effect.sql testdata/cases/no-effect.index.sql --bind 1:text:ok --runs 40  # expect: result=match verdict=no-effect exit=0
-```
-
-新しいインデックスで書くコストが増える INSERT: `--write` は `INSERT`・`UPDATE`・`DELETE`・`REPLACE` を1本、サンドボックスの両方のコピーで、ロールバックするトランザクションの中で比べます。この INSERT は `customer_id` のインデックスを使いませんが、行を追加するたびにインデックスも更新するため、書いた行数は 1 から 2 に増えます。両方のコピーが同じ1行を変更するので、判定は `needs-check`、終了コードは 0 のままです。元のデータベースは変更しません。
-
-```sh
-./zig-out/bin/qenome testdata/generated/qenome-fixture.db --write testdata/cases/write.sql --index-sql testdata/cases/improved.index.sql --bind 1:int:1234 --runs 0  # expect: result=match verdict=needs-check exit=0
-```
-
-比較できない SELECT: `ORDER BY random()` は実行するたびに別の行を選ぶため、Qenome は行が一致したと報告せず、比較できないと報告します。この例では SELECT を計測も判定もしません。ここでの終了コード 4 は期待どおりの結果で、エラーではありません。
-
-```sh
-./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/incomparable.sql testdata/cases/incomparable.index.sql  # expect: result=incomparable verdict=not-judged exit=4
-```
-
-batch は、複数のクエリと複数の候補のインデックスを1回の実行で比べます。`testdata/batch.json` は改善する例と効果のない例を、2つの候補のインデックスそれぞれと組み合わせます。Qenome は組ごとに1行を出し、不一致がなく改善した候補をおすすめするので、`cases/improved.index.sql` だけが資格を得ます。「まとめて比べる（--batch）」を参照してください。
-
-```sh
-./zig-out/bin/qenome testdata/generated/qenome-fixture.db --batch testdata/batch.json  # expect: recommended=cases/improved.index.sql exit=0
-```
-
-提案されたインデックス（インデックスのファイルなし）: `--suggest` は SQLite に、その SELECT に効くインデックスを尋ね、Qenome がその提案を同じ batch の仕組みで比べます。提案には `suggested:1` というラベルが付き、効けばおすすめになります。「候補のインデックスを提案させる（--suggest）」を参照してください。
-
-```sh
-./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/improved.sql --bind 1:int:1234 --suggest  # expect: recommended=suggested:1 exit=0
-```
-
-データベースの作成はおよそ1秒、計測する例はそれぞれ数秒で終わります。fixture・クエリ・期待する計画と件数は `testdata/README.md` に記録しています。
 
 ## 使い方
 
@@ -417,7 +361,7 @@ qenome --d1 DEMO_DB select.sql index.sql --runs 40
 
 1行目が `.wrangler/` にローカルのデータベースを作り、20万行を投入します。2行目が `select.sql` と `index.sql` の候補のインデックスを比較し、`result rows` が `match`、`verdict` が `improved`、実行計画が `SCAN events` から `SEARCH events USING INDEX ix_events_customer_id (customer_id=?)` に変わり、D1 ブロックに SQLite の版と注意が出ます。終了コードは 0 です。
 
-`schema.sql` は `events` を作り直すので、いつでも再実行できます。デプロイはしません。`qenome` は PATH 上のものを使う想定で、[ソースからビルド](#ソースからビルド) の直後は `./zig-out/bin/qenome` です。`4.152.0` はサンプルを確認した wrangler の版です。
+`schema.sql` は `events` を作り直すので、いつでも再実行できます。デプロイはしません。`qenome` は PATH 上のものを使う想定で、[Build from source](CONTRIBUTING.md#build-from-source) の直後は `./zig-out/bin/qenome` です。`4.152.0` はサンプルを確認した wrangler の版です。
 
 ### まとめて比べる（--batch）
 
@@ -464,7 +408,7 @@ Qenome はデータベースを1回コピーし、何かを実行する前に全
 
 報告を書けた場合、終了コードは、結果の不一致 `3`、インデックスまたはマイグレーションの作成失敗 `1`、候補の時間切れ `124`、比較不能 `4`、`--migration` の退行 `6`、`0` のうち一番重いものです。後片付けの失敗は `0` のときだけ `5` に置き換えます。そのため batch は、報告を書きながら `1`・`6`・`124` で終わることがあります。どれかは stdout で見分けます。
 
-human 出力は候補の表、`Recommendation:`、クエリと候補の判定表を出します。おすすめは、不一致・比較不能・`needs-check`（`--migration` では `needs_check` が `regressed` のクエリを数える）・時間切れがなく、改善が1件以上ある候補のうち、改善したクエリが最も多いものです。variant だけで計測した `not-judged` のクエリは、それだけではおすすめの条件を外しません。`Results` 表では、そのクエリの `result` 列が `variant-only`、`verdict` 列が `not-judged` になり、比較オブジェクト（JSON）の `result` は `baseline` を `null` にしたまま `incomparable` です。同じなら `bind_dependent_partial_index` 警告のない候補が先、次に容量の増分が小さい順、次に入力順（マニフェストの候補の後ろに提案）です。警告は判定・batch の件数・終了コードを変えません。human は判定表の後に `Warnings` の節を出し、比較ごとの警告を `<クエリ> -> <候補>: <code>: <message>` の形で1行ずつ示します。パスとインデックス名はほかの警告と同じ規則で制御文字を可視化し、パスは上で説明した短い表示を使います。`--format json` では [docs/json.md](docs/json.md) に書いた `batch_schema_version` 1 のオブジェクトを出します。
+human 出力は候補の表、`Recommendation:`、クエリと候補の判定表を出します。おすすめは、不一致・比較不能・`needs-check`（`--migration` では `needs_check` が `regressed` のクエリを数える）・時間切れがなく、改善が1件以上ある候補のうち、改善したクエリが最も多いものです。variant だけで計測した `not-judged` のクエリは、それだけではおすすめの条件を外しません。`Results` 表では、そのクエリの `result` 列が `variant-only`、`verdict` 列が `not-judged` になり、比較オブジェクト（JSON）の `result` は `baseline` を `null` にしたまま `incomparable` です。同じなら `bind_dependent_partial_index` 警告のない候補が先、次に容量の増分が小さい順、次に入力順（マニフェストの候補の後ろに提案）です。警告は判定・batch の件数・終了コードを変えません。human は判定表の後に `Warnings` の節を出し、候補ごとの警告を `<候補>: <code>: <message>` の形で（`no_analyze_stats` と `data_too_small`）、比較ごとの警告を `<クエリ> -> <候補>: <code>: <message>` の形で（`bind_dependent_partial_index`）1行ずつ示します。パスとインデックス名はほかの警告と同じ規則で制御文字を可視化し、パスは上で説明した短い表示を使います。batch のトップレベルの `warnings`（`--suggest` の警告と `unapplied_migrations`）はそのあとに `warning: <code>: <message>` の形で出します。`--format json` では [docs/json.md](docs/json.md) に書いた `batch_schema_version` 1 のオブジェクトを出します。
 
 インデックスの作成・SELECT 1回・診断文1回は、それぞれ `--timeout-ms` の制限時間を持ちます。batch は全体で、データベースのコピー1回と、候補ループの前に全クエリの baseline SELECT を1回ずつ実行する分に加えて、候補ごとにインデックスの作成1回とクエリごとの SELECT 2回、さらに診断文（ANALYZE とサイズの警告に最大3つ、パラメータがあるクエリでは bind 依存の部分インデックス診断として計画1回・カタログ1回・使用インデックスごとに最大2文（テーブル名の取得と `PRAGMA index_list`））それぞれの制限時間までかかることがあります。`--show-binds` と `--show-rows` は各比較オブジェクトに適用します。
 
@@ -576,7 +520,7 @@ SELECT ファイルを1本だけ渡したときは、その SELECT を batch の
 
 Qenome は baseline のコピーに2つ目の読み取り専用接続を開き、expert のサンプリングを `0` に設定します。そのため expert が利用者のデータベースから読むのはスキーマだけです。検査済みの全 SELECT を expert に渡します。expert を動かす前に、`sqlite_schema` の各行を検査します。各行は1文で、`CREATE TABLE`、`CREATE INDEX`、`CREATE UNIQUE INDEX`、`CREATE VIEW`、`CREATE TRIGGER`、`CREATE VIRTUAL TABLE` のいずれかで始まり、`expert` 仮想テーブルを使わないこと。これを満たさないデータベースは `suggest_schema_rejected`（終了コード `1`、stdout 空）で拒否し、マニフェストに候補があっても続けません。expert を動かしている間は、それが開く接続に一時的なガードを付けます。`ATTACH` と `DETACH` を拒否し、`index_list` と `index_xinfo` の PRAGMA だけを許し、接続できるデータベース数の上限を `0` にします。expert のオブジェクトを作ったあと、expert は自分の解析用コピーに独自の authorizer を設定しますが、接続できるデータベース数の上限はそこでも有効です。Qenome は expert を破棄したあとにガードを外します。ガードを設定できなければ、expert を呼ばずに止まります。これらで、細工されたスキーマがほかのデータベースファイルを作成・変更するのを防ぎます。レポートの `CREATE INDEX` は SQLite 自身の文の解析器で切り出します（引用符の中の `;` では切りません）。提案はマニフェストの候補と同じ検査を通し、落ちたものは `suggestion_rejected` の warning を付けて捨てます。ラベルは `suggested:1`、`suggested:2`… で、比べる提案は最大20件、マニフェストの候補と合わせて最大100件です。
 
-出力は batch の報告です。`summary` の各候補に `source`（`manifest` / `suggested`）と `index_sql_text` が付き、トップレベルの `warnings` に、捨てたもの・できなかったことが入ります。比較単位の警告（`bind_dependent_partial_index` を含む）は各 `results[].comparison.warnings` に入り、トップレベルの `warnings` は `--suggest` 用のままです。human は比較単位の警告を、クエリと候補を添えて `Warnings` の節に出します。
+出力は batch の報告です。`summary` の各候補に `source`（`manifest` / `suggested`）と `index_sql_text` が付き、トップレベルの `warnings` に、捨てたもの・できなかったことが入ります。比較単位の警告（`bind_dependent_partial_index` を含む）は各 `results[].comparison.warnings` に入り、トップレベルの `warnings` は `--suggest` 用のままです。human は候補単位の警告を候補名と、比較単位の警告をクエリと候補を添えて `Warnings` の節に出します。
 
 | warning の `code` | 意味 |
 | --- | --- |
@@ -596,7 +540,7 @@ Qenome は baseline のコピーに2つ目の読み取り専用接続を開き�
 
 human は判断に必要なものを出します。
 
-- Summary: 結果の行が一致したか、コピーごとの読んだ行数と書いた行数、判定とその理由、計画が変わったか、`--seed-data` のときは `seed data` と `seed` の行、ペアのラウンドから決めた時間の向き（判定できないときは向きを付けない中央値の比）、中央値が同じ向きのときの変化の大きさ（`230x faster`）、容量の増分、デバッグビルドのときはその注意。`--write` では `write` のファイル、`returning rows`、`rows changed`、`total changed`、`write runs` を足し、左右比較表にも `rows changed` と `total changed` を足す
+- Summary: 結果の行が一致したか、コピーごとの読んだ行数と書いた行数、判定とその理由、計画が変わったか、`--seed-data` のときは `seed data` と `seed` の行、ペアのラウンドから決めた時間の向き（判定できないときは向きを付けない中央値の比）、計時したときは A/A ノイズ幅、中央値が同じ向きのときの変化の大きさ（`230x faster`）、容量の増分、デバッグビルドのときはその注意。`--write` では `write` のファイル、`returning rows`、`rows changed`、`total changed`、`write runs` を足し、左右比較表にも `rows changed` と `total changed` を足す
 - baseline と variant の左右比較表: 読んだ行数、書いた行数、結果の行数、フルスキャン行数、VMステップ数、0 でないときはソート回数と autoindex 行数、計測したときは p25 / p75 の時間、データベースファイルのバイト数
 - 両方のコピーの実行計画。`kind` / `covering` / `automatic` は SQLite の文言から読んだヒント
 - 助言の警告があるときは `Warnings` の節に `warning: <code>: <message>` の行
@@ -605,7 +549,7 @@ human は判断に必要なものを出します。
 
 行が一致しない・比較できない・行の順序が変わったときは、説明と片方だけの件数を足します。例の行は `--show-rows` のときだけ出し、隠しているときはそのフラグで再実行するよう案内します。`--show-binds` を付けるとバインド値も出します。
 
-入力パスのうち `--seed-data` 以外、SQLite と Zig の版、ビルド種別、OS とアーキテクチャ、作業ディレクトリ、計時条件は kv と json にだけ出ます。時間の根拠（`effect`、`median_difference_ns`、`noise_band`、`confidence_interval`）も kv と json にだけ出ます。`--d1` のときは、human も上記の D1 ブロックを出します。
+入力パスのうち `--seed-data` 以外、SQLite と Zig の版、ビルド種別、OS とアーキテクチャ、作業ディレクトリ、計時条件は kv と json にだけ出ます。時間の根拠のうち `effect`、`median_difference_ns`、`confidence_interval` も kv と json にだけ出ます。human の Summary は時間の中央値、向き、A/A ノイズ幅を出します。`--d1` のときは、human も上記の D1 ブロックを出します。
 
 ### kv
 
@@ -704,17 +648,9 @@ fi
 - 正常・失敗・中断のどの経路でも、接続と一時ファイルを後片付けする
 - D1 のデータベースファイルを推測しない。バインディングがちょうど1つのファイルに決まらないときは止まる
 
-## 開発時の検査
+## コントリビュート
 
-```sh
-python3 scripts/check_all.py
-```
-
-CI の quality ワークフローも同じスクリプトを呼びます。Zig の版の照合、`zig fmt --check .`、ビルド、テスト、アーキテクチャとコメントの検査を順に実行し、最初に失敗した段階で止まります。最後の2段階は[クイックスタート](#クイックスタート)の検査です。`scripts/check_quick_start.py` は英語版 `README.md` のコマンドを書いてあるとおりに実行して各結果を `# expect:` と照合し、`README.ja.md`（このファイル）が同じコマンドを持っていることも確かめます。クイックスタートに例を足すときは、この印も付けてください。CI がその例も検査します。`improved`・`no-effect`・`incomparable` の例は、それぞれ1つ以上残っている必要があります。クイックスタートの2段階は Linux と macOS で実行します。Windows では skip を表示し、ほかの段階はそのまま実行します。
-
-コードにコメントは書きません。説明は README に書き、ルールの正本は検査スクリプトです。
-
-`docs/demo-suggest.gif`・`docs/demo-candidates.gif`・`docs/demo-migration.gif` は、`zig build -Doptimize=ReleaseFast` のあと、リポジトリのルートで `vhs docs/demo-suggest.tape`・`vhs docs/demo-candidates.tape`・`vhs docs/demo-migration.tape` を実行して撮り直します。台本は `examples/d1-toml` と `docs/demo` を一時ディレクトリへコピーし、サンプルの投入中はターミナルのエコーを止めるので、録画に残るのは Qenome のコマンドと出力だけです。
+ソースからのクイックスタート、開発時の検査、golden 出力の更新方法は [CONTRIBUTING.md](CONTRIBUTING.md) にあります。
 
 ## ライセンス
 
@@ -731,11 +667,11 @@ Qenome は Apache License 2.0 で公開しています。全文は [LICENSE](LIC
 
 `median_difference_ns` はラウンドごとの variant−baseline の差の中央値です。2つの中央値の差ではありません。既存 ratio は variant中央値/baseline中央値のままです。`confidence_interval` は独立同分布の連続な差を仮定する二項分布の順位区間で、将来の単発時間の範囲ではありません。要求水準 `level` は0.95、保守的な理論被覆率が `coverage`。再標本化はしません。式と根拠は [英語版](README.md#timing-evidence-and-advisory-warnings) を参照してください。
 
-6回未満は `too-few-rounds`（5回の最大有限区間は93.75%、6回は96.875%）、計測時間に0があれば `zero-duration`、差が全同値なら時計分解能を精度と取り違えないよう `no-observed-variation` として区間を null にし、effect は `insufficient-samples` です。区間が0を含むか、差の中央値の絶対値が A/A幅以下なら `no-difference`。それ以外が `faster` / `slower` です。これは補助説明で行数判定・終了コードには影響しません。A/Aを先に測る順序、キャッシュ、負荷のドリフト、時間依存、少数標本があるため、実機や本番で95%を厳密保証するものではありません。human は時間の中央値と、ペアのラウンドから決めた向きを出し、中央値が同じ向きのときだけ変化の大きさを添えます。ペアのラウンドで向きを判定できないときは、向きを付けずに中央値の比を出し、判定できないと明記します。上記の根拠は kv と json に出します。
+6回未満は `too-few-rounds`（5回の最大有限区間は93.75%、6回は96.875%）、計測時間に0があれば `zero-duration`、差が全同値なら時計分解能を精度と取り違えないよう `no-observed-variation` として区間を null にし、effect は `insufficient-samples` です。区間が0を含むか、差の中央値の絶対値が A/A幅以下なら `no-difference`。それ以外が `faster` / `slower` です。これは補助説明で行数判定・終了コードには影響しません。A/Aを先に測る順序、キャッシュ、負荷のドリフト、時間依存、少数標本があるため、実機や本番で95%を厳密保証するものではありません。human は時間の中央値と、ペアのラウンドから決めた向き、A/A ノイズ幅を出し、中央値が同じ向きのときだけ変化の大きさを添えます。ペアのラウンドで向きを判定できないときは、向きを付けずに中央値の比を出し、判定できないと明記します。上記の時間の根拠のうち `effect`・`median_difference_ns`・`confidence_interval` は kv と json に出します。
 
 `warnings` は非計時・比較不能でも配列として出し、human/kvにも同じcode/messageを表示します。`no_analyze_stats` は候補のインデックスの対象テーブルに、baseline上で空でない sqlite_stat1 エントリがない場合。別表の統計では解消しません。鮮度・完全性は確認せず、部分インデックスの統計だけでも存在扱いです。`data_too_small` はその表の `SELECT 1 ... LIMIT 1000` が1000件未満の場合。1000件到達は「1000件以上」であり、正確な件数ではありません。結果件数・読取行数・統計推定値は使いません。1000は代表性を保証しない目安です。
 
-`bind_dependent_partial_index` は、variant の計画が、バインド値が部分インデックスの `WHERE` 句を満たすためにその部分インデックスを使っている場合に、そのインデックス名を出します。Qenome は variant の計画をバインド値ありで読み、次に全パラメータを `NULL` にして同じ SELECT の計画を読みます。部分インデックスが前者にあって後者にないとき、その名前を出します。`NULL` では部分インデックスの `WHERE` 句を満たすことを示せないため、この差は「バインド値のおかげで使えている」ことを意味します。別の値やパラメータの渡し方では使われなくなり、`improved` はその実行の値でだけ成り立ちます。variant の計画だけで判定できるため、variant だけで計測する `--migration` のクエリでも出します。ただし best-effort です。追加の計画やインデックスのカタログを読めないとき（時間切れ・中断を含む）は警告を出さずに比較を続け、判定・終了コード・batch の件数は変えません。batch では `results[].comparison.warnings` に入り、human は `Warnings` の節にクエリと候補を添えて出します。
+`bind_dependent_partial_index` は、variant の計画が、バインド値が部分インデックスの `WHERE` 句を満たすためにその部分インデックスを使っている場合に、そのインデックス名を出します。Qenome は variant の計画をバインド値ありで読み、次に全パラメータを `NULL` にして同じ SELECT の計画を読みます。部分インデックスが前者にあって後者にないとき、その名前を出します。`NULL` では部分インデックスの `WHERE` 句を満たすことを示せないため、この差は「バインド値のおかげで使えている」ことを意味します。別の値やパラメータの渡し方では使われなくなり、`improved` はその実行の値でだけ成り立ちます。variant の計画だけで判定できるため、variant だけで計測する `--migration` のクエリでも出します。ただし best-effort です。追加の計画やインデックスのカタログを読めないとき（時間切れ・中断を含む）は警告を出さずに比較を続け、判定・終了コード・batch の件数は変えません。batch では `results[].comparison.warnings` に入り、human は `Warnings` の節にクエリと候補を添えて出します。`no_analyze_stats` と `data_too_small` も、batch と `--suggest` の human では候補ごとに `Warnings` の節へ出ます。
 
 診断は計時後にコピーだけを読み、ANALYZE/PRAGMA optimizeを実行しません。追加実行・診断を既存rows_read/rows_writtenへ混入させません。警告は判定を止めず終了コードも変えません。`no_analyze_stats` と `data_too_small` の診断の失敗・時間上限・中断は既存のエラー処理に従います。`bind_dependent_partial_index` は best-effort で、追加の読み取りに失敗したら警告を出さずに続けます。
 

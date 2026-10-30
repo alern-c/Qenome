@@ -77,6 +77,11 @@ def test_render(version):
     expect("render keeps the source placeholder", after == before, after.get("version"))
     expect("render writes the zon version", rendered["version"] == version, rendered["version"])
     expect("render drops private", "private" not in rendered, rendered.get("private"))
+    expect(
+        "render keeps the keywords",
+        rendered.get("keywords") == before.get("keywords") and bool(before.get("keywords")),
+        rendered.get("keywords"),
+    )
     optional = rendered["optionalDependencies"]
     expect(
         "render sets every optional dependency to the zon version",
@@ -113,6 +118,14 @@ def test_stage(version):
         launcher = stage_npm.load_json(os.path.join(dest, "qenome", "package.json"))
         expect("staged launcher version", launcher["version"] == version, launcher["version"])
         expect("staged launcher is publishable", "private" not in launcher, launcher.get("private"))
+        source_launcher = stage_npm.load_json(
+            stage_npm.source_manifest_path(ROOT, stage_npm.MAIN_DIR)
+        )
+        expect(
+            "staged launcher keeps the keywords",
+            launcher.get("keywords") == source_launcher.get("keywords"),
+            launcher.get("keywords"),
+        )
         mode = os.stat(os.path.join(dest, "qenome", "bin", "qenome.js")).st_mode
         expect("staged launcher is executable", mode & stat.S_IXUSR != 0, oct(mode))
         module = os.path.join(dest, "qenome", "lib", "d1.mjs")
@@ -138,6 +151,15 @@ def test_stage(version):
                 "staged " + platform["dir"] + " version",
                 manifest["version"] == version and "private" not in manifest,
                 manifest.get("version"),
+            )
+            source_platform = stage_npm.load_json(
+                stage_npm.source_manifest_path(ROOT, platform["dir"])
+            )
+            expect(
+                "staged " + platform["dir"] + " keywords",
+                manifest.get("keywords") == source_platform.get("keywords")
+                and bool(source_platform.get("keywords")),
+                manifest.get("keywords"),
             )
             expect(
                 "staged " + platform["dir"] + " binary",

@@ -110,6 +110,13 @@ def check_common(directory, manifest):
         raise ValueError(directory + " files must include bin, LICENSE, NOTICE, and README.md")
     if not manifest.get("description"):
         raise ValueError(directory + " needs a description")
+    keywords = manifest.get("keywords")
+    if not isinstance(keywords, list) or not keywords:
+        raise ValueError(directory + " keywords must be a non-empty list")
+    if not all(isinstance(keyword, str) and keyword for keyword in keywords):
+        raise ValueError(directory + " keywords must be non-empty strings")
+    if len(set(keywords)) != len(keywords):
+        raise ValueError(directory + " keywords must not repeat")
 
 
 def check_launcher(root, expected):
@@ -353,7 +360,13 @@ def check_tarball(path, manifest):
                 raise ValueError(path + " is missing " + name)
         if archive.getmember(binary).mode & 0o111 == 0:
             raise ValueError(binary + " is not executable in " + path)
-        packed = json.load(archive.extractfile("package/package.json"))
+        packed_source = archive.extractfile("package/package.json")
+        if packed_source is None:
+            raise ValueError(path + " has no package/package.json")
+        try:
+            packed = json.load(packed_source)
+        except (json.JSONDecodeError, UnicodeDecodeError) as error:
+            raise ValueError(path + " package.json is not valid JSON: " + str(error)) from None
     if packed.get("name") != manifest["name"] or packed.get("version") != manifest["version"]:
         raise ValueError("packed manifest does not match " + manifest["name"])
     if "private" in packed:

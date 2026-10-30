@@ -1,0 +1,28 @@
+Summary
+  result rows   match (the same rows on both copies)
+  rows read     200,000 -> 101
+  rows written  0 -> 0
+  verdict       improved: the rows match, and the variant reads fewer rows
+  query plan    changed on the variant
+  time          not measured (0 rounds; reference only)
+  db size       +2,170,880 bytes (+2.07 MiB; the whole database file, not the
+                index alone)
+
+Baseline vs variant           baseline         variant          change
+  rows read                    200,000             101        -199,899
+  rows written                       0               0            same
+  result rows                      100             100            same
+  fullscan-steps               199,999               0        -199,999
+  vm-steps                     600,407             710        -599,697
+  db file bytes              5,087,232       7,258,112      +2,170,880
+
+Query plan
+  baseline (candidate index not applied)
+    SCAN events  [scan]
+  variant (candidate index applied)
+    SEARCH events USING INDEX ix_events_customer_id (customer_id=?)  [search]
+
+Warnings
+  warning: no_analyze_stats: The candidate index table has no non-empty
+    sqlite_stat1 entry. Test an ANALYZE'd copy with representative data; this
+    check does not run ANALYZE.

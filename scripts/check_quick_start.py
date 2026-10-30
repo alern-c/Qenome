@@ -6,9 +6,10 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_ROOT = os.path.dirname(HERE)
 
-SOURCE = "README.md"
-TRANSLATION = "README.ja.md"
-HEADINGS = {SOURCE: "Quick start", TRANSLATION: "クイックスタート"}
+SOURCE = "CONTRIBUTING.md"
+SECTION = "Quick start"
+README_FILES = ("README.md", "README.ja.md")
+LINK = "CONTRIBUTING.md"
 EXPECT_KEYS = ("result", "verdict", "exit", "recommended")
 WINDOWS_SKIP = "skipped on Windows: the Quick start commands are for Linux and macOS"
 
@@ -164,10 +165,10 @@ def parse_steps(name, lines, violations):
     return steps
 
 
-def steps_for(root, name, violations):
-    text = read_text(root, name)
-    lines = section_lines(name, text, HEADINGS[name])
-    return parse_steps(name, lines, violations)
+def steps_for(root, violations):
+    text = read_text(root, SOURCE)
+    lines = section_lines(SOURCE, text, SECTION)
+    return parse_steps(SOURCE, lines, violations)
 
 
 def summary_lines(stdout):
@@ -244,7 +245,7 @@ def execute(root, step, violations):
             problems.append('the output has no "Recommendation:" line')
         elif step.expected["recommended"] != recommendation:
             problems.append(
-                "the recommendation differs: the README expects \""
+                "the recommendation differs: the " + SOURCE + " expects \""
                 + str(step.expected["recommended"])
                 + '", the command reported "'
                 + recommendation
@@ -252,7 +253,7 @@ def execute(root, step, violations):
             )
         if done.returncode != step.expected["exit"]:
             problems.append(
-                "the exit status differs: the README expects "
+                "the exit status differs: the " + SOURCE + " expects "
                 + str(step.expected["exit"])
                 + ", the command exited "
                 + str(done.returncode)
@@ -273,7 +274,7 @@ def execute(root, step, violations):
             problems.append(
                 "the "
                 + key
-                + ' differs: the README expects "'
+                + " differs: the " + SOURCE + ' expects "'
                 + str(step.expected[key])
                 + '", the command reported "'
                 + observed
@@ -281,7 +282,7 @@ def execute(root, step, violations):
             )
     if done.returncode != step.expected["exit"]:
         problems.append(
-            "the exit status differs: the README expects "
+            "the exit status differs: the " + SOURCE + " expects "
             + str(step.expected["exit"])
             + ", the command exited "
             + str(done.returncode)
@@ -307,57 +308,19 @@ def describe_expected(expected):
     )
 
 
-def compare(english, japanese, violations):
-    if len(english) != len(japanese):
-        violations.append(
-            TRANSLATION
-            + ": the Quick start has "
-            + str(len(japanese))
-            + " command(s), but "
-            + SOURCE
-            + " has "
-            + str(len(english))
-        )
-        return
-    for left, right in zip(english, japanese, strict=True):
-        if left.command != right.command:
-            violations.append(
-                right.label()
-                + ": the command differs from "
-                + left.label()
-                + "\n    "
-                + SOURCE
-                + ": "
-                + left.command
-                + "\n    "
-                + TRANSLATION
-                + ": "
-                + right.command
-            )
-            continue
-        if left.expected != right.expected:
-            violations.append(
-                right.label()
-                + ": the expect marker differs from "
-                + left.label()
-                + "\n    "
-                + SOURCE
-                + ": "
-                + describe_expected(left.expected)
-                + "\n    "
-                + TRANSLATION
-                + ": "
-                + describe_expected(right.expected)
-            )
+def readme_links(root, violations):
+    for name in README_FILES:
+        text = read_text(root, name)
+        if LINK not in text:
+            violations.append(name + ": the README must link to " + LINK)
 
 
 def run(root):
     violations = []
-    english = steps_for(root, SOURCE, violations)
-    japanese = steps_for(root, TRANSLATION, violations)
-    compare(english, japanese, violations)
+    readme_links(root, violations)
+    steps = steps_for(root, violations)
     checked = 0
-    for step in english:
+    for step in steps:
         ok, result, verdict = execute(root, step, violations)
         if step.expected is None:
             if not ok:
@@ -370,7 +333,7 @@ def run(root):
             print(step.label() + ": recommended=" + str(result), flush=True)
         else:
             print(step.label() + ": result=" + str(result) + " verdict=" + str(verdict), flush=True)
-    declared = [step.expected for step in english if step.expected is not None]
+    declared = [step.expected for step in steps if step.expected is not None]
     if not declared:
         violations.append(
             SOURCE + ': the Quick start has no command with an "# expect:" marker to check'
@@ -425,9 +388,9 @@ def main(argv):
     print(
         "quick-start: ok ("
         + str(checked)
-        + " commands checked, "
-        + TRANSLATION
-        + " has the same commands, root="
+        + " commands checked in "
+        + SOURCE
+        + ", root="
         + root
         + ")"
     )

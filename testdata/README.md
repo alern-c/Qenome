@@ -11,7 +11,7 @@
 | `schema.sql` | `events` テーブル（インデックスは作らない） |
 | `seed.sql` | 20万行の決定論的な投入（`random()` を使わない） |
 | `verify.sql` | 不変条件の検査（`sqlite3` CLI 専用） |
-| `seed.json` | `--seed-data` 用の50,000行のダミーデータ指定（Quick start で使う。fixture DB は変更しない） |
+| `seed.json` | `--seed-data` 用の50,000行のダミーデータ指定（CONTRIBUTING.md の Quick start で使う。fixture DB は変更しない） |
 | `cases/improved.sql` / `cases/improved.index.sql` | 改善する例の SELECT と候補DDL |
 | `cases/write.sql` | `--write` の例の INSERT（`cases/improved.index.sql` を候補に使う） |
 | `cases/no-effect.sql` / `cases/no-effect.index.sql` | 効果のない例の SELECT と候補DDL |
@@ -38,7 +38,7 @@ sqlite3 testdata/generated/qenome-fixture.db ".read testdata/verify.sql"
 
 `verify.sql` の検査項目: 行数、`id` の最小・最大・重複なし、`customer_id` の非NULL件数・NULL件数・種類数・最小・最大・範囲外0件、`status` 3値の件数と未知値0件、`note` のNULL件数・非NULL件数、ユーザー定義インデックス0件。
 
-`seed.json` は Quick start の `--seed-data` の例で使う。サンドボックスのコピーにある `events` を、`id` と `customer_id` が 1..50,000 の連番、`status` が `ok` 50% / `failed` 50%、`note` が NULL の50,000行で置き換える。`fixture DB` は変更しない。
+`seed.json` は CONTRIBUTING.md の Quick start の `--seed-data` の例で使う。サンドボックスのコピーにある `events` を、`id` と `customer_id` が 1..50,000 の連番、`status` が `ok` 50% / `failed` 50%、`note` が NULL の50,000行で置き換える。`fixture DB` は変更しない。
 
 ## 基準版
 
@@ -83,7 +83,7 @@ DBサイズは版によって変わりうるため検査には含めず、参考
 | 比較できない理由 | `random()` が実行のたびに別の行を選ぶ（`src/db.zig` の `alwaysIncomparable`） |
 | 結果 | `result: incomparable`、終了コード 4、`verdict: not-judged`。SELECT は計測しない |
 
-この組は `README.md` / `README.ja.md` のクイックスタートで使う。候補DDL は比較の対象としては使われないため、改善する例と同じものを使っている。
+この組は CONTRIBUTING.md の Quick start で使う。候補DDL は比較の対象としては使われないため、改善する例と同じものを使っている。
 
 ### 書き込みの例
 
