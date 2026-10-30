@@ -17,12 +17,6 @@ pub const Token = struct {
     text: []const u8,
     start: usize,
     terminated: bool = true,
-
-    pub fn inner(self: Token) ?[]const u8 {
-        if (self.kind != .quoted and self.kind != .string) return null;
-        if (!self.terminated) return null;
-        return self.text[1 .. self.text.len - 1];
-    }
 };
 
 pub const Word = struct {
@@ -103,22 +97,6 @@ pub const Lexer = struct {
         return .{ .kind = .punctuator, .text = text[at..][0..1], .start = at };
     }
 
-    pub fn nextCode(self: *Lexer) ?Token {
-        while (self.next()) |token| {
-            if (token.kind != .comment) return token;
-        }
-        return null;
-    }
-
-    pub fn skipTrivia(self: *Lexer) void {
-        while (self.next()) |token| {
-            if (token.kind != .comment) {
-                self.index = token.start;
-                return;
-            }
-        }
-    }
-
     fn skipSpace(self: *Lexer) void {
         const text = self.text;
         while (self.index < text.len and isSpace(text[self.index])) {
@@ -152,11 +130,11 @@ fn isWordStart(byte: u8) bool {
     return std.ascii.isAlphabetic(byte) or byte == '_' or byte >= 0x80;
 }
 
-fn isWordByte(byte: u8) bool {
+pub fn isWordByte(byte: u8) bool {
     return isWordStart(byte) or std.ascii.isDigit(byte) or byte == '$';
 }
 
-fn wordAt(text: []const u8, start: usize) Word {
+pub fn wordAt(text: []const u8, start: usize) Word {
     const end = wordEnd(text, start, true);
     return .{ .text = text[start..end], .end = end };
 }
@@ -171,13 +149,17 @@ fn wordContains(byte: u8, dollar_is_word: bool) bool {
     return isWordStart(byte) or std.ascii.isDigit(byte) or (dollar_is_word and byte == '$');
 }
 
+pub fn isQuote(byte: u8) bool {
+    return byte == '\'' or byte == '"' or byte == '`' or byte == '[';
+}
+
 pub fn keywordAt(text: []const u8, start: usize) Word {
     var end = start;
     while (end < text.len and (std.ascii.isAlphabetic(text[end]) or text[end] == '_')) : (end += 1) {}
     return .{ .text = text[start..end], .end = end };
 }
 
-fn quotedSpan(text: []const u8, start: usize) Span {
+pub fn quotedSpan(text: []const u8, start: usize) Span {
     const close: u8 = switch (text[start]) {
         '"' => '"',
         '\'' => '\'',
@@ -200,7 +182,7 @@ fn quotedSpan(text: []const u8, start: usize) Span {
     return .{ .end = text.len, .terminated = false };
 }
 
-fn commentSpan(text: []const u8, start: usize) Span {
+pub fn commentSpan(text: []const u8, start: usize) Span {
     if (start + 1 >= text.len) return .{ .end = start + 1 };
     const limit = text.len - 1;
     if (text[start] == '-' and text[start + 1] == '-') {
@@ -220,9 +202,13 @@ fn commentSpan(text: []const u8, start: usize) Span {
 }
 
 pub fn skipTrivia(text: []const u8, start: usize) usize {
+    return skipTriviaWith(text, start, .{});
+}
+
+pub fn skipTriviaWith(text: []const u8, start: usize, options: Options) usize {
     var index = start;
     while (index < text.len) {
-        if (isSpace(text[index])) {
+        if (isSpace(text[index]) and (options.vertical_tab_is_space or text[index] != 0x0b)) {
             index += 1;
             continue;
         }
@@ -481,6 +467,12 @@ test "a quoted span keeps a doubled quote inside" {
     try testing.expectEqual(@as(usize, 6), quotedSpan("'a''b'", 0).end);
     try testing.expectEqual(@as(usize, 3), quotedSpan("[a]]", 0).end);
     try testing.expect(!quotedSpan("'a''b", 0).terminated);
+}
+
+test "skipTrivia follows the caller's whitespace rule" {
+    try testing.expectEqual(@as(usize, 1), skipTriviaWith(" \x0by", 0, .{ .vertical_tab_is_space = false }));
+    try testing.expectEqual(@as(usize, 0), skipTriviaWith("\x0b y", 0, .{ .vertical_tab_is_space = false }));
+    try testing.expectEqual(@as(usize, 2), skipTriviaWith("\x0b y", 0, .{}));
 }
 
 test "skipTrivia crosses whitespace and comments" {

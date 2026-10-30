@@ -333,23 +333,40 @@ fn checkReason(handle: *db.Db, err: db.CheckError) []const u8 {
     };
 }
 
-fn nextWord(lexer: *sql_lexer.Lexer) ?[]const u8 {
-    while (lexer.nextCode()) |token| {
-        switch (token.kind) {
-            .word, .number, .parameter => return token.text,
-            else => {},
+fn nextWord(text: []const u8, at: *usize) ?[]const u8 {
+    while (true) {
+        at.* = sql_lexer.skipTriviaWith(text, at.*, preflight_options);
+        if (at.* >= text.len) return null;
+        const word = sql_lexer.wordAt(text, at.*);
+        if (word.end != at.*) {
+            at.* = word.end;
+            return word.text;
         }
+        if (sql_lexer.isQuote(text[at.*])) {
+            at.* = sql_lexer.quotedSpan(text, at.*).end;
+            continue;
+        }
+        at.* += 1;
     }
-    return null;
 }
 
-fn nextIdentifier(lexer: *sql_lexer.Lexer) ?[]const u8 {
-    const token = lexer.nextCode() orelse return null;
-    return switch (token.kind) {
-        .word, .number, .parameter => token.text,
-        .string, .quoted => token.inner(),
-        else => null,
-    };
+fn nextIdentifier(text: []const u8, at: *usize) ?[]const u8 {
+    at.* = sql_lexer.skipTriviaWith(text, at.*, preflight_options);
+    if (at.* >= text.len) return null;
+    if (sql_lexer.isQuote(text[at.*])) {
+        const span = sql_lexer.quotedSpan(text, at.*);
+        if (!span.terminated) {
+            at.* = span.end;
+            return null;
+        }
+        const inner = text[at.* + 1 .. span.end - 1];
+        at.* = span.end;
+        return inner;
+    }
+    const word = sql_lexer.wordAt(text, at.*);
+    if (word.end == at.*) return null;
+    at.* = word.end;
+    return word.text;
 }
 
 fn tailKind(text: []const u8) Tail {
@@ -364,42 +381,42 @@ fn tailKind(text: []const u8) Tail {
 const Tail = enum { trivia, statement, unterminated_comment };
 
 fn allowedCreate(statement: []const u8) bool {
-    var lexer: sql_lexer.Lexer = .initWith(statement, preflight_options);
-    const first = nextWord(&lexer) orelse return false;
+    var at: usize = 0;
+    const first = nextWord(statement, &at) orelse return false;
     if (!std.ascii.eqlIgnoreCase(first, "CREATE")) return false;
-    const second = nextWord(&lexer) orelse return false;
+    const second = nextWord(statement, &at) orelse return false;
     if (std.ascii.eqlIgnoreCase(second, "TABLE")) return true;
     if (std.ascii.eqlIgnoreCase(second, "INDEX")) return true;
     if (std.ascii.eqlIgnoreCase(second, "VIEW")) return true;
     if (std.ascii.eqlIgnoreCase(second, "TRIGGER")) return true;
-    if (std.ascii.eqlIgnoreCase(second, "UNIQUE")) return isWord(nextWord(&lexer), "INDEX");
-    if (std.ascii.eqlIgnoreCase(second, "VIRTUAL")) return isWord(nextWord(&lexer), "TABLE");
+    if (std.ascii.eqlIgnoreCase(second, "UNIQUE")) return isWord(nextWord(statement, &at), "INDEX");
+    if (std.ascii.eqlIgnoreCase(second, "VIRTUAL")) return isWord(nextWord(statement, &at), "TABLE");
     return false;
 }
 
 fn usesExpertModule(statement: []const u8) bool {
-    var lexer: sql_lexer.Lexer = .initWith(statement, preflight_options);
-    if (!isWord(nextWord(&lexer), "CREATE")) return false;
-    if (!isWord(nextWord(&lexer), "VIRTUAL")) return false;
-    if (!isWord(nextWord(&lexer), "TABLE")) return false;
+    var at: usize = 0;
+    if (!isWord(nextWord(statement, &at), "CREATE")) return false;
+    if (!isWord(nextWord(statement, &at), "VIRTUAL")) return false;
+    if (!isWord(nextWord(statement, &at), "TABLE")) return false;
 
-    const before_if = lexer;
-    if (isWord(nextWord(&lexer), "IF")) {
-        if (!isWord(nextWord(&lexer), "NOT")) return false;
-        if (!isWord(nextWord(&lexer), "EXISTS")) return false;
+    const before_if = at;
+    if (isWord(nextWord(statement, &at), "IF")) {
+        if (!isWord(nextWord(statement, &at), "NOT")) return false;
+        if (!isWord(nextWord(statement, &at), "EXISTS")) return false;
     } else {
-        lexer = before_if;
+        at = before_if;
     }
 
-    _ = nextIdentifier(&lexer) orelse return false;
-    lexer.skipTrivia();
-    if (lexer.index < lexer.text.len and lexer.text[lexer.index] == '.') {
-        lexer.index += 1;
-        _ = nextIdentifier(&lexer) orelse return false;
+    _ = nextIdentifier(statement, &at) orelse return false;
+    at = sql_lexer.skipTriviaWith(statement, at, preflight_options);
+    if (at < statement.len and statement[at] == '.') {
+        at += 1;
+        _ = nextIdentifier(statement, &at) orelse return false;
     }
 
-    if (!isWord(nextWord(&lexer), "USING")) return false;
-    const module = nextIdentifier(&lexer) orelse return false;
+    if (!isWord(nextWord(statement, &at), "USING")) return false;
+    const module = nextIdentifier(statement, &at) orelse return false;
     return std.ascii.eqlIgnoreCase(module, "expert");
 }
 
@@ -577,6 +594,8 @@ test "the preflight accepts the statements SQLite stores in the schema" {
         "CREATE\nTABLE\nt(a)",
         "/* lead */ CREATE TABLE t(a)",
         "CREATE TABLE \"CREATE\"(a)",
+        "\n]:CREATE:INDEX",
+        "@CREATE:-TABLE\x0b",
     };
     for (accepted) |sql| {
         try testing.expectEqual(@as(?[]const u8, null), try inspectSql(arena, sql));

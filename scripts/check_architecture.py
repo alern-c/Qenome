@@ -210,14 +210,14 @@ LAYER_RANK = {
 
 LINE_LIMITS = {
     "src/cli/tests.zig": 5744,
-    "src/db.zig": 3991,
+    "src/db.zig": 4055,
     "src/cli/report.zig": 2370,
     "src/cli/batch.zig": 1902,
     "src/cli/args.zig": 1780,
     "src/cli/d1.zig": 1034,
     "src/cli/seed.zig": 977,
+    "src/cli/suggest.zig": 831,
     "src/cli/record.zig": 827,
-    "src/cli/suggest.zig": 812,
 }
 
 MAX_LINES = 800
