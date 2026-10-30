@@ -24,6 +24,7 @@ pub const code = struct {
     pub const no_analyze_stats = "no_analyze_stats";
     pub const data_too_small = "data_too_small";
     pub const bind_dependent_partial_index = "bind_dependent_partial_index";
+    pub const unapplied_migrations = "unapplied_migrations";
     pub const suggest_query_skipped = "suggest_query_skipped";
     pub const suggestions_truncated = "suggestions_truncated";
     pub const suggestion_rejected = "suggestion_rejected";
@@ -39,6 +40,8 @@ pub const warning_messages = [_][]const u8{
 };
 
 pub const bind_dependent_partial_index_message = "The variant plan uses the partial index \"{s}\" only because the bound values satisfy its WHERE clause. A different bound value changes the plan, so test with the values you deploy.";
+
+pub const unapplied_migrations_message = "wrangler has not applied these migrations to the local D1 database for {s}: {s}. Run `npx wrangler d1 migrations apply {s} --local` and compare again; the schema under test is older than the migrations describe.";
 
 test "the warning codes pair with one message each" {
     try std.testing.expectEqual(warning_codes.len, warning_messages.len);

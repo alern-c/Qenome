@@ -334,7 +334,7 @@
       "required": ["code", "message"],
       "properties": {
         "code": {
-          "description": "no_analyze_stats, data_too_small, or bind_dependent_partial_index.",
+          "description": "no_analyze_stats, data_too_small, bind_dependent_partial_index, or unapplied_migrations.",
           "type": "string"
         },
         "message": { "type": "string" }

@@ -5,6 +5,7 @@ const contract = @import("../contract/values.zig");
 const db = @import("../db.zig");
 const result_rows = @import("../result.zig");
 const sqlite = @import("../sqlite.zig");
+const cli_d1_migrations = @import("../d1/migrations.zig");
 const cli_args = @import("args.zig");
 const cli_comparison = @import("comparison.zig");
 const cli_control = @import("control.zig");
@@ -13,6 +14,7 @@ const cli_pair = @import("pair.zig");
 const cli_query = @import("query.zig");
 const cli_report = @import("report.zig");
 const cli_suggest = @import("suggest.zig");
+const cli_warnings = @import("warnings.zig");
 const cli_workspace = @import("workspace.zig");
 
 const ExitCode = cli_control.ExitCode;
@@ -100,6 +102,7 @@ pub const Inputs = struct {
     timeout_ms: u64,
     show_binds: bool = false,
     show_rows: bool = false,
+    unapplied_migrations: ?cli_d1_migrations.Pending = null,
     format: cli_args.Format = .human,
     suggest: bool = false,
     manifest: bool = true,
@@ -457,6 +460,10 @@ pub fn run(
     }
 
     var suggest_warnings: std.ArrayList(cli_suggest.Warning) = .empty;
+    if (inputs.unapplied_migrations) |pending| {
+        const message = cli_warnings.unappliedMigrationsMessage(arena, pending) catch return outOfMemoryCode(stderr);
+        suggest_warnings.append(arena, .{ .code = contract.code.unapplied_migrations, .message = message }) catch return outOfMemoryCode(stderr);
+    }
     var suggested_rejected: usize = 0;
     if (inputs.suggest) {
         switch (suggestCandidates(arena, &baseline, inputs, loaded, &suggest_warnings, stderr)) {
@@ -1613,21 +1620,17 @@ fn writeBatchHuman(
         try stdout.writeByte('\n');
     }
 
-    var comparison_warnings_printed = false;
+    var comparisons: std.ArrayList(cli_warnings.Comparison) = .empty;
+    defer comparisons.deinit(allocator);
     for (results) |result| {
         const index_name = result.partial_index orelse continue;
-        if (!comparison_warnings_printed) {
-            try stdout.writeAll("\nWarnings\n");
-            comparison_warnings_printed = true;
-        }
-        const message = try cli_report.bindDependentPartialIndexMessage(allocator, index_name);
-        defer allocator.free(message);
-        try stdout.writeAll("  ");
-        try result_rows.writeEscapedText(stdout, displayNameOf(query_names, distinct_queries, result.query));
-        try stdout.writeAll(" -> ");
-        try result_rows.writeEscapedText(stdout, displayNameOf(candidate_names, summary_labels, result.candidate));
-        try stdout.print(": {s}: {s}\n", .{ contract.code.bind_dependent_partial_index, message });
+        try comparisons.append(allocator, .{
+            .query = displayNameOf(query_names, distinct_queries, result.query),
+            .candidate = displayNameOf(candidate_names, summary_labels, result.candidate),
+            .index_name = index_name,
+        });
     }
+    try cli_warnings.writeComparisons(stdout, allocator, comparisons.items);
 
     var not_judged_printed = false;
     for (results) |result| {
@@ -1654,11 +1657,7 @@ fn writeBatchHuman(
         try stdout.writeByte('\n');
     }
 
-    for (warnings) |warning| {
-        try stdout.print("warning: {s}: ", .{warning.code});
-        try result_rows.writeEscapedText(stdout, warning.message);
-        try stdout.writeByte('\n');
-    }
+    try cli_warnings.writeRunWarnings(stdout, warnings);
 }
 
 fn displayNames(allocator: std.mem.Allocator, labels: []const []const u8) ![][]const u8 {

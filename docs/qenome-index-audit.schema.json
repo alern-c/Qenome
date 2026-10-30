@@ -37,6 +37,19 @@
       "description": "One object per index in the main schema, ordered by table and then by name.",
       "type": "array",
       "items": { "$ref": "#/$defs/index" }
+    },
+    "warnings": {
+      "description": "Always emitted. unapplied_migrations with --d1 when the local D1 database has not applied every migration of the wrangler config; empty otherwise.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["code", "message"],
+        "properties": {
+          "code": { "description": "unapplied_migrations.", "type": "string" },
+          "message": { "type": "string" }
+        }
+      }
     }
   },
   "$defs": {

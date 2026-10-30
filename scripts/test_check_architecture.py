@@ -64,6 +64,7 @@ CANONICAL_FILES = {
         'pub const warning_codes = [_][]const u8{"no_analyze_stats"};\n'
         'pub const warning_messages = [_][]const u8{"a message"};\n'
         'pub const bind_dependent_partial_index_message = "the message";\n'
+        'pub const unapplied_migrations_message = "the message";\n'
         "pub const code = struct {\n"
         '    pub const suggest_failed = "suggest_failed";\n'
         "};\n"
@@ -105,7 +106,27 @@ CANONICAL_FILES = {
         'const contract = @import("../contract/values.zig");\n'
         "pub const ExitCode = contract.ExitCode;\n"
     ),
-    "src/cli/d1.zig": 'const std = @import("std");\n',
+    "src/cli/d1.zig": (
+        'const std = @import("std");\n'
+        'const config = @import("../d1/config.zig");\n'
+    ),
+    "src/d1/config.zig": 'const std = @import("std");\n',
+    "src/d1/migrations.zig": (
+        'const std = @import("std");\n'
+        'const sqlite = @import("../sqlite.zig");\n'
+    ),
+    "src/cli/warnings.zig": (
+        'const std = @import("std");\n'
+        'const contract = @import("../contract/values.zig");\n'
+        'const result = @import("../result.zig");\n'
+        'const cli_d1_migrations = @import("../d1/migrations.zig");\n'
+        'const cli_suggest = @import("suggest.zig");\n'
+    ),
+    "src/cli/d1_tests.zig": (
+        'const std = @import("std");\n'
+        'const contract = @import("../contract/values.zig");\n'
+        'const cli = @import("../cli.zig");\n'
+    ),
     "src/cli/comparison.zig": (
         'const std = @import("std");\n'
         'const db = @import("../db.zig");\n'
@@ -283,7 +304,7 @@ def expect_rejected(name, code, output, rule, mention=None):
 def main():
     code, output = case(None)
     expect_clean("the smallest approved tree passes", code, output)
-    expect("the whole tree is checked", "(28 files checked" in output, output.strip())
+    expect("the whole tree is checked", "(32 files checked" in output, output.strip())
 
     code, output = case(lambda root: os.remove(os.path.join(root, "src/cli/tests.zig")))
     expect_rejected("a missing test file fails", code, output, "missing-file", "src/cli/tests.zig")
@@ -511,6 +532,46 @@ def main():
         )
     )
     expect_rejected("the contract layer may not import the cli", code, output, "layer-order", "src/cli.zig")
+
+    code, output = case(
+        lambda root: write_file(
+            root, "src/d1/config.zig", CANONICAL_FILES["src/d1/config.zig"] + 'const db = @import("../db.zig");\n'
+        )
+    )
+    expect_rejected("the d1 component may not import the engine", code, output, "layer-order", "src/db.zig")
+
+    code, output = case(
+        lambda root: write_file(
+            root, "src/d1/config.zig", CANONICAL_FILES["src/d1/config.zig"] + 'const cli = @import("../cli.zig");\n'
+        )
+    )
+    expect_rejected("the d1 component may not import the cli", code, output, "layer-order", "src/cli.zig")
+
+    code, output = case(lambda root: write_file(root, "src/d1/extra.zig", "// new\n"))
+    expect_rejected("an unknown file under src/d1 fails", code, output, "unknown-file", "src/d1/extra.zig")
+
+    code, output = case(
+        lambda root: write_file(
+            root,
+            "src/d1/migrations.zig",
+            CANONICAL_FILES["src/d1/migrations.zig"] + 'const db = @import("../db.zig");\n',
+        )
+    )
+    expect_rejected("the d1 component may not import the engine", code, output, "layer-order", "src/db.zig")
+
+    code, output = case(
+        lambda root: write_file(
+            root,
+            "src/cli/d1_tests.zig",
+            'const label = "unapplied_migrations";\nconst cli = @import("../cli.zig");\n',
+        )
+    )
+    expect_clean("a test module may hold a contract code and import the cli", code, output)
+
+    code, output = case(
+        lambda root: write_file(root, "src/cli/d1_tests.zig", 'const config = @import("../d1/config.zig");\n')
+    )
+    expect_rejected("a test module needs an approved import", code, output, "unapproved-import", "src/d1/config.zig")
 
     code, output = case(lambda root: write_file(root, "src/cli/d1.zig", CANONICAL_FILES["src/cli/d1.zig"] + "x\n"))
     expect_clean("an extra line under the cap passes", code, output)

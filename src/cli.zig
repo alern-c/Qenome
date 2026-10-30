@@ -2,6 +2,7 @@ const std = @import("std");
 const Io = std.Io;
 const db = @import("db.zig");
 const result_rows = @import("result.zig");
+const cli_d1_migrations = @import("d1/migrations.zig");
 
 const cli_args = @import("cli/args.zig");
 const cli_d1 = @import("cli/d1.zig");
@@ -153,6 +154,7 @@ fn runCaptured(
     }
 
     var d1: ?cli_d1.Resolved = null;
+    var unapplied: ?cli_d1_migrations.Pending = null;
 
     const database_path = if (args.d1) |binding| resolved: {
         const outcome = cli_d1.resolve(io, arena, Io.Dir.cwd(), binding, args.config) catch |err| {
@@ -162,6 +164,7 @@ fn runCaptured(
         switch (outcome) {
             .resolved => |resolution| {
                 d1 = resolution;
+                unapplied = cli_d1_migrations.find(io, arena, resolution.config_path, resolution.migrations_dir, resolution.migrations_table, resolution.local_path, resolution.binding);
                 break :resolved arena.dupeSentinel(u8, resolution.local_path, 0) catch {
                     stderr.print("error: out of memory\n", .{}) catch {};
                     return .rejected;
@@ -212,6 +215,7 @@ fn runCaptured(
                 break :blk cli_audit.run(io, arena, allocator, .{
                     .database_path = database_path,
                     .baseline_path = work.baseline_path,
+                    .unapplied_migrations = unapplied,
                     .timeout_ms = args.timeout_ms,
                     .format = args.format,
                     .work_parent = parent_path,
@@ -222,6 +226,7 @@ fn runCaptured(
                 .baseline_path = work.baseline_path,
                 .variant_path = work.variant_path,
                 .d1 = d1,
+                .unapplied_migrations = unapplied,
                 .migration = migration,
                 .timeout_ms = args.timeout_ms,
                 .show_binds = args.show_binds,
@@ -264,6 +269,7 @@ fn runCaptured(
                 .baseline_path = suggest_work.baseline_path,
                 .variant_path = suggest_work.variant_path,
                 .d1 = d1,
+                .unapplied_migrations = unapplied,
                 .timeout_ms = args.timeout_ms,
                 .show_binds = args.show_binds,
                 .show_rows = args.show_rows,
@@ -308,6 +314,7 @@ fn runCaptured(
         const inputs: Inputs = .{
             .database_path = database_path,
             .d1 = d1,
+            .unapplied_migrations = unapplied,
             .baseline_path = work.baseline_path,
             .variant_path = work.variant_path,
             .select_path = select_path,
@@ -335,6 +342,7 @@ const Inputs = struct {
     baseline_path: [:0]const u8,
     variant_path: [:0]const u8,
     d1: ?cli_d1.Resolved = null,
+    unapplied_migrations: ?cli_d1_migrations.Pending = null,
     select_path: [:0]const u8,
     index_path: [:0]const u8,
     select_sql: [:0]const u8,
@@ -380,6 +388,7 @@ fn runChecked(
         .baseline_path = inputs.baseline_path,
         .variant_path = inputs.variant_path,
         .d1 = inputs.d1,
+        .unapplied_migrations = inputs.unapplied_migrations,
         .select_path = inputs.select_path,
         .index_path = inputs.index_path,
         .select_sql = inputs.select_sql,

@@ -35,7 +35,7 @@ The target dependency order is:
 
 `contract → sqlite → sql → engine → measure → verdict → sandbox → modes → report → cli → main`
 
-A lower layer never imports a higher one. `d1/` and `skill/` are independent components outside the chain. Modes only return report data; only `report/` and `cli/` write to stdout or stderr.
+A lower layer never imports a higher one. `d1/` and `skill/` are independent components outside the chain: each sits at the rank of the layer it may import, and the layers above that rank may import it. Modes only return report data; only `report/` and `cli/` write to stdout or stderr.
 
 Folders and files that exist now (v0.3.7):
 
@@ -47,8 +47,9 @@ Folders and files that exist now (v0.3.7):
 | engine | `src/db.zig`, `src/result.zig` |
 | cli | `src/cli.zig`, `src/cli/` |
 | main | `src/main.zig`, `src/root.zig` |
+| d1 (independent) | `src/d1/` |
 
-Planned for v0.3.8: split `src/db.zig` into `src/engine/*`, move measure, verdict and sandbox out of `src/cli/`, move the D1 code into `src/d1/`, and split the report out of `src/cli/report.zig`. Planned for v0.3.9: add `src/modes/`, replace the parsed arguments with a `Command` union, and split `src/cli/tests.zig`.
+Planned for v0.3.8: split `src/db.zig` into `src/engine/*`, move measure, verdict and sandbox out of `src/cli/`, move the remaining D1 code into `src/d1/`, and split the report out of `src/cli/report.zig`. Planned for v0.3.9: add `src/modes/`, replace the parsed arguments with a `Command` union, and split `src/cli/tests.zig`.
 
 ## Sources of the rules
 

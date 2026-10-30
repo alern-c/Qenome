@@ -402,6 +402,8 @@ Every `--d1` comparison prints two facts in all formats:
 
 Sections for other environments (`[env.<name>]`) and custom persist paths (`--persist-to`) are not read.
 
+Qenome also checks the migrations of the binding. It reads `migrations_dir` (default `migrations`, beside the config file) and `migrations_table` (default `d1_migrations`) from the `d1_databases` entry, lists the `.sql` files directly in that directory, and compares them with the names in the record table. When a file is not applied, every `--d1` mode warns `unapplied_migrations`, names the files in wrangler's order (a leading number, then lexical order), and says to run `npx wrangler d1 migrations apply DB --local`, because a comparison against an older schema can hide what the index does. The message names at most 10 files and then how many are left. The warning never changes the verdict, a count, or the exit status. It is omitted when the record table or the directory does not exist, when the local database cannot be read, and when the table or the directory is too large to read within the check's bounds. Qenome opens the local database read-only and reads only the names, so the original database does not change; `migrations_pattern` and the bindings under `[env.<name>]` are not read.
+
 #### Try the sample project
 
 `examples/d1-toml` and `examples/d1-jsonc` hold the same database and queries, once with `wrangler.toml` and once with `wrangler.jsonc`. Each is a wrangler project on its own: the config has one binding, `DEMO_DB`, and the `database_id` is a placeholder that is never deployed. Node.js is needed because wrangler runs through `npx`. Nothing is installed into the repository, and `.wrangler/` is not tracked by Git.
@@ -494,7 +496,7 @@ An index can appear in both the unused and the redundant lists. The key columns 
 
 The report is a statement about this manifest, not a recommendation to drop an index. The plans cover the SELECTs in the manifest only, so an index used by `UPDATE`, `DELETE`, foreign-key maintenance, or a query outside the manifest is not visible here. An index used only for `ORDER BY` or `GROUP BY` does appear in these plans. An index that SQLite did not pick can still be one it could use.
 
-The run exits `0` when the report is written, even when the lists are not empty. Read stdout, not the exit status, to find indexes. `--audit-indexes` needs `--batch` and does not take `--suggest`, `--migration`, or `--seed-data`; it takes `--d1`, `--timeout-ms` (for each plan and each catalog read), and `--format human` (default) or `--format json`. With JSON the output is the `audit_schema_version` 1 object described in [docs/json.md](docs/json.md).
+The run exits `0` when the report is written, even when the lists are not empty. With `--d1` the JSON report adds a `warnings` array, and the human report a `Warnings` section, for `unapplied_migrations`; it does not change the findings or the exit status. Read stdout, not the exit status, to find indexes. `--audit-indexes` needs `--batch` and does not take `--suggest`, `--migration`, or `--seed-data`; it takes `--d1`, `--timeout-ms` (for each plan and each catalog read), and `--format human` (default) or `--format json`. With JSON the output is the `audit_schema_version` 1 object described in [docs/json.md](docs/json.md).
 
 ### Recording the queries your app runs (--record)
 
@@ -664,7 +666,7 @@ Main keys:
 | `environment` | `qenome_version` (the same version as `--version`, from `build.zig.zon`), `sqlite_version`, `sqlite_source_id`, `zig_version`, `build_mode`, `os`, `arch`, `work_dir_parent` |
 | `measurement` | Timing conditions: `runs_per_copy` (timed rounds per copy; `0` when not timed), `warmup`, `order`, `scope`, `cache`. With `--write`, `runs_per_copy` is the number of rolled-back executions per copy |
 | `binds` | `number` and `type`; text also has `text_bytes`. `value` appears only with `--show-binds` |
-| `warnings` | An array of `{code, message}` (`no_analyze_stats`, `data_too_small`, `bind_dependent_partial_index`); advisory, never changes verdict or exit |
+| `warnings` | An array of `{code, message}` (`no_analyze_stats`, `data_too_small`, `bind_dependent_partial_index`, `unapplied_migrations`); advisory, never changes verdict or exit |
 | `sqlite` | Reserved, not emitted yet. `bundled_version` and `db_header_version`. Until then, the bundled version is `environment.sqlite_version` |
 
 - String values write a backslash as `\\` and each byte that is not valid UTF-8 as `\xNN` (byte 0xFF becomes `\xff`), and the result is then escaped as JSON. A literal four-character `\xff` therefore becomes `\\xff` and is a different string from the byte 0xFF. To recover the original bytes, read `\\` as one backslash and `\xNN` as that byte, and leave everything else as it is. Paths, plan details, reasons, and bind text use this rule. Text values in the example rows use it too, surrounded by single quotes (for example `'\xff'`, which appears as `'\\xff'` in the JSON text); BLOBs are written as `x'00ff'`. Example values longer than 200 bytes are cut and followed by `...(N bytes)`.

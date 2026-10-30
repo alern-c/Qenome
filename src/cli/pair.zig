@@ -3,6 +3,7 @@ const Io = std.Io;
 const db = @import("../db.zig");
 const sqlite = @import("../sqlite.zig");
 const result_rows = @import("../result.zig");
+const cli_d1_migrations = @import("../d1/migrations.zig");
 const cli_comparison = @import("comparison.zig");
 const cli_control = @import("control.zig");
 const cli_d1 = @import("d1.zig");
@@ -26,6 +27,7 @@ pub const Inputs = struct {
     baseline_path: [:0]const u8,
     variant_path: [:0]const u8,
     d1: ?cli_d1.Resolved = null,
+    unapplied_migrations: ?cli_d1_migrations.Pending = null,
     select_path: [:0]const u8,
     index_path: [:0]const u8,
     select_sql: [:0]const u8,
@@ -145,7 +147,11 @@ pub fn compute(
     const warnings = baseline.database.tableWarnings(arena, candidate_table, &control) catch |err| {
         return .{ .failed = diagnosticFailure(err, &baseline, &control, stderr) };
     };
-    report.warnings = .{ .no_analyze_stats = warnings.no_analyze_stats, .data_too_small = warnings.data_too_small };
+    report.warnings = .{
+        .no_analyze_stats = warnings.no_analyze_stats,
+        .data_too_small = warnings.data_too_small,
+        .unapplied_migrations = inputs.unapplied_migrations,
+    };
     report.warnings.bind_dependent_partial_index = variant.database.findBindDependentPartialIndex(arena, after.plan, inputs.select_sql, inputs.binds, &control) catch null;
     report.sizes = .{
         .baseline = fileSize(io, inputs.baseline_path, .baseline, stderr) orelse return .{ .failed = .rejected },
@@ -458,6 +464,7 @@ fn computeWrite(
     if (signalPending()) return .{ .failed = reportInterrupted(stderr) };
 
     var report: cli_report.Report = .{ .judgement = .{ .verdict = .not_judged }, .sizes = sizes };
+    report.warnings.unapplied_migrations = inputs.unapplied_migrations;
     const clues = db.Clues.merge(baseline.database.clues, variant.database.clues);
     if (cli_comparison.writeIncomparable(arena, clues)) |outcome| {
         const before = skippedWriteMeasurement(before_plan, baseline.columnCount());
@@ -538,7 +545,8 @@ fn tryWriteWarnings(
     control: *db.StepControl,
 ) !void {
     const warnings = try baseline.database.tableWarnings(arena, candidate_table, control);
-    report.warnings = .{ .no_analyze_stats = warnings.no_analyze_stats, .data_too_small = warnings.data_too_small };
+    report.warnings.no_analyze_stats = warnings.no_analyze_stats;
+    report.warnings.data_too_small = warnings.data_too_small;
 }
 
 fn writeDiagnosticFailure(err: anyerror, session: *WriteSession, control: *db.StepControl, stderr: *Io.Writer) ExitCode {
