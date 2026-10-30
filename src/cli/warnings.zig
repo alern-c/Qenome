@@ -22,6 +22,12 @@ pub const Comparison = struct {
     index_name: []const u8,
 };
 
+pub const CandidateWarning = struct {
+    candidate: []const u8,
+    code: []const u8,
+    message: []const u8,
+};
+
 pub fn anyWarnings(warnings: Warnings) bool {
     return warnings.no_analyze_stats or warnings.data_too_small or warnings.bind_dependent_partial_index != null or warnings.unapplied_migrations != null;
 }
@@ -79,10 +85,22 @@ pub fn writeWarnings(stdout: *Io.Writer, allocator: std.mem.Allocator, warnings:
     }
 }
 
-pub fn writeComparisons(stdout: *Io.Writer, allocator: std.mem.Allocator, entries: []const Comparison) Error!void {
-    if (entries.len == 0) return;
+pub fn writeBatchWarnings(
+    stdout: *Io.Writer,
+    allocator: std.mem.Allocator,
+    candidates: []const CandidateWarning,
+    comparisons: []const Comparison,
+) Error!void {
+    if (candidates.len == 0 and comparisons.len == 0) return;
     try stdout.writeAll("\nWarnings\n");
-    for (entries) |entry| {
+    for (candidates) |entry| {
+        try stdout.writeAll("  ");
+        try result.writeEscapedText(stdout, entry.candidate);
+        try stdout.print(": {s}: ", .{entry.code});
+        try result.writeEscapedText(stdout, entry.message);
+        try stdout.writeByte('\n');
+    }
+    for (comparisons) |entry| {
         const message = try bindDependentPartialIndexMessage(allocator, entry.index_name);
         defer allocator.free(message);
         try stdout.writeAll("  ");
@@ -131,4 +149,27 @@ test "the unapplied migration text escapes a name for the human report" {
     defer testing.allocator.free(text);
     try testing.expect(std.mem.indexOf(u8, text, "a\\nb.sql") != null);
     try testing.expect(std.mem.indexOfScalar(u8, text, '\n') == null);
+}
+
+test "the batch warnings list candidate and comparison entries under one heading" {
+    var buffer: [2048]u8 = undefined;
+    var stdout = Io.Writer.fixed(&buffer);
+    const candidates = [_]CandidateWarning{.{
+        .candidate = "a.sql",
+        .code = contract.code.no_analyze_stats,
+        .message = contract.warning_messages[0],
+    }};
+    const comparisons = [_]Comparison{.{ .query = "q.sql", .candidate = "a.sql", .index_name = "ix" }};
+    try writeBatchWarnings(&stdout, testing.allocator, &candidates, &comparisons);
+    const output = stdout.buffered();
+    try testing.expect(std.mem.startsWith(u8, output, "\nWarnings\n"));
+    try testing.expect(std.mem.indexOf(u8, output, "\n  a.sql: no_analyze_stats: ") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "\n  q.sql -> a.sql: bind_dependent_partial_index: ") != null);
+}
+
+test "the batch warnings write nothing when no warning applies" {
+    var buffer: [64]u8 = undefined;
+    var stdout = Io.Writer.fixed(&buffer);
+    try writeBatchWarnings(&stdout, testing.allocator, &.{}, &.{});
+    try testing.expectEqualStrings("", stdout.buffered());
 }
