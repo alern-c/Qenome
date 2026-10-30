@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -6,19 +7,37 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CHECKER = os.path.join(HERE, "check_architecture.py")
+CONTRACT_FILE = "src/contract/values.zig"
 
 FAILURES: list[str] = []
+
+
+def configured(pattern):
+    with open(CHECKER, encoding="utf-8") as handle:
+        body = handle.read()
+    found = re.search(pattern, body, re.MULTILINE)
+    if found is None:
+        raise SystemExit("the checker does not define " + pattern)
+    return int(found.group(1))
+
+
+def line_count(body):
+    return body.count("\n")
 
 CANONICAL_FILES = {
     "build.zig": '// the module is built as @import("Qenome")\n',
     "src/main.zig": 'const std = @import("std");\nconst Qenome = @import("Qenome");\n',
     "src/root.zig": (
+        'pub const contract = @import("contract/values.zig");\n'
+        'pub const sql = @import("sql/lexer.zig");\n'
         'pub const sqlite = @import("sqlite.zig");\n'
         'pub const db = @import("db.zig");\n'
         'pub const result = @import("result.zig");\n'
         'pub const cli = @import("cli.zig");\n'
         "\n"
         "test {\n"
+        '    _ = @import("contract/values.zig");\n'
+        '    _ = @import("sql/lexer.zig");\n'
         '    _ = @import("sqlite.zig");\n'
         '    _ = @import("db.zig");\n'
         '    _ = @import("result.zig");\n'
@@ -30,9 +49,25 @@ CANONICAL_FILES = {
         'const builtin = @import("builtin");\n'
         'const sqlite = @import("sqlite.zig");\n'
         'const result = @import("result.zig");\n'
+        'const sql_lexer = @import("sql/lexer.zig");\n'
     ),
     "src/result.zig": 'const std = @import("std");\nconst sqlite = @import("sqlite.zig");\n',
     "src/sqlite.zig": 'const std = @import("std");\n',
+    "src/sql/lexer.zig": 'const std = @import("std");\n',
+    "src/contract/values.zig": (
+        'const std = @import("std");\n'
+        "\n"
+        "pub const schema_version: u8 = 2;\n"
+        "pub const batch_schema_version: u8 = 1;\n"
+        "pub const audit_schema_version: u8 = 1;\n"
+        "pub const ExitCode = enum(u8) { ok = 0 };\n"
+        'pub const warning_codes = [_][]const u8{"no_analyze_stats"};\n'
+        'pub const warning_messages = [_][]const u8{"a message"};\n'
+        'pub const bind_dependent_partial_index_message = "the message";\n'
+        "pub const code = struct {\n"
+        '    pub const suggest_failed = "suggest_failed";\n'
+        "};\n"
+    ),
     "src/cli.zig": (
         'const std = @import("std");\n'
         'const db = @import("db.zig");\n'
@@ -60,11 +95,14 @@ CANONICAL_FILES = {
     "src/cli/args.zig": (
         'const std = @import("std");\n'
         'const db = @import("../db.zig");\n'
+        'const sql_lexer = @import("../sql/lexer.zig");\n'
         'const build_options = @import("build_options");\n'
     ),
     "src/cli/control.zig": (
         'const std = @import("std");\n'
         'const builtin = @import("builtin");\n'
+        'const contract = @import("../contract/values.zig");\n'
+        "pub const ExitCode = contract.ExitCode;\n"
     ),
     "src/cli/d1.zig": 'const std = @import("std");\n',
     "src/cli/comparison.zig": (
@@ -98,6 +136,7 @@ CANONICAL_FILES = {
     "src/cli/report.zig": (
         'const std = @import("std");\n'
         'const builtin = @import("builtin");\n'
+        'const contract = @import("../contract/values.zig");\n'
         'const result = @import("../result.zig");\n'
         'const cli_args = @import("args.zig");\n'
         'const cli_d1 = @import("d1.zig");\n'
@@ -220,7 +259,7 @@ def expect_rejected(name, code, output, rule, mention=None):
 def main():
     code, output = case(None)
     expect_clean("the smallest approved tree passes", code, output)
-    expect("the whole tree is checked", "(21 files checked" in output, output.strip())
+    expect("the whole tree is checked", "(23 files checked" in output, output.strip())
 
     code, output = case(lambda root: os.remove(os.path.join(root, "src/cli/tests.zig")))
     expect_rejected("a missing test file fails", code, output, "missing-file", "src/cli/tests.zig")
@@ -429,6 +468,119 @@ def main():
         )
     )
     expect_rejected("two test entries fail", code, output, "test-entry", "found 2")
+
+    code, output = case(
+        lambda root: write_file(
+            root, "src/sql/lexer.zig", CANONICAL_FILES["src/sql/lexer.zig"] + 'const db = @import("../db.zig");\n'
+        )
+    )
+    expect_rejected("the sql layer may not import the engine", code, output, "layer-order", "src/db.zig")
+
+    code, output = case(
+        lambda root: write_file(
+            root, CONTRACT_FILE, CANONICAL_FILES[CONTRACT_FILE] + 'const cli = @import("../cli.zig");\n'
+        )
+    )
+    expect_rejected("the contract layer may not import the cli", code, output, "layer-order", "src/cli.zig")
+
+    code, output = case(lambda root: write_file(root, "src/cli/d1.zig", CANONICAL_FILES["src/cli/d1.zig"] + "x\n"))
+    expect_clean("an extra line under the cap passes", code, output)
+
+    max_lines = configured(r"^MAX_LINES = (\d+)$")
+    code, output = case(
+        lambda root: write_file(
+            root,
+            "src/cli/query.zig",
+            CANONICAL_FILES["src/cli/query.zig"] + "const pad = 0;\n" * (max_lines + 1),
+        )
+    )
+    expect_rejected("a new file over the cap fails", code, output, "file-size", "src/cli/query.zig")
+
+    record_limit = configured(r'"src/cli/record.zig": (\d+)')
+    at_limit = record_limit - line_count(CANONICAL_FILES["src/cli/record.zig"])
+
+    code, output = case(
+        lambda root: write_file(
+            root, "src/cli/record.zig", CANONICAL_FILES["src/cli/record.zig"] + "const pad = 0;\n" * at_limit
+        )
+    )
+    expect_clean("a ratcheted file at its limit passes", code, output)
+
+    code, output = case(
+        lambda root: write_file(
+            root, "src/cli/record.zig", CANONICAL_FILES["src/cli/record.zig"] + "const pad = 0;\n" * (at_limit + 1)
+        )
+    )
+    expect_rejected("a ratcheted file that grows fails", code, output, "file-size", "src/cli/record.zig")
+
+    code, output = case(
+        lambda root: write_file(
+            root,
+            "src/cli/d1.zig",
+            CANONICAL_FILES["src/cli/d1.zig"]
+            + 'pub fn shout(stdout: anytype) void {\n    stdout.print("x", .{});\n}\n',
+        )
+    )
+    expect_rejected("a new stdout writer fails", code, output, "stdout-write", "src/cli/d1.zig")
+
+    code, output = case(
+        lambda root: write_file(
+            root,
+            "src/cli/query.zig",
+            CANONICAL_FILES["src/cli/query.zig"]
+            + 'pub fn quiet(stderr: anytype) void {\n    stderr.writeAll("x") catch {};\n}\n',
+        )
+    )
+    expect_clean("an allowlisted writer passes", code, output)
+
+    code, output = case(
+        lambda root: write_file(
+            root,
+            "src/cli/d1.zig",
+            CANONICAL_FILES["src/cli/d1.zig"]
+            + 'test "a writer in a test" {\n    stdout.print("x", .{});\n}\n',
+        )
+    )
+    expect_clean("a write inside a test block passes", code, output)
+
+    code, output = case(
+        lambda root: write_file(
+            root, "src/cli/report.zig", CANONICAL_FILES["src/cli/report.zig"] + "const schema_version: u8 = 2;\n"
+        )
+    )
+    expect_rejected(
+        "a contract value defined outside the contract fails", code, output, "contract-value", "schema_version"
+    )
+
+    code, output = case(
+        lambda root: write_file(
+            root, "src/cli/report.zig", CANONICAL_FILES["src/cli/report.zig"] + "const ExitCode = enum { ok };\n"
+        )
+    )
+    expect_rejected("a redefinition of ExitCode fails", code, output, "contract-value", "ExitCode")
+
+    code, output = case(
+        lambda root: write_file(
+            root, "src/cli/report.zig", CANONICAL_FILES["src/cli/report.zig"] + 'const label = "no_analyze_stats";\n'
+        )
+    )
+    expect_rejected("a contract code outside the contract fails", code, output, "contract-code", "no_analyze_stats")
+
+    code, output = case(
+        lambda root: write_file(
+            root,
+            "src/cli/report.zig",
+            CANONICAL_FILES["src/cli/report.zig"] + 'test "codes" {\n    const label = "data_too_small";\n}\n',
+        )
+    )
+    expect_clean("a contract code inside a test passes", code, output)
+
+    code, output = case(
+        lambda root: write_file(
+            root, CONTRACT_FILE, 'const std = @import("std");\npub const ExitCode = enum(u8) { ok = 0 };\n'
+        )
+    )
+    expect_rejected("the contract must declare every value", code, output, "missing-contract", "schema_version")
 
     def normalize(root):
         write_file(

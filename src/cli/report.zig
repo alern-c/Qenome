@@ -1,6 +1,7 @@
 const std = @import("std");
 const Io = std.Io;
 const builtin = @import("builtin");
+const contract = @import("../contract/values.zig");
 const result = @import("../result.zig");
 const cli_args = @import("args.zig");
 const cli_d1 = @import("d1.zig");
@@ -48,19 +49,10 @@ pub const Warnings = struct {
     bind_dependent_partial_index: ?[]const u8 = null,
 };
 
-const warning_codes = [_][]const u8{ "no_analyze_stats", "data_too_small" };
-const warning_messages = [_][]const u8{
-    "The candidate index table has no non-empty sqlite_stat1 entry. Test an ANALYZE'd copy with representative data; this check does not run ANALYZE.",
-    "The candidate index table has fewer than 1000 rows. This heuristic does not establish representative performance; test with more representative data.",
-};
-
-pub const bind_dependent_partial_index_code = "bind_dependent_partial_index";
-const bind_dependent_partial_index_message = "The variant plan uses the partial index \"{s}\" only because the bound values satisfy its WHERE clause. A different bound value changes the plan, so test with the values you deploy.";
-
 pub fn bindDependentPartialIndexMessage(allocator: std.mem.Allocator, index_name: []const u8) Error![]const u8 {
     const escaped = try escapedText(allocator, index_name);
     defer allocator.free(escaped);
-    return std.fmt.allocPrint(allocator, bind_dependent_partial_index_message, .{escaped});
+    return std.fmt.allocPrint(allocator, contract.bind_dependent_partial_index_message, .{escaped});
 }
 
 fn anyWarnings(warnings: Warnings) bool {
@@ -76,13 +68,13 @@ fn escapedText(allocator: std.mem.Allocator, text: []const u8) Error![]const u8 
 
 fn writeWarnings(stdout: *Io.Writer, allocator: std.mem.Allocator, warnings: Warnings) Error!void {
     const enabled = [_]bool{ warnings.no_analyze_stats, warnings.data_too_small };
-    for (enabled, warning_codes, warning_messages) |active, code, message| {
+    for (enabled, contract.warning_codes, contract.warning_messages) |active, code, message| {
         if (active) try stdout.print("warning: {s}: {s}\n", .{ code, message });
     }
     if (warnings.bind_dependent_partial_index) |name| {
         const message = try bindDependentPartialIndexMessage(allocator, name);
         defer allocator.free(message);
-        try stdout.print("warning: {s}: {s}\n", .{ bind_dependent_partial_index_code, message });
+        try stdout.print("warning: {s}: {s}\n", .{ contract.code.bind_dependent_partial_index, message });
     }
 }
 
@@ -99,13 +91,13 @@ fn writeHumanWarnings(stdout: *Io.Writer, allocator: std.mem.Allocator, warnings
     if (!anyWarnings(warnings)) return;
     try stdout.writeAll("\nWarnings\n");
     const enabled = [_]bool{ warnings.no_analyze_stats, warnings.data_too_small };
-    for (enabled, warning_codes, warning_messages) |active, code, message| {
+    for (enabled, contract.warning_codes, contract.warning_messages) |active, code, message| {
         if (active) try writeHumanWarning(stdout, allocator, code, message);
     }
     if (warnings.bind_dependent_partial_index) |name| {
         const message = try bindDependentPartialIndexMessage(allocator, name);
         defer allocator.free(message);
-        try writeHumanWarning(stdout, allocator, bind_dependent_partial_index_code, message);
+        try writeHumanWarning(stdout, allocator, contract.code.bind_dependent_partial_index, message);
     }
 }
 
@@ -371,8 +363,6 @@ fn writeJsonD1(json: *std.json.Stringify, allocator: std.mem.Allocator, header: 
     try json.endObject();
 }
 
-const json_schema_version: u8 = 2;
-
 pub const JsonStyle = enum { indented, minified };
 
 pub fn writeJsonReport(
@@ -434,7 +424,7 @@ fn writeJsonComparison(
     };
     try json.beginObject();
     try json.objectField("schema_version");
-    try json.write(json_schema_version);
+    try json.write(contract.schema_version);
     try json.objectField("exit_code");
     try json.write(header.exit_code);
     try json.objectField("statement");
@@ -479,16 +469,16 @@ fn writeJsonComparison(
     try json.objectField("warnings");
     try json.beginArray();
     const enabled = [_]bool{ report.warnings.no_analyze_stats, report.warnings.data_too_small };
-    for (enabled, warning_codes, warning_messages) |active, code, message| {
+    for (enabled, contract.warning_codes, contract.warning_messages) |active, code, message| {
         if (!active) continue;
         try json.write(.{ .code = code, .message = message });
     }
     if (report.warnings.bind_dependent_partial_index) |name| {
-        const message = try std.fmt.allocPrint(allocator, bind_dependent_partial_index_message, .{name});
+        const message = try std.fmt.allocPrint(allocator, contract.bind_dependent_partial_index_message, .{name});
         defer allocator.free(message);
         try json.beginObject();
         try json.objectField("code");
-        try json.write(bind_dependent_partial_index_code);
+        try json.write(contract.code.bind_dependent_partial_index);
         try json.objectField("message");
         try writeJsonText(&json, allocator, message);
         try json.endObject();

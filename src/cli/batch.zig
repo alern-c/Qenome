@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const Io = std.Io;
+const contract = @import("../contract/values.zig");
 const db = @import("../db.zig");
 const result_rows = @import("../result.zig");
 const sqlite = @import("../sqlite.zig");
@@ -19,7 +20,6 @@ const WorkDir = cli_workspace.WorkDir;
 const QuerySession = cli_query.QuerySession;
 const Measurement = cli_comparison.Measurement;
 
-const batch_schema_version: u8 = 1;
 const max_entries = 100;
 const baseline_cache_bytes: usize = result_rows.max_result_bytes;
 
@@ -928,7 +928,7 @@ fn suggestCandidates(
                 stderr.writeAll("hint: Check that the SELECTs are valid read-only queries for this database, or write a candidate CREATE INDEX yourself.\n") catch {};
                 return .{ .failed = .rejected };
             }
-            warnings.append(arena, .{ .code = "suggest_failed", .message = message }) catch return .{ .failed = outOfMemoryCode(stderr) };
+            warnings.append(arena, .{ .code = contract.code.suggest_failed, .message = message }) catch return .{ .failed = outOfMemoryCode(stderr) };
             return .{ .ready = .{ .candidates = loaded.candidates, .rejected = 0 } };
         },
         .ready => |ready| {
@@ -940,7 +940,7 @@ fn suggestCandidates(
                 warnings.append(arena, warning) catch return .{ .failed = outOfMemoryCode(stderr) };
             }
             if (build.generated == 0) {
-                warnings.append(arena, .{ .code = "no_suggestions", .message = "SQLite suggested no index for these queries" }) catch return .{ .failed = outOfMemoryCode(stderr) };
+                warnings.append(arena, .{ .code = contract.code.no_suggestions, .message = "SQLite suggested no index for these queries" }) catch return .{ .failed = outOfMemoryCode(stderr) };
             }
             const combined = arena.alloc(Candidate, loaded.candidates.len + build.statements.len) catch return .{ .failed = outOfMemoryCode(stderr) };
             @memcpy(combined[0..loaded.candidates.len], loaded.candidates);
@@ -1328,7 +1328,7 @@ fn writeBatchJson(
     };
     try json.beginObject();
     try json.objectField("batch_schema_version");
-    try json.write(batch_schema_version);
+    try json.write(contract.batch_schema_version);
     try json.objectField("exit_code");
     try json.write(@as(u8, @intCast(@backingInt(code))));
     try json.objectField("recommended");
@@ -1626,7 +1626,7 @@ fn writeBatchHuman(
         try result_rows.writeEscapedText(stdout, displayNameOf(query_names, distinct_queries, result.query));
         try stdout.writeAll(" -> ");
         try result_rows.writeEscapedText(stdout, displayNameOf(candidate_names, summary_labels, result.candidate));
-        try stdout.print(": {s}: {s}\n", .{ cli_report.bind_dependent_partial_index_code, message });
+        try stdout.print(": {s}: {s}\n", .{ contract.code.bind_dependent_partial_index, message });
     }
 
     var not_judged_printed = false;

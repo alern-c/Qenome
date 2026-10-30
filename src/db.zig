@@ -1,6 +1,7 @@
 const std = @import("std");
 const Io = std.Io;
 const builtin = @import("builtin");
+const sql_lexer = @import("sql/lexer.zig");
 const sqlite = @import("sqlite.zig");
 const result = @import("result.zig");
 
@@ -1464,27 +1465,9 @@ pub fn parseMigration(allocator: std.mem.Allocator, sql: [:0]const u8, detail: *
     }
 
     var start: usize = 0;
-    var i: usize = 0;
-    while (i < sql.len) {
-        const c = sql[i];
-        switch (c) {
-            '\'', '"', '`' => i = skipQuoted(sql, i, c),
-            '[' => i = if (std.mem.indexOfScalarPos(u8, sql, i + 1, ']')) |end| end + 1 else sql.len,
-            '-' => i = if (i + 1 < sql.len and sql[i + 1] == '-')
-                (std.mem.indexOfScalarPos(u8, sql, i, '\n') orelse sql.len)
-            else
-                i + 1,
-            '/' => i = if (i + 1 < sql.len and sql[i + 1] == '*')
-                (if (std.mem.indexOfPos(u8, sql, i + 2, "*/")) |end| end + 2 else sql.len)
-            else
-                i + 1,
-            ';' => {
-                try appendMigrationStatement(allocator, &statements, sql[start..i], detail);
-                i += 1;
-                start = i;
-            },
-            else => i += 1,
-        }
+    while (sql_lexer.statementEnd(sql, start)) |end| {
+        try appendMigrationStatement(allocator, &statements, sql[start..end], detail);
+        start = end + 1;
     }
     try appendMigrationStatement(allocator, &statements, sql[start..sql.len], detail);
 
@@ -1494,7 +1477,7 @@ pub fn parseMigration(allocator: std.mem.Allocator, sql: [:0]const u8, detail: *
 }
 
 fn appendMigrationStatement(allocator: std.mem.Allocator, statements: *std.ArrayList(MigrationStatement), span: []const u8, detail: *SnapshotDetail) (MigrationError || std.mem.Allocator.Error)!void {
-    const start = skipSqlTrivia(span, 0);
+    const start = sql_lexer.skipTrivia(span, 0);
     if (start == span.len) return;
     const text = std.mem.trimEnd(u8, span[start..], " \t\r\n");
     if (text.len == 0) return;
@@ -1575,40 +1558,9 @@ pub fn applyMigration(path: [:0]const u8, statements: []const MigrationStatement
     detail.statement_index = 0;
 }
 
-fn skipSqlTrivia(sql: []const u8, start: usize) usize {
-    var i = start;
-    while (i < sql.len) {
-        if (std.ascii.isWhitespace(sql[i])) {
-            i += 1;
-            continue;
-        }
-        if (sql[i] == '-' and i + 1 < sql.len and sql[i + 1] == '-') {
-            i = std.mem.indexOfScalarPos(u8, sql, i, '\n') orelse sql.len;
-            continue;
-        }
-        if (sql[i] == '/' and i + 1 < sql.len and sql[i + 1] == '*') {
-            i = if (std.mem.indexOfPos(u8, sql, i + 2, "*/")) |end| end + 2 else sql.len;
-            continue;
-        }
-        break;
-    }
-    return i;
-}
-
-const SqlWord = struct {
-    text: []const u8,
-    end: usize,
-};
-
-fn sqlWord(sql: []const u8, start: usize) SqlWord {
-    var end = start;
-    while (end < sql.len and (std.ascii.isAlphabetic(sql[end]) or sql[end] == '_')) end += 1;
-    return .{ .text = sql[start..end], .end = end };
-}
-
 fn startsWithWriteKeyword(sql: []const u8) bool {
-    const start = skipSqlTrivia(sql, 0);
-    const first = sqlWord(sql, start);
+    const start = sql_lexer.skipTrivia(sql, 0);
+    const first = sql_lexer.keywordAt(sql, start);
     return std.ascii.eqlIgnoreCase(first.text, "insert") or
         std.ascii.eqlIgnoreCase(first.text, "replace") or
         std.ascii.eqlIgnoreCase(first.text, "update") or
@@ -1616,143 +1568,82 @@ fn startsWithWriteKeyword(sql: []const u8) bool {
         std.ascii.eqlIgnoreCase(first.text, "with");
 }
 
+fn tokenIsWord(token: sql_lexer.Token, word: []const u8) bool {
+    return token.kind == .word and std.ascii.eqlIgnoreCase(token.text, word);
+}
+
+fn tokenIsPunctuator(token: sql_lexer.Token, text: []const u8) bool {
+    return token.kind == .punctuator and std.mem.eql(u8, token.text, text);
+}
+
 fn classifyMigrationStatement(sql: []const u8) ?MigrationKind {
-    var i = skipSqlTrivia(sql, 0);
-    const first = sqlWord(sql, i);
-    if (std.ascii.eqlIgnoreCase(first.text, "create")) {
-        i = skipSqlTrivia(sql, first.end);
-        const second = sqlWord(sql, i);
-        if (std.ascii.eqlIgnoreCase(second.text, "unique")) {
-            i = skipSqlTrivia(sql, second.end);
-            const third = sqlWord(sql, i);
-            return if (std.ascii.eqlIgnoreCase(third.text, "index")) .create_index else null;
+    var lexer: sql_lexer.Lexer = .init(sql);
+    const first = lexer.nextCode() orelse return null;
+    if (tokenIsWord(first, "create")) {
+        const second = lexer.nextCode() orelse return null;
+        if (tokenIsWord(second, "unique")) {
+            const third = lexer.nextCode() orelse return null;
+            return if (tokenIsWord(third, "index")) .create_index else null;
         }
-        if (std.ascii.eqlIgnoreCase(second.text, "index")) return .create_index;
-        if (std.ascii.eqlIgnoreCase(second.text, "table")) return if (createTableHasColumnList(sql, second.end)) .create_table else null;
+        if (tokenIsWord(second, "index")) return .create_index;
+        if (tokenIsWord(second, "table")) return if (createTableHasColumnList(&lexer)) .create_table else null;
         return null;
     }
-    if (std.ascii.eqlIgnoreCase(first.text, "drop")) {
-        i = skipSqlTrivia(sql, first.end);
-        const second = sqlWord(sql, i);
-        return if (std.ascii.eqlIgnoreCase(second.text, "index")) .drop_index else null;
+    if (tokenIsWord(first, "drop")) {
+        const second = lexer.nextCode() orelse return null;
+        return if (tokenIsWord(second, "index")) .drop_index else null;
     }
-    if (std.ascii.eqlIgnoreCase(first.text, "alter")) {
-        i = skipSqlTrivia(sql, first.end);
-        const second = sqlWord(sql, i);
-        if (!std.ascii.eqlIgnoreCase(second.text, "table")) return null;
-        i = skipSqlTrivia(sql, skipMigrationTableName(sql, second.end));
-        const third = sqlWord(sql, i);
-        if (std.ascii.eqlIgnoreCase(third.text, "add") or
-            std.ascii.eqlIgnoreCase(third.text, "rename") or
-            std.ascii.eqlIgnoreCase(third.text, "drop")) return .alter_table;
+    if (tokenIsWord(first, "alter")) {
+        const second = lexer.nextCode() orelse return null;
+        if (!tokenIsWord(second, "table")) return null;
+        skipTableName(&lexer);
+        const third = lexer.nextCode() orelse return null;
+        if (tokenIsWord(third, "add") or tokenIsWord(third, "rename") or tokenIsWord(third, "drop")) return .alter_table;
         return null;
     }
     return null;
 }
 
-fn skipMigrationTableName(sql: []const u8, start: usize) usize {
-    var i = skipSqlTrivia(sql, start);
-    if (i >= sql.len) return i;
-    switch (sql[i]) {
-        '\'', '"', '`' => i = skipQuoted(sql, i, sql[i]),
-        '[' => i = if (std.mem.indexOfScalarPos(u8, sql, i + 1, ']')) |end| end + 1 else sql.len,
-        else => {
-            while (i < sql.len and isWordByte(sql[i])) i += 1;
-        },
-    }
-    const after = skipSqlTrivia(sql, i);
-    if (after < sql.len and sql[after] == '.') {
-        i = skipSqlTrivia(sql, after + 1);
-        if (i >= sql.len) return i;
-        switch (sql[i]) {
-            '\'', '"', '`' => return skipQuoted(sql, i, sql[i]),
-            '[' => return if (std.mem.indexOfScalarPos(u8, sql, i + 1, ']')) |end| end + 1 else sql.len,
-            else => {
-                while (i < sql.len and isWordByte(sql[i])) i += 1;
-                return i;
-            },
-        }
-    }
-    return i;
+fn skipTableName(lexer: *sql_lexer.Lexer) void {
+    skipTableNamePart(lexer);
+    var probe = lexer.*;
+    const next = probe.nextCode() orelse return;
+    if (!tokenIsPunctuator(next, ".")) return;
+    lexer.* = probe;
+    skipTableNamePart(lexer);
 }
 
-fn createTableHasColumnList(sql: []const u8, start: usize) bool {
-    var i = start;
-    while (i < sql.len) {
-        const c = sql[i];
-        switch (c) {
-            '\'', '"', '`' => i = skipQuoted(sql, i, c),
-            '[' => i = if (std.mem.indexOfScalarPos(u8, sql, i + 1, ']')) |end| end + 1 else sql.len,
-            '-' => i = if (i + 1 < sql.len and sql[i + 1] == '-')
-                (std.mem.indexOfScalarPos(u8, sql, i, '\n') orelse sql.len)
-            else
-                i + 1,
-            '/' => i = if (i + 1 < sql.len and sql[i + 1] == '*')
-                (if (std.mem.indexOfPos(u8, sql, i + 2, "*/")) |end| end + 2 else sql.len)
-            else
-                i + 1,
-            '(' => return true,
-            ';' => return false,
-            else => {
-                if (!isWordByte(c)) {
-                    i += 1;
-                    continue;
-                }
-                const word_start = i;
-                i += 1;
-                while (i < sql.len and isWordByte(sql[i])) i += 1;
-                if (std.ascii.eqlIgnoreCase(sql[word_start..i], "as")) return false;
+fn skipTableNamePart(lexer: *sql_lexer.Lexer) void {
+    var probe = lexer.*;
+    const token = probe.nextCode() orelse return;
+    switch (token.kind) {
+        .word, .number, .parameter, .quoted, .string => lexer.* = probe,
+        else => {},
+    }
+}
+
+fn createTableHasColumnList(lexer: *sql_lexer.Lexer) bool {
+    while (lexer.next()) |token| {
+        switch (token.kind) {
+            .comment => {},
+            .word => if (std.ascii.eqlIgnoreCase(token.text, "as")) return false,
+            .punctuator => {
+                if (std.mem.eql(u8, token.text, "(")) return true;
+                if (std.mem.eql(u8, token.text, ";")) return false;
             },
+            else => {},
         }
     }
     return false;
 }
 
 pub fn mentionsLimitOrOffset(sql: []const u8) bool {
-    var i: usize = 0;
-    while (i < sql.len) {
-        const c = sql[i];
-        switch (c) {
-            '\'', '"', '`' => i = skipQuoted(sql, i, c),
-            '[' => i = if (std.mem.indexOfScalarPos(u8, sql, i + 1, ']')) |end| end + 1 else sql.len,
-            '-' => i = if (i + 1 < sql.len and sql[i + 1] == '-')
-                (std.mem.indexOfScalarPos(u8, sql, i, '\n') orelse sql.len)
-            else
-                i + 1,
-            '/' => i = if (i + 1 < sql.len and sql[i + 1] == '*')
-                (if (std.mem.indexOfPos(u8, sql, i + 2, "*/")) |end| end + 2 else sql.len)
-            else
-                i + 1,
-            else => {
-                if (!isWordByte(c) and c != ':' and c != '@') {
-                    i += 1;
-                    continue;
-                }
-                const start = i;
-                i += 1;
-                while (i < sql.len and isWordByte(sql[i])) i += 1;
-                const word = sql[start..i];
-                if (std.ascii.eqlIgnoreCase(word, "limit") or std.ascii.eqlIgnoreCase(word, "offset")) return true;
-            },
-        }
+    var lexer: sql_lexer.Lexer = .init(sql);
+    while (lexer.nextCode()) |token| {
+        if (token.kind != .word) continue;
+        if (std.ascii.eqlIgnoreCase(token.text, "limit") or std.ascii.eqlIgnoreCase(token.text, "offset")) return true;
     }
     return false;
-}
-
-fn isWordByte(c: u8) bool {
-    return std.ascii.isAlphanumeric(c) or c == '_' or c == '$' or c >= 0x80;
-}
-
-fn skipQuoted(sql: []const u8, start: usize, quote: u8) usize {
-    var i = start + 1;
-    while (std.mem.indexOfScalarPos(u8, sql, i, quote)) |end| {
-        if (end + 1 < sql.len and sql[end + 1] == quote) {
-            i = end + 2;
-            continue;
-        }
-        return end + 1;
-    }
-    return sql.len;
 }
 
 fn disableDoubleQuotedStrings(conn: *sqlite.sqlite3) bool {
@@ -3170,11 +3061,13 @@ test "parseMigration accepts table changes and index changes" {
         \\ALTER TABLE t RENAME COLUMN b TO label;
         \\ALTER TABLE t RENAME TO u;
         \\ALTER TABLE u DROP COLUMN c;
+        \\ALTER TABLE 'quoted' ADD COLUMN c INTEGER;
+        \\ALTER TABLE main.'quoted' RENAME TO 'other';
         \\CREATE INDEX idx_note ON u(label);
     , &detail);
     defer freeMigrationStatements(testing.allocator, statements);
 
-    try testing.expectEqual(@as(usize, 10), statements.len);
+    try testing.expectEqual(@as(usize, 12), statements.len);
     try testing.expectEqual(MigrationKind.create_table, statements[0].kind);
     try testing.expectEqual(MigrationKind.create_table, statements[1].kind);
     try testing.expectEqual(MigrationKind.create_table, statements[2].kind);
@@ -3184,7 +3077,9 @@ test "parseMigration accepts table changes and index changes" {
     try testing.expectEqual(MigrationKind.alter_table, statements[6].kind);
     try testing.expectEqual(MigrationKind.alter_table, statements[7].kind);
     try testing.expectEqual(MigrationKind.alter_table, statements[8].kind);
-    try testing.expectEqual(MigrationKind.create_index, statements[9].kind);
+    try testing.expectEqual(MigrationKind.alter_table, statements[9].kind);
+    try testing.expectEqual(MigrationKind.alter_table, statements[10].kind);
+    try testing.expectEqual(MigrationKind.create_index, statements[11].kind);
     try testing.expectEqualStrings("CREATE TABLE IF NOT EXISTS n(id INTEGER PRIMARY KEY, note TEXT)", statements[0].sql);
     try testing.expectEqual(@as(usize, 0), detail.statement_index);
 }

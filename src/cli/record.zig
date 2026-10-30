@@ -1,6 +1,7 @@
 const std = @import("std");
 const Io = std.Io;
 const builtin = @import("builtin");
+const sql_lexer = @import("../sql/lexer.zig");
 const cli_args = @import("args.zig");
 const cli_control = @import("control.zig");
 
@@ -10,29 +11,14 @@ pub const max_manifest_bytes: usize = 1024 * 1024;
 pub const max_queries: usize = 100;
 pub const record_marker = "QENOME_D1_RECORD ";
 
+const Token = sql_lexer.Token;
+
 const record_version: i64 = 1;
 
 const ExitCode = cli_control.ExitCode;
 
 const file_permissions: Io.File.Permissions = if (builtin.os.tag == .windows) .default_file else .fromMode(0o600);
 const dir_permissions: Io.File.Permissions = if (builtin.os.tag == .windows) .default_dir else .fromMode(0o700);
-
-const TokenKind = enum {
-    word,
-    number,
-    string,
-    blob,
-    quoted,
-    parameter,
-    operator,
-    punctuator,
-    comment,
-};
-
-const Token = struct {
-    kind: TokenKind,
-    text: []const u8,
-};
 
 const BindValue = union(enum) {
     int: i64,
@@ -340,191 +326,9 @@ fn objectString(object: std.json.ObjectMap, name: []const u8) ![]const u8 {
 }
 
 fn tokenize(list: *std.ArrayList(Token), arena: std.mem.Allocator, sql: []const u8) !void {
-    var index: usize = 0;
-    if (std.mem.startsWith(u8, sql, "\xef\xbb\xbf")) index = 3;
-    while (index < sql.len) {
-        const at = index;
-        const byte = sql[index];
-        if (isSpace(byte)) {
-            index += 1;
-            continue;
-        }
-        if (byte == '-' and index + 1 < sql.len and sql[index + 1] == '-') {
-            var end = index + 2;
-            while (end < sql.len and sql[end] != '\n') : (end += 1) {}
-            var text = sql[index..end];
-            if (text.len > 0 and text[text.len - 1] == '\r') text = text[0 .. text.len - 1];
-            try list.append(arena, .{ .kind = .comment, .text = text });
-            index = end;
-            continue;
-        }
-        if (byte == '/' and index + 1 < sql.len and sql[index + 1] == '*') {
-            var end = index + 2;
-            while (end + 1 < sql.len and !(sql[end] == '*' and sql[end + 1] == '/')) : (end += 1) {}
-            const stop = if (end + 1 < sql.len) end + 2 else sql.len;
-            try list.append(arena, .{ .kind = .comment, .text = sql[index..stop] });
-            index = stop;
-            continue;
-        }
-        if ((byte == 'x' or byte == 'X') and index + 1 < sql.len and sql[index + 1] == '\'') {
-            index = try scanQuoted(sql, index + 1, '\'');
-            try list.append(arena, .{ .kind = .blob, .text = sql[at..index] });
-            continue;
-        }
-        if (byte == '\'') {
-            index = try scanQuoted(sql, index, '\'');
-            try list.append(arena, .{ .kind = .string, .text = sql[at..index] });
-            continue;
-        }
-        if (byte == '"' or byte == '`') {
-            index = try scanQuoted(sql, index, byte);
-            try list.append(arena, .{ .kind = .quoted, .text = sql[at..index] });
-            continue;
-        }
-        if (byte == '[') {
-            index += 1;
-            while (index < sql.len and sql[index] != ']') : (index += 1) {}
-            if (index < sql.len) index += 1;
-            try list.append(arena, .{ .kind = .quoted, .text = sql[at..index] });
-            continue;
-        }
-        if (byte == '?') {
-            index += 1;
-            while (index < sql.len and std.ascii.isDigit(sql[index])) : (index += 1) {}
-            try list.append(arena, .{ .kind = .parameter, .text = sql[at..index] });
-            continue;
-        }
-        if ((byte == ':' or byte == '@' or byte == '$') and index + 1 < sql.len and isWordStart(sql[index + 1])) {
-            index += 2;
-            while (index < sql.len and isWordChar(sql[index])) : (index += 1) {}
-            try list.append(arena, .{ .kind = .parameter, .text = sql[at..index] });
-            continue;
-        }
-        if (std.ascii.isDigit(byte)) {
-            index = scanNumber(sql, index);
-            try list.append(arena, .{ .kind = .number, .text = sql[at..index] });
-            continue;
-        }
-        if (isWordStart(byte)) {
-            index += 1;
-            while (index < sql.len and isWordChar(sql[index])) : (index += 1) {}
-            try list.append(arena, .{ .kind = .word, .text = sql[at..index] });
-            continue;
-        }
-        if (operatorLength(sql[index..])) |length| {
-            index += length;
-            try list.append(arena, .{ .kind = .operator, .text = sql[at..index] });
-            continue;
-        }
-        index += 1;
-        try list.append(arena, .{ .kind = .punctuator, .text = sql[at..index] });
-    }
-}
-
-fn isSpace(byte: u8) bool {
-    return byte == ' ' or byte == '\t' or byte == '\r' or byte == '\n' or byte == 0x0b or byte == 0x0c;
-}
-
-fn isWordStart(byte: u8) bool {
-    return std.ascii.isAlphabetic(byte) or byte == '_' or byte >= 0x80;
-}
-
-fn isWordChar(byte: u8) bool {
-    return isWordStart(byte) or std.ascii.isDigit(byte);
-}
-
-fn scanQuoted(sql: []const u8, open: usize, quote: u8) !usize {
-    var index = open + 1;
-    while (index < sql.len) {
-        if (sql[index] != quote) {
-            index += 1;
-            continue;
-        }
-        if (index + 1 < sql.len and sql[index + 1] == quote) {
-            index += 2;
-            continue;
-        }
-        return index + 1;
-    }
-    return sql.len;
-}
-
-fn scanNumber(sql: []const u8, start: usize) usize {
-    var index = start;
-    if (index + 1 < sql.len and sql[index] == '0' and (sql[index + 1] == 'x' or sql[index + 1] == 'X')) {
-        index += 2;
-        while (index < sql.len) {
-            const byte = sql[index];
-            if (std.ascii.isHex(byte)) {
-                index += 1;
-                continue;
-            }
-            if (byte == '_' and index + 1 < sql.len and std.ascii.isHex(sql[index + 1])) {
-                index += 1;
-                continue;
-            }
-            break;
-        }
-        return index;
-    }
-    while (index < sql.len) {
-        const byte = sql[index];
-        if (std.ascii.isDigit(byte)) {
-            index += 1;
-            continue;
-        }
-        if (byte == '_' and index + 1 < sql.len and std.ascii.isDigit(sql[index + 1])) {
-            index += 1;
-            continue;
-        }
-        break;
-    }
-    if (index < sql.len and sql[index] == '.') {
-        index += 1;
-        while (index < sql.len) {
-            const byte = sql[index];
-            if (std.ascii.isDigit(byte)) {
-                index += 1;
-                continue;
-            }
-            if (byte == '_' and index + 1 < sql.len and std.ascii.isDigit(sql[index + 1])) {
-                index += 1;
-                continue;
-            }
-            break;
-        }
-    }
-    if (index < sql.len and (sql[index] == 'e' or sql[index] == 'E')) {
-        var exponent = index + 1;
-        if (exponent < sql.len and (sql[exponent] == '+' or sql[exponent] == '-')) exponent += 1;
-        if (exponent < sql.len and std.ascii.isDigit(sql[exponent])) {
-            index = exponent + 1;
-            while (index < sql.len) {
-                const byte = sql[index];
-                if (std.ascii.isDigit(byte)) {
-                    index += 1;
-                    continue;
-                }
-                if (byte == '_' and index + 1 < sql.len and std.ascii.isDigit(sql[index + 1])) {
-                    index += 1;
-                    continue;
-                }
-                break;
-            }
-        }
-    }
-    return index;
-}
-
-fn operatorLength(rest: []const u8) ?usize {
-    const operators = [_][]const u8{
-        "->>", "->", "||", "<<", ">>", "<=", ">=", "==", "!=", "<>", "!<", "!>",
-        "+",   "-",  "*",  "/",  "%",  "=",  "<",  ">",  "&",  "|",  "~",
-    };
-    for (operators) |operator| {
-        if (std.mem.startsWith(u8, rest, operator)) return operator.len;
-    }
-    return null;
+    const body = if (std.mem.startsWith(u8, sql, "\xef\xbb\xbf")) sql[3..] else sql;
+    var lexer: sql_lexer.Lexer = .initWith(body, .{ .dollar_is_word = false });
+    while (lexer.next()) |token| try list.append(arena, token);
 }
 
 fn tokenKey(allocator: std.mem.Allocator, buffer: *std.ArrayList(u8), tokens: []const Token) !void {
@@ -829,6 +633,12 @@ test "the tokenizer makes whitespace outside strings and comments the same" {
     try expectSameKey("\xef\xbb\xbfSELECT 1", "SELECT 1");
     try expectSameKey("SELECT /* a */ 1", "SELECT /* a */ 1");
     try expectSameKey("SELECT a.b", "SELECT a . b");
+}
+
+test "a dollar inside a parameter keeps the legacy boundary" {
+    try expectSameKey("SELECT :a$b FROM t", "SELECT :a $b FROM t");
+    try expectSameKey("SELECT @a$b FROM t", "SELECT @a $b FROM t");
+    try expectDifferentKey("SELECT :a$b FROM t", "SELECT :a $c FROM t");
 }
 
 test "the tokenizer keeps different SQLs apart" {
