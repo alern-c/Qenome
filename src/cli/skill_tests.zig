@@ -94,6 +94,23 @@ fn callSkill(
     return .{ .code = code, .stdout = stdout.buffered(), .stderr = stderr.buffered() };
 }
 
+fn callSkillInCwd(
+    directory: Io.Dir,
+    home: ?[]const u8,
+    stdin_text: []const u8,
+    argv: []const [:0]const u8,
+    stdout_buffer: []u8,
+    stderr_buffer: []u8,
+) !Result {
+    const original_path = try Io.Dir.cwd().realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(original_path);
+    var original = try Io.Dir.cwd().openDir(testing.io, original_path, .{});
+    defer original.close(testing.io);
+    try std.process.setCurrentDir(testing.io, directory);
+    defer std.process.setCurrentDir(testing.io, original) catch {};
+    return callSkill(directory, home, stdin_text, argv, stdout_buffer, stderr_buffer);
+}
+
 fn contains(text: []const u8, needle: []const u8) bool {
     return std.mem.indexOf(u8, text, needle) != null;
 }
@@ -334,6 +351,22 @@ test "the project option writes under the given directory" {
     const status = callSkill(home.tmp.dir, null, "", &.{ "status", "--project", "--target", "agents" }, &status_stdout, &status_stderr);
     try testing.expectEqual(cli.ExitCode.ok, status.code);
     try testing.expect(contains(status.stdout, "up to date"));
+}
+
+test "install with an empty or relative home writes nothing" {
+    var home = try Home.init();
+    defer home.deinit();
+    const cases = [_]?[]const u8{ "", "relative-home" };
+    for (cases) |value| {
+        var stdout_buffer: [8192]u8 = undefined;
+        var stderr_buffer: [4096]u8 = undefined;
+        const result = try callSkillInCwd(home.tmp.dir, value, "", &.{ "install", "--yes" }, &stdout_buffer, &stderr_buffer);
+        try testing.expectEqual(cli.ExitCode.rejected, result.code);
+        try testing.expect(contains(result.stderr, "home directory"));
+        try testing.expectEqualStrings("", result.stdout);
+        try testing.expectError(error.FileNotFound, home.tmp.dir.access(testing.io, ".agents", .{}));
+        try testing.expectError(error.FileNotFound, home.tmp.dir.access(testing.io, ".claude", .{}));
+    }
 }
 
 test "a missing home directory is reported instead of writing elsewhere" {

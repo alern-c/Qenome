@@ -192,7 +192,11 @@ pub fn resolve(
     options: Options,
 ) ResolveError![]Location {
     const root = switch (options.scope) {
-        .user => home orelse return error.HomeNotFound,
+        .user => blk: {
+            const value = home orelse return error.HomeNotFound;
+            if (value.len == 0 or !std.fs.path.isAbsolute(value)) return error.HomeNotFound;
+            break :blk value;
+        },
         .project => project_root,
     };
     const canonical_root = Io.Dir.cwd().realPathFileAlloc(io, root, allocator) catch root;
@@ -397,8 +401,10 @@ test "the user and project paths follow the documented locations" {
     try testing.expect(std.mem.startsWith(u8, project[0].path, root));
 }
 
-test "a missing home directory is reported" {
+test "a missing, empty, or relative home directory is reported" {
     try testing.expectError(error.HomeNotFound, resolve(testing.io, testing.allocator, null, "/tmp", .{}));
+    try testing.expectError(error.HomeNotFound, resolve(testing.io, testing.allocator, "", "/tmp", .{}));
+    try testing.expectError(error.HomeNotFound, resolve(testing.io, testing.allocator, "relative", "/tmp", .{}));
 }
 
 test "detection picks the agent directories that exist" {

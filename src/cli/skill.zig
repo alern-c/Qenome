@@ -67,7 +67,7 @@ fn resolveLocations(
     };
     return skill.resolve(io, allocator, home, project_root, options) catch |err| switch (err) {
         error.HomeNotFound => blk: {
-            stderr.writeAll("error: cannot find the home directory (HOME is not set); pass --project to use the current directory\n") catch {};
+            stderr.writeAll("error: cannot find the home directory (HOME is not set, empty, or not an absolute path); pass --project to use the current directory\n") catch {};
             break :blk null;
         },
         error.OutOfMemory => blk: {
