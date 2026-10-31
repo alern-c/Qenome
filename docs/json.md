@@ -206,7 +206,7 @@ Semantics and limits:
 
 ## Record report (record_schema_version 1)
 
-`--record FILE --out DIR --format json` writes one object with `record_schema_version` 1 and a trailing newline. It is a separate contract from the batch report: `schema_version` 2, `batch_schema_version` 1 and `audit_schema_version` 1 do not change. [qenome-record.schema.json](qenome-record.schema.json) checks the same shape. Without `--format json` the same facts are text lines, and the `repeated shapes:` block follows the per-query lines on stdout. [README](../README.md#recording-the-queries-your-app-runs---record) describes the command.
+`--record FILE --out DIR --format json` writes one object with `record_schema_version` 1 and a trailing newline. It is a separate contract from the batch report: `schema_version` 2, `batch_schema_version` 1 and `audit_schema_version` 1 do not change. [qenome-record.schema.json](qenome-record.schema.json) checks the same shape. Without `--format json` the same facts are text lines, and the `repeated shapes:` block follows the per-query lines on stdout. [the batch page](batch.md#recording-the-queries-your-app-runs---record) describes the command.
 
 | Key | Type | Meaning |
 | `record_schema_version` | number | `1` |

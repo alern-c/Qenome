@@ -94,6 +94,11 @@ def main():
         ),
         ("Check for comments", command([sys.executable, "scripts/check_comments.py"])),
         (
+            "Test the docs checker",
+            command([sys.executable, "scripts/test_check_docs.py"]),
+        ),
+        ("Check the documentation", command([sys.executable, "scripts/check_docs.py"])),
+        (
             "Test the npm package staging",
             command([sys.executable, "scripts/test_stage_npm.py"]),
         ),

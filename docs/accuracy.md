@@ -27,7 +27,7 @@ The result rows are compared as a multiset: each distinct row must appear the sa
 | `improved` | The rows match, the variant reads fewer rows, and the variant writes no more rows. |
 | `no-effect` | The rows match, both copies read the same number of rows, and the variant writes no more rows. |
 | `needs-check` | The rows match, but the variant reads or writes more rows. |
-| `regressed` | The rows match, but the migration made the variant read or write more rows. Only in a `--migration` batch; the exit status is `6`. |
+| `regressed` | The rows match, but the migration made the variant read or write more rows. Only in a `--migration` batch; the batch exits `6` unless a mismatch, a rejected change, a timeout, or an incomparable result takes precedence. |
 | `not-judged` | The rows differ or cannot be compared, or a `--migration` query could only run on the variant. Also used for a `--write` that was not run. |
 
 `rows_read` and `rows_written` decide the verdict. The times are a reference only and never change the verdict or the exit status, so `--runs 0` keeps the verdict and skips the timing loop.
