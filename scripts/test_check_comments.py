@@ -1,3 +1,7 @@
+import atexit
+import contextlib
+import importlib.util
+import io
 import os
 import shutil
 import subprocess
@@ -76,6 +80,18 @@ CANONICAL_FILES = {
 MAIN_ZIG_LINES = CANONICAL_FILES["src/main.zig"].count("\n")
 
 
+def load_checker():
+    spec = importlib.util.spec_from_file_location("check_comments", CHECKER)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("cannot load " + CHECKER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+CHECKER_MODULE = load_checker()
+
+
 def write_file(root, rel_path, text):
     path = os.path.join(root, rel_path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -111,6 +127,21 @@ def add_all(root):
         raise RuntimeError("git add failed: " + done.stderr)
 
 
+SEED: str | None = None
+
+
+def seed_tree():
+    global SEED
+    if SEED is None:
+        root = tempfile.mkdtemp(prefix="qenome-comments-seed-")
+        init_repo(root)
+        write_canonical_tree(root)
+        add_all(root)
+        atexit.register(shutil.rmtree, root, ignore_errors=True)
+        SEED = root
+    return SEED
+
+
 def run_checker(root, cwd=None, with_root=True, script=None):
     args = [sys.executable, script or CHECKER]
     if with_root:
@@ -119,19 +150,26 @@ def run_checker(root, cwd=None, with_root=True, script=None):
     return done.returncode, done.stdout + done.stderr
 
 
+def run_in_process(root):
+    out = io.StringIO()
+    err = io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = CHECKER_MODULE.main(["check_comments.py", "--root", root])
+    return code, out.getvalue() + err.getvalue()
+
+
 def case(mutate=None, post_add=None):
-    root = tempfile.mkdtemp(prefix="qenome-comments-")
+    holder = tempfile.mkdtemp(prefix="qenome-comments-")
+    root = os.path.join(holder, "tree")
     try:
-        init_repo(root)
-        write_canonical_tree(root)
+        shutil.copytree(seed_tree(), root)
         if mutate is not None:
             mutate(root)
-        add_all(root)
         if post_add is not None:
             post_add(root)
-        return run_checker(root)
+        return run_in_process(root)
     finally:
-        shutil.rmtree(root, ignore_errors=True)
+        shutil.rmtree(holder, ignore_errors=True)
 
 
 def append(rel_path, text):
@@ -151,6 +189,7 @@ def prepend(rel_path, text):
 def create(rel_path, text):
     def mutate(root):
         write_file(root, rel_path, text)
+        add_all(root)
 
     return mutate
 
