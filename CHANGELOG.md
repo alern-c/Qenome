@@ -17,9 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `README.md` and `README.ja.md` name the `time noise` line of the human Summary: the empirical A/A p95 and the number of pairs, shown only when timed, for reference only, and never changing the verdict or the exit code.
+- The output page (`docs/output.md` and `docs/ja/output.md`) names the `time noise` line of the human Summary: the empirical A/A p95 and the number of pairs, shown only when timed, for reference only, and never changing the verdict or the exit code.
 - `README.md` and `README.ja.md` are an index of paired pages under `docs/` and `docs/ja/`: the installation, D1, agent, usage, batch, output and rules details moved to those pages with their text unchanged, and the README keeps the introduction, the first example, the features and the contents list. `AGENTS.md` is an index of one-line rules, with the check stages in `CONTRIBUTING.md` and the architecture table in `docs/architecture.md`, and link targets elsewhere in the repository follow the moved pages. `scripts/check_docs.py` keeps that shape: it holds the page list, caps the line counts of the README and `AGENTS.md`, compares the heading levels of each page pair, and checks relative links, anchors and images, and `python3 scripts/check_all.py` runs it with its self-test.
-- `README.md` and `README.ja.md` have a short `Install` section: the npm install for Linux and macOS, `npx qenome` without installing, and the Windows prebuilt binaries, with the installation page kept as the detail link.
+- `README.md` and `README.ja.md` have a short install section: the npm install for Linux and macOS, `npx qenome` without installing, and the Windows prebuilt binaries, with the installation page kept as the detail link.
 - `docs/accuracy.md` and `docs/ja/accuracy.md` explain how the rows read and written are counted, what each verdict and warning means, what can differ from production D1, and how to check a result against production yourself; the READMEs, the output page and the bundled skill link to them. The page keeps to the same counting as local D1 (workerd patch) and says that the numbers have not been checked against production D1.
 
 ### Fixed
