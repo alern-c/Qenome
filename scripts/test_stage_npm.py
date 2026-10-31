@@ -457,6 +457,47 @@ def test_release_guard():
     expect("the refusal names the ref", "refs/heads/main" in done.stderr, done.stderr)
 
 
+def test_parse_pack_json():
+    array = '[\n  {\n    "name": "@qenome-cli/linux-x64",\n    "filename": "qenome-cli-linux-x64-0.3.8.tgz"\n  }\n]\n'
+    keyed = (
+        "{\n"
+        '  "@qenome-cli/linux-x64": {\n'
+        '    "name": "@qenome-cli/linux-x64",\n'
+        '    "filename": "qenome-cli-linux-x64-0.3.8.tgz",\n'
+        '    "files": [\n'
+        '      {"path": "LICENSE", "size": 11358, "mode": 420}\n'
+        "    ],\n"
+        '    "bundled": []\n'
+        "  }\n"
+        "}\n"
+    )
+    for label, text in (("npm 11 array", array), ("npm 12 object", keyed)):
+        try:
+            packed = stage_npm.parse_pack_json(text)
+        except ValueError as error:
+            expect("the " + label + " pack output is read", False, error)
+            continue
+        expect(
+            "the " + label + " pack output is read",
+            len(packed) == 1
+            and packed[0]["name"] == "@qenome-cli/linux-x64"
+            and packed[0]["filename"] == "qenome-cli-linux-x64-0.3.8.tgz",
+            packed,
+        )
+    try:
+        packed = stage_npm.parse_pack_json(keyed + "npm notice [done]\n")
+    except ValueError as error:
+        expect("text after the pack JSON is ignored", False, error)
+    else:
+        expect("text after the pack JSON is ignored", packed[0]["filename"].endswith(".tgz"), packed)
+    try:
+        stage_npm.parse_pack_json("no json here\n")
+    except ValueError as error:
+        expect("pack output without JSON is refused", "did not return" in str(error), error)
+    else:
+        expect("pack output without JSON is refused", False, "accepted text without JSON")
+
+
 def test_published_verify():
     calls = {"n": 0}
     names = verify_published_npm.package_names()
@@ -552,6 +593,7 @@ def main():
     test_launcher_permissions()
     test_publish_order()
     test_release_guard()
+    test_parse_pack_json()
     test_published_verify()
     test_publish_guards()
     if FAILURES:
