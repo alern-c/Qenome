@@ -2,7 +2,8 @@ const std = @import("std");
 const Io = std.Io;
 const builtin = @import("builtin");
 const contract = @import("../contract/values.zig");
-const cli_report = @import("report.zig");
+const report_model = @import("../report/model.zig");
+const report_json = @import("../report/json.zig");
 
 pub const max_findings: usize = 20;
 
@@ -347,7 +348,7 @@ pub const Report = struct {
     dropped: usize,
 };
 
-pub fn printSummary(writer: *Io.Writer, arena: std.mem.Allocator, summary: Summary) cli_report.Error!void {
+pub fn printSummary(writer: *Io.Writer, arena: std.mem.Allocator, summary: Summary) report_model.Error!void {
     const manifest = try std.fmt.allocPrint(arena, "{s}/manifest.json", .{summary.out_path});
     if (summary.json) {
         return writeJson(writer, arena, .{
@@ -394,16 +395,16 @@ pub fn printDistinctLimit(writer: *Io.Writer, count: usize, limit: usize, shapes
     try writer.writeAll("\n");
 }
 
-fn writeWarning(json: *std.json.Stringify, allocator: std.mem.Allocator, code: []const u8, message: []const u8) cli_report.Error!void {
+fn writeWarning(json: *std.json.Stringify, allocator: std.mem.Allocator, code: []const u8, message: []const u8) report_model.Error!void {
     try json.beginObject();
     try json.objectField("code");
     try json.write(code);
     try json.objectField("message");
-    try cli_report.writeJsonText(json, allocator, message);
+    try report_json.writeJsonText(json, allocator, message);
     try json.endObject();
 }
 
-fn writeJson(writer: *Io.Writer, allocator: std.mem.Allocator, report: Report) cli_report.Error!void {
+fn writeJson(writer: *Io.Writer, allocator: std.mem.Allocator, report: Report) report_model.Error!void {
     var json: std.json.Stringify = .{
         .writer = writer,
         .options = .{ .whitespace = .minified },
@@ -414,7 +415,7 @@ fn writeJson(writer: *Io.Writer, allocator: std.mem.Allocator, report: Report) c
     try json.objectField("exit_code");
     try json.write(@as(u8, 0));
     try json.objectField("manifest");
-    try cli_report.writeJsonText(&json, allocator, report.manifest);
+    try report_json.writeJsonText(&json, allocator, report.manifest);
     try json.objectField("records");
     try json.write(report.records);
     try json.objectField("queries");
@@ -423,7 +424,7 @@ fn writeJson(writer: *Io.Writer, allocator: std.mem.Allocator, report: Report) c
         var buffer: [32]u8 = undefined;
         try json.beginObject();
         try json.objectField("select");
-        try cli_report.writeJsonText(&json, allocator, selectPath(&buffer, line.index) orelse "");
+        try report_json.writeJsonText(&json, allocator, selectPath(&buffer, line.index) orelse "");
         try json.objectField("executions");
         try json.write(line.executions);
         try json.endObject();
@@ -476,22 +477,22 @@ fn writeJson(writer: *Io.Writer, allocator: std.mem.Allocator, report: Report) c
         try json.objectField("batched");
         try json.write(finding.batched);
         try json.objectField("example");
-        try cli_report.writeJsonText(&json, allocator, finding.example);
+        try report_json.writeJsonText(&json, allocator, finding.example);
         try json.objectField("previous_shape_example");
         if (finding.previous_shape_example) |sql| {
-            try cli_report.writeJsonText(&json, allocator, sql);
+            try report_json.writeJsonText(&json, allocator, sql);
         } else {
             try json.write(null);
         }
         try json.objectField("manifest_select");
         if (finding.manifest_index) |index| {
             var buffer: [32]u8 = undefined;
-            try cli_report.writeJsonText(&json, allocator, selectPath(&buffer, index) orelse "");
+            try report_json.writeJsonText(&json, allocator, selectPath(&buffer, index) orelse "");
         } else {
             try json.write(null);
         }
         try json.objectField("hint");
-        try cli_report.writeJsonText(&json, allocator, kindHint(finding.kind));
+        try report_json.writeJsonText(&json, allocator, kindHint(finding.kind));
         try json.endObject();
     }
     try json.endArray();

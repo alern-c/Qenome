@@ -10,10 +10,10 @@ const cli_args = @import("args.zig");
 const cli_batch_report = @import("batch_report.zig");
 const cli_comparison = @import("comparison.zig");
 const cli_control = @import("control.zig");
-const cli_d1 = @import("d1.zig");
 const cli_pair = @import("pair.zig");
 const cli_query = @import("query.zig");
-const cli_report = @import("report.zig");
+const report_model = @import("../report/model.zig");
+const report_json = @import("../report/json.zig");
 const cli_suggest = @import("suggest.zig");
 const cli_warnings = @import("warnings.zig");
 const cli_workspace = @import("workspace.zig");
@@ -90,7 +90,7 @@ pub const Inputs = struct {
     database_path: [:0]const u8,
     baseline_path: [:0]const u8,
     variant_path: [:0]const u8,
-    d1: ?cli_d1.Resolved = null,
+    d1: ?report_model.D1 = null,
     migration: ?Migration = null,
     timeout_ms: u64,
     show_binds: bool = false,
@@ -99,7 +99,7 @@ pub const Inputs = struct {
     format: cli_args.Format = .human,
     suggest: bool = false,
     manifest: bool = true,
-    seed: ?cli_report.Seed = null,
+    seed: ?report_model.Seed = null,
     work_parent: []const u8,
 };
 
@@ -607,20 +607,21 @@ pub fn run(
 
             if (missing_baseline) {
                 const reason = failureMessage(arena, "the baseline cannot run this SELECT before the migration: {s}", .{baseline_reasons[query_index]});
-                var variant_report: cli_report.Report = .{ .judgement = .{ .verdict = .not_judged } };
+                var variant_report: report_model.Report = .{ .judgement = .{ .verdict = .not_judged } };
                 variant_report.judgement.add(reason);
                 variant_report.judgement.add("only the variant was measured, so its plan and row counts are reported without a comparison");
                 variant_report.sizes = .{ .baseline = baseline_size, .variant = variant_size };
                 const partial_index = variant.database.findBindDependentPartialIndex(child, after.plan, query.sql, query.binds, &control) catch null;
                 variant_report.warnings.bind_dependent_partial_index = partial_index;
 
-                const variant_header: cli_report.Header = .{
+                const variant_header: report_model.Header = .{
                     .database_path = inputs.database_path,
                     .select_path = query.label,
                     .index_path = candidate.label,
                     .work_parent = inputs.work_parent,
                     .sqlite_version = cli_query.sqliteVersion(),
                     .sqlite_source_id = cli_query.sqliteSourceId(),
+                    .qenome_version = cli_args.version,
                     .binds = query.binds,
                     .show_binds = inputs.show_binds,
                     .show_rows = inputs.show_rows,
@@ -628,7 +629,7 @@ pub fn run(
                     .d1 = inputs.d1,
                 };
                 var variant_rendered: Io.Writer.Allocating = .init(child);
-                cli_report.writeJsonVariantOnlyTo(&variant_rendered.writer, child, variant_header, after, variant_report, .minified) catch |err| return reportWriteFailure(err, stderr);
+                report_json.writeJsonVariantOnlyTo(&variant_rendered.writer, child, variant_header, after, variant_report, .minified) catch |err| return reportWriteFailure(err, stderr);
                 const variant_comparison = arena.dupe(u8, variant_rendered.written()) catch return outOfMemoryCode(stderr);
                 summary.not_judged += 1;
                 if (partial_index != null) summary.partial_index_warnings += 1;
@@ -651,7 +652,7 @@ pub fn run(
                 .limit_or_offset = db.mentionsLimitOrOffset(query.sql),
             });
 
-            var report: cli_report.Report = .{ .judgement = .{ .verdict = .not_judged } };
+            var report: report_model.Report = .{ .judgement = .{ .verdict = .not_judged } };
             switch (outcome.verdict) {
                 .mismatch => {
                     report.judgement.add("the result rows do not match, so the row counts are not judged");
@@ -677,13 +678,14 @@ pub fn run(
             report.sizes = .{ .baseline = baseline_size, .variant = variant_size };
             if (partial_index != null) summary.partial_index_warnings += 1;
 
-            const header: cli_report.Header = .{
+            const header: report_model.Header = .{
                 .database_path = inputs.database_path,
                 .select_path = query.label,
                 .index_path = candidate.label,
                 .work_parent = inputs.work_parent,
                 .sqlite_version = cli_query.sqliteVersion(),
                 .sqlite_source_id = cli_query.sqliteSourceId(),
+                .qenome_version = cli_args.version,
                 .binds = query.binds,
                 .show_binds = inputs.show_binds,
                 .show_rows = inputs.show_rows,
@@ -691,7 +693,7 @@ pub fn run(
                 .d1 = inputs.d1,
             };
             var rendered: Io.Writer.Allocating = .init(child);
-            cli_report.writeJsonTo(&rendered.writer, child, header, before, after, outcome, report, .minified) catch return reportFailure(stderr);
+            report_json.writeJsonTo(&rendered.writer, child, header, before, after, outcome, report, .minified) catch return reportFailure(stderr);
             const comparison = arena.dupe(u8, rendered.written()) catch return outOfMemoryCode(stderr);
             results.append(arena, .{
                 .query = query.label,
