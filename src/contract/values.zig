@@ -10,6 +10,8 @@ pub const record_schema_version: u8 = 1;
 
 pub const scale_schema_version: u8 = 1;
 
+pub const rank_schema_version: u8 = 1;
+
 pub const ExitCode = enum(u8) {
     ok = 0,
     rejected = 1,
@@ -18,6 +20,7 @@ pub const ExitCode = enum(u8) {
     incomparable = 4,
     cleanup = 5,
     regression = 6,
+    likely_full_scan = 7,
     timeout = 124,
     hangup = 129,
     interrupted = 130,
@@ -78,6 +81,7 @@ test "the warning codes pair with one message each" {
 test "the exit codes keep the documented values" {
     try std.testing.expectEqual(@as(u8, 0), @backingInt(ExitCode.ok));
     try std.testing.expectEqual(@as(u8, 6), @backingInt(ExitCode.regression));
+    try std.testing.expectEqual(@as(u8, 7), @backingInt(ExitCode.likely_full_scan));
     try std.testing.expectEqual(@as(u8, 124), @backingInt(ExitCode.timeout));
     try std.testing.expectEqual(@as(u8, 143), @backingInt(ExitCode.terminated));
 }

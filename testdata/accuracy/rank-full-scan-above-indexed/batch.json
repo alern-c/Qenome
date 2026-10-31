@@ -1,0 +1,6 @@
+{
+  "queries": [
+    { "select": "indexed.sql" },
+    { "select": "scan.sql" }
+  ]
+}

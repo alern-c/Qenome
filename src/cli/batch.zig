@@ -49,6 +49,7 @@ pub const Query = struct {
     path: [:0]const u8,
     sql: [:0]const u8,
     binds: []const db.BindArg,
+    executions: ?u64 = null,
 };
 
 pub const Source = cli_batch_report.Source;
@@ -77,6 +78,7 @@ pub const ManifestOptions = struct {
     suggest: bool = false,
     migration: bool = false,
     audit: bool = false,
+    rank: bool = false,
 };
 
 const Suggested = struct {
@@ -118,6 +120,7 @@ pub fn load(io: Io, arena: std.mem.Allocator, path: [:0]const u8, stderr: *Io.Wr
     const suggest = options.suggest;
     const migration = options.migration;
     const audit = options.audit;
+    const rank = options.rank;
     const data = cli_args.readSqlFile(io, arena, path) catch |err| {
         switch (err) {
             error.SqlFileTooLarge => return invalidManifest(stderr, path, "the file is larger than 1 MiB", .{}),
@@ -153,8 +156,8 @@ pub fn load(io: Io, arena: std.mem.Allocator, path: [:0]const u8, stderr: *Io.Wr
         if (suggest or migration) return invalidManifest(stderr, path, "it must have only the keys queries and candidates", .{});
         return invalidManifest(stderr, path, "it must have exactly the keys queries and candidates", .{});
     }
-    const writes = cli_batch_writes.loadManifest(io, arena, root, manifest_dir, path, migration, stderr) orelse return null;
-    if (!suggest and !migration and !audit and root.get("candidates") == null) {
+    const writes = if (rank) &.{} else (cli_batch_writes.loadManifest(io, arena, root, manifest_dir, path, migration, stderr) orelse return null);
+    if (!suggest and !migration and !audit and !rank and root.get("candidates") == null) {
         return invalidManifest(stderr, path, "it must have exactly the keys queries and candidates", .{});
     }
 
@@ -173,12 +176,12 @@ pub fn load(io: Io, arena: std.mem.Allocator, path: [:0]const u8, stderr: *Io.Wr
             .object => |object| object,
             else => return invalidManifest(stderr, path, "query {d} must be an object", .{index + 1}),
         };
-        if (query_object.get("select") == null or query_object.count() < 1 or query_object.count() > 2) {
+        if (query_object.get("select") == null or query_object.count() < 1 or query_object.count() > 3) {
             return invalidManifest(stderr, path, "query {d} must have select and optional binds", .{index + 1});
         }
         var query_keys = query_object.iterator();
         while (query_keys.next()) |entry| {
-            if (!std.mem.eql(u8, entry.key_ptr.*, "select") and !std.mem.eql(u8, entry.key_ptr.*, "binds")) {
+            if (!std.mem.eql(u8, entry.key_ptr.*, "select") and !std.mem.eql(u8, entry.key_ptr.*, "binds") and !std.mem.eql(u8, entry.key_ptr.*, "executions")) {
                 return invalidManifest(stderr, path, "query {d} must have select and optional binds", .{index + 1});
             }
         }
@@ -217,11 +220,21 @@ pub fn load(io: Io, arena: std.mem.Allocator, path: [:0]const u8, stderr: *Io.Wr
             }
         }
 
+        var executions: ?u64 = null;
+        if (query_object.get("executions")) |raw| {
+            const number = switch (raw) {
+                .integer => |number| number,
+                else => return invalidManifest(stderr, path, "query {d} executions must be a whole number", .{index + 1}),
+            };
+            if (number < 1) return invalidManifest(stderr, path, "query {d} executions must be at least 1", .{index + 1});
+            executions = @intCast(number);
+        }
+
         const resolved = resolvePath(arena, manifest_dir, label) orelse return outOfMemory(stderr);
-        queries.append(arena, .{ .label = label, .path = resolved, .sql = undefined, .binds = binds.items }) catch return outOfMemory(stderr);
+        queries.append(arena, .{ .label = label, .path = resolved, .sql = undefined, .binds = binds.items, .executions = executions }) catch return outOfMemory(stderr);
     }
 
-    const candidate_values: []std.json.Value = if (audit)
+    const candidate_values: []std.json.Value = if (audit or rank)
         &.{}
     else if (root.get("candidates")) |value| switch (value) {
         .array => |array| array.items,
@@ -235,7 +248,7 @@ pub fn load(io: Io, arena: std.mem.Allocator, path: [:0]const u8, stderr: *Io.Wr
         if (candidate_values.len > max_entries) {
             return invalidManifest(stderr, path, "candidates must hold 0 to {d} entries", .{max_entries});
         }
-    } else if (audit) {} else if (candidate_values.len < 1 or candidate_values.len > max_entries) {
+    } else if (audit or rank) {} else if (candidate_values.len < 1 or candidate_values.len > max_entries) {
         return invalidManifest(stderr, path, "candidates must hold 1 to {d} entries", .{max_entries});
     }
     for (candidate_values, 0..) |candidate_value, index| {

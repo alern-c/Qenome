@@ -6,7 +6,8 @@ description: >
   a candidate index on sandbox copies, and reports the rows read and written,
   the verdict, the exit code, and a JSON report (schema_version 2). Use when a
   D1 or SQLite query is slow, when its plan reads many rows, when the user asks
-  whether an index helps or which index is missing, or when a migration that
+  whether an index helps or which index is missing, when a manifest of queries
+  should be ranked on the baseline before a candidate exists, or when a migration that
   adds, drops, or replaces an index or a column must be checked before merge.
   Needs a wrangler d1_databases binding or a SQLite file. Does not apply the
   index to the original database.
@@ -14,7 +15,7 @@ description: >
 
 # Qenome
 
-Qenome compares one read-only `SELECT` with one candidate `CREATE INDEX` on sandbox copies. With `--write`, it compares one `INSERT`, `UPDATE`, `DELETE`, or `REPLACE` instead, inside a transaction that is rolled back. With `--seed-data`, it fills the sandbox copy with deterministic rows first; `--scale` repeats that comparison at 2 or 3 sizes. With `--batch`, it compares every SELECT in a manifest with every candidate in one run. With `--batch ... --audit-indexes`, it reports the indexes that the manifest queries did not use and the indexes whose leading columns another index or the primary key covers. With `--suggest`, SQLite's expert proposes the candidate indexes, so a SELECT file is enough. With `--migration`, it applies a SQL file of index or table changes to the variant before comparing every query, and every write statement the manifest lists, in a manifest. The verdict uses the same counting as local D1 (workerd patch). The numbers have not yet been checked against production D1.
+Qenome compares one read-only `SELECT` with one candidate `CREATE INDEX` on sandbox copies. With `--batch ... --rank`, it measures every query in a manifest on the baseline only and ranks them by rows read, with no candidate index. With `--write`, it compares one `INSERT`, `UPDATE`, `DELETE`, or `REPLACE` instead, inside a transaction that is rolled back. With `--seed-data`, it fills the sandbox copy with deterministic rows first; `--scale` repeats that comparison at 2 or 3 sizes. With `--batch`, it compares every SELECT in a manifest with every candidate in one run. With `--batch ... --audit-indexes`, it reports the indexes that the manifest queries did not use and the indexes whose leading columns another index or the primary key covers. With `--suggest`, SQLite's expert proposes the candidate indexes, so a SELECT file is enough. With `--migration`, it applies a SQL file of index or table changes to the variant before comparing every query, and every write statement the manifest lists, in a manifest. The verdict uses the same counting as local D1 (workerd patch). The numbers have not yet been checked against production D1.
 
 The contract is [docs/json.md](../../docs/json.md). This skill expects `schema_version` 2. Before telling a user what a result means for production, read [docs/accuracy.md](../../docs/accuracy.md): how rows are counted, what each verdict means, and what can differ from production D1.
 
@@ -26,7 +27,7 @@ The contract is [docs/json.md](../../docs/json.md). This skill expects `schema_v
 
 Run Qenome before keeping a `CREATE INDEX` on a local D1 or a SQLite file. Run it when the user asks whether an index helps, whether a query got faster, whether a write gets more expensive, or whether a schema change is safe to merge.
 
-Do not run it to change production, to apply SQL, or to estimate a bill. One comparison is one SELECT file and one CREATE INDEX file; `--batch` takes a manifest of them. `--suggest` lets SQLite propose the candidate from the SELECT file alone.
+Do not run it to change production, to apply SQL, or to estimate a bill. `--rank` prints `rows read x runs` as a relative indicator and labels it `not a bill`; do not call that number a charge. One comparison is one SELECT file and one CREATE INDEX file; `--batch` takes a manifest of them. `--suggest` lets SQLite propose the candidate from the SELECT file alone. `--rank` is the step before `--suggest` when the slow query is not known yet.
 
 ## Install and invoke
 
@@ -179,9 +180,10 @@ Use this when the user wants a manifest from the queries the app actually runs, 
 npx qenome --record qenome-record.log --out qenome-manifest
 ```
 
-1. Compare it with `--suggest` or `--migration`, because the manifest holds only `queries`:
+1. Rank it when the slow query is not known yet, then `--suggest` the top query. The manifest holds only `queries`, and each query's `executions` is how many times that statement ran:
 
 ```sh
+npx qenome --d1 DB --batch qenome-manifest/manifest.json --rank --format json
 npx qenome --d1 DB --batch qenome-manifest/manifest.json --suggest --format json
 ```
 
@@ -191,6 +193,23 @@ npx qenome --d1 DB --batch qenome-manifest/manifest.json --suggest --format json
 - After writing a data-access loop, run `npx qenome --record qenome-record.log --out qenome-manifest --format json` and read `repeated_shapes`: each entry is a statement that ran many times with different values (a possible N+1), with `manifest_select` and a `hint`. It is a hint, not a measurement, and it never changes the exit code. `--n-plus-one-threshold N` changes the default of 10 different values; `0` turns the report off.
 - `--record` needs no database, takes `--format human` (default) or `--format json`, and cannot be combined with the comparison options.
 - Do not put the wrapper in production code: it writes the SQL and the bind values to the output. SQL inside `withSession` and Durable Objects is not recorded.
+
+## Rank a manifest on the baseline (--rank)
+
+Use `--rank` when the user has a manifest, from `--record` or written by hand, and does not yet know which query reads the most. It does not need a candidate index.
+
+```sh
+npx qenome app.db --batch manifest.json --rank --format json
+npx qenome --d1 DB --batch qenome-manifest/manifest.json --rank --format json
+```
+
+- The manifest needs only `queries`. `candidates` and `writes` are ignored. A query may include `executions`, a whole number of at least 1. `--record` writes that count into `manifest.json`.
+- Each query runs once on the baseline copy. Read `rows_read`, `rows_returned`, `read_ratio` (`null` when no rows come back), `fullscan_steps`, and `scan_steps` (plan lines that are a table `SCAN`, not `SCAN ... USING`, a co-routine that a `CO-ROUTINE` line of the same plan names, a constant row set, or a `VALUES` clause).
+- `likely_full_scan` is true when `fullscan_steps` is above zero or `scan_steps` is not empty. Say so plainly. Exit `7` means the report was written and at least one query is flagged. Exit `0` means none is. Do not treat `7` as a rejected input: stdout holds the report.
+- Order is by `relative_rows` (`rows_read` times `executions`) when `executions` is set, otherwise by `rows_read`, highest first. `relative_rows` is a relative indicator, not a bill. The object says that in `note`. Never call the figure a bill or a charge.
+- `next.select` is the top query. The path is relative to the manifest. The next command is `npx qenome <DB> <that file> --suggest`.
+- The object has `schema_version` 2 and `rank_schema_version` 1. It is not a comparison: do not read `verdict` from it. `warnings` may hold `unapplied_migrations` with `--d1`.
+- `--rank` needs `--batch`. It does not take `--suggest`, `--migration`, `--audit-indexes`, `--runs`, or `--format kv`. It does take `--seed-data` and `--d1`.
 
 ## Compare a migration (--migration)
 
@@ -218,6 +237,7 @@ npx qenome --d1 DB --batch queries.json --migration 0002_replace_index.sql --for
 State `schema_version` before you interpret fields.
 
 - If stdout is a JSON object with `record_schema_version` `1`, it is a `--record` report. Read `records`, `queries`, `skipped`, `warnings`, `repeated_shapes`, and `repeated_shapes_dropped`. Repeat the `warnings` codes `record_log_permissions` (the log is readable by other users) and `record_manifest_binds`. It is not a comparison and has no `verdict`; the exit code is `0` when the object is written. On a no-SELECT failure, the error `message` carries the `skipped:` breakdown.
+- If stdout is a JSON object with `rank_schema_version` `1`, it is a baseline rank, even though `schema_version` is also `2`. Read `likely_full_scans`, `queries` in order, `note`, and `next`. Do not read `verdict`. `relative_rows` is not a bill. Exit `7` means at least one likely full scan; exit `0` means none. Then run `--suggest` on `next.select`.
 - If stdout is a JSON object with `audit_schema_version` `1`, it is an index audit report. Read `redundancy_judged` first, then each `indexes` entry (`used`, `constraint`, `redundant_by`, `partial`, `expression`). It is not a comparison and has no `verdict`. Exit `0` can have unused and redundant entries; report them as candidates only.
 - If stdout is a JSON object with `scale_schema_version` `1`, it is a `--scale` report. Read the top-level `exit_code`, `inputs.scale`, and each `steps` entry (`rows`, `tables`, and the full `comparison` with `schema_version` 2 and the shape below), then the run-wide `warnings`. The per-step warnings are inside each `steps[].comparison.warnings`. If the verdict changes between steps, say so in one line and do not classify the growth. The numbers are generated data on this machine, not production D1 billing.
 - If stdout is a JSON object with `batch_schema_version`, it is a batch report. Read `batch_schema_version` first; it must be `1`. Read `recommended` (`null` when no candidate qualifies; with `--suggest` it can be `suggested:N`; with `--migration` it is the migration path or `null`), the `summary` entries (`candidate`, `source`, `index_sql_text`, `not_judged`; `source` can be `manifest`, `suggested`, or `migration`), the `results`, the optional top-level `migration` object (`path`, `statements`), the optional `writes` array (`write`, `candidate`, `status`, and the embedded `comparison`; `comparison` is `null` when `status` is `variant_timeout`), and the top-level `warnings` (the `--suggest` entries, plus `unapplied_migrations` with `--d1`). Repeat every batch warning `code` and `message`, like the comparison warnings. Read each `results[].comparison.warnings` too: comparison warnings, including `bind_dependent_partial_index`, are there and not in the batch top-level `warnings`. A `human` batch report lists each comparison warning under `Warnings` as `<query> -> <candidate>: <code>: <message>`. The `comparison` object under each result has `schema_version` 2 and the shape below.
@@ -275,6 +295,7 @@ Tell the user the process exit code, `schema_version`, `result`, `verdict`, and 
 | 4 and stdout is empty | The local D1 was not found. Follow `error.hint`. Do not edit the index to fix a missing database |
 | 5 | The comparison matched and cleanup failed. stdout holds the report (`exit_code` 0). Tell the user to remove the directory named in the stderr error. Do not loop |
 | 6 | `--migration` matched the rows but made a query read or write more rows. Do not keep the migration. Quote the `regressed` verdicts, the `needs_check` summary count, and the comparison reasons |
+| 7 and `rank_schema_version` | The rank report was written and at least one query is a likely full scan. Quote the top query's `rows_read`, `rows_returned`, and `scan_steps`. Say that `relative_rows` is not a bill. Offer `--suggest` on `next.select` |
 | 0 with `not-judged` | The query could only run on the variant. Report the variant plan, the row counts, and the `verdict_reasons`; do not treat it as a failure and do not change the exit code. Quote `summary.not_judged` |
 | 1 | The input was rejected. Follow `error.hint` or the `error:` line. With `--migration`, `batch_variant_failed` may mean a manifest query uses a column or table the migration dropped or renamed: read the SQLite message and, if it does, fix the manifest rather than the migration |
 | 2 | The command line is wrong. Follow the hint. Fix the invocation and rerun once |
@@ -317,4 +338,8 @@ npx qenome testdata/skill/app.db --batch testdata/skill/batch.json --format json
 
 ```sh
 npx qenome testdata/skill/app.db testdata/skill/select.sql --bind 1:int:1 --suggest --format json  # qenome-ci: run exit=0 stdout=report fields=batch_schema_version,recommended,summary,warnings
+```
+
+```sh
+npx qenome testdata/skill/app.db --batch testdata/skill/rank.json --rank --format json  # qenome-ci: run exit=7 stdout=report fields=schema_version,rank_schema_version,exit_code,likely_full_scans,queries.0.rows_read,queries.0.likely_full_scan,next.select
 ```

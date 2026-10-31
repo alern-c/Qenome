@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "qenome-rank.schema.json",
+  "title": "Qenome baseline rank report (schema_version 2, rank_schema_version 1)",
+  "description": "Stdout object after --batch FILE --rank. Separate from the comparison object; see docs/json.md.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "rank_schema_version",
+    "exit_code",
+    "database",
+    "sqlite_version",
+    "work_dir_parent",
+    "likely_full_scans",
+    "note",
+    "next",
+    "queries",
+    "warnings"
+  ],
+  "properties": {
+    "schema_version": { "const": 2 },
+    "rank_schema_version": { "const": 1 },
+    "exit_code": {
+      "description": "0 when no query is a likely full scan, 7 when at least one is. The process can still exit 5 after a 0 object when cleanup fails.",
+      "enum": [0, 7]
+    },
+    "database": { "type": "string" },
+    "sqlite_version": { "type": "string" },
+    "work_dir_parent": { "type": "string" },
+    "seed_data": { "type": "string" },
+    "likely_full_scans": { "type": "integer", "minimum": 0 },
+    "note": { "const": "rows read x runs is a relative indicator, not a bill" },
+    "next": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["select", "command", "hint"],
+      "properties": {
+        "select": { "type": "string", "minLength": 1 },
+        "command": { "const": "--suggest" },
+        "hint": { "type": "string" }
+      }
+    },
+    "queries": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100,
+      "items": { "$ref": "#/$defs/query" }
+    },
+    "warnings": { "type": "array" }
+  },
+  "$defs": {
+    "query": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "rank",
+        "select",
+        "rows_read",
+        "rows_returned",
+        "read_ratio",
+        "fullscan_steps",
+        "scan_steps",
+        "likely_full_scan",
+        "executions",
+        "relative_rows"
+      ],
+      "properties": {
+        "rank": { "type": "integer", "minimum": 1 },
+        "select": { "type": "string", "minLength": 1 },
+        "rows_read": { "type": "integer", "minimum": 0 },
+        "rows_returned": { "type": "integer", "minimum": 0 },
+        "read_ratio": { "type": ["number", "null"] },
+        "fullscan_steps": { "type": "integer", "minimum": 0 },
+        "scan_steps": { "type": "array", "items": { "type": "string" } },
+        "likely_full_scan": { "type": "boolean" },
+        "executions": { "type": ["integer", "null"] },
+        "relative_rows": {
+          "description": "rows_read times executions. A relative indicator, not a bill.",
+          "type": ["integer", "null"]
+        }
+      }
+    }
+  }
+}
