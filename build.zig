@@ -18,14 +18,25 @@ pub fn build(b: *std.Build) void {
 
     mod.addAnonymousImport("qenome_skill", .{ .root_source_file = b.path("skills/qenome/SKILL.md") });
 
-    mod.addCSourceFiles(.{
-        .files = &.{ "vendor/sqlite3/sqlite3.c", "vendor/sqlite3/sqlite3expert.c" },
-        .flags = &.{
+    const sqlite_flags: []const []const u8 = if (optimize == .debug)
+        &.{
             "-DSQLITE_THREADSAFE=0",
             "-DSQLITE_OMIT_LOAD_EXTENSION",
             "-DNDEBUG",
             "-fwrapv",
-        },
+            "-O2",
+        }
+    else
+        &.{
+            "-DSQLITE_THREADSAFE=0",
+            "-DSQLITE_OMIT_LOAD_EXTENSION",
+            "-DNDEBUG",
+            "-fwrapv",
+        };
+
+    mod.addCSourceFiles(.{
+        .files = &.{ "vendor/sqlite3/sqlite3.c", "vendor/sqlite3/sqlite3expert.c" },
+        .flags = sqlite_flags,
     });
 
     const exe = b.addExecutable(.{
