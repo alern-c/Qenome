@@ -184,7 +184,7 @@ const Session = struct {
 
     fn open(self: *Session, path: [:0]const u8, stderr: *Io.Writer, failure: *ExitCode) bool {
         self.runner.open(path) catch |err| {
-            stderr.print("error: cannot open the {t} '{s}' for writing: {s}\n", .{ self.side, path, cli_query.openErrorMessage(err) }) catch {};
+            stderr.print("error: the batch write: cannot open the {t} '{s}' for writing: {s}\n", .{ self.side, path, cli_query.openErrorMessage(err) }) catch {};
             failure.* = .rejected;
             return false;
         };
@@ -264,10 +264,7 @@ const Session = struct {
         failure: *ExitCode,
     ) RunOutcome {
         const execution = self.runner.execute(control, rows_out) catch |err| return switch (err) {
-            error.Timeout => blk: {
-                stderr.print("error: the batch write '{s}' exceeded the time limit of {d} ms on the {t}\n", .{ write.label, control.timeout_ms, self.side }) catch {};
-                break :blk .timeout;
-            },
+            error.Timeout => .timeout,
             error.Interrupted => blk: {
                 failure.* = cli_control.reportInterrupted(stderr);
                 break :blk .{ .failed = failure.* };
@@ -399,7 +396,10 @@ pub fn compare(
 
         const before_execution = switch (baseline.execute(write, control, &rows.baseline, stderr, &failure)) {
             .measured => |execution| execution,
-            .timeout => return .{ .failed = .timeout },
+            .timeout => {
+                stderr.print("error: the batch write '{s}' exceeded the time limit of {d} ms on the baseline\n", .{ write.label, control.timeout_ms }) catch {};
+                return .{ .failed = .timeout };
+            },
             .failed => |code| return .{ .failed = code },
         };
         const after_execution = switch (variant.execute(write, control, &rows.variant, stderr, &failure)) {

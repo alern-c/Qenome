@@ -210,6 +210,34 @@ fn createPair(tmp: *testing.TmpDir, baseline_schema: [:0]const u8, variant_schem
     try db.createTestDatabase(variant_path.*, variant_schema);
 }
 
+fn runCompare(
+    arena: std.mem.Allocator,
+    tmp: *testing.TmpDir,
+    baseline_schema: [:0]const u8,
+    variant_schema: [:0]const u8,
+    writes: []const cli_batch_writes.Write,
+    timeout_ms: u64,
+    results: *std.ArrayList(report_batch_writes.Result),
+    stderr: *Io.Writer,
+) !void {
+    var baseline_path: [:0]u8 = undefined;
+    var variant_path: [:0]u8 = undefined;
+    try createPair(tmp, baseline_schema, variant_schema, &baseline_path, &variant_path);
+    defer testing.allocator.free(baseline_path);
+    defer testing.allocator.free(variant_path);
+    var cancel = std.atomic.Value(bool).init(false);
+    var control = db.StepControl.init(testing.io, timeout_ms, &cancel);
+    var cleanup_failed = false;
+    switch (cli_batch_writes.compare(arena, testing.allocator, writes, baseline_path, variant_path, "m.sql", .{
+        .database_path = "db.sqlite",
+        .work_parent = "/tmp",
+    }, &control, results, stderr, &cleanup_failed)) {
+        .done => {},
+        .failed => return error.UnexpectedFailure,
+    }
+    try testing.expect(!cleanup_failed);
+}
+
 const pair_schema: [:0]const u8 =
     \\CREATE TABLE t(a INTEGER, b TEXT, c INTEGER);
     \\INSERT INTO t VALUES (1, 'x', 0), (2, 'y', 0);
@@ -228,32 +256,21 @@ fn randomWrite() cli_batch_writes.Write {
     };
 }
 
+fn updateWrite(label: [:0]const u8, sql: [:0]const u8, value: i64, storage: *[1]db.BindArg) cli_batch_writes.Write {
+    storage[0] = .{ .number = 1, .value = .{ .int = value } };
+    return .{ .label = label, .path = label, .sql = sql, .binds = storage };
+}
+
 test "a nondeterministic write is not run when both copies can prepare it" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    var baseline_path: [:0]u8 = undefined;
-    var variant_path: [:0]u8 = undefined;
-    try createPair(&tmp, pair_schema, pair_schema, &baseline_path, &variant_path);
-    defer testing.allocator.free(baseline_path);
-    defer testing.allocator.free(variant_path);
-
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
-    var cancel = std.atomic.Value(bool).init(false);
-    var control = db.StepControl.init(testing.io, 0, &cancel);
     var stderr_buffer: [1024]u8 = undefined;
     var stderr = Io.Writer.fixed(&stderr_buffer);
-    var cleanup_failed = false;
     var results: std.ArrayList(report_batch_writes.Result) = .empty;
     const writes = [_]cli_batch_writes.Write{randomWrite()};
-    switch (cli_batch_writes.compare(arena_state.allocator(), testing.allocator, &writes, baseline_path, variant_path, "m.sql", .{
-        .database_path = "db.sqlite",
-        .work_parent = "/tmp",
-    }, &control, &results, &stderr, &cleanup_failed)) {
-        .done => {},
-        .failed => return error.UnexpectedFailure,
-    }
-    try testing.expect(!cleanup_failed);
+    try runCompare(arena_state.allocator(), &tmp, pair_schema, pair_schema, &writes, 0, &results, &stderr);
     try testing.expectEqual(@as(usize, 1), results.items.len);
     const entry = results.items[0];
     try testing.expectEqual(cli_comparison.Verdict.incomparable, entry.outcome.?);
@@ -265,29 +282,13 @@ test "a nondeterministic write is not run when both copies can prepare it" {
 test "a nondeterministic write the baseline cannot prepare is not run on the variant" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    var baseline_path: [:0]u8 = undefined;
-    var variant_path: [:0]u8 = undefined;
-    try createPair(&tmp, pair_table_only, pair_schema, &baseline_path, &variant_path);
-    defer testing.allocator.free(baseline_path);
-    defer testing.allocator.free(variant_path);
-
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
-    var cancel = std.atomic.Value(bool).init(false);
-    var control = db.StepControl.init(testing.io, 0, &cancel);
     var stderr_buffer: [1024]u8 = undefined;
     var stderr = Io.Writer.fixed(&stderr_buffer);
-    var cleanup_failed = false;
     var results: std.ArrayList(report_batch_writes.Result) = .empty;
     const writes = [_]cli_batch_writes.Write{randomWrite()};
-    switch (cli_batch_writes.compare(arena_state.allocator(), testing.allocator, &writes, baseline_path, variant_path, "m.sql", .{
-        .database_path = "db.sqlite",
-        .work_parent = "/tmp",
-    }, &control, &results, &stderr, &cleanup_failed)) {
-        .done => {},
-        .failed => return error.UnexpectedFailure,
-    }
-    try testing.expect(!cleanup_failed);
+    try runCompare(arena_state.allocator(), &tmp, pair_table_only, pair_schema, &writes, 0, &results, &stderr);
     try testing.expectEqual(@as(usize, 1), results.items.len);
     const entry = results.items[0];
     try testing.expect(entry.baseline_missing);
@@ -296,4 +297,96 @@ test "a nondeterministic write the baseline cannot prepare is not run on the var
     try testing.expectEqual(@as(u64, 0), entry.variant_written);
     try testing.expect(std.mem.indexOf(u8, entry.comparison, "\"baseline\":null") != null);
     try testing.expect(std.mem.indexOf(u8, entry.comparison, "random()") != null);
+}
+
+test "a write that changes a different number of rows on each copy is a mismatch" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    var stderr_buffer: [1024]u8 = undefined;
+    var stderr = Io.Writer.fixed(&stderr_buffer);
+    var results: std.ArrayList(report_batch_writes.Result) = .empty;
+    var bind: [1]db.BindArg = undefined;
+    const writes = [_]cli_batch_writes.Write{updateWrite("w.sql", "UPDATE t SET b = 'y' WHERE a = ?1", 1, &bind)};
+    const with_trigger =
+        \\CREATE TABLE t(a INTEGER, b TEXT);
+        \\CREATE TABLE audit(n INTEGER);
+        \\INSERT INTO t VALUES (1, 'x');
+        \\CREATE TRIGGER tr AFTER UPDATE ON t BEGIN INSERT INTO audit VALUES (1); END;
+    ;
+    const plain =
+        \\CREATE TABLE t(a INTEGER, b TEXT);
+        \\INSERT INTO t VALUES (1, 'x');
+    ;
+    try runCompare(arena_state.allocator(), &tmp, with_trigger, plain, &writes, 0, &results, &stderr);
+    try testing.expectEqual(@as(usize, 1), results.items.len);
+    const entry = results.items[0];
+    try testing.expectEqual(cli_comparison.Verdict.mismatch, entry.outcome.?);
+    try testing.expectEqual(cli_comparison.RowVerdict.not_judged, entry.judgement);
+    try testing.expect(cli_batch_writes.severity(results.items).mismatch);
+}
+
+test "a write that reads fewer rows after the index is an improvement" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    var stderr_buffer: [1024]u8 = undefined;
+    var stderr = Io.Writer.fixed(&stderr_buffer);
+    var results: std.ArrayList(report_batch_writes.Result) = .empty;
+    var bind: [1]db.BindArg = undefined;
+    const writes = [_]cli_batch_writes.Write{updateWrite("w.sql", "UPDATE t SET b = 'y' WHERE a = ?1", 77, &bind)};
+    const plain =
+        \\CREATE TABLE t(a INTEGER, b TEXT);
+        \\WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 200)
+        \\INSERT INTO t SELECT i, 'x' FROM n;
+    ;
+    const indexed =
+        \\CREATE TABLE t(a INTEGER, b TEXT);
+        \\WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 200)
+        \\INSERT INTO t SELECT i, 'x' FROM n;
+        \\CREATE INDEX idx_a ON t(a);
+    ;
+    try runCompare(arena_state.allocator(), &tmp, plain, indexed, &writes, 0, &results, &stderr);
+    try testing.expectEqual(@as(usize, 1), results.items.len);
+    const entry = results.items[0];
+    try testing.expectEqual(cli_comparison.Verdict.match, entry.outcome.?);
+    try testing.expectEqual(cli_comparison.RowVerdict.improved, entry.judgement);
+    try testing.expect(entry.rows_read.?.baseline > entry.rows_read.?.variant);
+}
+
+test "a write timeout on the variant is recorded and the next write runs" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    var stderr_buffer: [1024]u8 = undefined;
+    var stderr = Io.Writer.fixed(&stderr_buffer);
+    var results: std.ArrayList(report_batch_writes.Result) = .empty;
+    var slow_bind: [1]db.BindArg = undefined;
+    var fast_bind: [1]db.BindArg = undefined;
+    const writes = [_]cli_batch_writes.Write{
+        updateWrite("slow.sql", "UPDATE t SET b = 'slow' WHERE a = ?1", 1, &slow_bind),
+        updateWrite("fast.sql", "UPDATE t SET b = 'fast' WHERE a = ?1", 1, &fast_bind),
+    };
+    const baseline_schema =
+        \\CREATE TABLE t(a INTEGER, b TEXT);
+        \\INSERT INTO t VALUES (1, 'x');
+    ;
+    const variant_schema =
+        \\CREATE TABLE t(a INTEGER, b TEXT);
+        \\WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2000)
+        \\INSERT INTO t SELECT i, 'x' FROM n;
+        \\CREATE TRIGGER tr AFTER UPDATE ON t WHEN NEW.b = 'slow'
+        \\BEGIN
+        \\  INSERT INTO t SELECT x.a + 10000, 'bulk' FROM t AS x, t AS y LIMIT 400000;
+        \\END;
+    ;
+    try runCompare(arena_state.allocator(), &tmp, baseline_schema, variant_schema, &writes, 50, &results, &stderr);
+    try testing.expectEqual(@as(usize, 2), results.items.len);
+    try testing.expectEqual(report_batch_writes.Status.variant_timeout, results.items[0].status);
+    try testing.expectEqual(cli_comparison.Verdict.match, results.items[1].outcome.?);
+    try testing.expect(cli_batch_writes.severity(results.items).timeout);
+    try testing.expectEqualStrings("", stderr.buffered());
 }
