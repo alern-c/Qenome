@@ -33,6 +33,7 @@ EXPECT_KEYS = (
     "suggest",
     "error",
     "writes",
+    "rank",
     "scale",
 )
 PLAN_KEYS = ("contains", "excludes")
@@ -41,6 +42,7 @@ WARNING_KEYS = ("contains", "excludes")
 HUMAN_KEYS = ("contains", "excludes")
 BATCH_KEYS = ("recommended", "counts")
 SUGGEST_KEYS = ("recommended", "leads_with")
+RANK_KEYS = ("likely_full_scans", "first", "note")
 ERROR_KEYS = ("code",)
 COUNT_KEYS = (
     "improved",
@@ -280,6 +282,27 @@ def check_suggest(name, value):
     return result
 
 
+def check_rank(name, value):
+    require(isinstance(value, dict), name + " must be an object")
+    unknown_keys(name, value, RANK_KEYS)
+    result = {}
+    if "likely_full_scans" in value:
+        count = value["likely_full_scans"]
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise Unusable(name + ".likely_full_scans must be a whole number")
+        result["likely_full_scans"] = count
+    if "first" in value:
+        first = value["first"]
+        require(isinstance(first, str) and bool(first), name + ".first must be a non-empty string")
+        result["first"] = first
+    if "note" in value:
+        note = value["note"]
+        require(isinstance(note, str) and bool(note), name + ".note must be a non-empty string")
+        result["note"] = note
+    require(result, name + " needs likely_full_scans, first, or note")
+    return result
+
+
 def check_error(name, value):
     require(isinstance(value, dict), name + " must be an object")
     unknown_keys(name, value, ERROR_KEYS)
@@ -388,6 +411,8 @@ def load_expect(case_name, value):
         result["suggest"] = check_suggest(case_name + ": expect.suggest", value["suggest"])
     if "error" in value:
         result["error"] = check_error(case_name + ": expect.error", value["error"])
+    if "rank" in value:
+        result["rank"] = check_rank(case_name + ": expect.rank", value["rank"])
     if "writes" in value:
         result["writes"] = check_writes(case_name + ": expect.writes", value["writes"])
     if "scale" in value:
@@ -527,7 +552,7 @@ def check_manifest(case):
             )
     if has_migration:
         require(candidates is None or candidates == [], case.name + ": a --migration manifest must omit candidates")
-    else:
+    elif not has_option(case.args, "--rank"):
         require(candidates is not None, case.name + ": batch.json needs candidates without --migration")
     writes = manifest.get("writes")
     if writes is not None:
@@ -581,6 +606,7 @@ def observation_from(done):
         "comparisons": [],
         "writes": [],
         "error": None,
+        "rank": None,
         "scale": None,
     }
     stdout = done.stdout.strip()
@@ -592,7 +618,9 @@ def observation_from(done):
         if not isinstance(report, dict):
             raise Unusable("the report is not one JSON object")
         observation["exit_code"] = report.get("exit_code")
-        if "batch_schema_version" in report:
+        if "rank_schema_version" in report:
+            observation["rank"] = report
+        elif "batch_schema_version" in report:
             observation["batch"] = report
             comparisons = []
             for result in report.get("results") or []:
@@ -656,8 +684,32 @@ def fail_messages(expect, observation):
         failures += suggest_failures(expect["suggest"], observation["batch"])
     if "error" in expect:
         failures += error_failures(expect["error"], observation["error"])
+    if "rank" in expect:
+        failures += rank_failures(expect["rank"], observation["rank"])
     if "scale" in expect:
         failures += scale_failures(expect["scale"], observation.get("scale"))
+    return failures
+
+
+def rank_failures(spec, report):
+    if not isinstance(report, dict):
+        return ["there is no rank report"]
+    failures = []
+    if "likely_full_scans" in spec and report.get("likely_full_scans") != spec["likely_full_scans"]:
+        failures.append(
+            "likely_full_scans is "
+            + json.dumps(report.get("likely_full_scans"))
+            + ", expected "
+            + json.dumps(spec["likely_full_scans"])
+        )
+    queries = report.get("queries")
+    first = None
+    if isinstance(queries, list) and queries and isinstance(queries[0], dict):
+        first = queries[0].get("select")
+    if "first" in spec and first != spec["first"]:
+        failures.append("the first query is " + json.dumps(first) + ", expected " + json.dumps(spec["first"]))
+    if "note" in spec and spec["note"] not in str(report.get("note")):
+        failures.append("the rank note does not contain " + json.dumps(spec["note"]))
     return failures
 
 

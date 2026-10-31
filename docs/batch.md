@@ -21,11 +21,12 @@
 ```
 
 - `queries` holds 1 to 100 entries. `candidates` holds 1 to 100 entries, or may be omitted (or `[]`) when `--suggest` adds the proposals or `--migration` supplies the variant change.
-- `writes` holds 1 to 100 entries and is only accepted with `--migration`. Without `--migration` the manifest is rejected before anything runs, with exit status `1` and `batch_manifest_invalid`. Each entry names one file that holds one `INSERT`, `UPDATE`, `DELETE`, or `REPLACE`; a leading `WITH` and a trailing `RETURNING` are allowed, and the same checks and time limit apply as for `--write`.
+- `writes` holds 1 to 100 entries and is only accepted with `--migration`. Without `--migration` the manifest is rejected before anything runs, with exit status `1` and `batch_manifest_invalid`, unless the run is `--rank`, which ignores `writes`. Each entry names one file that holds one `INSERT`, `UPDATE`, `DELETE`, or `REPLACE`; a leading `WITH` and a trailing `RETURNING` are allowed, and the same checks and time limit apply as for `--write`.
 - The same path cannot appear twice in `queries`, in `writes`, or in `candidates`.
 - With `--migration`, `candidates` must be omitted or `[]`, and the manifest holds `queries` and optional `writes`.
 - `select`, `write`, and `index_sql` are paths to files. They are resolved from the manifest's directory, not from the current directory. Each file holds one read-only SELECT, one write statement, or one `CREATE INDEX`, and is at most 1 MiB.
 - `binds` is optional and uses the same `N:TYPE:VALUE` syntax as `--bind`. Every query and write entry carries its own binds. Every path and bind must be a JSON string without a NUL byte.
+- `executions` is optional on a query. It is a whole number of at least 1. `--record` writes how many times that statement ran. Comparison modes ignore it. `--rank` multiplies rows read by it.
 - The `select`, `write`, and `index_sql` strings are copied to the JSON report exactly as written. The `human` report shortens an absolute path to the shortest trailing part that no other path in the same list shares, so candidates in different directories stay apart (`a/x.sql` and `b/x.sql`), and shows a relative path and a `suggested:N` label as written. The full path stays in the JSON report, and with `--migration` in the `migration:` line.
 
 Qenome copies the database once, checks every SELECT, every write statement, and every candidate before it runs anything, then visits the candidates in manifest order. For each candidate it copies the baseline again, builds the index on that copy only, and runs every query on both copies. The baseline SELECT is run again for each candidate. With `--migration`, every write statement of the manifest runs after the queries of the candidate, on the same two copies.
@@ -132,9 +133,10 @@ npx qenome --record qenome-record.log --out qenome-manifest
 
 `--out` gets `manifest.json` and SQL files such as `queries/q001.sql`. The directory is created with mode `0700` and the files with `0600`, and stdout never holds a bind value. The manifest does hold the values, so do not commit it, and delete the record log once the manifest exists.
 
-1. Compare the manifest, or audit the indexes it uses. It holds only `queries`, so pair it with `--suggest`, `--migration`, or `--audit-indexes`.
+1. Rank the manifest when you do not yet know which query reads the most, or compare it, or audit the indexes it uses. It holds only `queries`. `--record` also writes `executions` on each query, the number of times that statement ran.
 
 ```sh
+npx qenome --d1 DB --batch qenome-manifest/manifest.json --rank
 npx qenome --d1 DB --batch qenome-manifest/manifest.json --suggest
 ```
 
@@ -159,6 +161,25 @@ A shape ignores the values, not the statement: `WHERE post_id = ?`, `= ?1`, `= :
 The report is a hint about round trips and repeated work, not a measurement: it does not change a row count, a timing, the manifest, or the exit status.
 
 Recording is for local development and tests only. The wrapper writes the SQL and the bind values to its output, so do not ship it to production. SQL inside `withSession` and Durable Objects is not recorded.
+
+## Ranking queries on the baseline (--rank)
+
+`qenome app.db --batch manifest.json --rank` measures every SELECT in the manifest on the baseline copy only and prints them in rank order. Use it when a missing index may be reading far more rows than the query returns, and you do not yet have a candidate `CREATE INDEX`. A manifest from `--record` works as it is. A hand-written manifest needs only `queries`. `candidates` and `writes` are ignored, so an existing comparison manifest can be ranked without editing it.
+
+```sh
+qenome app.db --batch manifest.json --rank
+qenome --d1 DB --batch qenome-manifest/manifest.json --rank --format json
+```
+
+Each query runs once. The report gives rows read, rows returned, the rows-read / rows-returned ratio (`n/a` when the query returns no rows), full-scan steps, and the plan steps that are a table `SCAN` (a `SCAN` that does not say `USING`). A `SCAN` of a co-routine (a name that the plan's own `CO-ROUTINE` line declares, so a materialized subquery or a CTE), of a constant row set, or of a `VALUES` clause is not a table `SCAN`. A query is a likely full scan when the full-scan counter is above zero or one of those table `SCAN` steps is present. The human report marks it with `flag: likely full scan`.
+
+The order is the weight, highest first: `rows read` multiplied by `executions` when the query has that count, otherwise `rows read` alone. A likely full scan, then a higher ratio, then manifest order, break ties. `rows read x runs` is a relative indicator, not a bill. The report says that in the `note` line and on each weighted row. Nothing in the report is a charge.
+
+The last line names the top query for the next step: `qenome <DB> <that SELECT> --suggest`. The path is the `select` string from the manifest, relative to the manifest file.
+
+Exit status `0` means the report was written and no query is a likely full scan. Exit status `7` means the report was written and at least one query is. A rejected SELECT, a bad manifest, or a usage error still exits `1` or `2` with empty stdout. A time limit exits `124`. Cleanup failure replaces `0` with `5` and leaves `7` as it is. `--rank` needs `--batch`. It takes `--d1`, `--seed-data`, `--timeout-ms`, and `--format human` or `json`. It does not take `--suggest`, `--migration`, `--audit-indexes`, `--runs`, or `--format kv`.
+
+`--format json` writes one object with `schema_version` 2 and `rank_schema_version` 1. The comparison object is unchanged. [docs/json.md](json.md#baseline-rank-rank_schema_version-1) lists the keys.
 
 ## Suggesting candidate indexes
 

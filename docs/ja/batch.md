@@ -21,11 +21,12 @@
 ```
 
 - `queries` は1〜100件。`candidates` は1〜100件で、`--suggest` が提案を足すとき、または `--migration` が variant の変更を渡すときは省略（または `[]`）できる。マニフェストは1 MiBまで。
-- `writes` は1〜100件で、`--migration` のときだけ受け付ける。`--migration` なしで書くと、何も実行する前に終了コード `1` と `batch_manifest_invalid` で拒否する。各項目は、`INSERT`・`UPDATE`・`DELETE`・`REPLACE` のいずれか1本を持つファイルのパス。先頭の `WITH` と末尾の `RETURNING` は使え、`--write` と同じ検査と制限時間がかかる。
+- `writes` は1〜100件で、`--migration` のときだけ受け付ける。`--migration` なしで書くと、何も実行する前に終了コード `1` と `batch_manifest_invalid` で拒否する。ただし `--rank` は `writes` を無視する。各項目は、`INSERT`・`UPDATE`・`DELETE`・`REPLACE` のいずれか1本を持つファイルのパス。先頭の `WITH` と末尾の `RETURNING` は使え、`--write` と同じ検査と制限時間がかかる。
 - 同じパスを `queries` の中で2回、`writes` の中で2回、または `candidates` の中で2回書くことはできない。
 - `--migration` のとき、`candidates` は省略または `[]` にし、マニフェストは `queries` と任意の `writes` を持つ。
 - `select`・`write`・`index_sql` はファイルのパス。カレントディレクトリではなく、マニフェストのディレクトリを基準に解決する。各ファイルは読み取り専用の SELECT 1本、書き込み文1本、または `CREATE INDEX` 1本で、1 MiBまで。
 - `binds` は任意で、`--bind` と同じ `N:TYPE:VALUE` 形式。クエリと書き込み文はそれぞれ自分の `binds` を持つ。パスとバインド値は NUL バイトを含まない JSON 文字列にする。
+- クエリの `executions` は任意で、1 以上の整数。`--record` がその文の実行回数を書く。比較のモードは無視する。`--rank` は読んだ行数にこの回数を掛ける。
 - `select`・`write`・`index_sql` の文字列は、JSON の報告には書いたとおりに出す。human の報告では、絶対パスを、同じ一覧のほかのパスと末尾が重ならない最短の部分に短くして出す（別のディレクトリにある候補は `a/x.sql` と `b/x.sql` のように区別できる）。相対パスと `suggested:N` のラベルは書いたとおりに出す。フルパスは JSON の報告に残り、`--migration` では `migration:` の行にも出る。
 
 Qenome はデータベースを1回コピーし、何かを実行する前に全 SELECT・全書き込み文・全候補を検査します。そのあと候補をマニフェスト順に処理し、候補ごとに baseline をもう一度コピーして、そのコピーにだけインデックスを作り、全クエリを両方のコピーで実行します。baseline の SELECT は候補ごとに実行し直します。`--migration` のときは、候補のクエリのあとに、マニフェストの全書き込み文を同じ2つのコピーで実行します。
@@ -132,9 +133,10 @@ npx qenome --record qenome-record.log --out qenome-manifest
 
 `--out` の下に `manifest.json` と `queries/q001.sql` のような SQL ファイルができます。ディレクトリは `0700`、ファイルは `0600` で作り、stdout にはバインド値を出しません。`manifest.json` には実値が入るので commit しないでください。記録に使ったログも、マニフェストを作ったあとに削除してください。
 
-1. 作ったマニフェストを比べるか、使っているインデックスを監査します。`queries` だけを持つので、`--suggest`・`--migration`・`--audit-indexes` と組み合わせます。
+1. どのクエリが一番多く読んでいるかまだ分からないときは順位を付け、分かっているときは比べるか、使っているインデックスを監査します。マニフェストは `queries` だけを持ちます。`--record` は各クエリに、その文が何回実行されたかを `executions` として書きます。
 
 ```sh
+npx qenome --d1 DB --batch qenome-manifest/manifest.json --rank
 npx qenome --d1 DB --batch qenome-manifest/manifest.json --suggest
 ```
 
@@ -159,6 +161,25 @@ repeated shapes:
 この報告は往復回数と繰り返し作業についてのヒントであり、計測ではありません。行数・実行時間・マニフェスト・終了コードは変わりません。
 
 記録はローカルの開発とテストのためだけのものです。ラッパーは記録した SQL とバインド値をそのまま出力に書くので、本番の Worker には入れないでください。`withSession` と Durable Object の中の SQL は記録しません。
+
+## baseline の読み取りを順位づける（--rank）
+
+`qenome app.db --batch manifest.json --rank` は、マニフェストの全 SELECT を baseline のコピーだけで1回ずつ測り、順位を付けて出します。候補の `CREATE INDEX` がまだ無く、足りないインデックスが返した行数よりはるかに多くの行を読んでいるかもしれないときに使います。`--record` が作ったマニフェストはそのまま使えます。手で書くマニフェストは `queries` だけで足ります。`candidates` と `writes` は無視するので、比較用のマニフェストも書き換えずに順位を付けられます。
+
+```sh
+qenome app.db --batch manifest.json --rank
+qenome --d1 DB --batch qenome-manifest/manifest.json --rank --format json
+```
+
+各クエリは1回実行します。報告には、読んだ行数、返した行数、読んだ行数 / 返した行数（0行のときは `n/a`）、フルスキャンのステップ数、インデックスを使わない `SCAN`（`USING` が付かない `SCAN`）が出ます。同じ計画の `CO-ROUTINE` 行が宣言する名前の `SCAN`（materialize されたサブクエリや CTE）、行数が固定の `SCAN`、`VALUES` の `SCAN` は、テーブルの `SCAN` ではありません。フルスキャンのカウンタが 0 より大きいか、そのテーブルの `SCAN` が1つでもあれば、そのクエリは likely full scan です。human は `flag: likely full scan` と出します。
+
+並びは重みの大きい順です。クエリに `executions` があれば読んだ行数とその回数の積、無ければ読んだ行数だけを使います。同じ重みなら likely full scan を先に、次に比率の大きい順、最後にマニフェストの順です。`rows read x runs` は相対的な指標であり、請求ではありません。`note` の行と、回数を掛けた各行にその旨を書きます。報告の数値は料金ではありません。
+
+最後の行は、次に `--suggest` へ渡す先頭のクエリです。`qenome <DB> <その SELECT> --suggest` と出ます。パスはマニフェストに書いた `select` で、マニフェストのファイルからの相対パスです。
+
+終了コード `0` は、報告を書けて、likely full scan のクエリが無かったという意味です。`7` は、報告を書けて、1件以上あったという意味です。SELECT の拒否、壊れたマニフェスト、引数の誤りは、これまでどおり stdout を空にして `1` または `2` です。時間切れは `124` です。後片付けの失敗は `0` を `5` に置き換え、`7` はそのままです。`--rank` には `--batch` が必要です。`--d1`、`--seed-data`、`--timeout-ms`、`--format human` または `json` を使えます。`--suggest`、`--migration`、`--audit-indexes`、`--runs`、`--format kv` とは併用できません。
+
+`--format json` は、`schema_version` 2 と `rank_schema_version` 1 を持つオブジェクトを1つ出します。比較オブジェクトは変わりません。キーは [docs/json.md](../json.md#baseline-rank-rank_schema_version-1) にあります。
 
 ## 候補のインデックスを提案させる（--suggest）
 

@@ -59,6 +59,7 @@ qenome --version
 - **ローカル D1 のバインディングだけで試せます。** `--d1 <BINDING>` が wrangler の設定からローカルデータベースを探し、`--config` で設定ファイルを指定できます。
 - **複数のクエリをまとめて比較。** `--batch <FILE>` は JSON のマニフェストにある全 SELECT と全候補 `CREATE INDEX` を組み合わせて、各組み合わせの判定を出します。[まとめて比べる（--batch）](docs/ja/batch.md#まとめて比べる--batch)を参照してください。
 - **マニフェストで使っていないインデックスを見つけられます。** `--batch manifest.json --audit-indexes` は、どのクエリの実行計画にも出てこなかったインデックス、先頭の列がほかのインデックスや主キーに覆われているインデックス、制約のために残す UNIQUE / PRIMARY KEY のインデックスを一覧にします。[インデックスの監査（--audit-indexes）](docs/ja/batch.md#インデックスの監査--audit-indexes)を参照してください。
+- **インデックスがまだ無いとき、一番多く読んでいるクエリを見つけられます。** `--batch manifest.json --rank` は全クエリを baseline だけで測って読んだ行数で順位を付け、likely full scan を明示し、先頭のクエリを `--suggest` へ案内します。読んだ行数と実行回数の積は相対的な指標であり、請求ではありません。[baseline の読み取りを順位づける（--rank）](docs/ja/batch.md#baseline-の読み取りを順位づける--rank)を参照してください。
 - **アプリが実行したクエリからマニフェストを作れます。** `qenome/d1` はローカルの D1 に実際に発行された SELECT とバインド値を記録し、`--record` がそのまま比較に使えるマニフェストにします。[実際に実行されたクエリを記録する（--record）](docs/ja/batch.md#実際に実行されたクエリを記録する--record)を参照してください。
 - **クエリから候補のインデックスを探せます。** `--suggest` は SQLite の expert に候補のインデックスを提案させて比較するので、SELECT ファイルだけで済みます。[候補のインデックスを提案させる（--suggest）](docs/ja/batch.md#候補のインデックスを提案させる--suggest)を参照してください。
 - **AI エージェントと CI 向けの JSON。** `--format json` は `schema_version` 2 のレポートを出し、終了コードが一致・不一致・比較不能を分けます。
@@ -72,6 +73,7 @@ qenome --version
 - [特徴](#特徴)
 - [インストールの詳細](docs/ja/installation.md): npm、ビルド済みバイナリ、チェックサム、ソースからのビルド
 - [ローカル D1 を調べる](docs/ja/local-d1.md): wrangler プロジェクトでの最初の比較
+- [D1 の請求が跳ねたとき](docs/bill-spiked.md): 読んだ行数の跳ねから足りないインデックスを探す。本文は英語です
 - [AI エージェントと使う](docs/ja/agents.md): スキル、JSON レポート、インストールのコマンド
 - [なぜ他の方法ではないのか](docs/ja/why-not.md): EXPLAIN QUERY PLAN、`wrangler dev`、`d1 insights` がすでに渡すもの
 - [使い方](docs/ja/usage.md): すべてのオプション、書き込み、シードデータ、D1 のローカルデータベース
