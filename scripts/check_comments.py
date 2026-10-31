@@ -6,6 +6,7 @@ import sys
 import tokenize
 
 EXCLUDED_FILES = [
+    ".git-blame-ignore-revs",
     ".github/pull_request_template.md",
     ".python-version",
     "AGENTS.md",
@@ -133,24 +134,16 @@ def scan_python(text):
         if token.type == tokenize.COMMENT:
             first_line, first_column = token.start
             last_line, last_column = token.end
-            comments.append(
-                Comment(first_line, first_column, last_line, last_column, "a Python comment")
-            )
+            comments.append(Comment(first_line, first_column, last_line, last_column, "a Python comment"))
     tree = ast.parse(text)
     for node in ast.walk(tree):
-        if not isinstance(
-            node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
-        ):
+        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         body = getattr(node, "body", None)
         if not body:
             continue
         first = body[0]
-        if (
-            isinstance(first, ast.Expr)
-            and isinstance(first.value, ast.Constant)
-            and isinstance(first.value.value, str)
-        ):
+        if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str):
             value = first.value
             comments.append(
                 Comment(
@@ -208,18 +201,14 @@ def scan_sql(text):
         if char == "-" and text[index + 1 : index + 2] == "-":
             end = text.find("\n", index)
             end = length if end < 0 else end
-            comments.append(
-                Comment(line, column, line, column + (end - index), "a SQL line comment")
-            )
+            comments.append(Comment(line, column, line, column + (end - index), "a SQL line comment"))
             index = end
             continue
         if char == "/" and text[index + 1 : index + 2] == "*":
             end = text.find("*/", index + 2)
             end = length if end < 0 else end + 2
             end_line, end_column = advance(text, index, end, line, column)
-            comments.append(
-                Comment(line, column, end_line, end_column, "a SQL block comment")
-            )
+            comments.append(Comment(line, column, end_line, end_column, "a SQL block comment"))
             index = end
             line, column = end_line, end_column
             continue
@@ -306,9 +295,7 @@ def scan_slash_comments(text, quotes, line_label, block_label, allow_shebang):
         if char == "/" and text.startswith("//", index):
             end = text.find("\n", index)
             end = length if end < 0 else end
-            comments.append(
-                Comment(line, column, line, column + (end - index), line_label)
-            )
+            comments.append(Comment(line, column, line, column + (end - index), line_label))
             index = end
             continue
         if char == "/" and text.startswith("/*", index):
@@ -330,9 +317,7 @@ def scan_slash_comments(text, quotes, line_label, block_label, allow_shebang):
 
 
 def scan_json(text):
-    return scan_slash_comments(
-        text, '"', "a JSON line comment", "a JSON block comment", False
-    )
+    return scan_slash_comments(text, '"', "a JSON line comment", "a JSON block comment", False)
 
 
 def scan_js(text):

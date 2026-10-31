@@ -123,8 +123,8 @@ PAGE_BODIES = {
         "",
     ),
     "batch": (
-        "# Batch\n\n## Batch comparisons\n\n<img src=\"logo.svg\" alt=\"demo\">\n\n## Index audit\n",
-        "# まとめて\n\n## まとめて比べる\n\n<img src=\"../logo.svg\" alt=\"demo\">\n\n## インデックスの監査\n",
+        '# Batch\n\n## Batch comparisons\n\n<img src="logo.svg" alt="demo">\n\n## Index audit\n',
+        '# まとめて\n\n## まとめて比べる\n\n<img src="../logo.svg" alt="demo">\n\n## インデックスの監査\n',
         "",
     ),
     "output": (

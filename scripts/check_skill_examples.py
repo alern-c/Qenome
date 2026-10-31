@@ -29,9 +29,7 @@ def parse_examples(text):
         command = stripped[:at].strip()
         spec = stripped[at + len(MARKER) :].strip()
         mode, _, rest = spec.partition(" ")
-        examples.append(
-            {"line": number, "command": command, "mode": mode, "rest": rest}
-        )
+        examples.append({"line": number, "command": command, "mode": mode, "rest": rest})
     return examples
 
 
@@ -100,30 +98,25 @@ def check_report(payload, spec, returncode):
         problems.append("schema_version is not 2")
     if payload.get("exit_code") != returncode:
         problems.append(
-            "exit_code "
-            + str(payload.get("exit_code"))
-            + " does not match the process exit "
-            + str(returncode)
+            "exit_code " + str(payload.get("exit_code")) + " does not match the process exit " + str(returncode)
         )
     if spec["verdict"] is not None and payload.get("verdict") != spec["verdict"]:
-        problems.append(
-            "verdict is "
-            + str(payload.get("verdict"))
-            + ", expected "
-            + spec["verdict"]
-        )
+        problems.append("verdict is " + str(payload.get("verdict")) + ", expected " + spec["verdict"])
     if spec["result"] is not None and payload.get("result") != spec["result"]:
-        problems.append(
-            "result is " + str(payload.get("result")) + ", expected " + spec["result"]
-        )
+        problems.append("result is " + str(payload.get("result")) + ", expected " + spec["result"])
     for field in spec["fields"]:
         found_value, found = lookup(payload, field)
         if not found:
             problems.append("missing field " + field)
             continue
-        if field.endswith("rows_read") or field.endswith("rows_written") or field in (
-            "schema_version",
-            "exit_code",
+        if (
+            field.endswith("rows_read")
+            or field.endswith("rows_written")
+            or field
+            in (
+                "schema_version",
+                "exit_code",
+            )
         ):
             if not isinstance(found_value, int) or isinstance(found_value, bool):
                 problems.append(field + " is not an integer")
@@ -138,19 +131,14 @@ def check_error(payload, spec, returncode):
         problems.append("schema_version is not 2")
     if payload.get("exit_code") != returncode:
         problems.append(
-            "error exit_code "
-            + str(payload.get("exit_code"))
-            + " does not match the process exit "
-            + str(returncode)
+            "error exit_code " + str(payload.get("exit_code")) + " does not match the process exit " + str(returncode)
         )
     failure = payload.get("error")
     if not isinstance(failure, dict):
         problems.append("error object is missing")
         return problems
     if spec["error"] is not None and failure.get("code") != spec["error"]:
-        problems.append(
-            "error.code is " + str(failure.get("code")) + ", expected " + spec["error"]
-        )
+        problems.append("error.code is " + str(failure.get("code")) + ", expected " + spec["error"])
     for key in ("code", "message", "hint"):
         value = failure.get(key)
         if not isinstance(value, str) or not value:
@@ -163,12 +151,7 @@ def check_output(spec, returncode, stdout, stderr):
     if spec["exit"] is None:
         problems.append("the marker needs exit=")
     elif returncode != spec["exit"]:
-        problems.append(
-            "process exit "
-            + str(returncode)
-            + " does not match exit="
-            + str(spec["exit"])
-        )
+        problems.append("process exit " + str(returncode) + " does not match exit=" + str(spec["exit"]))
     if spec["stdout"] == "report":
         if stderr.strip():
             problems.append("stderr is not empty: " + stderr.strip()[:400])
@@ -333,9 +316,7 @@ def main(argv):
             root = rest[1]
             rest = rest[2:]
         else:
-            sys.stderr.write(
-                "usage: python3 scripts/check_skill_examples.py [--root DIR]\n"
-            )
+            sys.stderr.write("usage: python3 scripts/check_skill_examples.py [--root DIR]\n")
             return 2
     root = os.path.abspath(root)
     binary = os.path.join(root, "zig-out", "bin", "qenome")
@@ -397,24 +378,10 @@ def main(argv):
         print(item)
     if problems:
         print(
-            "skill-examples: "
-            + str(len(problems))
-            + " problem(s), "
-            + str(ran)
-            + " ran, "
-            + str(pending)
-            + " pending"
+            "skill-examples: " + str(len(problems)) + " problem(s), " + str(ran) + " ran, " + str(pending) + " pending"
         )
         return 1
-    print(
-        "skill-examples: ok ("
-        + str(ran)
-        + " ran, "
-        + str(pending)
-        + " pending, root="
-        + root
-        + ")"
-    )
+    print("skill-examples: ok (" + str(ran) + " ran, " + str(pending) + " pending, root=" + root + ")")
     return 0
 
 

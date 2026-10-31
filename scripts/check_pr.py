@@ -129,9 +129,7 @@ def check_tables(lines, problems):
             end += 1
         if end - position > 1 and not TABLE_SEPARATOR.match(lines[position + 1]):
             problems.append(
-                'body: the table starting with "'
-                + lines[position].strip()
-                + '" has no separator row of --- cells'
+                'body: the table starting with "' + lines[position].strip() + '" has no separator row of --- cells'
             )
         position = end
 

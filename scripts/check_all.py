@@ -77,6 +77,10 @@ def main():
             command(["uv", "run", "--locked", "--group", "dev", "ruff", "check", "."]),
         ),
         (
+            "Check the Python formatting with ruff",
+            command(["uv", "run", "--locked", "--group", "dev", "ruff", "format", "--check", "."]),
+        ),
+        (
             "Type-check the Python code with mypy",
             command(["uv", "run", "--locked", "--group", "dev", "mypy"]),
         ),

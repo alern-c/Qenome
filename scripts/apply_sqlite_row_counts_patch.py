@@ -18,9 +18,7 @@ TARGETS = {
     "sqlite-src-pristine/src/sqlite.h.in": ("sqlite3.c", "sqlite3.h"),
 }
 SKIPPED = {
-    "sqlite-src-pristine/src/shell.c.in": (
-        "the shell is not vendored; it is not part of the build"
-    ),
+    "sqlite-src-pristine/src/shell.c.in": ("the shell is not vendored; it is not part of the build"),
 }
 DECORATED = {
     "int sqlite3_stmt_status(sqlite3_stmt *pStmt, int op, int resetFlag){": (
@@ -184,9 +182,7 @@ def build(source_dir, patch_path):
                 + " or the file is another release)"
             )
         lines = data.decode("utf-8", "surrogateescape").split("\n")
-        files[name] = "\n".join(apply_hunks(lines, per_target[name], name)).encode(
-            "utf-8", "surrogateescape"
-        )
+        files[name] = "\n".join(apply_hunks(lines, per_target[name], name)).encode("utf-8", "surrogateescape")
     return files, skipped
 
 
