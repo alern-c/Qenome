@@ -4,7 +4,8 @@ const contract = @import("../contract/values.zig");
 const db = @import("../db.zig");
 const cli_comparison = @import("comparison.zig");
 const cli_control = @import("control.zig");
-const cli_report = @import("report.zig");
+const report_model = @import("../report/model.zig");
+const report_json = @import("../report/json.zig");
 const cli_suggest = @import("suggest.zig");
 
 const ExitCode = cli_control.ExitCode;
@@ -80,7 +81,7 @@ pub fn writeBatchJson(
     warnings: []const cli_suggest.Warning,
     recommended: ?usize,
     migration: ?Migration,
-    seed: ?cli_report.Seed,
+    seed: ?report_model.Seed,
     code: ExitCode,
 ) !void {
     var out: Io.Writer.Allocating = .init(allocator);
@@ -96,7 +97,7 @@ pub fn writeBatchJson(
     try json.write(@as(u8, @intCast(@backingInt(code))));
     try json.objectField("recommended");
     if (recommended) |index| {
-        try cli_report.writeJsonText(&json, allocator, summaries[index].candidate);
+        try report_json.writeJsonText(&json, allocator, summaries[index].candidate);
     } else {
         try json.write(null);
     }
@@ -104,7 +105,7 @@ pub fn writeBatchJson(
         try json.objectField("migration");
         try json.beginObject();
         try json.objectField("path");
-        try cli_report.writeJsonText(&json, allocator, value.path);
+        try report_json.writeJsonText(&json, allocator, value.path);
         try json.objectField("statements");
         try json.beginArray();
         for (value.statements) |statement| {
@@ -112,7 +113,7 @@ pub fn writeBatchJson(
             try json.objectField("kind");
             try json.write(statement.kind.text());
             try json.objectField("sql");
-            try cli_report.writeJsonText(&json, allocator, statement.sql);
+            try report_json.writeJsonText(&json, allocator, statement.sql);
             try json.endObject();
         }
         try json.endArray();
@@ -120,7 +121,7 @@ pub fn writeBatchJson(
     }
     if (seed) |value| {
         try json.objectField("seed_data");
-        try cli_report.writeJsonSeed(&json, allocator, value);
+        try report_json.writeJsonSeed(&json, allocator, value);
     }
     try json.objectField("summary");
     try json.beginArray();
@@ -129,11 +130,11 @@ pub fn writeBatchJson(
         const compared = summary.status == .compared;
         try json.beginObject();
         try json.objectField("candidate");
-        try cli_report.writeJsonText(&json, allocator, summary.candidate);
+        try report_json.writeJsonText(&json, allocator, summary.candidate);
         try json.objectField("source");
         try json.write(@tagName(summary.source));
         try json.objectField("index_sql_text");
-        try cli_report.writeJsonText(&json, allocator, summary.index_sql_text);
+        try report_json.writeJsonText(&json, allocator, summary.index_sql_text);
         try json.objectField("status");
         try json.write(@tagName(summary.status));
         try json.objectField("failure");
@@ -144,7 +145,7 @@ pub fn writeBatchJson(
             try json.objectField("code");
             try json.write(summary.failure_code);
             try json.objectField("message");
-            try cli_report.writeJsonText(&json, allocator, summary.failure_message);
+            try report_json.writeJsonText(&json, allocator, summary.failure_message);
             try json.endObject();
         }
         try json.objectField("improved");
@@ -171,9 +172,9 @@ pub fn writeBatchJson(
     for (results) |result| {
         try json.beginObject();
         try json.objectField("query");
-        try cli_report.writeJsonText(&json, allocator, result.query);
+        try report_json.writeJsonText(&json, allocator, result.query);
         try json.objectField("candidate");
-        try cli_report.writeJsonText(&json, allocator, result.candidate);
+        try report_json.writeJsonText(&json, allocator, result.candidate);
         try json.objectField("status");
         try json.write(@tagName(result.status));
         try json.objectField("comparison");
@@ -192,7 +193,7 @@ pub fn writeBatchJson(
         try json.objectField("code");
         try json.write(warning.code);
         try json.objectField("message");
-        try cli_report.writeJsonText(&json, allocator, warning.message);
+        try report_json.writeJsonText(&json, allocator, warning.message);
         try json.endObject();
     }
     try json.endArray();

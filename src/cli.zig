@@ -11,7 +11,10 @@ const cli_comparison = @import("cli/comparison.zig");
 const cli_query = @import("cli/query.zig");
 const cli_workspace = @import("cli/workspace.zig");
 const cli_timing = @import("cli/timing.zig");
-const cli_report = @import("cli/report.zig");
+const report_model = @import("report/model.zig");
+const report_human = @import("report/human.zig");
+const report_kv = @import("report/kv.zig");
+const report_json = @import("report/json.zig");
 const cli_pair = @import("cli/pair.zig");
 const cli_batch = @import("cli/batch.zig");
 const cli_audit = @import("cli/audit.zig");
@@ -45,9 +48,7 @@ const sqliteSourceId = cli_query.sqliteSourceId;
 const decide = cli_comparison.decide;
 const timeRuns = cli_timing.timeRuns;
 const judgeRows = cli_comparison.judgeRows;
-const Report = cli_report.Report;
-const Header = cli_report.Header;
-const writeReport = cli_report.writeReport;
+const Header = report_model.Header;
 const installSignalHandlers = cli_control.installSignalHandlers;
 const clearSignals = cli_control.clearSignals;
 const signalPending = cli_control.signalPending;
@@ -153,7 +154,7 @@ fn runCaptured(
         return cli_record.run(io, arena, record_path, args.out.?, args.format, args.n_plus_one_threshold, stdout, stderr);
     }
 
-    var d1: ?cli_d1.Resolved = null;
+    var d1: ?report_model.D1 = null;
     var unapplied: ?cli_d1_migrations.Pending = null;
 
     const database_path = if (args.d1) |binding| resolved: {
@@ -163,7 +164,7 @@ fn runCaptured(
         };
         switch (outcome) {
             .resolved => |resolution| {
-                d1 = resolution;
+                d1 = reportD1(resolution);
                 unapplied = cli_d1_migrations.find(io, arena, resolution.config_path, resolution.migrations_dir, resolution.migrations_table, resolution.local_path, resolution.binding);
                 break :resolved arena.dupeSentinel(u8, resolution.local_path, 0) catch {
                     stderr.print("error: out of memory\n", .{}) catch {};
@@ -178,7 +179,7 @@ fn runCaptured(
     } else args.db.?;
 
     var seed_spec: ?cli_seed.Spec = null;
-    var seed_report: ?cli_report.Seed = null;
+    var seed_report: ?report_model.Seed = null;
     if (args.seed_data) |seed_path| {
         seed_spec = cli_seed.load(io, arena, seed_path, stderr) orelse return .rejected;
         seed_report = buildSeedReport(arena, seed_spec.?) catch {
@@ -341,7 +342,7 @@ const Inputs = struct {
     database_path: [:0]const u8,
     baseline_path: [:0]const u8,
     variant_path: [:0]const u8,
-    d1: ?cli_d1.Resolved = null,
+    d1: ?report_model.D1 = null,
     unapplied_migrations: ?cli_d1_migrations.Pending = null,
     select_path: [:0]const u8,
     index_path: [:0]const u8,
@@ -356,12 +357,12 @@ const Inputs = struct {
     show_binds: bool = false,
     show_rows: bool = false,
     format: cli_args.Format = .human,
-    seed: ?cli_report.Seed = null,
+    seed: ?report_model.Seed = null,
     progress_interval_ns: u64 = std.time.ns_per_s,
 };
 
-fn buildSeedReport(arena: std.mem.Allocator, spec: cli_seed.Spec) !cli_report.Seed {
-    const tables = try arena.alloc(cli_report.SeedTable, spec.tables.len);
+fn buildSeedReport(arena: std.mem.Allocator, spec: cli_seed.Spec) !report_model.Seed {
+    const tables = try arena.alloc(report_model.SeedTable, spec.tables.len);
     var total: u64 = 0;
     for (spec.tables, 0..) |table, index| {
         tables[index] = .{ .table = table.name, .rows = table.rows };
@@ -407,7 +408,7 @@ fn runChecked(
     };
 
     const code = resultExitCode(computed.outcome);
-    const header: cli_report.Header = .{
+    const header: Header = .{
         .database_path = inputs.database_path,
         .select_path = inputs.select_path,
         .write_path = inputs.write_path,
@@ -415,6 +416,7 @@ fn runChecked(
         .work_parent = inputs.work_parent,
         .sqlite_version = sqliteVersion(),
         .sqlite_source_id = sqliteSourceId(),
+        .qenome_version = version,
         .binds = inputs.binds,
         .show_binds = inputs.show_binds,
         .show_rows = inputs.show_rows,
@@ -430,6 +432,33 @@ fn runChecked(
         return .rejected;
     };
     return code;
+}
+
+fn writeReport(
+    stdout: *Io.Writer,
+    allocator: std.mem.Allocator,
+    format: cli_args.Format,
+    header: Header,
+    before: cli_comparison.Measurement,
+    after: cli_comparison.Measurement,
+    outcome: cli_comparison.Outcome,
+    report: report_model.Report,
+) report_model.Error!void {
+    switch (format) {
+        .human => try report_human.writeHumanSummary(stdout, allocator, header, before, after, outcome, report),
+        .kv => try report_kv.writeSummary(stdout, allocator, header, before, after, outcome, report),
+        .json => try report_json.writeJsonReport(stdout, allocator, header, before, after, outcome, report),
+    }
+}
+
+fn reportD1(resolution: cli_d1.Resolved) report_model.D1 {
+    return .{
+        .binding = resolution.binding,
+        .config_path = resolution.config_path,
+        .database_id = resolution.database_id,
+        .local_path = resolution.local_path,
+        .sqlite_version = cli_d1.local_engine_sqlite_version,
+    };
 }
 
 fn reportD1Failure(stderr: *Io.Writer, failure: cli_d1.Failure) Io.Writer.Error!void {

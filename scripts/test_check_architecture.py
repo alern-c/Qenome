@@ -81,7 +81,10 @@ CANONICAL_FILES = {
         'const cli_query = @import("cli/query.zig");\n'
         'const cli_workspace = @import("cli/workspace.zig");\n'
         'const cli_timing = @import("cli/timing.zig");\n'
-        'const cli_report = @import("cli/report.zig");\n'
+        'const report_model = @import("report/model.zig");\n'
+        'const report_human = @import("report/human.zig");\n'
+        'const report_kv = @import("report/kv.zig");\n'
+        'const report_json = @import("report/json.zig");\n'
         'const cli_pair = @import("cli/pair.zig");\n'
         'const cli_batch = @import("cli/batch.zig");\n'
         'const cli_audit = @import("cli/audit.zig");\n'
@@ -156,26 +159,104 @@ CANONICAL_FILES = {
         'const cli_control = @import("control.zig");\n'
         'const cli_query = @import("query.zig");\n'
     ),
-    "src/cli/report.zig": (
+    "src/report/model.zig": (
+        'const std = @import("std");\n'
+        'const db = @import("../db.zig");\n'
+        'const cli_comparison = @import("../cli/comparison.zig");\n'
+        'const cli_timing = @import("../cli/timing.zig");\n'
+        'const cli_warnings = @import("../cli/warnings.zig");\n'
+    ),
+    "src/report/format.zig": (
+        'const std = @import("std");\n'
+        'const db = @import("../db.zig");\n'
+        'const result = @import("../result.zig");\n'
+        'const model = @import("model.zig");\n'
+        "\n"
+        "test {\n"
+        '    _ = @import("format_tests.zig");\n'
+        "}\n"
+    ),
+    "src/report/human.zig": (
         'const std = @import("std");\n'
         'const builtin = @import("builtin");\n'
         'const contract = @import("../contract/values.zig");\n'
         'const result = @import("../result.zig");\n'
-        'const cli_args = @import("args.zig");\n'
-        'const cli_d1 = @import("d1.zig");\n'
-        'const cli_comparison = @import("comparison.zig");\n'
-        'const cli_timing = @import("timing.zig");\n'
+        'const cli_comparison = @import("../cli/comparison.zig");\n'
+        'const cli_warnings = @import("../cli/warnings.zig");\n'
+        'const model = @import("model.zig");\n'
+        'const format = @import("format.zig");\n'
+        "\n"
+        "test {\n"
+        '    _ = @import("human_tests.zig");\n'
+        "}\n"
     ),
-    "src/cli/report_time.zig": 'const std = @import("std");\n',
+    "src/report/kv.zig": (
+        'const std = @import("std");\n'
+        'const builtin = @import("builtin");\n'
+        'const result = @import("../result.zig");\n'
+        'const cli_warnings = @import("../cli/warnings.zig");\n'
+        'const model = @import("model.zig");\n'
+        'const format = @import("format.zig");\n'
+        'const time = @import("time.zig");\n'
+        "\n"
+        "test {\n"
+        '    _ = @import("kv_tests.zig");\n'
+        "}\n"
+    ),
+    "src/report/json.zig": (
+        'const std = @import("std");\n'
+        'const builtin = @import("builtin");\n'
+        'const contract = @import("../contract/values.zig");\n'
+        'const result = @import("../result.zig");\n'
+        'const cli_comparison = @import("../cli/comparison.zig");\n'
+        'const cli_timing = @import("../cli/timing.zig");\n'
+        'const cli_warnings = @import("../cli/warnings.zig");\n'
+        'const model = @import("model.zig");\n'
+        'const format = @import("format.zig");\n'
+        "\n"
+        "test {\n"
+        '    _ = @import("json_tests.zig");\n'
+        "}\n"
+    ),
+    "src/report/time.zig": (
+        'const std = @import("std");\n'
+        'const cli_timing = @import("../cli/timing.zig");\n'
+    ),
+    "src/report/format_tests.zig": (
+        'const std = @import("std");\n'
+        'const format = @import("format.zig");\n'
+    ),
+    "src/report/human_tests.zig": (
+        'const std = @import("std");\n'
+        'const db = @import("../db.zig");\n'
+        'const result = @import("../result.zig");\n'
+        'const model = @import("model.zig");\n'
+        'const format = @import("format.zig");\n'
+        'const human = @import("human.zig");\n'
+    ),
+    "src/report/kv_tests.zig": (
+        'const std = @import("std");\n'
+        'const db = @import("../db.zig");\n'
+        'const result = @import("../result.zig");\n'
+        'const model = @import("model.zig");\n'
+        'const kv = @import("kv.zig");\n'
+    ),
+    "src/report/json_tests.zig": (
+        'const std = @import("std");\n'
+        'const db = @import("../db.zig");\n'
+        'const result = @import("../result.zig");\n'
+        'const model = @import("model.zig");\n'
+        'const format = @import("format.zig");\n'
+        'const json = @import("json.zig");\n'
+    ),
     "src/cli/pair.zig": (
         'const std = @import("std");\n'
         'const db = @import("../db.zig");\n'
         'const result = @import("../result.zig");\n'
         'const cli_comparison = @import("comparison.zig");\n'
         'const cli_control = @import("control.zig");\n'
-        'const cli_d1 = @import("d1.zig");\n'
         'const cli_query = @import("query.zig");\n'
-        'const cli_report = @import("report.zig");\n'
+        'const report_model = @import("../report/model.zig");\n'
         'const cli_timing = @import("timing.zig");\n'
         'const cli_workspace = @import("workspace.zig");\n'
     ),
@@ -187,7 +268,8 @@ CANONICAL_FILES = {
         'const cli_batch = @import("batch.zig");\n'
         'const cli_control = @import("control.zig");\n'
         'const cli_query = @import("query.zig");\n'
-        'const cli_report = @import("report.zig");\n'
+        'const report_human = @import("../report/human.zig");\n'
+        'const report_json = @import("../report/json.zig");\n'
     ),
     "src/cli/batch.zig": (
         'const std = @import("std");\n'
@@ -197,10 +279,10 @@ CANONICAL_FILES = {
         'const cli_args = @import("args.zig");\n'
         'const cli_comparison = @import("comparison.zig");\n'
         'const cli_control = @import("control.zig");\n'
-        'const cli_d1 = @import("d1.zig");\n'
         'const cli_pair = @import("pair.zig");\n'
         'const cli_query = @import("query.zig");\n'
-        'const cli_report = @import("report.zig");\n'
+        'const report_model = @import("../report/model.zig");\n'
+        'const report_json = @import("../report/json.zig");\n'
         'const cli_suggest = @import("suggest.zig");\n'
         'const cli_workspace = @import("workspace.zig");\n'
     ),
@@ -248,7 +330,8 @@ CANONICAL_FILES = {
     "src/cli/record_shapes.zig": (
         'const std = @import("std");\n'
         'const contract = @import("../contract/values.zig");\n'
-        'const cli_report = @import("report.zig");\n'
+        'const report_model = @import("../report/model.zig");\n'
+        'const report_json = @import("../report/json.zig");\n'
     ),
     "src/cli/record_tests.zig": (
         'const std = @import("std");\n'
@@ -321,7 +404,7 @@ def expect_rejected(name, code, output, rule, mention=None):
 def main():
     code, output = case(None)
     expect_clean("the smallest approved tree passes", code, output)
-    expect("the whole tree is checked", "(37 files checked" in output, output.strip())
+    expect("the whole tree is checked", "(45 files checked" in output, output.strip())
 
     code, output = case(lambda root: os.remove(os.path.join(root, "src/cli/tests.zig")))
     expect_rejected("a missing test file fails", code, output, "missing-file", "src/cli/tests.zig")
@@ -503,7 +586,11 @@ def main():
             'const cli_args = @import("cli/args.zig");\nconst cli_control = @import("cli/control.zig");\n'
             'const cli_comparison = @import("cli/comparison.zig");\nconst cli_query = @import("cli/query.zig");\n'
             'const cli_workspace = @import("cli/workspace.zig");\nconst cli_timing = @import("cli/timing.zig");\n'
-            'const cli_report = @import("cli/report.zig");\n\ntest {\n    _ = @import("tests.zig");\n}\n',
+            'const report_model = @import("report/model.zig");\n'
+            'const report_human = @import("report/human.zig");\n'
+            'const report_kv = @import("report/kv.zig");\n'
+            'const report_json = @import("report/json.zig");\n'
+            '\ntest {\n    _ = @import("tests.zig");\n}\n',
         )
     )
     expect_rejected("a differently written test entry fails", code, output, "test-entry", "cli/tests.zig")
@@ -516,7 +603,10 @@ def main():
             'const cli_args = @import("cli/args.zig");\nconst cli_control = @import("cli/control.zig");\n'
             'const cli_comparison = @import("cli/comparison.zig");\nconst cli_query = @import("cli/query.zig");\n'
             'const cli_workspace = @import("cli/workspace.zig");\nconst cli_timing = @import("cli/timing.zig");\n'
-            'const cli_report = @import("cli/report.zig");\n'
+            'const report_model = @import("report/model.zig");\n'
+            'const report_human = @import("report/human.zig");\n'
+            'const report_kv = @import("report/kv.zig");\n'
+            'const report_json = @import("report/json.zig");\n'
             '_ = @import("cli/tests.zig");\n',
         )
     )
@@ -530,7 +620,11 @@ def main():
             'const cli_args = @import("cli/args.zig");\nconst cli_control = @import("cli/control.zig");\n'
             'const cli_comparison = @import("cli/comparison.zig");\nconst cli_query = @import("cli/query.zig");\n'
             'const cli_workspace = @import("cli/workspace.zig");\nconst cli_timing = @import("cli/timing.zig");\n'
-            'const cli_report = @import("cli/report.zig");\n\ntest {\n    _ = @import("cli/tests.zig");\n'
+            'const report_model = @import("report/model.zig");\n'
+            'const report_human = @import("report/human.zig");\n'
+            'const report_kv = @import("report/kv.zig");\n'
+            'const report_json = @import("report/json.zig");\n'
+            '\ntest {\n    _ = @import("cli/tests.zig");\n'
             "    _ = @import(\"cli/tests.zig\");\n}\n",
         )
     )
@@ -563,6 +657,36 @@ def main():
         )
     )
     expect_rejected("the d1 component may not import the cli", code, output, "layer-order", "src/cli.zig")
+
+    code, output = case(
+        lambda root: write_file(
+            root,
+            "src/report/model.zig",
+            CANONICAL_FILES["src/report/model.zig"] + 'const cli_query = @import("../cli/query.zig");\n',
+        )
+    )
+    expect_rejected(
+        "the report layer may not import a cli module outside the pending list",
+        code,
+        output,
+        "layer-order",
+        "src/cli/query.zig",
+    )
+
+    code, output = case(
+        lambda root: write_file(
+            root,
+            "src/report/time.zig",
+            CANONICAL_FILES["src/report/time.zig"] + 'const cli = @import("../cli.zig");\n',
+        )
+    )
+    expect_rejected(
+        "the report layer may not import the cli coordinator",
+        code,
+        output,
+        "layer-order",
+        "src/cli.zig",
+    )
 
     code, output = case(lambda root: write_file(root, "src/d1/extra.zig", "// new\n"))
     expect_rejected("an unknown file under src/d1 fails", code, output, "unknown-file", "src/d1/extra.zig")
@@ -652,7 +776,7 @@ def main():
 
     code, output = case(
         lambda root: write_file(
-            root, "src/cli/report.zig", CANONICAL_FILES["src/cli/report.zig"] + "const schema_version: u8 = 2;\n"
+            root, "src/report/human.zig", CANONICAL_FILES["src/report/human.zig"] + "const schema_version: u8 = 2;\n"
         )
     )
     expect_rejected(
@@ -661,14 +785,16 @@ def main():
 
     code, output = case(
         lambda root: write_file(
-            root, "src/cli/report.zig", CANONICAL_FILES["src/cli/report.zig"] + "const ExitCode = enum { ok };\n"
+            root, "src/report/human.zig", CANONICAL_FILES["src/report/human.zig"] + "const ExitCode = enum { ok };\n"
         )
     )
     expect_rejected("a redefinition of ExitCode fails", code, output, "contract-value", "ExitCode")
 
     code, output = case(
         lambda root: write_file(
-            root, "src/cli/report.zig", CANONICAL_FILES["src/cli/report.zig"] + 'const label = "no_analyze_stats";\n'
+            root,
+            "src/report/human.zig",
+            CANONICAL_FILES["src/report/human.zig"] + 'const label = "no_analyze_stats";\n',
         )
     )
     expect_rejected("a contract code outside the contract fails", code, output, "contract-code", "no_analyze_stats")
@@ -676,8 +802,8 @@ def main():
     code, output = case(
         lambda root: write_file(
             root,
-            "src/cli/report.zig",
-            CANONICAL_FILES["src/cli/report.zig"] + 'test "codes" {\n    const label = "data_too_small";\n}\n',
+            "src/report/human.zig",
+            CANONICAL_FILES["src/report/human.zig"] + 'test "codes" {\n    const label = "data_too_small";\n}\n',
         )
     )
     expect_clean("a contract code inside a test passes", code, output)
@@ -697,7 +823,11 @@ def main():
             'const cli_args = @import("./cli/args.zig");\nconst cli_control = @import("cli/control.zig");\n'
             'const cli_comparison = @import("cli/comparison.zig");\nconst cli_query = @import("cli/query.zig");\n'
             'const cli_workspace = @import("cli/workspace.zig");\nconst cli_timing = @import("cli/timing.zig");\n'
-            'const cli_report = @import("cli/report.zig");\n\ntest {\n    _ = @import("cli/tests.zig");\n}\n',
+            'const report_model = @import("report/model.zig");\n'
+            'const report_human = @import("report/human.zig");\n'
+            'const report_kv = @import("report/kv.zig");\n'
+            'const report_json = @import("report/json.zig");\n'
+            '\ntest {\n    _ = @import("cli/tests.zig");\n}\n',
         )
         write_file(root, "src/cli/args.zig", 'const db = @import("./../db.zig");\n')
 
@@ -705,7 +835,7 @@ def main():
     expect_clean("normalized paths pass", code, output)
 
     def two_violations(root):
-        os.remove(os.path.join(root, "src/cli/report.zig"))
+        os.remove(os.path.join(root, "src/report/human.zig"))
         write_file(root, "src/cli/args.zig", 'const sqlite = @import("../sqlite.zig");\n')
 
     code, output = case(two_violations)
