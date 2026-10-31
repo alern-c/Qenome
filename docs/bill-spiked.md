@@ -112,24 +112,29 @@ next: qenome <DB> queries/q001.sql --suggest
 qenome testdata/generated/bill-spiked/app.db testdata/generated/bill-spiked/manifest/queries/q001.sql --suggest
 ```
 
-Exit status 0. This run printed `CREATE INDEX events_idx_000160d6 ON events(note);`, `Recommendation: suggested:1`, and `improved` with `200 -> 0`. Under `Warnings` it printed:
+Exit status 0. This run printed `CREATE INDEX events_idx_000160d6 ON events(note);`, `Recommendation: suggested:1`, and `improved` with `200 -> 0`. Under `Recommendation:` it also printed the small-table note and a `Next:` command, which is the same advice as the warning below. Under `Warnings` it printed:
 
 ```text
-  suggested:1: data_too_small: The candidate index table has fewer than 1000 rows. This heuristic does not establish representative performance; test with more representative data.
+  suggested:1: data_too_small: The table "events" has 200 rows, fewer than 1000 rows, so this result is not meaningful yet. A full scan reads every row, so a small count does not mean a missing index is harmless. Save the suggested index as index.sql first; --scale does not run with --suggest. Write a seed spec that lists events and rerun: qenome app.db q001.sql index.sql --seed-data seed.json --scale 1000,10000
 ```
 
-`events` has 200 rows. The warning does not change the verdict or the exit status. Copy the `CREATE INDEX` line from your own `Suggested by SQLite` section into a migration file. For a CI gate, compare that file without `--suggest`, so a later change in SQLite's advice cannot change the build. See [Suggesting candidate indexes](batch.md#suggesting-candidate-indexes).
+`events` has 200 rows. The warning does not change the verdict or the exit status. Save the suggested `CREATE INDEX` line as `index.sql` and rerun the comparison as [When the local table is too small](#when-the-local-table-is-too-small) does. For a CI gate, copy the `CREATE INDEX` line from your own `Suggested by SQLite` section into a migration file and compare that file without `--suggest`, so a later change in SQLite's advice cannot change the build. See [Suggesting candidate indexes](batch.md#suggesting-candidate-indexes).
 
-On this branch, any fewer rows read is `improved`. [PR #142](https://github.com/alern-c/Qenome/pull/142) is not merged and is not in this branch. It would require at least 1% fewer rows, and a smaller drop would be `no-effect`. `200 -> 0` is above that bar.
+`improved` needs at least 1% fewer rows read than the baseline. The same count and a smaller reduction are both `no-effect`, and `verdict_reasons` names the minimum. `200 -> 0` is above that bar; [Accuracy](accuracy.md#minimum-meaningful-improvement) gives the exact check.
 
-`queries/q002.sql` already uses `idx_events_customer`. This run of `--suggest` with `--bind 1:int:1` exited 1 and wrote nothing to stdout. stderr was:
+`queries/q002.sql` already uses `idx_events_customer`, so SQLite proposes nothing. This run exited 0 and started with `no index needed`:
+
+```sh
+qenome testdata/generated/bill-spiked/app.db testdata/generated/bill-spiked/manifest/queries/q002.sql --suggest --bind 1:int:1
+```
+
+It then gave the query path, `rows read: 2`, and the plan:
 
 ```text
-error: no candidate index to compare: SQLite suggested no index for these queries
-hint: Check that the SELECT has a WHERE or ORDER BY clause, or write a candidate CREATE INDEX file and compare it without --suggest.
+  SEARCH events USING INDEX idx_events_customer (customer_id=?)
 ```
 
-That error is `no_candidates`. [PR #143](https://github.com/alern-c/Qenome/pull/143) is not merged and is not in this branch. When the current plan already needs no index, it would exit 0 and start the report with `no index needed`. It would also accept `--sql` and a SELECT path of `-` for stdin. This page uses a SQL file, which this branch accepts.
+Exit status 0 means the current plan needs no index, so there is nothing to compare. A query that cannot be prepared, an expert that cannot analyze, or a suggestion that Qenome rejects still exits 1. This mode accepts a SELECT file, `--sql "<SQL>"`, or `-` for stdin; this page uses the files that the manifest wrote.
 
 ## Gate the migration
 
@@ -167,9 +172,9 @@ After the migration is on the remote database, read the same metrics again. [How
 
 ## When the local table is too small
 
-Two hundred rows still show `flag: likely full scan`, and the comparison can say `improved`, while the absolute count stays small. That hides what the same scan costs on a larger table. `data_too_small` means the candidate's table has fewer than 1,000 rows. On this branch the warning text does not name a follow-up command, and it does not change the verdict. [PR #145](https://github.com/alern-c/Qenome/pull/145) is not merged and is not in this branch. It would keep the verdict and add a suggested `--seed-data` and `--scale` command to the report.
+Two hundred rows still show `flag: likely full scan`, and the comparison can say `improved`, while the absolute count stays small. That hides what the same scan costs on a larger table. `data_too_small` means the candidate's table has fewer than 1,000 rows. The warning names the table and its row count, and, when the baseline plan is a bare scan of that table, says that a full scan reads every row. It gives a `next` command that reruns the same files with `--seed-data seed.json --scale 1000,10000`; with `--suggest`, it says to save the suggested SQL as `index.sql` first. The warning does not change the verdict or the exit status. [Accuracy and production D1](accuracy.md#what-the-verdicts-mean) lists every warning.
 
-`--scale` already works here. It does not combine with `--suggest`, `--batch`, or `--rank`, so the index has to be a file first. The seed replaces `events` in the sandbox copy only. Every seeded `note` is `n`, and the query looks for `missing`, so the scan still reads every row and the index reads none.
+`--scale` needs the index as a file, because it does not take `--suggest`, `--batch`, `--migration`, `--rank`, `--record`, or `--format kv`. The seed replaces `events` in the sandbox copy only. Every seeded `note` is `n`, and the query looks for `missing`, so the scan still reads every row and the index reads none.
 
 ```sh
 cat > testdata/generated/bill-spiked/seed.json <<'EOF'
@@ -206,9 +211,14 @@ Steps
         10,000        10,000            0 0.0000x  improved    match        changed -
 
 Warnings
-  warning at 100 rows: data_too_small: The candidate index table has fewer than
-    1000 rows. This heuristic does not establish representative performance;
-    test with more representative data.
+  warning at 100 rows: data_too_small: The table "events" has 100 rows, fewer
+    than 1000 rows, so this result is not meaningful yet. A full scan reads
+    every row, so a small count does not mean a missing index is harmless. Write
+    a seed spec that lists events and rerun: qenome
+    testdata/generated/bill-spiked/app.db
+    testdata/generated/bill-spiked/manifest/queries/q001.sql
+    testdata/generated/bill-spiked/0002_note.sql --seed-data seed.json --scale
+    1000,10000
 
 note: these rows come from generated data measured on this machine; they are not
 production D1 billing.
