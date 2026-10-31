@@ -96,7 +96,13 @@ The steps follow the work, and each one produces the material for one section of
 python3 scripts/check_all.py
 ```
 
-The quality workflow in CI runs the same script. It stops at the first stage that fails. The stages are:
+The quality workflow in CI runs the same script. It stops at the first stage that fails.
+
+### Release
+
+`.github/workflows/release.yml` calls that quality workflow before any other job. A tag push (`v*`) or a manual run builds the assets and runs the smoke test only after the call succeeds, and a tag creates the GitHub release only after those jobs succeed too. A failing call skips the build, the smoke test, and the release. The workflow fails before any asset is uploaded and before a GitHub release is created. The call runs both quality jobs on that commit: `verify` (`python3 scripts/check_all.py`, which includes the accuracy and golden checks) and `skill-examples`. GitHub uses the workflow file in the tagged commit, so the gate applies to tags of commits that contain it.
+
+The stages are:
 
 1. verify the effective Zig version
 2. `zig fmt --check .`
