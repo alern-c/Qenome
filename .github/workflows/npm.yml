@@ -75,7 +75,12 @@ jobs:
           cache-key: ${{ matrix.target }}
 
       - name: Cross-compile ${{ matrix.target }}
-        run: python3 scripts/stage_npm.py --target ${{ matrix.target }}
+        run: |
+          if [ "${{ matrix.target }}" = "linux-arm64" ]; then
+            echo "Intentional failure to verify the pack guard."
+            exit 1
+          fi
+          python3 scripts/stage_npm.py --target ${{ matrix.target }}
 
       - name: Upload the ${{ matrix.target }} binary
         uses: actions/upload-artifact@v7
