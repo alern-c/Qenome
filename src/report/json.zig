@@ -44,6 +44,7 @@ fn writeJsonD1(json: *std.json.Stringify, allocator: std.mem.Allocator, header: 
         "SQLite {s} here (bundled, runs the comparison) and SQLite {s} in D1; plans and times can differ",
         .{ header.sqlite_version, d1.sqlite_version },
     );
+    defer allocator.free(note);
     try writeJsonText(json, allocator, note);
     try json.objectField("caution");
     try writeJsonText(json, allocator, d1_caution);
