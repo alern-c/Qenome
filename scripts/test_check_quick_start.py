@@ -1,4 +1,7 @@
+import atexit
+import contextlib
 import importlib.util
+import io
 import os
 import shutil
 import stat
@@ -61,6 +64,9 @@ def load_checker():
     return module
 
 
+CHECKER_MODULE = load_checker()
+
+
 def write_file(root, rel_path, text):
     path = os.path.join(root, rel_path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -76,6 +82,26 @@ def read_file(root, rel_path):
 def make_executable(path):
     mode = os.stat(path).st_mode
     os.chmod(path, mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+
+FAKE_DIR: str | None = None
+
+
+def fake_qenome():
+    global FAKE_DIR
+    if FAKE_DIR is None:
+        root = tempfile.mkdtemp(prefix="qenome-fake-")
+        write_file(root, "qenome", FAKE_QENOME)
+        make_executable(os.path.join(root, "qenome"))
+        atexit.register(shutil.rmtree, root, ignore_errors=True)
+        FAKE_DIR = root
+    return FAKE_DIR
+
+
+def install_fake_qenome(root):
+    link = os.path.join(root, "tools", "qenome")
+    os.makedirs(os.path.dirname(link), exist_ok=True)
+    os.symlink(os.path.join(fake_qenome(), "qenome"), link)
 
 
 def contributing(commands):
@@ -115,6 +141,14 @@ def run_checker(root, args=None):
     argv += ["--root", root] if args is None else args
     done = subprocess.run(argv, capture_output=True, text=True)
     return done.returncode, done.stdout + done.stderr
+
+
+def run_in_process(root):
+    out = io.StringIO()
+    err = io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = CHECKER_MODULE.main(["check_quick_start.py", "--root", root])
+    return code, out.getvalue() + err.getvalue()
 
 
 def patch(rel_path, old, new):
@@ -160,14 +194,13 @@ def rewrite(rel_path, text):
 def case(mutate=None):
     root = tempfile.mkdtemp(prefix="qenome-quick-start-")
     try:
-        write_file(root, "tools/qenome", FAKE_QENOME)
-        make_executable(os.path.join(root, "tools", "qenome"))
+        install_fake_qenome(root)
         write_file(root, "CONTRIBUTING.md", contributing(COMMANDS))
         write_file(root, "README.md", README)
         write_file(root, "README.ja.md", README_JA)
         if mutate is not None:
             mutate(root)
-        return run_checker(root)
+        return run_in_process(root)
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
@@ -203,7 +236,7 @@ def expect_unusable(name, code, output, mention):
 
 
 def main():
-    checker = load_checker()
+    checker = CHECKER_MODULE
     windows = checker.windows_skip_reason("nt")
     expect("Windows is skipped", windows is not None, windows)
     expect("the skip names Windows", windows is not None and "Windows" in windows, windows)
