@@ -1,9 +1,13 @@
+import contextlib
+import glob
+import io
 import os
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -179,6 +183,135 @@ def test_stage(version):
         shutil.rmtree(work, ignore_errors=True)
 
 
+def test_build_binary():
+    work = tempfile.mkdtemp(prefix="qenome-build-")
+    pattern = os.path.join(tempfile.gettempdir(), "qenome-npm-*")
+    before = set(glob.glob(pattern))
+    calls = []
+
+    def writing_run(args, **kwargs):
+        calls.append(args)
+        prefix = args[args.index("--prefix") + 1]
+        os.makedirs(os.path.join(prefix, "bin"))
+        with open(os.path.join(prefix, "bin", "qenome"), "wb") as handle:
+            handle.write(b"built-binary")
+        return subprocess.CompletedProcess(args, 0, stdout="build output\n")
+
+    def failing_run(args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 2, stdout="compile error\n")
+
+    def silent_run(args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="ok\n")
+
+    original = stage_npm.subprocess.run
+    try:
+        stage_npm.subprocess.run = writing_run
+        dest = os.path.join(work, "built", "bin", "qenome")
+        log = stage_npm.build_binary(ROOT, "aarch64-macos", dest)
+        expect("build_binary copies the built binary", open(dest, "rb").read() == b"built-binary", dest)
+        expect("build_binary returns the build log", log == "build output\n", log)
+        expect(
+            "build_binary makes the binary executable",
+            stat.S_IMODE(os.stat(dest).st_mode) == 0o755,
+            oct(stat.S_IMODE(os.stat(dest).st_mode)),
+        )
+        expect(
+            "build_binary passes the release target",
+            any("-Doptimize=ReleaseSafe" in args and "-Dtarget=aarch64-macos" in args for args in calls),
+            calls,
+        )
+        blocker = os.path.join(work, "blocker")
+        with open(blocker, "w", encoding="utf-8") as handle:
+            handle.write("x")
+        try:
+            stage_npm.build_binary(ROOT, "x86_64-linux-musl", os.path.join(blocker, "bin", "qenome"))
+        except stage_npm.BuildError as error:
+            expect("an install failure keeps the log", error.log == "build output\n", error.log)
+            expect("an install failure names its target", "x86_64-linux-musl" in str(error), error)
+        else:
+            expect("an install failure keeps the log", False, "build succeeded")
+        stage_npm.subprocess.run = failing_run
+        try:
+            stage_npm.build_binary(ROOT, "x86_64-macos", os.path.join(work, "failed", "bin", "qenome"))
+        except stage_npm.BuildError as error:
+            expect("a failed build names its target", "x86_64-macos" in str(error), error)
+            expect("a failed build keeps the log", error.log == "compile error\n", error.log)
+        else:
+            expect("a failed build names its target", False, "build succeeded")
+        stage_npm.subprocess.run = silent_run
+        try:
+            stage_npm.build_binary(ROOT, "aarch64-linux-musl", os.path.join(work, "silent", "bin", "qenome"))
+        except stage_npm.BuildError as error:
+            expect("a build without a binary is refused", "did not write a binary" in str(error), error)
+            expect("a build without a binary keeps the log", error.log == "ok\n", error.log)
+        else:
+            expect("a build without a binary is refused", False, "build succeeded")
+        expect("build_binary does not leave a temp prefix", set(glob.glob(pattern)) == before, glob.glob(pattern))
+    finally:
+        stage_npm.subprocess.run = original
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def test_parallel_builds():
+    work = tempfile.mkdtemp(prefix="qenome-parallel-")
+    targets = [
+        (platform, os.path.join(work, platform["dir"], "bin", "qenome")) for platform in stage_npm.PLATFORMS
+    ]
+    barrier = threading.Barrier(len(targets), timeout=30)
+    seen = []
+    lock = threading.Lock()
+
+    def builder(root, zig_target, dest):
+        with lock:
+            seen.append(zig_target)
+        barrier.wait()
+        return "log for " + zig_target + "\n"
+
+    def failing_builder(root, zig_target, dest):
+        with lock:
+            seen.append(zig_target)
+        if zig_target == "x86_64-macos":
+            raise stage_npm.BuildError("zig build failed for " + zig_target, "boom\n")
+        return "log for " + zig_target + "\n"
+
+    try:
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            stage_npm.build_binaries(ROOT, targets, builder)
+        expect(
+            "every target is built",
+            sorted(seen) == sorted(platform["zig"] for platform in stage_npm.PLATFORMS),
+            seen,
+        )
+        output = captured.getvalue()
+        for platform in stage_npm.PLATFORMS:
+            block = "stage_npm: zig build -Dtarget=" + platform["zig"] + "\nlog for " + platform["zig"] + "\n"
+            expect("the log for " + platform["zig"] + " is one block", block in output, output)
+        seen.clear()
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            try:
+                stage_npm.build_binaries(ROOT, targets, failing_builder)
+            except stage_npm.BuildError as error:
+                expect("a parallel failure names its target", "x86_64-macos" in str(error), error)
+            else:
+                expect("a parallel failure names its target", False, "builds succeeded")
+        expect(
+            "a parallel failure still builds every target",
+            sorted(seen) == sorted(platform["zig"] for platform in stage_npm.PLATFORMS),
+            seen,
+        )
+        output = captured.getvalue()
+        expect("a failed target prints its log", "boom\n" in output, output)
+        expect("a failed log is printed once", output.count("boom\n") == 1, output)
+        headers = ["stage_npm: zig build -Dtarget=" + platform["zig"] + "\n" for platform in stage_npm.PLATFORMS]
+        expect("every target prints a block on failure", all(header in output for header in headers), output)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def test_empty_binary():
     work = tempfile.mkdtemp(prefix="qenome-empty-")
     binaries = {}
@@ -294,6 +427,8 @@ def main():
     test_sources()
     test_render(version)
     test_stage(version)
+    test_build_binary()
+    test_parallel_builds()
     test_empty_binary()
     test_launcher_permissions()
     test_publish_guards()

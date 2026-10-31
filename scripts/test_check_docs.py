@@ -12,12 +12,19 @@ FAILURES: list[str] = []
 
 README = """# Sample
 
+## Install
+
+```sh
+npm install -g qenome
+```
+
 ## Features
 
 One line.
 
 ## Contents
 
+- [Install](#install)
 - [Features](#features)
 - [Installation](docs/installation.md)
 - [Check a local D1](docs/local-d1.md)
@@ -44,12 +51,19 @@ Apache-2.0.
 
 README_JA = """# サンプル
 
+## インストール
+
+```sh
+npm install -g qenome
+```
+
 ## 特徴
 
 1行。
 
 ## 目次
 
+- [インストール](#インストール)
 - [特徴](#特徴)
 - [インストール](docs/ja/installation.md)
 - [ローカル D1 を調べる](docs/ja/local-d1.md)

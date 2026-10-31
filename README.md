@@ -38,6 +38,17 @@ Rows read fell from 200,000 to 101, and the exit status is 0. The original datab
 
 Give it one read-only `SELECT` and one `CREATE INDEX`. With `--write`, give it one `INSERT`, `UPDATE`, `DELETE`, or `REPLACE` instead. It copies a local SQLite file, or a local Cloudflare D1 database (`--d1 <BINDING>`, `--config`), into sandbox snapshots and compares them. The original database is never modified.
 
+## Install
+
+On Linux and macOS, for x64 and arm64, install the command once:
+
+```sh
+npm install -g qenome
+qenome --version
+```
+
+To try Qenome without installing it, run `npx qenome`. Windows is not an npm target: use a prebuilt binary from [Releases](https://github.com/alern-c/Qenome/releases), after checking it against `SHA256SUMS`. The install steps for every platform and a build from source are in [Installation](docs/installation.md).
+
 ## Features
 
 - **Your database stays untouched.** Qenome opens the original read-only and compares sandbox copies, so a candidate index that does not help can be dropped before the merge.
@@ -56,8 +67,9 @@ Give it one read-only `SELECT` and one `CREATE INDEX`. With `--write`, give it o
 
 ## Contents
 
+- [Install](#install): npm on Linux and macOS, or `npx qenome` without installing
 - [Features](#features)
-- [Installation](docs/installation.md): npm, prebuilt binaries, or a build from source
+- [Installation details](docs/installation.md): npm, prebuilt binaries, checksums, and a build from source
 - [Check a local D1](docs/local-d1.md): the first comparison, from a wrangler project
 - [Use with AI agents](docs/agents.md): the skill, the JSON report, and the install commands
 - [Why not ...](docs/why-not.md): EXPLAIN QUERY PLAN, wrangler, production metrics, and applying the index

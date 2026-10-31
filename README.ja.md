@@ -38,6 +38,17 @@ Results
 
 読み取り専用の `SELECT` を1本と、候補の `CREATE INDEX` を1本渡します。`--write` を付けると、代わりに `INSERT`・`UPDATE`・`DELETE`・`REPLACE` を1本渡します。ローカルの SQLite ファイル、またはローカルの Cloudflare D1（`--d1 <BINDING>` と `--config`）をサンドボックスのコピーにして比較します。元のデータベースは変更しません。
 
+## インストール
+
+Linux と macOS の x64 と arm64 では、次の1回でコマンドをインストールできます。
+
+```sh
+npm install -g qenome
+qenome --version
+```
+
+インストールせずに試すときは `npx qenome` で実行できます。Windows は npm の対象外なので、[Releases](https://github.com/alern-c/Qenome/releases) のビルド済みバイナリを `SHA256SUMS` で確認してから使ってください。全プラットフォームの手順とソースからのビルドは[インストール](docs/ja/installation.md)にあります。
+
 ## 特徴
 
 - **元のデータベースは変更しません。** 読み取り専用で開き、サンドボックスのコピーで比較するので、役に立たない候補のインデックスはマージの前に捨てられます。
@@ -56,8 +67,9 @@ Results
 
 ## 目次
 
+- [インストール](#インストール): Linux と macOS の npm、インストールせずに `npx qenome`
 - [特徴](#特徴)
-- [インストール](docs/ja/installation.md): npm、ビルド済みバイナリ、ソースからのビルド
+- [インストールの詳細](docs/ja/installation.md): npm、ビルド済みバイナリ、チェックサム、ソースからのビルド
 - [ローカル D1 を調べる](docs/ja/local-d1.md): wrangler プロジェクトでの最初の比較
 - [AI エージェントと使う](docs/ja/agents.md): スキル、JSON レポート、インストールのコマンド
 - [なぜ他の方法ではないのか](docs/ja/why-not.md): EXPLAIN QUERY PLAN、wrangler、本番の数値、インデックスを適用する方法との違い
