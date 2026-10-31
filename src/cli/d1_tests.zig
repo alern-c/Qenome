@@ -362,6 +362,36 @@ test "a write comparison reports the unapplied migrations" {
     try testing.expect(contains(try warningField(warning, "message"), "0001_a.sql"));
 }
 
+test "the scale run with a D1 header writes the D1 note for every step" {
+    var fixture = try Fixture.init(testing.allocator, "", null);
+    defer fixture.deinit(testing.allocator);
+    const seed = try fixture.file(testing.allocator, "seed.json",
+        \\{"seed": 9, "tables": {"t": {"rows": 10, "columns": {"a": {"kind": "sequence"}, "b": {"kind": "fixed", "value": "x"}}}}}
+    );
+    defer testing.allocator.free(seed);
+
+    const argv = [_][:0]const u8{
+        "Qenome",      "--d1",        "DB",          "--config", fixture.config, "--select", fixture.select,
+        "--index-sql", fixture.index, "--seed-data", seed,       "--scale",      "100,500",  "--runs",
+        "0",           "--format",    "json",
+    };
+    var stdout_buffer: [65536]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = callRun(testing.allocator, &argv, fixture.work, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(cli.ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseReport(testing.allocator, result.stdout);
+    defer parsed.deinit();
+    const steps = parsed.value.object.get("steps").?.array.items;
+    try testing.expectEqual(@as(usize, 2), steps.len);
+    for (steps) |step| {
+        const d1 = step.object.get("comparison").?.object.get("d1") orelse return error.TestUnexpectedResult;
+        const note = d1.object.get("sqlite_version_note") orelse return error.TestUnexpectedResult;
+        try testing.expect(contains(note.string, " in D1; plans and times can differ"));
+    }
+}
+
 test "a suggest run reports the unapplied migrations" {
     var fixture = try Fixture.init(testing.allocator, "", record_schema);
     defer fixture.deinit(testing.allocator);
