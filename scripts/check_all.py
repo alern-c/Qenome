@@ -115,6 +115,10 @@ def main():
             command([sys.executable, "scripts/test_record_wrapper.py"]),
         ),
         (
+            "Test the review findings poster",
+            command([sys.executable, "scripts/test_post_review_findings.py"]),
+        ),
+        (
             "Test the golden checker",
             command([sys.executable, "scripts/test_check_golden.py"]),
         ),

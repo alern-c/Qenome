@@ -71,6 +71,8 @@ jobs:
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENCODE_PERMISSION: '{"external_directory": {"${{ runner.temp }}/*": "allow"}}'
+          REVIEW_FINDINGS_PATH: ${{ runner.temp }}/opencode-review-findings.json
         with:
           model: opencode-go/glm-5.3-flash
           use_github_token: true
@@ -81,14 +83,24 @@ jobs:
             Look for correctness bugs and regressions first, then for tests the change needs and does not have, then for violations of the rules in AGENTS.md: English in commits, pull requests and docs, no comments in code, contract values only in src/contract/values.zig, the standard library only, and a new file or folder registered in the check tables.
             When an earlier review of yours is already on this pull request, cover only what changed since that review and do not repeat a finding it already made.
             Give the file and the line of each finding, order the findings by severity, and write one sentence when the change looks correct.
+            - Write the findings as JSON to the file named by `$REVIEW_FINDINGS_PATH`, because a later step posts one inline comment per finding on the line it names: a JSON array of `{"path": "<path from the repository root>", "line": <line number in the pull request head file>, "severity": "<blocker, major, minor or nit>", "body": "<the finding, one or two sentences>"}` and nothing else. A finding that is not about a specific changed line goes in your final reply only, and a review with no finding writes an empty array. The final reply stays the full review, including the Verification section.
             Verify, do not only read. The steps before this one install Zig and build the head and the merge base; when one of them failed, say which in the Verification section and stop the runs that need it. Read `skills/qenome/SKILL.md`, the Quick start in `CONTRIBUTING.md` and the pages under `docs/` for how to run the CLI instead of restating their usage.
             - Decide what behaviour the change claims to alter, rebuild both trees with `zig build` and `(cd testdata/generated/qenome-base && zig build)`, and run both binaries on the inputs the change touches: the databases and queries under `testdata/`, the cases under `testdata/accuracy/`, or a small case you write under `testdata/generated/`. Compare the outputs, the verdicts and the exit codes.
             - Check that the diff matches what the pull request says should change, and that nothing else changed.
             - Run every build and every qenome command with the secrets out of the environment: `env -u OPENCODE_API_KEY -u GITHUB_TOKEN <command>`.
-            - Keep every path inside the checkout, and write scratch files under `testdata/generated/`: the action has to approve a path outside the checkout, and nothing can approve it here, so such a command waits until the job ends.
+            - Keep every path inside the checkout, and write scratch files under `testdata/generated/`: the action has to approve a path outside the checkout, and nothing can approve it here, so such a command waits until the job ends. This workflow approves the directory of `$REVIEW_FINDINGS_PATH`, so write that file there and nothing else.
             - Do not repeat what CI already runs: `quality.yml` runs `python3 scripts/check_all.py`, so run only the targeted commands the change needs, and do not run ruff or mypy.
             - A pull request that changes no qenome behaviour (docs or CI only) needs no comparison: say so, skip the comparison runs, and still run `./zig-out/bin/qenome --version` once so the review shows the binary works.
             - Put a short Verification section in the review: the commands you ran, what you observed, and one line that says matches, does not match, or could not verify, with the reason.
+
+      - name: Post the findings on the changed lines
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FINDINGS: ${{ runner.temp }}/opencode-review-findings.json
+          PR: ${{ github.event.pull_request.number }}
+          COMMIT: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/post_review_findings.py "$FINDINGS" --pull-request "$PR" --commit "$COMMIT"
 
   mention:
     if: |
