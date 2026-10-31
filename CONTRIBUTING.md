@@ -33,12 +33,12 @@ Build Qenome:
 zig build
 ```
 
-The seven examples run `zig-out/bin/qenome`. Each command ends with the result it has to report: `result` and `verdict` from the Summary (or `recommended` for a batch), and the exit status. `python3 scripts/check_all.py` and the quality workflow run these lines as written, so this file and the program stay in step. `--runs 40` keeps the medians steady on a busy machine; the default is `10`.
+The seven examples run `zig-out/bin/qenome`. Each command ends with the result it has to report: `result` and `verdict` from the Summary (or `recommended` for a batch), and the exit status. `python3 scripts/check_all.py` and the quality workflow run these lines as written, so this file and the program stay in step. Only the first example runs the timing loop, with the default `--runs 10`, which keeps the medians steady on a busy machine. The verdict comes from the rows read and the rows written, not from the times, so the other examples pass `--runs 0`, use a mode that never times (`--batch`, `--suggest`), or return an incomparable result.
 
 An index that removes the full scan. The candidate index turns `SCAN events` into `SEARCH events USING INDEX ix_events_customer_id (customer_id=?)`, the rows read fall from 200,000 to 101, and both copies return the same 100 rows.
 
 ```sh
-./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/improved.sql testdata/cases/improved.index.sql --bind 1:int:1234 --runs 40  # expect: result=match verdict=improved exit=0
+./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/improved.sql testdata/cases/improved.index.sql --bind 1:int:1234  # expect: result=match verdict=improved exit=0
 ```
 
 An index on data you choose. `--seed-data testdata/seed.json` replaces the `events` rows in the sandbox copy, with the original database unchanged, by 50,000 deterministic rows. The same query then finds row `1234` among them, and the verdict stays `improved`. See [Generating sandbox data](docs/usage.md#generating-sandbox-data).
@@ -50,7 +50,7 @@ An index on data you choose. `--seed-data testdata/seed.json` replaces the `even
 An index that cannot help. The SELECT wraps the column in `lower()`, so SQLite cannot use the index on `status`, and the plan, the rows read, and the rows written stay the same.
 
 ```sh
-./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/no-effect.sql testdata/cases/no-effect.index.sql --bind 1:text:ok --runs 40  # expect: result=match verdict=no-effect exit=0
+./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/no-effect.sql testdata/cases/no-effect.index.sql --bind 1:text:ok --runs 0  # expect: result=match verdict=no-effect exit=0
 ```
 
 An INSERT that a new index makes more expensive. `--write` compares one `INSERT`, `UPDATE`, `DELETE`, or `REPLACE` on both sandbox copies, inside a transaction that is rolled back. The candidate index on `customer_id` is not used by this INSERT, but each inserted row also updates the index: the rows written rise from 1 to 2, while both copies change the same row. The verdict is `needs-check` because the variant writes more, and the exit status stays 0. The original database is not changed.
@@ -77,18 +77,18 @@ A proposed index, without an index file. `--suggest` asks SQLite which index wou
 ./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/improved.sql --bind 1:int:1234 --suggest  # expect: recommended=suggested:1 exit=0
 ```
 
-The first database build takes about a second, and each timed example a few seconds. `testdata/README.md` records the fixture, the queries, and their expected plan and counters.
+The first database build takes about a second, and the whole walkthrough about seven seconds, because only the first example runs the timing loop. `testdata/README.md` records the fixture, the queries, and their expected plan and counters.
 
 ## Workflow
 
 The steps follow the work, and each one produces the material for one section of the pull request. The body comes from `.github/pull_request_template.md`.
 
-1. Problem (PR section 1): before changing anything, write down who is affected, what goes wrong and what happens if it is left alone. Create one branch per issue from an up-to-date `origin/main`, named `<type>/<short-name>` with `<type>` one of `feat`, `fix`, `docs`, `test`, `refactor` or `chore`; leave the issue number out of the name.
+1. Problem (PR section 1): before changing anything, write down who is affected, what goes wrong and what happens if it is left alone. Create one branch per issue from an up-to-date `origin/main`, named `<type>/<short-name>` with `<type>` one of `feat`, `fix`, `docs`, `test`, `refactor`, `perf`, `build`, `ci` or `chore`; leave the issue number out of the name.
 2. Approaches (PR section 3): before implementing, list the approaches really considered and compare them on the same points, starting with whether each solves the problem. A purely mechanical change says why there is no comparison.
 3. Implement (PR section 2): a behaviour change starts with the failing Zig test or accuracy case (see [Checks before you finish](AGENTS.md#checks-before-you-finish) in `AGENTS.md`). For an intended output change, regenerate the golden output with `python3 scripts/check_golden.py --update` and review the diff. Do not mix a behaviour change with a structural change (refactor), and stay within the issue's scope. `README.md` and `README.ja.md` move together (see the Language rule in `AGENTS.md`). A change to CLI behaviour, output or the README gets an entry under `[Unreleased]` in `CHANGELOG.md`; a change only to tests or checkers does not.
-4. Verify (PR section 4): try the approaches, or say which were not tried and why, and record the result of each and why the chosen one won. For a change to CLI behaviour or output, to the npm launcher (`npm/`) or to the bundled skill (`skills/`, shown as a screenshot of an agent session that uses it; a wording-only change is exempt), capture a PNG or GIF of a real run during this step, before and after when the behaviour changes. A terminal screenshot is enough, and vhs is optional. The image adds to the golden and accuracy checks (see [Checks before you finish](AGENTS.md#checks-before-you-finish)); it does not replace them. No image is needed when the output is unchanged (for example a refactor whose golden and accuracy checks pass), or for a docs-, test-, checker- or build-only change; say why in section 4. Attach images to the PR (drag them into the GitHub form, or `gh pr create --attach` / `gh pr edit --attach`), keep them outside the repository, and do not commit them; the README demos in `docs/*.gif` are recorded only as [Golden output](#golden-output) describes. The repository is public: images must not show secrets, tokens, personal data or real user data.
+4. Verify (PR section 4): try the approaches, or say which were not tried and why, and record the result of each and why the chosen one won. For a change to CLI behaviour or output, to the npm launcher (`npm/`) or to the bundled skill (`skills/`, shown as a screenshot of an agent session that uses it; a wording-only change is exempt), capture a PNG or GIF of a real run during this step, before and after when the behaviour changes. A terminal screenshot is enough, and vhs is optional. The image adds to the golden and accuracy checks (see [Checks before you finish](AGENTS.md#checks-before-you-finish)); it does not replace them. No image is needed when the output is unchanged (for example a refactor whose golden and accuracy checks pass), or for a docs-, test-, checker- or build-only change; say why in section 4 on a line that starts with `No image:` and the reason, as in `No image: the golden output is unchanged`. Attach images to the PR (drag them into the GitHub form, or `gh pr create --attach` / `gh pr edit --attach`), keep them outside the repository, and do not commit them; the README demos in `docs/*.gif` are recorded only as [Golden output](#golden-output) describes. The repository is public: images must not show secrets, tokens, personal data or real user data.
 5. Check (PR section 6): run `python3 scripts/check_all.py`, then reread `git diff origin/main...HEAD` before committing.
-6. Commit and PR: commits follow Conventional Commits, `<type>(<scope>): <summary>` in English, with one logical change per commit; commit only the files the change needs. To update a branch, merge `origin/main` into it; do not rebase or force-push a pushed branch. The PR has a Conventional Commits title, and its body comes from `.github/pull_request_template.md` with the six headings verbatim, because `gh pr create --body` and `--body-file` do not load the template. Put `Closes #<n>` at the end of section 2, and attach the images.
+6. Commit and PR: commits follow Conventional Commits, `<type>(<scope>): <summary>` in English, with one logical change per commit; commit only the files the change needs. To update a branch, merge `origin/main` into it; do not rebase or force-push a pushed branch. The PR has a Conventional Commits title, and its body comes from `.github/pull_request_template.md` with the six headings verbatim, because `gh pr create --body` and `--body-file` do not load the template. Put `Closes #<n>` at the end of section 2, and attach the images. The `pr-format` check in CI reads the title and body on every pull request that is opened, edited or pushed to, and prints one line per problem. It rejects a title that is not Conventional Commits with one of the types above (a `Revert "…"` title passes), one of the six headings missing, repeated or out of order, an empty section (section 5 says `None.` when there is nothing to decide), the `Closes #<n>` placeholder left in place, a table whose second line is not a row of `---` cells, and a change under `src/`, `npm/` or `skills/` with no image and no `No image:` line in section 4.
 
 ## Development checks
 
@@ -112,13 +112,14 @@ The quality workflow in CI runs the same script. It stops at the first stage tha
 12. the comment check
 13. the docs checker's self-test
 14. the docs check
-15. the npm publish-tree test
-16. the record wrapper test
-17. the golden checker's self-test
-18. the golden output check
-19. the accuracy checker's self-test
-20. the Quick start checker's self-test
-21. the CONTRIBUTING Quick start
+15. the PR format checker's self-test
+16. the npm publish-tree test
+17. the record wrapper test
+18. the golden checker's self-test
+19. the golden output check
+20. the accuracy checker's self-test
+21. the Quick start checker's self-test
+22. the CONTRIBUTING Quick start
 
 ruff and mypy run through `uv run --locked`, so the checks need uv 0.13.1 or newer.
 

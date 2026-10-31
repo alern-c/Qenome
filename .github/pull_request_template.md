@@ -14,7 +14,7 @@ Closes #<n>
 
 ## 4. Verification and conclusion
 
-<!-- What was run or read to check each claim, the result of each approach, why the chosen one won, and any accepted weakness (Workflow step 4). For a change to CLI behaviour or output, `npm/` or `skills/`: attach a PNG/GIF of a real run (before/after). Otherwise say why none is needed. -->
+<!-- What was run or read to check each claim, the result of each approach, why the chosen one won, and any accepted weakness (Workflow step 4). For a change to CLI behaviour or output, `npm/` or `skills/`: attach a PNG/GIF of a real run (before/after). Otherwise say why none is needed, on a line that starts `No image: <reason>`. -->
 
 ## 5. Decisions or agreement needed
 
