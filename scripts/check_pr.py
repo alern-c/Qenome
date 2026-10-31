@@ -13,7 +13,7 @@ HEADINGS = (
 )
 TYPES = ("feat", "fix", "docs", "test", "refactor", "perf", "build", "ci", "chore")
 TITLE = re.compile(r"^(?:" + "|".join(TYPES) + r")(?:\([^()]+\))?!?: \S")
-REVERT = re.compile(r'^Revert "[^"]*"(?: \(#[0-9]+\))?$')
+REVERT = re.compile(r'^Revert ".*"(?: \(#[0-9]+\))?$')
 HTML_COMMENT = re.compile(r"<!--.*?-->", re.S)
 FENCE = re.compile(r"^(`{3,}|~{3,})")
 TABLE_SEPARATOR = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$")

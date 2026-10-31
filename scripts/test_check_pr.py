@@ -188,8 +188,14 @@ def main():
     expect_clean("a scope passes", run(title="feat(cli): add a check"))
     expect_clean("a breaking change marker passes", run(title="fix!: drop the flag"))
     expect_clean("a Revert title passes", run(title='Revert "feat(cli): add a check"'))
+    expect_clean("a Revert title with quotes inside passes",
+                 run(title='Revert "fix: handle "none""'))
+    expect_clean("a Revert of a Revert title passes",
+                 run(title='Revert "Revert "feat: x""'))
     expect_clean("a Revert title with the PR number passes",
                  run(title='Revert "feat: add a check" (#42)'))
+    expect_problem("a Revert title without quotes fails",
+                   run(title="Revert feat: x"), "title:")
     expect_problem("an unknown type fails", run(title="wip: add a check"), "title:")
     expect_problem("a missing space after the colon fails",
                    run(title="feat(cli):add a check"), "title:")
