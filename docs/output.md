@@ -98,6 +98,8 @@ Main keys:
 | 124 | A time limit was reached (`--timeout-ms`) |
 | 129 / 130 / 143 | Interrupted by `SIGHUP` / `SIGINT` / `SIGTERM` (POSIX) |
 
+For how the counters are built and what each verdict means for production D1, see [Accuracy and production D1](accuracy.md).
+
 `--format json` reports the comparison result in `exit_code` as `0`, `3`, or `4`. The process can still exit with `5` after writing the JSON.
 
 A `--batch` report can be written with exit `1`, `6`, or `124`. If stdout is the batch object, the run finished and the failures are in the report. If stdout is empty, the run stopped and stderr holds the error object.
