@@ -1,3 +1,6 @@
+const std = @import("std");
+const contract = @import("../contract/values.zig");
+
 pub const synopsis = "       qenome skill <print|install|uninstall|status> [options]";
 
 pub const body =
@@ -285,8 +288,9 @@ pub const body =
     \\  ORDER BY or among equal ORDER BY keys, and ORDER BY itself is not
     \\  checked.
     \\  Verdict, from the rows read: improved (the rows match and the variant
-    \\  reads fewer rows), no-effect (the rows match and both copies read the
-    \\  same number of rows), needs-check (the rows match but the variant reads
+    \\  reads at least 1% fewer rows, and writes no more), no-effect (the rows
+    \\  match and the variant does not, including a smaller reduction, which
+    \\  the reasons explain), needs-check (the rows match but the variant reads
     \\  or writes more, with the reasons), or not-judged (the rows differ or
     \\  cannot be compared, with the reasons; --runs 0 is still judged). A
     \\  migration batch calls the needs-check case regressed, and its JSON
@@ -303,3 +307,8 @@ pub const body =
     \\AI agents: use `qenome skill print` or `qenome skill install`.
     \\
 ;
+
+test "the verdict help names the minimum read gain" {
+    const needle = std.fmt.comptimePrint("at least {d}% fewer", .{contract.min_read_gain_percent});
+    try std.testing.expect(std.mem.indexOf(u8, body, needle) != null);
+}

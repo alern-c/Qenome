@@ -8,6 +8,8 @@ The numbers use the same counting as local D1 (workerd patch), but they come fro
 
 Qenome builds the bundled SQLite (3.53.4 in this tree) with Cloudflare's row-count patch from `workerd`; [NOTICE](../NOTICE) names the patch and [vendor/sqlite3/PROVENANCE.txt](../vendor/sqlite3/PROVENANCE.txt) records its hashes and how to apply it again. The patch adds two prepared-statement counters, `LIBSQL_STMTSTATUS_ROWS_READ` (1025) and `LIBSQL_STMTSTATUS_ROWS_WRITTEN` (1026), and Qenome reports them as `rows_read` and `rows_written`. Local D1 runs the same patch, so the report uses the same counting as local D1 (workerd patch).
 
+Local D1 already reports those two fields for one execution. Under `wrangler dev`, `run` and `all` (documented as aliases) and `batch` return `rows_read` and `rows_written` on the result `meta`. `raw`, `first`, and `exec` do not. `wrangler d1 execute --local --json` returns that `meta` for the command. Those numbers come from the local D1 engine. Qenome's numbers come from its own build of the patch, and [the builds use different compile options](#what-can-differ-from-production-d1), so the counts can differ. Neither number is a production D1 bill. [Why not ...](why-not.md) says what those tools already give you and what the comparison adds.
+
 The patch increments the read counter in `OP_Count`, `OP_Seek*`, `OP_NotExists`, `OP_SeekRowid`, `OP_Last`, `OP_Rewind`, `OP_Next`, and `OP_VNext`. It increments the write counter in `OP_Insert`, `OP_IdxInsert`, `OP_Delete`, `OP_Clear`, and `OP_VUpdate`, skipping ephemeral cursors. In practice:
 
 - **Rows read** counts the rows and index entries a scan steps over. The positioning operations (`OP_Seek*`, `OP_NotExists`, `OP_SeekRowid`, `OP_Last`, `OP_Rewind`) add one for the attempt, which can be counted even when the lookup finds no row; `OP_Count` adds the row count it returns.
@@ -24,13 +26,13 @@ The result rows are compared as a multiset: each distinct row must appear the sa
 
 | Verdict | Meaning |
 | --- | --- |
-| `improved` | The rows match, the variant reads fewer rows, and the variant writes no more rows. |
-| `no-effect` | The rows match, both copies read the same number of rows, and the variant writes no more rows. |
+| `improved` | The rows match, the variant reads at least 1% fewer rows than the baseline, and the variant writes no more rows. |
+| `no-effect` | The rows match, and the variant does not read at least 1% fewer rows. The same count and a smaller reduction both land here, and the variant writes no more rows. A smaller reduction is named in `verdict_reasons`. |
 | `needs-check` | The rows match, but the variant reads or writes more rows. |
 | `regressed` | The rows match, but the migration made the variant read or write more rows. Only in a `--migration` batch; the batch exits `6` unless a mismatch, a rejected change, a timeout, or an incomparable result takes precedence. |
 | `not-judged` | The rows differ or cannot be compared, or a `--migration` query could only run on the variant. Also used for a `--write` that was not run. |
 
-`rows_read` and `rows_written` decide the verdict. The times are a reference only and never change the verdict or the exit status, so `--runs 0` keeps the verdict and skips the timing loop.
+`rows_read` and `rows_written` decide the verdict. The times are a reference only and never change the verdict or the exit status, so `--runs 0` keeps the verdict and skips the timing loop. A read reduction below 1% of the baseline `rows_read` is not `improved`; see [Minimum meaningful improvement](#minimum-meaningful-improvement).
 
 The `result` field says whether the rows could be compared:
 
@@ -51,6 +53,20 @@ Warnings advise; they never change the verdict, a row count, or the exit status.
 
 A `--migration` batch does not emit `no_analyze_stats` or `data_too_small`, because a migration can touch several tables.
 
+## Minimum meaningful improvement
+
+`improved` requires the variant to read at least 1% fewer rows than the baseline. The check uses the two `rows_read` counters as integers: `(baseline - variant) * 100 >= baseline`. The smallest saving that counts is one row for every hundred baseline rows, rounded up, so a saving of exactly 1% is `improved`. A smaller saving is `no-effect`, and `verdict_reasons` says the reduction is below 1% of the baseline rows read. The counters stay in the report, and `schema_version` stays `2`.
+
+The same check applies to a `--write` comparison and to a write in a `--migration` batch. More rows read is still `needs-check`, or `regressed` in that batch. More rows written is still `needs-check` for a SELECT. For a migration write, rows written are still reported and still do not change the verdict.
+
+One percent is a fixed heuristic, in the same way the `data_too_small` warning uses 1,000 rows. It is not a command-line flag. Both `rows_read` numbers are still printed, so a reader can apply another cutoff. A point lookup on a small table stays `improved`, because reading 1 row instead of 100 is far more than 1%. An absolute floor, such as 100 rows, would call that lookup `no-effect`. The positioning operations in [How rows are counted](#how-rows-are-counted) add one for the attempt, so a one-row difference on a large scan is the same size as that count and is not a reason to keep the index.
+
+The accuracy corpus keeps three known answers for this rule:
+
+- [testdata/accuracy/one-row-gain-of-50000/](../testdata/accuracy/one-row-gain-of-50000/) reads 50,000 rows on the baseline and 49,999 on the variant. The verdict is `no-effect`.
+- [testdata/accuracy/one-percent-gain-of-50000/](../testdata/accuracy/one-percent-gain-of-50000/) reads 50,000 rows on the baseline and 49,500 on the variant. That is exactly 1%, and the verdict is `improved`.
+- [testdata/accuracy/clear-gain-equality/](../testdata/accuracy/clear-gain-equality/) is an equality lookup on the same 50,000-row table. The variant reads 26 rows. The verdict is `improved`.
+
 ## What can differ from production D1
 
 The result is a measurement of a local copy. A production result can differ for any of these reasons.
@@ -62,7 +78,7 @@ The result is a measurement of a local copy. A production result can differ for 
 - **Real traffic.** Qenome runs the query with the bind values you pass. Production runs it with other values, at its own frequency, with its own caching and concurrent writes. `avgRowsRead` from `d1 insights` is an average over the values that ran in the period, not the count for one value.
 - **Writes.** The write counter does not count secondary-index deletes (see [How rows are counted](#how-rows-are-counted)), so a `DELETE` or an `UPDATE` that removes an old index entry reports less than the full index-maintenance cost.
 - **Schema.** The local D1 database can be older than the migrations in the wrangler config. The `unapplied_migrations` warning lists the migration files that have not been applied; a result on that schema can hide the effect of the index.
-- **Billing.** D1 bills on its own counters. Qenome reads `sqlite3_stmt_status` on a local copy and does not read the production counters, so the report cannot tell you what D1 will charge.
+- **Billing.** D1 bills on its own counters. Qenome reads `sqlite3_stmt_status` on a local copy and does not read the production counters, so the report cannot tell you what D1 will charge. A smaller `rows_read` here is not a smaller bill.
 
 ## How to check against production yourself
 

@@ -122,7 +122,7 @@ PRODUCTION_IMPORTS = {
     "src/cli/args.zig": ["src/db.zig", "src/sql/lexer.zig", "src/cli/usage_text.zig"],
     "src/cli/control.zig": ["src/contract/values.zig"],
     "src/cli/d1.zig": ["src/d1/config.zig", "src/cli/d1_tests.zig"],
-    "src/cli/comparison.zig": ["src/db.zig", "src/result.zig"],
+    "src/cli/comparison.zig": ["src/db.zig", "src/result.zig", "src/contract/values.zig"],
     "src/cli/query.zig": [
         "src/db.zig",
         "src/sqlite.zig",
@@ -343,7 +343,7 @@ PRODUCTION_IMPORTS = {
         "src/cli/skill_tests.zig",
         "src/skill/skill.zig",
     ],
-    "src/cli/usage_text.zig": [],
+    "src/cli/usage_text.zig": ["src/contract/values.zig"],
     "src/cli/write_runner.zig": [
         "src/db.zig",
         "src/sqlite.zig",

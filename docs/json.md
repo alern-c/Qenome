@@ -68,7 +68,7 @@ A candidate qualifies for `recommended` when its status is `compared` and `misma
 | `status` | string | `compared`, or `variant_timeout` when the variant run reached `--timeout-ms` |
 | `comparison` | object or `null` | `null` for `variant_timeout`; otherwise the schema_version 2 comparison object with `statement` `write`, `inputs.write` set to the manifest string, and `inputs.index_sql` set to the migration path. It keeps `baseline` and `variant` row counters, `changes`, `total_changes`, and `executions` (`1`). A write the baseline cannot run before the migration has `baseline` `null`, `verdict` `not-judged`, `result` `incomparable`, and exit_code `0`. The embedded object is minified |
 
-`writes` compares one write statement of the manifest on both copies after the migration. The verdict comes from `rows_read` only: more rows read is `regressed`, the same is `no-effect`, and fewer is `improved`. `rows_written` is in the counters and does not change the verdict, because an index that the migration adds makes an `INSERT` or `UPDATE` write at least one more entry. The `RETURNING` rows, `changes`, and the difference of `total_changes` must match on both copies, or the comparison is a `mismatch`; a write that reads the schema, the current time, or a nondeterministic function is not run and is `incomparable`. A batch `exit_code` of `6` also covers a `regressed` write, and a write with `mismatch`, `incomparable`, a timeout, or `regressed` keeps the migration out of `recommended`. The bundled D1 counting patch does not count secondary-index deletes, so dropping an index does not lower `rows written`; [the batch page](batch.md#batch-comparisons) describes the run and the human output.
+`writes` compares one write statement of the manifest on both copies after the migration. The verdict comes from `rows_read` only: more rows read is `regressed`, the same count or a reduction below 1% of the baseline rows read is `no-effect`, and a reduction of at least 1% is `improved`. `rows_written` is in the counters and does not change the verdict, because an index that the migration adds makes an `INSERT` or `UPDATE` write at least one more entry. The `RETURNING` rows, `changes`, and the difference of `total_changes` must match on both copies, or the comparison is a `mismatch`; a write that reads the schema, the current time, or a nondeterministic function is not run and is `incomparable`. A batch `exit_code` of `6` also covers a `regressed` write, and a write with `mismatch`, `incomparable`, a timeout, or `regressed` keeps the migration out of `recommended`. The bundled D1 counting patch does not count secondary-index deletes, so dropping an index does not lower `rows written`; [the batch page](batch.md#batch-comparisons) describes the run and the human output.
 
 ### `--migration`
 
@@ -314,7 +314,7 @@ The object is indented with two spaces and ends with a newline. A missing key th
 | `exit_code` | number | `0`, `3`, or `4` for the comparison. This stays `0` when the process later exits `5`. A variant-only `--migration` comparison writes `0` |
 | `statement` | string | `select` for a SELECT comparison, `write` for an `INSERT`, `UPDATE`, `DELETE`, or `REPLACE` comparison |
 | `verdict` | string | `improved`, `no-effect`, `needs-check`, `regressed`, or `not-judged`. `regressed` appears only in a `--migration` batch; the other modes name the same condition `needs-check`. `not-judged` also covers a variant-only `--migration` query whose baseline cannot prepare it, and a `--write` comparison that was not run |
-| `verdict_reasons` | array of strings | Why the verdict is `needs-check`, `regressed`, or `not-judged`. Empty for `improved` and `no-effect` |
+| `verdict_reasons` | array of strings | Why the verdict is `needs-check`, `regressed`, or `not-judged`. Empty for `improved`. Empty for `no-effect` when the two `rows_read` counts are equal. When the variant reads fewer rows but the reduction is below 1% of the baseline `rows_read`, the verdict is `no-effect` and this array holds that reason. See [Minimum meaningful improvement](accuracy.md#minimum-meaningful-improvement) |
 | `result` | string | `match`, `mismatch`, or `incomparable`. A variant-only `--migration` query is `incomparable` because there is no baseline result to compare. With `--write`, the rows are the `RETURNING` rows (empty without `RETURNING`), and the same `changes` and `total_changes` are also required for a match |
 | `row_order` | string | `same`, `differs`, or `not-applicable`. Reference only. `same` or `differs` only when `result` is `match` |
 | `result_reasons` | array of `{text, hint}` | Why the rows cannot be compared. `hint` is a string or `null`. Empty for a variant-only `--migration` query; its `verdict_reasons` holds the reason |
@@ -337,13 +337,13 @@ The object is indented with two spaces and ends with a newline. A missing key th
 
 | `verdict` | Meaning |
 | --- | --- |
-| `improved` | The rows match, and the variant reads fewer rows |
-| `no-effect` | The rows match, and the variant reads the same number of rows |
+| `improved` | The rows match, and the variant reads at least 1% fewer rows than the baseline |
+| `no-effect` | The rows match, and the variant does not read at least 1% fewer rows. A smaller reduction is named in `verdict_reasons` |
 | `needs-check` | The rows match, but the variant reads or writes more rows |
 | `regressed` | The rows match, but the migration made the variant read or write more rows. For a write comparison in `writes` the rows must match and only `rows_read` can make it `regressed`. Only inside a `--migration` batch; the other modes name the same condition `needs-check` |
 | `not-judged` | The rows differ or cannot be compared, or a `--migration` query could only run on the variant |
 
-The verdict comes from `rows_read` and `rows_written`. It does not change the exit code. Times do not change the verdict, so `--runs 0` still has a verdict.
+The verdict comes from `rows_read` and `rows_written`. A read reduction is `improved` only when `(baseline - variant) * 100 >= baseline`, which is at least 1% of the baseline `rows_read`. A smaller reduction is `no-effect` with a `verdict_reasons` entry, and the counters are unchanged. `schema_version` stays `2`. The verdict does not change the exit code. Times do not change the verdict, so `--runs 0` still has a verdict.
 
 ## Write comparison (`--write`)
 
