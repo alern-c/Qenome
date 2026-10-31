@@ -1,6 +1,6 @@
 # Contributing to Qenome
 
-`README.md` is the user guide. This file holds the build-from-source Quick start, the checks that CI runs, and how to update the golden test output. `AGENTS.md` records the repository rules (language, dependencies, architecture, and comments).
+`README.md` and the pages under `docs/` are the user guide. This file holds the build-from-source Quick start, the checks that CI runs, and how to update the golden test output. `AGENTS.md` records the repository rules (language, dependencies, architecture, and comments).
 
 ## Build from source
 
@@ -41,7 +41,7 @@ An index that removes the full scan. The candidate index turns `SCAN events` int
 ./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/improved.sql testdata/cases/improved.index.sql --bind 1:int:1234 --runs 40  # expect: result=match verdict=improved exit=0
 ```
 
-An index on data you choose. `--seed-data testdata/seed.json` replaces the `events` rows in the sandbox copy, with the original database unchanged, by 50,000 deterministic rows. The same query then finds row `1234` among them, and the verdict stays `improved`. See [Generating sandbox data](README.md#generating-sandbox-data).
+An index on data you choose. `--seed-data testdata/seed.json` replaces the `events` rows in the sandbox copy, with the original database unchanged, by 50,000 deterministic rows. The same query then finds row `1234` among them, and the verdict stays `improved`. See [Generating sandbox data](docs/usage.md#generating-sandbox-data).
 
 ```sh
 ./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/improved.sql testdata/cases/improved.index.sql --bind 1:int:1234 --seed-data testdata/seed.json --runs 0  # expect: result=match verdict=improved exit=0
@@ -65,13 +65,13 @@ A SELECT whose rows cannot be compared. `ORDER BY random()` picks other rows on 
 ./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/incomparable.sql testdata/cases/incomparable.index.sql  # expect: result=incomparable verdict=not-judged exit=4
 ```
 
-A batch compares several queries with several candidate indexes in one run. `testdata/batch.json` pairs the improved and no-effect queries with both candidate indexes. Qenome reports one row per pair and recommends the candidate that helps without a mismatch, so only `cases/improved.index.sql` qualifies. See [Batch comparisons](README.md#batch-comparisons).
+A batch compares several queries with several candidate indexes in one run. `testdata/batch.json` pairs the improved and no-effect queries with both candidate indexes. Qenome reports one row per pair and recommends the candidate that helps without a mismatch, so only `cases/improved.index.sql` qualifies. See [Batch comparisons](docs/batch.md#batch-comparisons).
 
 ```sh
 ./zig-out/bin/qenome testdata/generated/qenome-fixture.db --batch testdata/batch.json  # expect: recommended=cases/improved.index.sql exit=0
 ```
 
-A proposed index, without an index file. `--suggest` asks SQLite which index would help the SELECT, and Qenome compares that proposal with the same batch machinery. The proposal is labelled `suggested:1` and becomes the recommendation when it helps. See [Suggesting candidate indexes](README.md#suggesting-candidate-indexes).
+A proposed index, without an index file. `--suggest` asks SQLite which index would help the SELECT, and Qenome compares that proposal with the same batch machinery. The proposal is labelled `suggested:1` and becomes the recommendation when it helps. See [Suggesting candidate indexes](docs/batch.md#suggesting-candidate-indexes).
 
 ```sh
 ./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/improved.sql --bind 1:int:1234 --suggest  # expect: recommended=suggested:1 exit=0
@@ -85,7 +85,33 @@ The first database build takes about a second, and each timed example a few seco
 python3 scripts/check_all.py
 ```
 
-The quality workflow in CI runs the same script. It checks the effective Zig version, runs `zig fmt --check .`, the build, the tests, the Python checks, the architecture and comment checks, the npm staging test, the golden output, and the Quick start above, in order, and stops at the first stage that fails.
+The quality workflow in CI runs the same script. It stops at the first stage that fails. The stages are:
+
+1. verify the effective Zig version
+2. `zig fmt --check .`
+3. build
+4. the accuracy corpus check
+5. test
+6. show the Python version
+7. ruff
+8. mypy
+9. the architecture checker's self-test
+10. the architecture check
+11. the comment checker's self-test
+12. the comment check
+13. the docs checker's self-test
+14. the docs check
+15. the npm publish-tree test
+16. the record wrapper test
+17. the golden checker's self-test
+18. the golden output check
+19. the accuracy checker's self-test
+20. the Quick start checker's self-test
+21. the CONTRIBUTING Quick start
+
+ruff and mypy run through `uv run --locked`, so the checks need uv 0.13.1 or newer.
+
+`scripts/check_docs.py` keeps the documentation in shape. It holds the list of pages cut from the README, checks that each has its `docs/ja/` pair with the same sequence of heading levels, caps the README and `AGENTS.md` line counts, and checks every relative link, anchor and image in `README.md`, `README.ja.md`, `AGENTS.md`, this file, `skills/qenome/SKILL.md` and the pages under `docs/`. Add a page to its list when you add one; a new `docs/*.md` that is neither a paired page nor a listed developer page fails the check.
 
 `scripts/check_quick_start.py` runs the commands in the [Quick start](#quick-start) as written and compares each result with its `# expect:` marker. An example added to the Quick start needs that marker, so that CI checks it too, and the section keeps a checked example for `improved`, `no-effect`, and `incomparable`. The check also requires `README.md` and `README.ja.md` to link to this file. The Quick start stages run on Linux and macOS; on Windows they print a skip and the other stages still run.
 
@@ -109,6 +135,6 @@ git diff -- testdata/golden
 
 The files are `testdata/golden/*.human.txt` and `testdata/golden/*.json`. `--d1` is not covered there: it needs a wrangler install and a generated local D1 state. The D1 warning path is covered by `src/cli/d1_tests.zig`.
 
-The codebase carries no comments: explanations live in the README, and the checks are the source of truth for the rules they enforce.
+The codebase carries no comments: explanations live in the README and the pages under `docs/`, and the checks are the source of truth for the rules they enforce.
 
 `docs/demo-suggest.gif`, `docs/demo-candidates.gif`, and `docs/demo-migration.gif` are recorded with `vhs docs/demo-suggest.tape`, `vhs docs/demo-candidates.tape`, and `vhs docs/demo-migration.tape` from the repository root, after `zig build -Doptimize=ReleaseFast`. Each tape copies `examples/d1-toml` and `docs/demo` into a temporary directory and silences the terminal echo while it loads the sample, so the recording holds only the Qenome command and its output.

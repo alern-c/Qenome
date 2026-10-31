@@ -1,67 +1,44 @@
 # AGENTS.md
 
-Qenome is a Zig CLI that compares the change one candidate `CREATE INDEX` makes to a single local SQLite `SELECT`. `README.md` (Japanese translation: `README.ja.md`) is the source of truth for usage, output and exit codes. This file holds only the facts about this repository that any AI tool needs so that every tool follows the same steps.
+Qenome is a Zig CLI that compares the change one candidate `CREATE INDEX` makes to a single local SQLite `SELECT`. `README.md` and the pages under `docs/` are the source of truth for usage, output and exit codes. This file holds the rules that every AI tool follows, one line each, and links to the page that explains each one.
 
 ## Language
 
-Commit messages, PR titles and bodies, issues, CHANGELOG, code comments and docs are written in English. `README.ja.md` is the only Japanese file; it is a maintained translation and must be updated whenever `README.md` changes. Past history is not rewritten: text that predates this rule keeps its language until that file is next edited (for example the release notes already in `CHANGELOG.md` and `testdata/README.md`).
+Commit messages, PR titles and bodies, issues, CHANGELOG and code comments are written in English, and so are the docs. The maintained translations are `README.ja.md` and the pages under `docs/ja/`, one for every page cut from the README; update the translation in the same change as the English page. `docs/npm.md` and `testdata/README.md` are older Japanese text that predates this rule. Past history is not rewritten: text that predates the rule keeps its language until that file is next edited (for example the release notes already in `CHANGELOG.md`).
 
 ## Build and test
 
-```sh
-zig build
-zig build test
-```
-
-The Zig version is pinned by `minimum_zig_version` in `build.zig.zon` (currently 0.17.0). The checks do not pass when `zig version` differs.
+- Build with `zig build` and test with `zig build test`.
+- The Zig version is pinned by `minimum_zig_version` in `build.zig.zon` (currently 0.17.0); the checks fail when `zig version` differs.
 
 ## Checks before you finish
 
-Before you report a finished task, always run this one command. The quality workflow in CI calls the same script, so the local and CI checks are identical.
-
-```sh
-python3 scripts/check_all.py
-```
-
-It stops at the first failing stage and prints `check_all: failed at "<stage>" with exit code N`. It works from any directory, because it runs at the repository root. The stages are: verify the Zig version, `zig fmt --check .`, build, the accuracy corpus check, test, show the Python version, ruff, mypy, the architecture checker's self-test, the architecture check, the comment checker's self-test, the comment check, the npm publish-tree test, the record wrapper test, the golden checker's self-test, the golden output check, the accuracy checker's self-test, the Quick start checker's self-test, and the CONTRIBUTING Quick start. ruff and mypy run through `uv run --locked`, so this check needs uv 0.13.1 or newer. The required version is `required-version` under `[tool.uv]` in `pyproject.toml`. CI pins 0.13.1 in `.github/workflows/quality.yml`, so raise that floor as well when you raise the requirement. The accuracy corpus in `testdata/accuracy/` runs with 3 repeats: a change to a verdict, plan reading, counters or warnings must keep `scripts/check_accuracy.py` green, and a new rule needs a case.
+- Run `python3 scripts/check_all.py` before you report a finished task. CI runs the same script.
+- ruff and mypy run through `uv run --locked`, so the checks need uv 0.13.1 or newer (`required-version` under `[tool.uv]` in `pyproject.toml`). CI pins 0.13.1 in `.github/workflows/quality.yml`, so raise that floor as well when you raise the requirement.
+- The stages, and what each one covers, are listed once in [the development checks](CONTRIBUTING.md#development-checks).
+- A change to a verdict, plan reading, counters or warnings must keep `python3 scripts/check_accuracy.py` green, and a new rule needs a case in `testdata/accuracy/`.
+- A file must not grow past the line count its check records. Split the file instead of raising the number; raising it is a deliberate decision for a human.
 
 ## Dependencies
 
-Code (Zig in `src/`, Python in `scripts/`, JavaScript in `npm/`) uses only each language's standard library. The only external code the program uses is SQLite, vendored in `vendor/sqlite3/`. The only other allowed code is the development tools used by the checks (ruff and mypy, in the `dev` group of `pyproject.toml`). Ask a human for approval before adding any other dependency.
+- Code (Zig in `src/`, Python in `scripts/`, JavaScript in `npm/`) uses only each language's standard library. The only external code the program uses is SQLite, vendored in `vendor/sqlite3/`. The only other allowed code is the development tools used by the checks (ruff and mypy, in the `dev` group of `pyproject.toml`).
+- Ask a human for approval before adding any other dependency.
 
 ## Architecture
 
-The target dependency order is:
+- The dependency order, the folder table and the plans are in [docs/architecture.md](docs/architecture.md). The source of truth is `scripts/check_architecture.py`; add every new file or folder to its tables.
+- The contract values are defined only in `src/contract/values.zig`; a second definition, including a second copy of a code string, fails the check.
 
-`contract → sqlite → sql → engine → measure → verdict → sandbox → modes → report → cli → main`
+## Documentation
 
-A lower layer never imports a higher one. `d1/` and `skill/` are independent components outside the chain: each sits at the rank of the layer it may import, and the layers above that rank may import it. Modes only return report data; only `report/` and `cli/` write to stdout or stderr.
-
-Folders and files that exist now (v0.3.7):
-
-| Layer | Path |
-| --- | --- |
-| contract | `src/contract/` |
-| sqlite | `src/sqlite.zig` |
-| sql | `src/sql/` |
-| engine | `src/db.zig`, `src/result.zig` |
-| cli | `src/cli.zig`, `src/cli/` |
-| main | `src/main.zig`, `src/root.zig` |
-| d1 (independent) | `src/d1/` |
-
-Planned for v0.3.8: split `src/db.zig` into `src/engine/*`, move measure, verdict and sandbox out of `src/cli/`, move the remaining D1 code into `src/d1/`, and split the report out of `src/cli/report.zig`. Planned for v0.3.9: add `src/modes/`, replace the parsed arguments with a `Command` union, and split `src/cli/tests.zig`.
-
-## Sources of the rules
-
-- Architecture boundaries are the source of truth in `scripts/check_architecture.py`; its self-test is `scripts/test_check_architecture.py`. The script owns `APPROVED_FILES` (the only files allowed under `src/`), the import table for every file, `LAYERS` (which layer each folder or file belongs to), `LINE_LIMITS` (the recorded line count of the largest files) with `MAX_LINES` (the cap for a file the table does not list), `WRITE_ALLOWED` with `WRITE_DEBT` (where stdout and stderr may be written), and the contract values and codes. Add the file or folder to these tables whenever you add one; an unclassified file fails the check.
-- The contract values (JSON schema versions, exit codes and warning codes) are defined only in `src/contract/values.zig`. Use an import from there; a second definition, including a second copy of a code string, fails the check. `ExitCode` may stay as an alias of the contract type.
-- A file must not grow past its recorded line count. Split the file instead of raising the number; raising it is a deliberate decision for a human.
-- Do not add comments to code. Documentation belongs in `README.md` / `README.ja.md`. The rule's source of truth is `scripts/check_comments.py`; its self-test is `scripts/test_check_comments.py`. The language rule above sets the language of the text that exists; it does not allow new comments.
-- `check_comments.py` classifies every tracked file as either checked for comments or excluded. When you add a new kind of file, decide whether the check can handle it or list it in `EXCLUDED_FILES`; a file left unclassified fails the check.
+- The README is an index: an introduction, the first example, and links to `docs/`. Put details on a `docs/` page, with its `docs/ja/` pair.
+- Do not add comments to code. The source of truth is `scripts/check_comments.py`; when you add a new kind of file, check it or list it in `EXCLUDED_FILES`.
+- When you add a page, register its English and Japanese pair in `scripts/check_docs.py`. That check owns the page list, the README line caps, the link, anchor and image checks, and the heading-pair check.
 
 ## npm
 
-Only `.version` in `build.zig.zon` carries the npm version. Keep `version` at `0.0.0` and `private` at `true` in `npm/*/package.json`. `python3 scripts/stage_npm.py` builds the publish tree in `dist/npm/`. The steps are in `docs/npm.md`.
+- Only `.version` in `build.zig.zon` carries the npm version. Keep `version` at `0.0.0` and `private` at `true` in `npm/*/package.json`.
+- The publish steps are in [docs/npm.md](docs/npm.md).
 
 ## CLAUDE.md
 
