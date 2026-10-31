@@ -54,8 +54,10 @@ jobs:
 
       - name: Build the merge base
         continue-on-error: true
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          base="$(git merge-base "origin/${{ github.base_ref }}" HEAD)"
+          base="$(git merge-base "origin/$BASE_REF" HEAD)"
           echo "Merge base: $base"
           git log -1 --format='%H %s' "$base"
           mkdir -p testdata/generated/qenome-base
