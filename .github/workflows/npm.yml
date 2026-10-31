@@ -12,13 +12,48 @@ jobs:
   pack:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      relevant: ${{ steps.detect.outputs.relevant }}
     steps:
       - uses: actions/checkout@v7
         with:
+          fetch-depth: 0
           persist-credentials: false
+
+      - name: Decide whether the npm packages can change
+        id: detect
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          relevant=true
+          reason="this is not a pull request"
+          if [ -n "$BASE_REF" ]; then
+            reason="the change could not be compared with the pull request base"
+            if git diff --name-only --no-renames -z \
+              "origin/$BASE_REF...HEAD" > "$RUNNER_TEMP/changed-paths.txt"; then
+              relevant=false
+              reason="no build-relevant path changed"
+              while IFS= read -r -d '' path; do
+                case "$path" in
+                  src/*|vendor/*|npm/*|skills/*|build.zig|build.zig.zon|LICENSE|NOTICE|scripts/stage_npm.py|scripts/smoke_npm.py|.github/workflows/npm.yml)
+                    relevant=true
+                    reason="build-relevant change: $path"
+                    break
+                    ;;
+                esac
+              done < "$RUNNER_TEMP/changed-paths.txt"
+            fi
+          fi
+          echo "relevant=$relevant" >> "$GITHUB_OUTPUT"
+          if [ "$relevant" = "false" ]; then
+            echo "No build-relevant path changed; skipping the npm build."
+          else
+            echo "The npm build will run: $reason."
+          fi
 
       - name: Read the runner CPU model for the Zig cache key
         id: cpu_model
+        if: steps.detect.outputs.relevant != 'false'
         run: |
           model="$(grep -m1 '^model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2- | sed 's/^[[:space:]]*//' || true)"
           echo "Runner CPU model: ${model:-unknown}"
@@ -27,20 +62,24 @@ jobs:
           printf 'cache_key=%s\n' "${cache_key:-unknown}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Zig (resolved from build.zig.zon)
+        if: steps.detect.outputs.relevant != 'false'
         uses: mlugg/setup-zig@v2
         with:
           cache-key: ${{ steps.cpu_model.outputs.cache_key }}
 
       - name: Set up Node.js
+        if: steps.detect.outputs.relevant != 'false'
         uses: actions/setup-node@v6
         with:
           node-version: "22"
           package-manager-cache: false
 
       - name: Cross-compile, pack, and dry-run every package
+        if: steps.detect.outputs.relevant != 'false'
         run: python3 scripts/stage_npm.py --pack
 
       - name: Upload the packed tarballs
+        if: steps.detect.outputs.relevant != 'false'
         uses: actions/upload-artifact@v7
         with:
           name: npm-tarballs
@@ -64,23 +103,31 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
+      - name: Explain the skipped npm smoke test
+        if: needs.pack.outputs.relevant == 'false'
+        run: echo "No build-relevant path changed; skipped the npm smoke test."
+
       - uses: actions/checkout@v7
+        if: needs.pack.outputs.relevant != 'false'
         with:
           persist-credentials: false
 
       - name: Set up Node.js
+        if: needs.pack.outputs.relevant != 'false'
         uses: actions/setup-node@v6
         with:
           node-version: "22"
           package-manager-cache: false
 
       - name: Download the packed tarballs
+        if: needs.pack.outputs.relevant != 'false'
         uses: actions/download-artifact@v8
         with:
           name: npm-tarballs
           path: dist/npm
 
       - name: Install the tarballs and run npx qenome --version
+        if: needs.pack.outputs.relevant != 'false'
         env:
           QENOME_SMOKE_TARGET: ${{ matrix.target }}
         run: python3 scripts/smoke_npm.py
