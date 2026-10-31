@@ -26,6 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -44,10 +45,22 @@ jobs:
         with:
           cache-key: ${{ steps.cpu_model.outputs.cache_key }}
 
-      - name: Build the pull request as it would merge
+      - name: Build the pull request head
         continue-on-error: true
         run: |
           zig version
+          zig build
+          ./zig-out/bin/qenome --version
+
+      - name: Build the merge base
+        continue-on-error: true
+        run: |
+          base="$(git merge-base "origin/${{ github.base_ref }}" HEAD)"
+          echo "Merge base: $base"
+          git log -1 --format='%H %s' "$base"
+          mkdir -p testdata/generated/qenome-base
+          git archive "$base" | tar -x -C testdata/generated/qenome-base
+          cd testdata/generated/qenome-base
           zig build
           ./zig-out/bin/qenome --version
 
@@ -62,14 +75,15 @@ jobs:
           share: false
           prompt: |
             Review this pull request and report only. Do not edit the tracked files, commit, push, or open a pull request, and do not post a comment yourself: the action posts your final reply to this pull request, so make the final reply the full review.
-            The checkout holds the pull request as it would merge with its base branch, and it holds the full history: `git merge-base "origin/${GITHUB_BASE_REF:-main}" HEAD` is the base to compare with.
+            The checkout holds the pull request head, and `testdata/generated/qenome-base` holds its merge base; both are already built as `zig-out/bin/qenome` and `testdata/generated/qenome-base/zig-out/bin/qenome`.
             Look for correctness bugs and regressions first, then for tests the change needs and does not have, then for violations of the rules in AGENTS.md: English in commits, pull requests and docs, no comments in code, contract values only in src/contract/values.zig, the standard library only, and a new file or folder registered in the check tables.
             When an earlier review of yours is already on this pull request, cover only what changed since that review and do not repeat a finding it already made.
             Give the file and the line of each finding, order the findings by severity, and write one sentence when the change looks correct.
-            Verify, do not only read. The steps before this one install Zig and build `zig-out/bin/qenome` from this checkout; when either failed, say so in the Verification section and stop the runs that need the binary. Read `skills/qenome/SKILL.md`, the Quick start in `CONTRIBUTING.md` and the pages under `docs/` for how to run the CLI instead of restating their usage.
-            - Work out what the change claims to alter, then build the base too: `mkdir -p "$RUNNER_TEMP/base" && git archive "$(git merge-base "origin/${GITHUB_BASE_REF:-main}" HEAD)" | tar -x -C "$RUNNER_TEMP/base"`, and run `zig build` in `$RUNNER_TEMP/base`. Run the base binary and the checkout binary on the inputs the change touches: the databases and queries under `testdata/`, the cases under `testdata/accuracy/`, or a small case you write under `$RUNNER_TEMP`. Compare the outputs, the verdicts and the exit codes.
+            Verify, do not only read. The steps before this one install Zig and build the head and the merge base; when one of them failed, say which in the Verification section and stop the runs that need it. Read `skills/qenome/SKILL.md`, the Quick start in `CONTRIBUTING.md` and the pages under `docs/` for how to run the CLI instead of restating their usage.
+            - Decide what behaviour the change claims to alter, rebuild both trees with `zig build` and `(cd testdata/generated/qenome-base && zig build)`, and run both binaries on the inputs the change touches: the databases and queries under `testdata/`, the cases under `testdata/accuracy/`, or a small case you write under `testdata/generated/`. Compare the outputs, the verdicts and the exit codes.
             - Check that the diff matches what the pull request says should change, and that nothing else changed.
             - Run every build and every qenome command with the secrets out of the environment: `env -u OPENCODE_API_KEY -u GITHUB_TOKEN <command>`.
+            - Keep every path inside the checkout, and write scratch files under `testdata/generated/`: the action has to approve a path outside the checkout, and nothing can approve it here, so such a command waits until the job ends.
             - Do not repeat what CI already runs: `quality.yml` runs `python3 scripts/check_all.py`, so run only the targeted commands the change needs, and do not run ruff or mypy.
             - A pull request that changes no qenome behaviour (docs or CI only) needs no comparison: say so, skip the comparison runs, and still run `./zig-out/bin/qenome --version` once so the review shows the binary works.
             - Put a short Verification section in the review: the commands you ran, what you observed, and one line that says matches, does not match, or could not verify, with the reason.
