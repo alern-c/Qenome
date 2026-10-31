@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.9] - 2026-10-31
+
+### Added
+
+- `--batch <manifest> --migration` also compares write statements. A manifest may list `writes`, 1 to 100 statements, and `writes` without `--migration` exits `1`. Each write runs on both copies in a rolled-back transaction, so the original database is not changed. The rows read and written for both copies go in a `Writes` section and a JSON `writes` array; `batch_schema_version` stays `1`. `rows read` decides the verdict: more is `regressed` (exit `6`), the same `no-effect`, fewer `improved`; `rows written` is reported only. A row difference is a `mismatch` (exit `3`), and a write that reads the schema, the current time, or a nondeterministic function is `incomparable` (exit `4`). The D1 counting patch does not count secondary-index deletes, so dropping an index does not lower `rows written`; the batch page (`docs/batch.md`) covers the failure, timeout and variant-only rules.
+- A pull request gets an advisory review from OpenCode, and an owner, member, or collaborator can ask for one with `/oc` or `/opencode`. The automatic run builds the head and the merge base and asks the agent to compare their outputs; a run can comment but cannot push or fail the pull request. `CONTRIBUTING.md` describes the review.
+
+### Changed
+
+- A successful `release.yml` run started by a `v*` tag push now starts `publish-npm.yml` automatically after the GitHub Release exists, and `workflow_dispatch` remains the manual fallback. The guard also requires the triggering release run to be at the same commit as the published one.
+
+### Fixed
+
+- `--d1` with `--scale` no longer leaks the note that explains the two SQLite versions: the note is freed after it is written, so the per-step `SafeAllocator` report on stderr is gone. The note is still written for every step, and the report, the JSON fields, the verdict, and the exit status are unchanged.
+- `scripts/check_accuracy.py` tolerates a statistical timing label. `expect.effect` fails only when more than half of the repeats return a label outside the allowed list, and a smaller count is printed as one `note` line that names the case, the runs, and their labels, so a short run that reports `faster` by chance no longer reddens a release. Every other expectation and the repeat stability check still fail on a single repeat, and the check that rejects a `faster`/`slower` flip is skipped only for a case whose `expect.effect` already decides the labels.
+- `scripts/verify_published_npm.py` reads the `npm pack --json` output of npm 12, which is an object keyed by package name instead of the array npm 11 writes, so the post-publish check no longer stops with `Extra data` after all five packages reach the registry; `scripts/stage_npm.py --pack` and its self-test read both shapes and ignore text after the JSON value.
+
 ## [0.3.8] - 2026-10-31
 
 ### Added
