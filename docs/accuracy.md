@@ -24,13 +24,13 @@ The result rows are compared as a multiset: each distinct row must appear the sa
 
 | Verdict | Meaning |
 | --- | --- |
-| `improved` | The rows match, the variant reads fewer rows, and the variant writes no more rows. |
-| `no-effect` | The rows match, both copies read the same number of rows, and the variant writes no more rows. |
+| `improved` | The rows match, the variant reads at least 1% fewer rows than the baseline, and the variant writes no more rows. |
+| `no-effect` | The rows match, and the variant does not read at least 1% fewer rows. The same count and a smaller reduction both land here, and the variant writes no more rows. A smaller reduction is named in `verdict_reasons`. |
 | `needs-check` | The rows match, but the variant reads or writes more rows. |
 | `regressed` | The rows match, but the migration made the variant read or write more rows. Only in a `--migration` batch; the batch exits `6` unless a mismatch, a rejected change, a timeout, or an incomparable result takes precedence. |
 | `not-judged` | The rows differ or cannot be compared, or a `--migration` query could only run on the variant. Also used for a `--write` that was not run. |
 
-`rows_read` and `rows_written` decide the verdict. The times are a reference only and never change the verdict or the exit status, so `--runs 0` keeps the verdict and skips the timing loop.
+`rows_read` and `rows_written` decide the verdict. The times are a reference only and never change the verdict or the exit status, so `--runs 0` keeps the verdict and skips the timing loop. A read reduction below 1% of the baseline `rows_read` is not `improved`; see [Minimum meaningful improvement](#minimum-meaningful-improvement).
 
 The `result` field says whether the rows could be compared:
 
@@ -50,6 +50,20 @@ Warnings advise; they never change the verdict, a row count, or the exit status.
 | `unapplied_migrations` | The local D1 database has not applied these migrations from the wrangler config. | Run `npx wrangler d1 migrations apply <BINDING> --local` and compare again; the schema under test is older than the migrations describe. |
 
 A `--migration` batch does not emit `no_analyze_stats` or `data_too_small`, because a migration can touch several tables.
+
+## Minimum meaningful improvement
+
+`improved` requires the variant to read at least 1% fewer rows than the baseline. The check uses the two `rows_read` counters as integers: `(baseline - variant) * 100 >= baseline`. The smallest saving that counts is one row for every hundred baseline rows, rounded up, so a saving of exactly 1% is `improved`. A smaller saving is `no-effect`, and `verdict_reasons` says the reduction is below 1% of the baseline rows read. The counters stay in the report, and `schema_version` stays `2`.
+
+The same check applies to a `--write` comparison and to a write in a `--migration` batch. More rows read is still `needs-check`, or `regressed` in that batch. More rows written is still `needs-check` for a SELECT. For a migration write, rows written are still reported and still do not change the verdict.
+
+One percent is a fixed heuristic, in the same way the `data_too_small` warning uses 1,000 rows. It is not a command-line flag. Both `rows_read` numbers are still printed, so a reader can apply another cutoff. A point lookup on a small table stays `improved`, because reading 1 row instead of 100 is far more than 1%. An absolute floor, such as 100 rows, would call that lookup `no-effect`. The positioning operations in [How rows are counted](#how-rows-are-counted) add one for the attempt, so a one-row difference on a large scan is the same size as that count and is not a reason to keep the index.
+
+The accuracy corpus keeps three known answers for this rule:
+
+- [testdata/accuracy/one-row-gain-of-50000/](../testdata/accuracy/one-row-gain-of-50000/) reads 50,000 rows on the baseline and 49,999 on the variant. The verdict is `no-effect`.
+- [testdata/accuracy/one-percent-gain-of-50000/](../testdata/accuracy/one-percent-gain-of-50000/) reads 50,000 rows on the baseline and 49,500 on the variant. That is exactly 1%, and the verdict is `improved`.
+- [testdata/accuracy/clear-gain-equality/](../testdata/accuracy/clear-gain-equality/) is an equality lookup on the same 50,000-row table. The variant reads 26 rows. The verdict is `improved`.
 
 ## What can differ from production D1
 

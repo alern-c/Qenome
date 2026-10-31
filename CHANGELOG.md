@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- A read reduction is `improved` only when it is at least 1% of the baseline `rows_read` (`(baseline - variant) * 100 >= baseline`). A smaller reduction, including one row out of 50,000, is `no-effect`, and `verdict_reasons` names the minimum. The counters are unchanged, `schema_version` stays `2`, and the threshold is not a flag. The same check applies to `--write` and to a write in a `--migration` batch. See `docs/accuracy.md`.
+
 ## [0.3.9] - 2026-10-31
 
 ### Added

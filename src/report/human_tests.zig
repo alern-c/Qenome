@@ -96,7 +96,7 @@ test "the human summary puts the conclusion first and the copies side by side" {
         \\  result rows   match (the same rows on both copies)
         \\  rows read     200,000 -> 201
         \\  rows written  0 -> 0
-        \\  verdict       improved: the rows match, and the variant reads fewer rows
+        \\  verdict       improved: the rows match and at least 1% fewer rows were read
         \\  query plan    changed on the variant
         \\  time          median 4.33 ms -> 37.29 us; 116x faster (reference only)
         \\  time noise    A/A p95 0 ns over 0 pairs (empirical; reference only)

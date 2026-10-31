@@ -1,0 +1,47 @@
+{
+  "description": "An equality lookup on 50,000 rows reads a small fraction of the table, well above the 1% minimum, so the verdict is improved.",
+  "args": [
+    "--bind",
+    "1:int:1"
+  ],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "verdict": "improved",
+    "plan_changed": true,
+    "baseline_plan": {
+      "contains": [
+        "SCAN events"
+      ],
+      "excludes": [
+        "SEARCH events"
+      ]
+    },
+    "variant_plan": {
+      "contains": [
+        "SEARCH events USING INDEX idx_customer (customer_id=?)"
+      ],
+      "excludes": [
+        "SCAN events"
+      ]
+    },
+    "rows_read": {
+      "direction": "decrease",
+      "max_ratio": 0.01
+    },
+    "rows_written": "same",
+    "human": {
+      "contains": [
+        "improved",
+        "50,000 -> 26"
+      ]
+    },
+    "warnings": {
+      "excludes": [
+        "no_analyze_stats",
+        "data_too_small"
+      ]
+    }
+  }
+}
