@@ -30,3 +30,5 @@ Planned for v0.3.8: split `src/db.zig` into `src/engine/*`, move measure, verdic
 The source of truth for these boundaries is `scripts/check_architecture.py`; its self-test is `scripts/test_check_architecture.py`. The script owns `APPROVED_FILES` (the only files allowed under `src/`), the import table for every file, `LAYERS` (which layer each folder or file belongs to), `LINE_LIMITS` (the recorded line count of the largest files) with `MAX_LINES` (the cap for a file the table does not list), `WRITE_ALLOWED` with `WRITE_DEBT` (where stdout and stderr may be written), `PENDING_MOVE_IMPORTS` (the temporary lower-layer imports), and the contract values and codes. Add the file or folder to these tables whenever you add one; an unclassified file fails the check.
 
 The contract values (JSON schema versions, exit codes and warning codes) are defined only in `src/contract/values.zig`. Use an import from there; a second definition, including a second copy of a code string, fails the check. `ExitCode` may stay as an alias of the contract type.
+
+Temporary documentation-only change to verify the npm CI skip path.
