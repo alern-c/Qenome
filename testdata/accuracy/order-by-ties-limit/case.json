@@ -1,0 +1,25 @@
+{
+  "description": "ORDER BY a non-unique column with LIMIT: the index changes which tied rows come back, so the rows are not comparable.",
+  "args": [],
+  "expect": {
+    "exit": 4,
+    "exit_code": 4,
+    "result": "incomparable",
+    "verdict": "not-judged",
+    "plan_changed": true,
+    "baseline_plan": {
+      "contains": [
+        "USE TEMP B-TREE FOR ORDER BY"
+      ]
+    },
+    "variant_plan": {
+      "contains": [
+        "SCAN events USING INDEX idx_status"
+      ],
+      "excludes": [
+        "TEMP B-TREE"
+      ]
+    },
+    "rows_written": "same"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "description": "The same plan and the same rows with timing on: the verdict is no-effect and the timing effect never says faster.",
+  "args": [
+    "--bind",
+    "1:text:ok",
+    "--runs",
+    "6"
+  ],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "verdict": "no-effect",
+    "plan_changed": false,
+    "rows_read": "same",
+    "effect": [
+      "no-difference",
+      "insufficient-samples",
+      "slower"
+    ]
+  },
+  "timing": "stable"
+}

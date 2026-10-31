@@ -1,0 +1,29 @@
+{
+  "description": "A partial index over a range serves the query and the result rows still match.",
+  "args": [
+    "--bind",
+    "1:int:1235"
+  ],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "verdict": "improved",
+    "plan_changed": true,
+    "variant_plan": {
+      "contains": [
+        "SEARCH events USING INDEX idx_recent_customer (customer_id=?)"
+      ]
+    },
+    "rows_read": {
+      "direction": "decrease",
+      "max_ratio": 0.02
+    },
+    "rows_written": "same",
+    "warnings": {
+      "excludes": [
+        "bind_dependent_partial_index"
+      ]
+    }
+  }
+}

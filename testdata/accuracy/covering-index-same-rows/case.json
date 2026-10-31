@@ -1,0 +1,26 @@
+{
+  "description": "A covering index changes only the plan text: both copies read every row, so the verdict is no-effect.",
+  "args": [],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "verdict": "no-effect",
+    "plan_changed": true,
+    "baseline_plan": {
+      "contains": [
+        "SCAN events"
+      ],
+      "excludes": [
+        "COVERING"
+      ]
+    },
+    "variant_plan": {
+      "contains": [
+        "SCAN events USING COVERING INDEX idx_status"
+      ]
+    },
+    "rows_read": "same",
+    "rows_written": "same"
+  }
+}
