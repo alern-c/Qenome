@@ -10,6 +10,8 @@ Qenome はローカルのデータベースのサンドボックスのコピー�
 
 Qenome は同梱の SQLite（このツリーでは 3.53.4）を、Cloudflare の `workerd` の行数カウントのパッチ付きでビルドします。[NOTICE](../../NOTICE) がパッチを、[vendor/sqlite3/PROVENANCE.txt](../../vendor/sqlite3/PROVENANCE.txt) がハッシュと当て直し方を記録しています。パッチはプリペアドステートメントのカウンタを2つ、`LIBSQL_STMTSTATUS_ROWS_READ`（1025）と `LIBSQL_STMTSTATUS_ROWS_WRITTEN`（1026）を追加し、Qenome はそれを `rows_read` と `rows_written` として報告します。ローカル D1 も同じパッチで動くため、レポートはローカル D1 と同じ数え方（workerd のパッチ）になります。
 
+ローカル D1 も、1回の実行について同じ2つの値をすでに返します。`wrangler dev` では `run` と `all`（エイリアスとして文書化されています）と `batch` が、結果の `meta` に `rows_read` と `rows_written` を返します。`raw`、`first`、`exec` は返しません。`wrangler d1 execute --local --json` は、そのコマンドの `meta` に同じ値を返します。これらの数値はローカル D1 のエンジンから出ます。Qenome の数値はパッチを当てた独自のビルドから出ます。[2つのビルドはコンパイルオプションが違います](#本番-d1-と異なる点)。そのため行数は一致しないことがあります。どちらも本番 D1 の請求ではありません。[なぜ他の方法ではないのか](why-not.md)に、これらの道具がすでに渡すものと、比較が足すものを書いています。
+
 パッチは読み取りカウンタを `OP_Count`、`OP_Seek*`、`OP_NotExists`、`OP_SeekRowid`、`OP_Last`、`OP_Rewind`、`OP_Next`、`OP_VNext` で増やし、書き込みカウンタを `OP_Insert`、`OP_IdxInsert`、`OP_Delete`、`OP_Clear`、`OP_VUpdate` で増やします（ephemeral カーソルは除く）。実際には次のようになります。
 
 - **読んだ行数**は、スキャンがたどる行とインデックスのエントリを数えます。位置決めの操作（`OP_Seek*`、`OP_NotExists`、`OP_SeekRowid`、`OP_Last`、`OP_Rewind`）は試行1回につき1を加え、行が見つからない場合も数えることがあります。`OP_Count` は返す行数を加えます。
@@ -78,7 +80,7 @@ Qenome は同梱の SQLite（このツリーでは 3.53.4）を、Cloudflare の
 - **実際のトラフィック。** Qenome は渡したバインド値でクエリを実行します。本番では別の値で、それぞれの頻度で実行され、独自のキャッシュと同時書き込みがあります。`d1 insights` の `avgRowsRead` は、その期間に実行された値全体の平均で、1つの値の行数ではありません。
 - **書き込み。** 書き込みカウンタはセカンダリインデックスの削除を数えません（[行数の数え方](#行数の数え方)を参照）。そのため、古いインデックスのエントリを消す `DELETE` や `UPDATE` は、インデックス更新の全コストより少なく報告します。
 - **スキーマ。** ローカルの D1 データベースは、wrangler の設定にあるマイグレーションより古いことがあります。`unapplied_migrations` の警告は、適用されていないマイグレーションのファイルを一覧にします。そのスキーマでの結果は、インデックスの効果を隠すことがあります。
-- **請求。** D1 は独自のカウンタで請求します。Qenome はローカルのコピーで `sqlite3_stmt_status` を読み、本番のカウンタは読みません。そのため、レポートから D1 の請求額は分かりません。
+- **請求。** D1 は独自のカウンタで請求します。Qenome はローカルのコピーで `sqlite3_stmt_status` を読み、本番のカウンタは読みません。そのため、レポートから D1 の請求額は分かりません。ここでの `rows_read` が小さいことは、請求が小さいことではありません。
 
 ## 本番と自分で照合する方法
 

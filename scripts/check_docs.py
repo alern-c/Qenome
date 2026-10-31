@@ -31,7 +31,7 @@ PAGE_PAIRS = (
     "accuracy",
     "rules",
 )
-UNPAIRED_DOCS = ("docs/architecture.md", "docs/json.md", "docs/npm.md")
+UNPAIRED_DOCS = ("docs/architecture.md", "docs/automerge.md", "docs/json.md", "docs/npm.md")
 
 HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*$")
 FENCE = re.compile(r"^\s*```")

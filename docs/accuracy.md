@@ -8,6 +8,8 @@ The numbers use the same counting as local D1 (workerd patch), but they come fro
 
 Qenome builds the bundled SQLite (3.53.4 in this tree) with Cloudflare's row-count patch from `workerd`; [NOTICE](../NOTICE) names the patch and [vendor/sqlite3/PROVENANCE.txt](../vendor/sqlite3/PROVENANCE.txt) records its hashes and how to apply it again. The patch adds two prepared-statement counters, `LIBSQL_STMTSTATUS_ROWS_READ` (1025) and `LIBSQL_STMTSTATUS_ROWS_WRITTEN` (1026), and Qenome reports them as `rows_read` and `rows_written`. Local D1 runs the same patch, so the report uses the same counting as local D1 (workerd patch).
 
+Local D1 already reports those two fields for one execution. Under `wrangler dev`, `run` and `all` (documented as aliases) and `batch` return `rows_read` and `rows_written` on the result `meta`. `raw`, `first`, and `exec` do not. `wrangler d1 execute --local --json` returns that `meta` for the command. Those numbers come from the local D1 engine. Qenome's numbers come from its own build of the patch, and [the builds use different compile options](#what-can-differ-from-production-d1), so the counts can differ. Neither number is a production D1 bill. [Why not ...](why-not.md) says what those tools already give you and what the comparison adds.
+
 The patch increments the read counter in `OP_Count`, `OP_Seek*`, `OP_NotExists`, `OP_SeekRowid`, `OP_Last`, `OP_Rewind`, `OP_Next`, and `OP_VNext`. It increments the write counter in `OP_Insert`, `OP_IdxInsert`, `OP_Delete`, `OP_Clear`, and `OP_VUpdate`, skipping ephemeral cursors. In practice:
 
 - **Rows read** counts the rows and index entries a scan steps over. The positioning operations (`OP_Seek*`, `OP_NotExists`, `OP_SeekRowid`, `OP_Last`, `OP_Rewind`) add one for the attempt, which can be counted even when the lookup finds no row; `OP_Count` adds the row count it returns.
@@ -76,7 +78,7 @@ The result is a measurement of a local copy. A production result can differ for 
 - **Real traffic.** Qenome runs the query with the bind values you pass. Production runs it with other values, at its own frequency, with its own caching and concurrent writes. `avgRowsRead` from `d1 insights` is an average over the values that ran in the period, not the count for one value.
 - **Writes.** The write counter does not count secondary-index deletes (see [How rows are counted](#how-rows-are-counted)), so a `DELETE` or an `UPDATE` that removes an old index entry reports less than the full index-maintenance cost.
 - **Schema.** The local D1 database can be older than the migrations in the wrangler config. The `unapplied_migrations` warning lists the migration files that have not been applied; a result on that schema can hide the effect of the index.
-- **Billing.** D1 bills on its own counters. Qenome reads `sqlite3_stmt_status` on a local copy and does not read the production counters, so the report cannot tell you what D1 will charge.
+- **Billing.** D1 bills on its own counters. Qenome reads `sqlite3_stmt_status` on a local copy and does not read the production counters, so the report cannot tell you what D1 will charge. A smaller `rows_read` here is not a smaller bill.
 
 ## How to check against production yourself
 
