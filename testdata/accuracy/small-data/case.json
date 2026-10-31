@@ -26,7 +26,10 @@
     "human": {
       "contains": [
         "verdict       improved",
-        "data_too_small:"
+        "data_too_small:",
+        "events has 500 rows, fewer than 1000 rows",
+        "A full scan",
+        "--scale 1000,10000"
       ],
       "excludes": [
         "error:"

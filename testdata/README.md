@@ -1,26 +1,26 @@
-# テストデータ（工程1: ダミーDBと期待値表）
+# Test data (step 1: dummy database and expected-value table)
 
-インデックスの効果を判定するためのダミーDBと、判定基準になる期待値の記録。この表と突き合わせて「改善した／しなかった」を判定する。
+A dummy database for judging an index, and the expected values that decision is checked against. Compare a result with this table to decide whether it improved.
 
-実データ、機密情報、実在の個人情報は含まない（`id` から決まる合成データだけ）。
+No real data, secrets, or real personal information (only synthetic data determined by `id`).
 
-## ファイル
+## Files
 
-| パス | 役割 |
+| Path | Role |
 |---|---|
-| `schema.sql` | `events` テーブル（インデックスは作らない） |
-| `seed.sql` | 20万行の決定論的な投入（`random()` を使わない） |
-| `verify.sql` | 不変条件の検査（`sqlite3` CLI 専用） |
-| `seed.json` | `--seed-data` 用の50,000行のダミーデータ指定（CONTRIBUTING.md の Quick start で使う。fixture DB は変更しない） |
-| `cases/improved.sql` / `cases/improved.index.sql` | 改善する例の SELECT と候補DDL |
-| `cases/write.sql` | `--write` の例の INSERT（`cases/improved.index.sql` を候補に使う） |
-| `cases/no-effect.sql` / `cases/no-effect.index.sql` | 効果のない例の SELECT と候補DDL |
-| `cases/incomparable.sql` / `cases/incomparable.index.sql` | 結果を比較できない例の SELECT と候補DDL |
-| `generated/` | 生成したDBの置き場（`.gitignore` 対象。追跡しない） |
+| `schema.sql` | The `events` table (no indexes are created) |
+| `seed.sql` | A deterministic load of 200,000 rows (does not use `random()`) |
+| `verify.sql` | Invariant checks (for the `sqlite3` CLI only) |
+| `seed.json` | A 50,000-row dummy-data spec for `--seed-data` (used by the Quick start in CONTRIBUTING.md; the fixture database is not changed) |
+| `cases/improved.sql` / `cases/improved.index.sql` | The SELECT and candidate DDL for an example that improves |
+| `cases/write.sql` | The INSERT for a `--write` example (uses `cases/improved.index.sql` as the candidate) |
+| `cases/no-effect.sql` / `cases/no-effect.index.sql` | The SELECT and candidate DDL for an example with no effect |
+| `cases/incomparable.sql` / `cases/incomparable.index.sql` | The SELECT and candidate DDL for an example whose results cannot be compared |
+| `generated/` | Where the generated database is placed (gitignored; not tracked) |
 
-## 再生成手順
+## Regenerating the database
 
-`schema.sql` → `seed.sql` → `verify.sql` の順に実行する。`seed` の投入は約0.08秒で、検査まで含めても1秒未満（2026-10-10、macOS・SQLite 3.51.2）。macOS の `sh` / `zsh` で確認済み。Windows は未確認。
+Run `schema.sql`, then `seed.sql`, then `verify.sql`. Loading the seed takes about 0.08 seconds, and the load plus the checks stays under one second (2026-10-10, macOS, SQLite 3.51.2). Checked with macOS `sh` / `zsh`. Windows has not been checked.
 
 ```sh
 mkdir -p testdata/generated
@@ -30,132 +30,132 @@ sqlite3 testdata/generated/qenome-fixture.db ".read testdata/seed.sql"
 sqlite3 testdata/generated/qenome-fixture.db ".read testdata/verify.sql"
 ```
 
-- 先頭の `mkdir` は必須。ディレクトリが無いと `sqlite3` は `unable to open database file` で exit 1 になり、DBも作られない
-- `verify.sql` は17項目を出力する。すべて `ok` なら exit 0、1つでも `FAIL` があれば最後の `INSERT` が `CHECK` 制約違反となり exit 1（実測: `Runtime error near line 32: CHECK constraint failed: ok = 1 (19)`）
-- 途中で失敗したら、部分生成されたDBを削除して先頭からやり直す（中途半端なDBを残さない）。削除して再実行できることは確認済み
-- 検査で `FAIL` が出たら期待値を書き換えず、まず原因を調べる（記録どおりにならない状態を成功として扱わない）
-- この手順を2回実行し、検査の出力が完全に一致することを確認済み（2026-10-10）
+- The leading `mkdir` is required. Without the directory, `sqlite3` exits 1 with `unable to open database file` and creates no database.
+- `verify.sql` prints 17 checks. All `ok` means exit 0. One `FAIL` makes the last `INSERT` violate a `CHECK` constraint and exit 1 (measured: `Runtime error near line 32: CHECK constraint failed: ok = 1 (19)`).
+- If a step fails, delete the partly written database and start again (do not keep a half-built database). Deleting it and running the steps again has been checked.
+- If a check prints `FAIL`, do not rewrite the expected values. Find the cause first (do not treat a result that does not match the record as a success).
+- This procedure was run twice, and the check output matched exactly (2026-10-10).
 
-`verify.sql` の検査項目: 行数、`id` の最小・最大・重複なし、`customer_id` の非NULL件数・NULL件数・種類数・最小・最大・範囲外0件、`status` 3値の件数と未知値0件、`note` のNULL件数・非NULL件数、ユーザー定義インデックス0件。
+Checks in `verify.sql`: the row count; the minimum, maximum, and uniqueness of `id`; the non-NULL count, NULL count, distinct count, minimum, maximum, and zero out-of-range values of `customer_id`; the three `status` counts and zero unknown values; the NULL and non-NULL counts of `note`; and zero user-defined indexes.
 
-`seed.json` は CONTRIBUTING.md の Quick start の `--seed-data` の例で使う。サンドボックスのコピーにある `events` を、`id` と `customer_id` が 1..50,000 の連番、`status` が `ok` 50% / `failed` 50%、`note` が NULL の50,000行で置き換える。`fixture DB` は変更しない。
+`seed.json` is the `--seed-data` example in the Quick start in CONTRIBUTING.md. It replaces `events` in the sandbox copy with 50,000 rows whose `id` and `customer_id` are the sequence 1..50,000, whose `status` is `ok` 50% / `failed` 50%, and whose `note` is NULL. The fixture database is not changed.
 
-## 基準版
+## Reference version
 
-期待値は次の版で導出した。`testdata/generated` を作る版と揃える。
+The expected values were derived on the following version. Use the same version when you build `testdata/generated`.
 
 ```text
 sqlite3 3.51.2 2026-01-09 17:27:48 b270f8339eb13b504d0b2ba154ebca966b7dde08e40c3ed7d559749818cbalt1 (64-bit)
 ```
 
-計画の文言とフルスキャン行数は 3.51.0 / 3.53.4 でも同じ値を確認済み。**版が変わったら期待値を再導出する。**
+The plan text and the full-scan row counts were checked to be the same on 3.51.0 and 3.53.4. **When the version changes, derive the expected values again.**
 
-## データの条件（`verify.sql` が検査する値）
+## Data conditions (the values `verify.sql` checks)
 
-| 条件 | 値 |
+| Condition | Value |
 |---|---|
-| 行数 | 200,000 |
-| `id` | 1..200,000 の連番（重複なし） |
-| `customer_id` | 1..2,000 を巡回。`id%997 = 0` の200行は NULL |
-| `status` | `ok` 66,666 / `warn` 66,667 / `failed` 66,667（`id%3` で決まる） |
-| `note` | `'note-'||id`。`id%5 = 0` の40,000行は NULL |
-| ユーザー定義インデックス | 0件 |
-| DBサイズ（参考） | 1,242ページ・5,087,232 bytes（約4.85MiB、`page_size` は4096） |
+| Row count | 200,000 |
+| `id` | The sequence 1..200,000 (no duplicates) |
+| `customer_id` | Cycles through 1..2,000. The 200 rows where `id%997 = 0` are NULL |
+| `status` | `ok` 66,666 / `warn` 66,667 / `failed` 66,667 (decided by `id%3`) |
+| `note` | `'note-'||id`. The 40,000 rows where `id%5 = 0` are NULL |
+| User-defined indexes | 0 |
+| Database size (reference) | 1,242 pages, 5,087,232 bytes (about 4.85MiB, `page_size` 4096) |
 
-DBサイズは版によって変わりうるため検査には含めず、参考値として記録する。ファイルのバイト一致も保証しない（判定は `verify.sql` の不変条件で行う）。
+The database size can change with the version, so it is not part of the checks and is recorded only as a reference. Byte-for-byte identity of the file is not guaranteed either (the judgement uses the invariants in `verify.sql`).
 
-## 3組のクエリと候補DDL
+## Three queries and their candidate DDL
 
-| | 改善する例 | 効果のない例 |
+| | Example that improves | Example with no effect |
 |---|---|---|
 | SELECT | `SELECT id, status, note FROM events WHERE customer_id = ?;` | `SELECT note FROM events WHERE lower(status) = ?;` |
-| 代表バインド | 型 INTEGER・値 `1234` | 型 TEXT・値 `'ok'` |
-| 候補DDL | `CREATE INDEX ix_events_customer_id ON events(customer_id);` | `CREATE INDEX ix_events_status ON events(status);` |
-| インデックスが効かない理由 | — | 条件の列を `lower()` で包むため、`status` のインデックスを使えない |
+| Representative bind | Type INTEGER, value `1234` | Type TEXT, value `'ok'` |
+| Candidate DDL | `CREATE INDEX ix_events_customer_id ON events(customer_id);` | `CREATE INDEX ix_events_status ON events(status);` |
+| Why the index does not apply | — | The filtered column is wrapped in `lower()`, so the index on `status` cannot be used |
 
-### 比較できない例
+### Example that cannot be compared
 
-| 項目 | 値 |
+| Item | Value |
 |---|---|
 | SELECT | `SELECT id, note FROM events ORDER BY random() LIMIT 10;` |
-| 代表バインド | なし |
-| 候補DDL | `CREATE INDEX ix_events_customer_id ON events(customer_id);` |
-| 比較できない理由 | `random()` が実行のたびに別の行を選ぶ（`src/db.zig` の `alwaysIncomparable`） |
-| 結果 | `result: incomparable`、終了コード 4、`verdict: not-judged`。SELECT は計測しない |
+| Representative bind | None |
+| Candidate DDL | `CREATE INDEX ix_events_customer_id ON events(customer_id);` |
+| Why it cannot be compared | `random()` picks different rows on every run (`alwaysIncomparable` in `src/db.zig`) |
+| Result | `result: incomparable`, exit status 4, `verdict: not-judged`. The SELECT is not measured |
 
-この組は CONTRIBUTING.md の Quick start で使う。候補DDL は比較の対象としては使われないため、改善する例と同じものを使っている。
+The Quick start in CONTRIBUTING.md uses this pair. The candidate DDL is not what the comparison judges, so it is the same DDL as the example that improves.
 
-### 書き込みの例
+### Write example
 
-| 項目 | 値 |
+| Item | Value |
 | --- | --- |
-| ファイル | `cases/write.sql` |
+| File | `cases/write.sql` |
 | SQL | `INSERT INTO events(customer_id, status, note) VALUES (?, 'ok', 'new');` |
-| 代表バインド | 型 INTEGER・値 `1234` |
-| 候補DDL | `CREATE INDEX ix_events_customer_id ON events(customer_id);`（改善する例と同じ） |
-| 期待する書く行数 | baseline 1（テーブル1行）、variant 2（テーブル1行 + 候補インデックスの挿入1行） |
-| 期待する変更行数 | 両方 1 |
-| 結果 | `result: match`、`verdict: needs-check`、終了コード 0 |
-| 期待する読む行数 | 両方 0（INSERT ... VALUES は行を読まない） |
+| Representative bind | Type INTEGER, value `1234` |
+| Candidate DDL | `CREATE INDEX ix_events_customer_id ON events(customer_id);` (the same as the example that improves) |
+| Expected rows written | baseline 1 (one table row), variant 2 (one table row + one insert into the candidate index) |
+| Expected rows changed | 1 on both sides |
+| Result | `result: match`, `verdict: needs-check`, exit status 0 |
+| Expected rows read | 0 on both sides (`INSERT ... VALUES` reads no rows) |
 
-`--write` は文をサンドボックスの各コピーで実行し、トランザクションをロールバックするので、元の DB は変わらない。書く行数は workerd の行数カウントで、テーブルの行とセカンダリインデックスの挿入、トリガーの挿入、外部キーの CASCADE を含む。セカンダリインデックスの削除は含まないため、`DELETE` では書く行数が増えないことがある。`DELETE ... WHERE` の読む行数がインデックスで減ることは、`src/cli/tests.zig` の統合テストで確認する。
+`--write` runs the statement on each sandbox copy and rolls the transaction back, so the original database does not change. Rows written use the workerd row-count patch. They include the table row, each secondary-index insert, trigger inserts, and foreign-key CASCADE actions. They do not include secondary-index deletes, so a `DELETE` may not increase the rows written. An integration test in `src/cli/tests.zig` checks that an index can lower the rows read by `DELETE ... WHERE`.
 
-## 期待値表
+## Expected-value table
 
-代表バインドで実行した値。インデックスは `baseline`（インデックスなし）と `variant`（候補DDLを1本だけ適用）の差で見る。
+Values from a run with the representative bind. The index is the difference between `baseline` (no index) and `variant` (only the candidate DDL applied).
 
-### 改善する例
+### Example that improves
 
-| 項目 | インデックスなし（baseline） | インデックスあり（variant） |
+| Item | No index (baseline) | With the index (variant) |
 |---|---|---|
-| 計画 | `SCAN events` | `SEARCH events USING INDEX ix_events_customer_id (customer_id=?)` |
-| フルスキャン行数 | 199,999 | 0 |
-| VMステップ | 600,407 | 710 |
-| 件数 | 100 | 100 |
+| Plan | `SCAN events` | `SEARCH events USING INDEX ix_events_customer_id (customer_id=?)` |
+| Full-scan rows | 199,999 | 0 |
+| VM steps | 600,407 | 710 |
+| Row count | 100 | 100 |
 | `count(customer_id)` / `count(note)` | 100 / 100 | 100 / 100 |
-| `sum(id)` / `sum(customer_id)` | 10,023,300 / 123,400 | 同左 |
+| `sum(id)` / `sum(customer_id)` | 10,023,300 / 123,400 | Same as baseline |
 | `sum(length(note))` | 1,045 | 1,045 |
-| `min(id)` / `max(id)` | 1,233 / 199,233 | 同左 |
-| 結果の比較（工程5） | — | 一致（`result: match (row multiset)`、終了コード 0、`row-order: same`） |
+| `min(id)` / `max(id)` | 1,233 / 199,233 | Same as baseline |
+| Result comparison (step 5) | — | Match (`result: match (row multiset)`, exit status 0, `row-order: same`) |
 
-### 効果のない例
+### Example with no effect
 
-| 項目 | インデックスなし（baseline） | インデックスあり（variant） |
+| Item | No index (baseline) | With the index (variant) |
 |---|---|---|
-| 計画 | `SCAN events` | `SCAN events`（完全一致） |
-| フルスキャン行数 | 199,999 | 199,999 |
-| VMステップ | 933,339 | 933,339 |
-| 件数 | 66,666 | 66,666 |
+| Plan | `SCAN events` | `SCAN events` (identical) |
+| Full-scan rows | 199,999 | 199,999 |
+| VM steps | 933,339 | 933,339 |
+| Row count | 66,666 | 66,666 |
 | `count(note)` | 53,333 | 53,333 |
 | `sum(length(note))` | 557,032 | 557,032 |
-| `min(note)` / `max(note)` | `note-100002` / `note-99999` | 同左 |
-| 結果の比較（工程5） | — | 一致（`result: match (row multiset)`、終了コード 0、`row-order: same`） |
+| `min(note)` / `max(note)` | `note-100002` / `note-99999` | Same as baseline |
+| Result comparison (step 5) | — | Match (`result: match (row multiset)`, exit status 0, `row-order: same`) |
 
-### 判定条件
+### Decision conditions
 
-判定の主軸は数値の絶対値ではなく、次の関係条件にする。
+The decision is the following relations, not the absolute numbers.
 
-- 改善する例: 結果が一致し、読んだ行数（`rows-read`）がインデックスなしより減る。計画も `SEARCH` に変わる
-- 効果のない例: 結果が一致し、読んだ行数・書いた行数がインデックスなしと一致する。計画・フルスキャン行数・VMステップも一致する
-- 時間（数値の正解は置かない。判定には使わず、`time-baseline-ns` / `time-variant-ns` に参考値として出す）: 改善する例はインデックスありの中央値が小さく、反復しても順序が反転しない。効果のない例は両者の中央値の差が測定ノイズ帯（例: インデックスなしの±20%以内）にある
-- 読んだ行数が減らない場合: 時間が短くても「改善」と判定しない
+- Example that improves: the results match, and the rows read (`rows-read`) are lower than with no index. The plan also changes to `SEARCH`.
+- Example with no effect: the results match, and the rows read and the rows written match the no-index side. The plan, the full-scan rows, and the VM steps also match.
+- Time (no numeric answer is fixed. It is not used for the decision, and is reported as a reference in `time-baseline-ns` / `time-variant-ns`): for the example that improves, the median with the index is smaller and the order does not reverse across repeats. For the example with no effect, the difference of the two medians stays inside the measurement noise (for example, within ±20% of the no-index median).
+- When the rows read do not fall: do not call it an improvement, even if the time is shorter.
 
-VMステップは実行形式で数ステップ変わる（改善する例のインデックスあり: 代表バインド 710 / リテラル 708）。上の表は代表バインドの値で揃えている。この差は関係条件には影響しない。
+VM steps can change by a few steps with the way the statement is written (the indexed side of the example that improves: representative bind 710 / literal 708). The table above uses the representative bind. That difference does not affect the relations.
 
-## 導出コマンド
+## Commands that derive the values
 
-期待値を再導出する手順。`sqlite3` は基準版を使う。
+How to derive the expected values again. Use the reference version of `sqlite3`.
 
 ```sh
 d=$(mktemp -d)
 cp testdata/generated/qenome-fixture.db "$d/baseline.db"
 cp testdata/generated/qenome-fixture.db "$d/improved.db"
 cp testdata/generated/qenome-fixture.db "$d/no-effect.db"
-sqlite3 "$d/improved.db" ".read testdata/cases/improved.index.sql"    # variant 側にだけインデックスを足す
+sqlite3 "$d/improved.db" ".read testdata/cases/improved.index.sql"    # add the index on the variant side only
 sqlite3 "$d/no-effect.db" ".read testdata/cases/no-effect.index.sql"
 ```
 
-計画とカウンタ（改善する例。`1234` は代表バインド）:
+The plan and the counters (the example that improves; `1234` is the representative bind):
 
 ```sh
 sqlite3 "$d/baseline.db" <<'SQL'
@@ -166,33 +166,33 @@ SELECT id, status, note FROM events WHERE customer_id = ?;
 SQL
 ```
 
-- 計画は `EXPLAIN QUERY PLAN` の出力から `SCAN` / `SEARCH` の行を読む
-- カウンタは `.stats stmt` の `Fullscan Steps` と `Virtual Machine Steps` の**最後の値**を読む。出力に結果行が混ざるため（効果のない例は66,666行出力される）
-- インデックスありの側は `$d/improved.db` / `$d/no-effect.db` に読み替える
-- 効果のない例は `.parameter set ?1 ok` とし、`SELECT note FROM events WHERE lower(status) = ?;` に差し替える
+- Read the `SCAN` / `SEARCH` line from the `EXPLAIN QUERY PLAN` output.
+- Read the **last** `Fullscan Steps` and `Virtual Machine Steps` from `.stats stmt`. Result rows are mixed into the output (the example with no effect prints 66,666 rows).
+- For the side with the index, read `$d/improved.db` or `$d/no-effect.db` instead.
+- For the example with no effect, use `.parameter set ?1 ok` and replace the statement with `SELECT note FROM events WHERE lower(status) = ?;`.
 
-結果の要約（改善する例）:
+Summary of the result (the example that improves):
 
 ```sh
 sqlite3 "$d/baseline.db" "SELECT count(*), count(customer_id), count(note), sum(id), sum(customer_id), sum(length(note)), min(id), max(id) FROM events WHERE customer_id = 1234;"
 ```
 
-結果の要約（効果のない例）:
+Summary of the result (the example with no effect):
 
 ```sh
 sqlite3 "$d/baseline.db" "SELECT count(*), count(note), sum(length(note)), min(note), max(note) FROM events WHERE lower(status) = 'ok';"
 ```
 
-要約は期待値の確認用。工程5の結果一致判定（値の型・NULL・重複行数を保った行の多重集合の比較）を代替しない。要約が同じでも中身が異なる結果はあり得る。
+The summaries only check the expected values. They do not replace the step-5 match (a multiset comparison of rows that keeps value types, NULLs, and duplicate counts). Two results can share a summary and still differ.
 
-## 罠
+## Traps
 
-- **covering index**: 効果のない例の SELECT から `note` を外す（`SELECT status FROM events WHERE lower(status) = ?;`）と、インデックスありの計画は `SCAN events USING COVERING INDEX ix_events_status` に変わる。改善していないのに計画が変わるため、SELECT を変えるときは期待値を再導出する
-- **`ANALYZE` を入れない**: 統計が入ると計画が統計に依存するため、fixture では `ANALYZE` を実行しない
-- **カウンタの取得**: `.stats stmt` の出力に結果行が混ざる。`Fullscan Steps` / `Virtual Machine Steps` の最後の値を採用する
-- **版依存**: 期待値は基準版で導出した値。版が変わったら再導出する
-- **バイト一致は保証しない**: DBファイルの内容のバイト一致は判定に使わない。`verify.sql` の不変条件で判定する
-- **`LIMIT` だけでは比較不能にならない**: `LIMIT` / `OFFSET` を含む SELECT も、行が一致すれば `match` のまま比較と計測を続ける（`LIMIT` / `OFFSET` は行が不一致だったときの理由にだけ現れる）。比較不能になるのは `random()` などの非決定的な関数や schema テーブルを読む SELECT（`src/db.zig` の `alwaysIncomparable`）
+- **Covering index**: drop `note` from the SELECT in the example with no effect (`SELECT status FROM events WHERE lower(status) = ?;`) and the plan with the index becomes `SCAN events USING COVERING INDEX ix_events_status`. The plan changed without an improvement, so derive the expected values again when you change the SELECT.
+- **Do not run `ANALYZE`**: statistics make the plan depend on the statistics, so the fixture does not run `ANALYZE`.
+- **Reading the counters**: result rows are mixed into the `.stats stmt` output. Take the last `Fullscan Steps` / `Virtual Machine Steps`.
+- **Version dependence**: the expected values were derived on the reference version. Derive them again when the version changes.
+- **Byte-for-byte identity is not guaranteed**: the judgement does not use identical file bytes. It uses the invariants in `verify.sql`.
+- **`LIMIT` alone does not make a result incomparable**: a SELECT with `LIMIT` / `OFFSET` stays a `match` and keeps being compared and measured when the rows match (`LIMIT` / `OFFSET` appears only as the reason when the rows differ). What makes a result incomparable is a non-deterministic function such as `random()`, or a SELECT that reads a schema table (`alwaysIncomparable` in `src/db.zig`).
 
 ## Accuracy corpus (`testdata/accuracy/`)
 
@@ -239,11 +239,11 @@ The cases fall into three groups, and each directory is named after the trap it 
 
 | Group | What the case protects | Added later |
 | --- | --- | --- |
-| not improved | the rows match and the variant reads the same rows, so the answer is `no-effect`: an index SQLite does not use, a plan whose text changed without changing the rows read, and an unused index that the timing must not call `faster` in most runs | `unused-column-index`, `nocase-index-binary-comparison`, `covering-index-same-rows`, `timing-same-plan` |
-| needs review | the rows match but the change costs something: the verdict is `needs-check` when the variant reads or writes more rows, and the warnings must reach the human report next to the verdict | `stale-stats-reads-more`, `insert-index-writes`, `update-indexed-column-writes-more`, `one-row-gain-of-50000`, the same query and index that answer `improved` for one bind and `no-effect` for another (`bind-range-one-row`, `bind-range-every-row`), and the human checks in `small-data` and `no-analyze-stats` |
+| not improved | the rows match and the variant does not read at least 1% fewer rows, so the answer is `no-effect`: an index SQLite does not use, a plan whose text changed without changing the rows read, an unused index that the timing must not call `faster` in most runs, and a one-row saving out of 50,000 | `unused-column-index`, `nocase-index-binary-comparison`, `covering-index-same-rows`, `timing-same-plan`, `one-row-gain-of-50000` |
+| needs review | the rows match but the change costs something: the verdict is `needs-check` when the variant reads or writes more rows, and the warnings must reach the human report next to the verdict | `stale-stats-reads-more`, `insert-index-writes`, `update-indexed-column-writes-more`, the same query and index that answer `improved` for one bind and `no-effect` for another (`bind-range-one-row`, `bind-range-every-row`), and the human checks in `small-data` and `no-analyze-stats` |
 | results differ | the rows must stay the same where the candidate can only change the plan, and a case where they can differ expects exit `3` or `4` with `verdict` `not-judged`, never `improved` | `nocase-index-match`, `partial-index-range-match`, `order-by-ties-limit` |
 
-To add a case, create the directory with the files above, put the explanation in `description` (the SQL files must not hold comments), and run `python3 scripts/check_accuracy.py --case <case>`. Decide the expected answer from SQLite's documented behaviour and from the baseline and variant plans, not from what the binary prints today. When the binary is wrong, keep the right expectation and mark the case `"known_wrong": "<issue link>"` with a new issue: the harness reports it as `known-wrong` instead of `ok`, and fails once the case starts passing so that the marker gets removed. A change to the verdict rule belongs in its own issue, not in a corpus case. When the expectation deliberately records today's answer while a human decides (as in `one-row-gain-of-50000`), name that issue in `description`. The corpus depends only on the JSON contracts in `docs/json.md` (comparison `schema_version` 2, `batch_schema_version` 1, and a `--rank` report that carries `schema_version` 2 plus `rank_schema_version` 1); a new SQLite version can change a plan text or a counter, so recheck the expected values then.
+To add a case, create the directory with the files above, put the explanation in `description` (the SQL files must not hold comments), and run `python3 scripts/check_accuracy.py --case <case>`. Decide the expected answer from SQLite's documented behaviour and from the baseline and variant plans, not from what the binary prints today. When the binary is wrong, keep the right expectation and mark the case `"known_wrong": "<issue link>"` with a new issue: the harness reports it as `known-wrong` instead of `ok`, and fails once the case starts passing so that the marker gets removed. A change to the verdict rule belongs in its own issue, not in a corpus case. When the expectation deliberately records today's answer while a human decides (as in `one-row-gain-of-50000`), name that issue in `description`. The 1% read-reduction rule has three known answers: `one-row-gain-of-50000` is `no-effect`, `one-percent-gain-of-50000` is the smallest `improved`, and `clear-gain-equality` is a clear `improved`. The corpus depends only on the JSON contracts in `docs/json.md` (comparison `schema_version` 2, `batch_schema_version` 1, and a `--rank` report that carries `schema_version` 2 plus `rank_schema_version` 1); a new SQLite version can change a plan text or a counter, so recheck the expected values then.
 
 `rows_read` counts the rows a b-tree cursor visits: a full scan visits every row, and an index search visits its matching entries plus one, so one search cannot read more rows than a full scan. Sorter reads count too, so an index that removes an `ORDER BY` sort also lowers the counter. A `needs-check` from one SELECT therefore needs a baseline that already reads fewer rows than the table: `stale-stats-reads-more` writes a `sqlite_stat1` row that makes the planner prefer the candidate index over a better existing one. A write reaches `needs-check` through `rows_written` instead (`insert-index-writes`, `update-indexed-column-writes-more`). A bind decides the direction of one search: `bind-range-one-row` matches one row and reads one, while the same query and index in `bind-range-every-row` matches every row and reads every entry, so the first is `improved` and the second is `no-effect`.
 

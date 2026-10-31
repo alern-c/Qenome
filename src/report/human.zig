@@ -16,6 +16,22 @@ const Outcome = model.Outcome;
 const Plan = model.Plan;
 const PlanRow = model.PlanRow;
 const TimeEffect = model.TimeEffect;
+const improved_select = std.fmt.comptimePrint(
+    "improved: the rows match and at least {d}% fewer rows were read",
+    .{contract.min_read_gain_percent},
+);
+const improved_write = std.fmt.comptimePrint(
+    "improved: the RETURNING rows match and at least {d}% fewer rows were read",
+    .{contract.min_read_gain_percent},
+);
+const below_min_select = std.fmt.comptimePrint(
+    "no-effect: the rows match, but the read reduction is below {d}%",
+    .{contract.min_read_gain_percent},
+);
+const below_min_write = std.fmt.comptimePrint(
+    "no-effect: the RETURNING rows match, but the read reduction is below {d}%",
+    .{contract.min_read_gain_percent},
+);
 const line_width = format.line_width;
 const value_column = format.value_column;
 const d1_caution = format.d1_caution;
@@ -39,7 +55,12 @@ fn writeHumanWarnings(stdout: *Io.Writer, allocator: std.mem.Allocator, warnings
     try stdout.writeAll("\nWarnings\n");
     const enabled = [_]bool{ warnings.no_analyze_stats, warnings.data_too_small };
     for (enabled, contract.warning_codes, contract.warning_messages) |active, code, message| {
-        if (active) try writeHumanWarning(stdout, allocator, code, message);
+        if (!active) continue;
+        const text = if (std.mem.eql(u8, code, contract.code.data_too_small))
+            if (warnings.small_data) |detail| detail.message else message
+        else
+            message;
+        try writeHumanWarning(stdout, allocator, code, text);
     }
     if (warnings.bind_dependent_partial_index) |name| {
         const message = try cli_warnings.bindDependentPartialIndexMessage(allocator, name);
@@ -139,15 +160,17 @@ fn writeOverview(
         try writeField(stdout, "write runs", rows_text.buffered());
     }
     const writing = header.write_path != null;
+    const same_reads = before.counters.rows_read == after.counters.rows_read;
     try writeField(stdout, "verdict", switch (report.judgement.verdict) {
-        .improved => if (writing)
-            "improved: the RETURNING rows match, and the variant reads fewer rows without writing more"
-        else
-            "improved: the rows match, and the variant reads fewer rows",
-        .no_effect => if (writing)
+        .improved => if (writing) improved_write else improved_select,
+        .no_effect => if (writing and same_reads)
             "no-effect: the RETURNING rows match, and both copies read and write the same rows"
+        else if (writing)
+            below_min_write
+        else if (same_reads)
+            "no-effect: the rows match, and the variant reads the same rows"
         else
-            "no-effect: the rows match, and the variant reads the same rows",
+            below_min_select,
         .needs_check => "needs-check:",
         .regressed => "regressed:",
         .not_judged => "not-judged:",
@@ -157,6 +180,17 @@ fn writeOverview(
         try stdout.writeAll("- ");
         try writeWrapped(stdout, reason, value_column + 2, value_column + 2);
         try stdout.writeByte('\n');
+    }
+    if (report.warnings.small_data) |detail| {
+        var buffer: [768]u8 = undefined;
+        var text = Io.Writer.fixed(&buffer);
+        const scan = if (detail.full_scan) " A full scan reads every row, so this count does not mean a missing index is harmless." else "";
+        if (text.print("{s} has {d} rows, fewer than 1000 rows.{s}", .{ detail.table, detail.rows, scan })) {
+            try writeField(stdout, "data", text.buffered());
+        } else |_| {
+            try writeField(stdout, "data", "TOO SMALL: fewer than 1000 rows");
+        }
+        try writeField(stdout, "next", detail.next_command);
     }
     try writeField(stdout, "query plan", if (cli_comparison.samePlan(before.plan, after.plan))
         "the same on both copies"

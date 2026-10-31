@@ -34,6 +34,7 @@ EXPECT_KEYS = (
     "error",
     "writes",
     "rank",
+    "scale",
 )
 PLAN_KEYS = ("contains", "excludes")
 ROWS_KEYS = ("direction", "max_ratio")
@@ -345,6 +346,43 @@ def check_writes(name, value):
     return result
 
 
+def whole_number(name, value):
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise Unusable(name + " must be a whole number")
+    return value
+
+
+def check_scale_step(name, value):
+    require(isinstance(value, dict), name + " must be an object")
+    comparison = {}
+    extra = {}
+    allowed = ("rows", "baseline_rows_read_at_most", "baseline_rows_read_at_least")
+    for key, item in value.items():
+        if key in COMPARISON_KEYS:
+            comparison[key] = item
+        elif key in allowed:
+            extra[key] = whole_number(name + "." + key, item)
+        else:
+            raise Unusable(name + ": unknown key(s): " + key)
+    result = check_comparison(name, comparison) if comparison else {}
+    result.update(extra)
+    require(result, name + " needs a check")
+    return result
+
+
+def check_scale(name, value):
+    require(isinstance(value, dict), name + " must be an object")
+    unknown_keys(name, value, ("steps", "grows"))
+    steps = value.get("steps")
+    require(isinstance(steps, list) and bool(steps), name + ".steps must be a non-empty array")
+    checked = [check_scale_step(name + ".steps[" + str(index) + "]", step) for index, step in enumerate(steps)]
+    result = {"steps": checked}
+    if "grows" in value:
+        require(value["grows"] is True, name + ".grows must be true")
+        result["grows"] = True
+    return result
+
+
 def load_expect(case_name, value):
     require(isinstance(value, dict), case_name + ": expect must be an object")
     unknown_keys(case_name + ": expect", value, EXPECT_KEYS)
@@ -377,6 +415,8 @@ def load_expect(case_name, value):
         result["rank"] = check_rank(case_name + ": expect.rank", value["rank"])
     if "writes" in value:
         result["writes"] = check_writes(case_name + ": expect.writes", value["writes"])
+    if "scale" in value:
+        result["scale"] = check_scale(case_name + ": expect.scale", value["scale"])
     require(result, case_name + ": expect holds no check")
     return result
 
@@ -567,6 +607,7 @@ def observation_from(done):
         "writes": [],
         "error": None,
         "rank": None,
+        "scale": None,
     }
     stdout = done.stdout.strip()
     if stdout:
@@ -593,6 +634,13 @@ def observation_from(done):
                 if isinstance(entry, dict) and isinstance(entry.get("comparison"), dict):
                     writes.append(entry["comparison"])
             observation["writes"] = writes
+        elif "scale_schema_version" in report:
+            observation["scale"] = report
+            comparisons = []
+            for step in report.get("steps") or []:
+                if isinstance(step, dict) and isinstance(step.get("comparison"), dict):
+                    comparisons.append(step["comparison"])
+            observation["comparisons"] = comparisons
         else:
             observation["comparison"] = report
             observation["comparisons"] = [report]
@@ -638,6 +686,8 @@ def fail_messages(expect, observation):
         failures += error_failures(expect["error"], observation["error"])
     if "rank" in expect:
         failures += rank_failures(expect["rank"], observation["rank"])
+    if "scale" in expect:
+        failures += scale_failures(expect["scale"], observation.get("scale"))
     return failures
 
 
@@ -660,6 +710,62 @@ def rank_failures(spec, report):
         failures.append("the first query is " + json.dumps(first) + ", expected " + json.dumps(spec["first"]))
     if "note" in spec and spec["note"] not in str(report.get("note")):
         failures.append("the rank note does not contain " + json.dumps(spec["note"]))
+    return failures
+
+
+def baseline_rows_read(comparison):
+    if not isinstance(comparison, dict):
+        return None
+    baseline = comparison.get("baseline")
+    if not isinstance(baseline, dict):
+        return None
+    counters = baseline.get("counters")
+    if not isinstance(counters, dict):
+        return None
+    return counters.get("rows_read")
+
+
+def scale_failures(spec, report):
+    if not isinstance(report, dict):
+        return ["there is no scale report"]
+    steps = report.get("steps")
+    if not isinstance(steps, list):
+        return ["the scale report has no steps"]
+    wanted = spec["steps"]
+    if len(steps) != len(wanted):
+        return ["the scale report has " + str(len(steps)) + " steps, expected " + str(len(wanted))]
+    failures = []
+    baselines = []
+    for index, (expect, step) in enumerate(zip(wanted, steps)):
+        prefix = "steps[" + str(index) + "]"
+        if not isinstance(step, dict):
+            failures.append(prefix + " is not an object")
+            baselines.append(None)
+            continue
+        if "rows" in expect and step.get("rows") != expect["rows"]:
+            failures.append(prefix + " rows is " + json.dumps(step.get("rows")) + ", expected " + str(expect["rows"]))
+        comparison = step.get("comparison")
+        if not isinstance(comparison, dict):
+            failures.append(prefix + " has no comparison")
+            baselines.append(None)
+            continue
+        failures += [prefix + ": " + failure for failure in comparison_failures(expect, comparison)]
+        baseline = baseline_rows_read(comparison)
+        baselines.append(baseline)
+        ceiling = expect.get("baseline_rows_read_at_most")
+        if ceiling is not None and (not isinstance(baseline, int) or baseline > ceiling):
+            failures.append(prefix + " baseline rows_read is " + json.dumps(baseline) + ", at most " + str(ceiling))
+        floor = expect.get("baseline_rows_read_at_least")
+        if floor is not None and (not isinstance(baseline, int) or baseline < floor):
+            failures.append(prefix + " baseline rows_read is " + json.dumps(baseline) + ", at least " + str(floor))
+    if spec.get("grows"):
+        first, last = baselines[0], baselines[-1]
+        if not isinstance(first, int) or not isinstance(last, int):
+            failures.append("baseline rows_read is not a number on the first and last steps")
+        elif last < first * 10:
+            failures.append(
+                "baseline rows_read grows from " + str(first) + " to " + str(last) + ", expected at least 10x"
+            )
     return failures
 
 

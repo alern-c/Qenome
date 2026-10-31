@@ -15,7 +15,7 @@ pub const Budget = struct {
     used: usize = 0,
 };
 
-pub const CollectFailure = enum { over_budget, out_of_memory };
+pub const CollectFailure = enum { over_budget, out_of_memory, too_big };
 
 const Span = struct { start: usize, len: usize };
 
@@ -46,7 +46,10 @@ pub const RowCollector = struct {
 
         var size: usize = 0;
         for (0..columns) |column| {
-            size += valueSize(statement, @intCast(column)) orelse return self.fail(.out_of_memory);
+            switch (valueSize(statement, @intCast(column))) {
+                .bytes => |n| size += n,
+                .failure => |failure| return self.fail(failure),
+            }
         }
         const cost = size + @sizeOf(Span);
         if (cost > self.budget.limit - self.budget.used) return self.fail(.over_budget);
@@ -74,20 +77,33 @@ pub const RowCollector = struct {
     }
 };
 
-fn valueSize(statement: *sqlite.sqlite3_stmt, column: c_int) ?usize {
+const ValueMeasure = union(enum) {
+    bytes: usize,
+    failure: CollectFailure,
+};
+
+fn columnFailure(statement: *sqlite.sqlite3_stmt) CollectFailure {
+    const handle = sqlite.sqlite3_db_handle(statement) orelse return .out_of_memory;
+    if ((sqlite.sqlite3_errcode(handle) & 0xff) == sqlite.SQLITE_TOOBIG) return .too_big;
+    return .out_of_memory;
+}
+
+fn valueSize(statement: *sqlite.sqlite3_stmt, column: c_int) ValueMeasure {
     return switch (sqlite.sqlite3_column_type(statement, column)) {
-        sqlite.SQLITE_INTEGER, sqlite.SQLITE_FLOAT => 1 + 8,
+        sqlite.SQLITE_INTEGER, sqlite.SQLITE_FLOAT => .{ .bytes = 1 + 8 },
         sqlite.SQLITE_TEXT => blk: {
-            _ = sqlite.sqlite3_column_text(statement, column) orelse return null;
-            break :blk 1 + 4 + @as(usize, @intCast(sqlite.sqlite3_column_bytes(statement, column)));
+            if (sqlite.sqlite3_column_text(statement, column) == null) return .{ .failure = columnFailure(statement) };
+            break :blk .{ .bytes = 1 + 4 + @as(usize, @intCast(sqlite.sqlite3_column_bytes(statement, column))) };
         },
         sqlite.SQLITE_BLOB => blk: {
             const blob = sqlite.sqlite3_column_blob(statement, column);
             const bytes = sqlite.sqlite3_column_bytes(statement, column);
-            if (blob == null and (bytes != 0 or sqlite.sqlite3_column_type(statement, column) != sqlite.SQLITE_BLOB)) return null;
-            break :blk 1 + 4 + @as(usize, @intCast(bytes));
+            if (blob == null and (bytes != 0 or sqlite.sqlite3_column_type(statement, column) != sqlite.SQLITE_BLOB)) {
+                return .{ .failure = columnFailure(statement) };
+            }
+            break :blk .{ .bytes = 1 + 4 + @as(usize, @intCast(bytes)) };
         },
-        else => 1,
+        else => .{ .bytes = 1 },
     };
 }
 

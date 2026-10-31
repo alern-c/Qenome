@@ -96,7 +96,7 @@ test "the human summary puts the conclusion first and the copies side by side" {
         \\  result rows   match (the same rows on both copies)
         \\  rows read     200,000 -> 201
         \\  rows written  0 -> 0
-        \\  verdict       improved: the rows match, and the variant reads fewer rows
+        \\  verdict       improved: the rows match and at least 1% fewer rows were read
         \\  query plan    changed on the variant
         \\  time          median 4.33 ms -> 37.29 us; 116x faster (reference only)
         \\  time noise    A/A p95 0 ns over 0 pairs (empirical; reference only)
@@ -439,4 +439,56 @@ test "a plan whose parents loop still ends" {
     try testing.expectEqual(@as(usize, 4), planDepth(plan, looped[0]));
     try testing.expectEqual(@as(usize, 4), planDepth(plan, looped[2]));
     try testing.expectEqual(@as(usize, 0), planDepth(plan, looped[3]));
+}
+
+test "small data is named in the summary with the scale command" {
+    var buffer: [8192]u8 = undefined;
+    var stdout = Io.Writer.fixed(&buffer);
+    const header: Header = .{
+        .database_path = "app.db",
+        .select_path = "select.sql",
+        .index_path = "index.sql",
+        .work_parent = "/tmp",
+        .sqlite_version = "0.0.0",
+        .sqlite_source_id = "test-source-id",
+        .qenome_version = "0.0.0",
+        .binds = &.{},
+        .show_binds = false,
+    };
+    const measurement: model.Measurement = .{
+        .rows = 1,
+        .plan = .{ .rows = @constCast(&scan_line) },
+        .counters = .{ .rows_read = 12, .rows_written = 0, .fullscan_steps = 12, .vm_steps = 20, .sort_ops = 0, .autoindex_rows = 0 },
+        .columns = 1,
+    };
+    const comparison: result.Comparison = .{ .matched = true, .same_order = true };
+    const outcome: model.Outcome = .{ .verdict = .match, .comparison = comparison };
+    const command = "qenome app.db select.sql index.sql --seed-data seed.json --scale 1000,10000";
+    const message = "The table \"events\" has 12 rows, fewer than 1000 rows, so this result is not meaningful yet.";
+    const report: Report = .{
+        .sizes = .{ .baseline = 4096, .variant = 4096 },
+        .judgement = .{ .verdict = .improved },
+        .warnings = .{
+            .data_too_small = true,
+            .small_data = .{
+                .table = "events",
+                .rows = 12,
+                .full_scan = true,
+                .suggested = false,
+                .next_command = command,
+                .message = message,
+            },
+        },
+    };
+    try writeHumanSummary(&stdout, testing.allocator, header, measurement, measurement, outcome, report);
+    const output = stdout.buffered();
+    const summary_end = std.mem.indexOf(u8, output, "\n\n") orelse return error.TestUnexpectedResult;
+    const summary = output[0..summary_end];
+    try testing.expect(std.mem.indexOf(u8, summary, "verdict       improved") != null);
+    try testing.expect(std.mem.indexOf(u8, summary, "events has 12 rows, fewer than 1000 rows.") != null);
+    try testing.expect(std.mem.indexOf(u8, summary, "full scan") != null);
+    try testing.expect(std.mem.indexOf(u8, summary, "--scale") != null);
+    try testing.expect(std.mem.indexOf(u8, summary, "1000,10000") != null);
+    try testing.expect(std.mem.indexOf(u8, summary, "warning:") == null);
+    try testing.expect(std.mem.indexOf(u8, output, "warning: data_too_small: ") != null);
 }

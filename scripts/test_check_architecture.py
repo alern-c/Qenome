@@ -69,6 +69,9 @@ CANONICAL_FILES = {
         'pub const warning_messages = [_][]const u8{"a message"};\n'
         'pub const bind_dependent_partial_index_message = "the message";\n'
         'pub const unapplied_migrations_message = "the message";\n'
+        'pub const data_too_small_message = "the message";\n'
+        'pub const data_too_small_full_scan = "the message";\n'
+        'pub const data_too_small_suggested = "the message";\n'
         "pub const code = struct {\n"
         '    pub const suggest_failed = "suggest_failed";\n'
         '    pub const usage_scale = "usage_scale";\n'
@@ -241,8 +244,13 @@ CANONICAL_FILES = {
     ),
     "src/report/time.zig": ('const std = @import("std");\nconst cli_timing = @import("../cli/timing.zig");\n'),
     "src/report/scale.zig": 'const std = @import("std");\n',
+    "src/report/suggest_none.zig": 'const std = @import("std");\n',
     "src/report/scale_tests.zig": 'const std = @import("std");\n',
     "src/cli/scale.zig": 'const std = @import("std");\n',
+    "src/cli/suggest_none.zig": 'const std = @import("std");\n',
+    "src/cli/recommend.zig": 'const std = @import("std");\n',
+    "src/cli/sql_input.zig": 'const std = @import("std");\n',
+    "src/cli/sql_input_tests.zig": 'const std = @import("std");\n',
     "src/cli/scale_tests.zig": 'const std = @import("std");\n',
     "src/report/format_tests.zig": ('const std = @import("std");\nconst format = @import("format.zig");\n'),
     "src/report/human_tests.zig": (
@@ -423,7 +431,7 @@ def expect_rejected(name, code, output, rule, mention=None):
 def main():
     code, output = case(None)
     expect_clean("the smallest approved tree passes", code, output)
-    expect("the whole tree is checked", "(56 files checked" in output, output.strip())
+    expect("the whole tree is checked", "(61 files checked" in output, output.strip())
 
     code, output = case(lambda root: os.remove(os.path.join(root, "src/cli/tests.zig")))
     expect_rejected("a missing test file fails", code, output, "missing-file", "src/cli/tests.zig")

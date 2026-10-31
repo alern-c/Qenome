@@ -1407,10 +1407,48 @@ def command_line_tests(checker) -> None:
     expect("an unknown corpus case is refused", absent == 2, absent)
 
 
+def scale_expect_tests(checker) -> None:
+    normalized = checker.load_expect(
+        "x",
+        {"scale": {"grows": True, "steps": [{"rows": 100, "verdict": "improved"}, {"rows": 10000}]}},
+    )
+    expect("a scale expect keeps the steps", normalized["scale"]["grows"] is True, normalized)
+    flat = {
+        "steps": [
+            {"rows": 100, "comparison": {"baseline": {"counters": {"rows_read": 100}}}},
+            {"rows": 10000, "comparison": {"baseline": {"counters": {"rows_read": 200}}}},
+        ]
+    }
+    failures = checker.scale_failures(normalized["scale"], flat)
+    expect("a full scan that stays small fails the growth check", any("10x" in item for item in failures), failures)
+    grown = {
+        "steps": [
+            {
+                "rows": 100,
+                "comparison": {
+                    "verdict": "improved",
+                    "baseline": {"counters": {"rows_read": 100}},
+                    "warnings": [{"code": "data_too_small"}],
+                },
+            },
+            {
+                "rows": 10000,
+                "comparison": {
+                    "baseline": {"counters": {"rows_read": 10000}},
+                    "warnings": [],
+                },
+            },
+        ]
+    }
+    failures = checker.scale_failures(normalized["scale"], grown)
+    expect("a full scan that grows tenfold passes", failures == [], failures)
+
+
 def main() -> int:
     checker = load_checker()
     parser_tests(checker)
     parser_value_tests(checker)
+    scale_expect_tests(checker)
     expectation_tests(checker)
     repeat_tests(checker)
     effect_tests(checker)

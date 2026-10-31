@@ -161,6 +161,7 @@ fn foundAt(warnings: Warnings, code: []const u8) ?Found {
     }
     if (std.mem.eql(u8, code, contract.warning_codes[1])) {
         if (!warnings.data_too_small) return null;
+        if (warnings.small_data) |detail| return .{ .code = code, .text = detail.message };
         return .{ .code = code, .text = contract.warning_messages[1] };
     }
     const name = warnings.bind_dependent_partial_index orelse return null;

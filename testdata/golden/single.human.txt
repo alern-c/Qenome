@@ -2,7 +2,7 @@ Summary
   result rows   match (the same rows on both copies)
   rows read     200,000 -> 101
   rows written  0 -> 0
-  verdict       improved: the rows match, and the variant reads fewer rows
+  verdict       improved: the rows match and at least 1% fewer rows were read
   query plan    changed on the variant
   time          not measured (0 rounds; reference only)
   db size       +2,170,880 bytes (+2.07 MiB; the whole database file, not the

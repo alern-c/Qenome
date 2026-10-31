@@ -71,8 +71,9 @@ pub fn writeWrapped(writer: *Io.Writer, text: []const u8, column: usize, indent:
         if (!first) {
             if (at + 1 + word.len > line_width) {
                 try writer.writeByte('\n');
-                try writeIndent(writer, indent);
-                at = indent;
+                const hang: usize = if (indent + word.len > line_width and word.len <= line_width) 0 else indent;
+                try writeIndent(writer, hang);
+                at = hang;
             } else {
                 try writer.writeByte(' ');
                 at += 1;
