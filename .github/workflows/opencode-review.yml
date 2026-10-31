@@ -17,6 +17,11 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      zig: ${{ steps.zig.outcome }}
+      head_build: ${{ steps.head_build.outcome }}
+      base_build: ${{ steps.base_build.outcome }}
+      opencode: ${{ steps.opencode.outcome }}
     concurrency:
       group: opencode-review-pull-request-${{ github.event.pull_request.number }}
       cancel-in-progress: true
@@ -40,12 +45,14 @@ jobs:
           printf 'cache_key=%s\n' "${cache_key:-unknown}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Zig (resolved from build.zig.zon)
+        id: zig
         continue-on-error: true
         uses: mlugg/setup-zig@v2
         with:
           cache-key: ${{ steps.cpu_model.outputs.cache_key }}
 
       - name: Build the pull request head
+        id: head_build
         continue-on-error: true
         run: |
           zig version
@@ -53,6 +60,7 @@ jobs:
           ./zig-out/bin/qenome --version
 
       - name: Build the merge base
+        id: base_build
         continue-on-error: true
         env:
           BASE_REF: ${{ github.base_ref }}
@@ -67,9 +75,12 @@ jobs:
           ./zig-out/bin/qenome --version
 
       - name: Name the findings file
-        run: echo "REVIEW_FINDINGS_PATH=$RUNNER_TEMP/opencode-review-findings.json" >> "$GITHUB_ENV"
+        run: |
+          echo "REVIEW_FINDINGS_PATH=$RUNNER_TEMP/opencode-review-findings.json" >> "$GITHUB_ENV"
+          echo "REVIEW_VERIFICATION_PATH=$RUNNER_TEMP/opencode-review-verification.json" >> "$GITHUB_ENV"
 
       - name: Run OpenCode
+        id: opencode
         uses: anomalyco/opencode/github@github-v1.2.28
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
@@ -85,23 +96,48 @@ jobs:
             Look for correctness bugs and regressions first, then for tests the change needs and does not have, then for violations of the rules in AGENTS.md: English in commits, pull requests and docs, no comments in code, contract values only in src/contract/values.zig, the standard library only, and a new file or folder registered in the check tables.
             When an earlier review of yours is already on this pull request, cover only what changed since that review and do not repeat a finding it already made.
             Give the file and the line of each finding, order the findings by severity, and write one sentence when the change looks correct.
-            - Write the findings as JSON to the file named by `$REVIEW_FINDINGS_PATH`, because a later step posts one inline comment per finding on the line it names: a JSON array of `{"path": "<path from the repository root>", "line": <line number in the pull request head file>, "severity": "<blocker, major, minor or nit>", "body": "<the finding, one or two sentences>"}` and nothing else. A finding that is not about a specific changed line goes in your final reply only, and a review with no finding writes an empty array. The final reply stays the full review, including the Verification section.
+            - Write the findings as JSON to the file named by `$REVIEW_FINDINGS_PATH`, because a later step posts one inline comment per finding on the line it names: a JSON array of `{"path": "<path from the repository root>", "line": <line number in the pull request head file>, "severity": "<blocker, major, minor or nit>", "body": "<the finding, one or two sentences>"}` and nothing else. The first byte is `[` and the last non-whitespace byte is `]`. Do not wrap the array in a fence. `severity` is exactly `blocker`, `major`, `minor`, or `nit`. `blocker` and `major` fail the pull request's review-gate check; `minor` and `nit` do not. Do not downgrade a real defect to `nit`. A finding that is not about a specific changed line goes in your final reply only, and a review with no finding writes an empty array. The final reply stays the full review, including the Verification section.
+            - Write one JSON object and nothing else to the file named by `$REVIEW_VERIFICATION_PATH`, in the same directory. The first byte is `{` and the last non-whitespace byte is `}`. Do not wrap it in a fence and do not add a key. The keys are `verification` and `head_sha` only. `head_sha` is ${{ github.event.pull_request.head.sha }}. `verification` is `matches`, `does_not_match`, or `could_not_verify`. Use `matches` only when the head build and the merge-base build both succeeded and the comparison agrees, or when the pull request changes no qenome behaviour, you skipped the comparison, and `./zig-out/bin/qenome --version` on the head succeeded. Use `does_not_match` when a comparison disagrees. Use `could_not_verify` when you could not run the check, including when a build failed.
             Verify, do not only read. The steps before this one install Zig and build the head and the merge base; when one of them failed, say which in the Verification section and stop the runs that need it. Read `skills/qenome/SKILL.md`, the Quick start in `CONTRIBUTING.md` and the pages under `docs/` for how to run the CLI instead of restating their usage.
             - Decide what behaviour the change claims to alter, rebuild both trees with `zig build` and `(cd testdata/generated/qenome-base && zig build)`, and run both binaries on the inputs the change touches: the databases and queries under `testdata/`, the cases under `testdata/accuracy/`, or a small case you write under `testdata/generated/`. Compare the outputs, the verdicts and the exit codes.
             - Check that the diff matches what the pull request says should change, and that nothing else changed.
             - Run every build and every qenome command with the secrets out of the environment: `env -u OPENCODE_API_KEY -u GITHUB_TOKEN <command>`.
-            - Keep every path inside the checkout, and write scratch files under `testdata/generated/`: the action has to approve a path outside the checkout, and nothing can approve it here, so such a command waits until the job ends. This workflow approves the directory of `$REVIEW_FINDINGS_PATH`, so write that file there and nothing else.
+            - Keep every path inside the checkout, and write scratch files under `testdata/generated/`: the action has to approve a path outside the checkout, and nothing can approve it here, so such a command waits until the job ends. This workflow approves the directory of `$REVIEW_FINDINGS_PATH`, so write the findings file and the verification file there and nothing else.
             - Do not repeat what CI already runs: `quality.yml` runs `python3 scripts/check_all.py`, so run only the targeted commands the change needs, and do not run ruff or mypy.
-            - A pull request that changes no qenome behaviour (docs or CI only) needs no comparison: say so, skip the comparison runs, and still run `./zig-out/bin/qenome --version` once so the review shows the binary works.
-            - Put a short Verification section in the review: the commands you ran, what you observed, and one line that says matches, does not match, or could not verify, with the reason.
+            - A pull request that changes no qenome behaviour (docs or CI only) needs no comparison: say so, skip the comparison runs, and still run `./zig-out/bin/qenome --version` once so the review shows the binary works. Record `matches` when that run succeeds and `could_not_verify` when it does not.
+            - Put a short Verification section in the review: the commands you ran, what you observed, and one line that says matches, does not match, or could not verify, with the reason. That line and the `verification` value are the same conclusion.
 
       - name: Post the findings on the changed lines
+        if: always()
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
           COMMIT: ${{ github.event.pull_request.head.sha }}
         run: python3 scripts/post_review_findings.py "$REVIEW_FINDINGS_PATH" --pull-request "$PR" --commit "$COMMIT"
+
+      - name: Collect the review material
+        if: always()
+        run: |
+          set -euo pipefail
+          dest="$RUNNER_TEMP/review-gate-material"
+          mkdir -p "$dest"
+          if [ -n "${REVIEW_FINDINGS_PATH:-}" ] && [ -f "$REVIEW_FINDINGS_PATH" ]; then
+            cp "$REVIEW_FINDINGS_PATH" "$dest/findings.json"
+          fi
+          if [ -n "${REVIEW_VERIFICATION_PATH:-}" ] && [ -f "$REVIEW_VERIFICATION_PATH" ]; then
+            cp "$REVIEW_VERIFICATION_PATH" "$dest/verification.json"
+          fi
+          printf 'collected\n' > "$dest/collected"
+
+      - name: Upload the review material
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: review-gate-material
+          path: ${{ runner.temp }}/review-gate-material
+          if-no-files-found: error
+          retention-days: 1
 
   mention:
     if: |
@@ -165,3 +201,54 @@ jobs:
           model: opencode-go/glm-5.3-flash
           use_github_token: true
           share: false
+
+  review-gate:
+    name: review-gate
+    needs: review
+    if: always() && needs.review.result != 'cancelled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Fail when the review did not run
+        if: needs.review.result != 'success' && needs.review.result != 'failure'
+        run: |
+          echo "::error::The OpenCode review did not run (result: ${{ needs.review.result }}). review-gate fails closed."
+          exit 1
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Require the gate script from the base commit
+        run: |
+          set -euo pipefail
+          if [ ! -f scripts/review_gate.py ]; then
+            echo "::error::scripts/review_gate.py is not on the base commit, so review-gate fails closed."
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: review-gate-material
+          path: review-gate-material
+
+      - name: Require a matching verification
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          ZIG_OUTCOME: ${{ needs.review.outputs.zig }}
+          HEAD_BUILD: ${{ needs.review.outputs.head_build }}
+          BASE_BUILD: ${{ needs.review.outputs.base_build }}
+          OPENCODE_OUTCOME: ${{ needs.review.outputs.opencode }}
+        run: |
+          python3 scripts/review_gate.py \
+            --head-sha "$HEAD_SHA" \
+            --verification review-gate-material/verification.json \
+            --findings review-gate-material/findings.json \
+            --zig-outcome "$ZIG_OUTCOME" \
+            --head-build "$HEAD_BUILD" \
+            --base-build "$BASE_BUILD" \
+            --opencode "$OPENCODE_OUTCOME"

@@ -29,7 +29,7 @@ Commit messages, PR titles and bodies, issues, CHANGELOG and code comments are w
 5. Check (PR section 6): run `python3 scripts/check_all.py`, then reread `git diff origin/main...HEAD`.
 6. Commit and PR: Conventional Commits `<type>(<scope>): <summary>` in English, one logical change per commit, commit only the files the change needs; merge `origin/main` to update, no rebase or force-push; PR title in Conventional Commits, body from the template with the six headings verbatim, `Closes #<n>` at the end of section 2.
 
-The `pr-format` check in CI enforces the PR title and body on every pull request.
+The `pr-format` check in CI enforces the PR title and body on every pull request. Auto-merge is described in [docs/automerge.md](docs/automerge.md).
 
 The details, including every evidence rule, are in [the workflow](CONTRIBUTING.md#workflow).
 
