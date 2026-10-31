@@ -13,11 +13,15 @@ qenome app.db --batch batch.json
 qenome app.db --batch batch.json --audit-indexes
 qenome app.db --batch batch.json --migration 0002_replace_index.sql
 qenome app.db select.sql --suggest
+qenome app.db --sql "SELECT id FROM events WHERE customer_id = 1" --suggest
+qenome app.db - index.sql
 qenome app.db --batch batch.json --suggest
 qenome --record qenome-record.log --out qenome-manifest
 ```
 
 パスは DB・SELECT（または書き込み）ファイル・CREATE INDEX ファイルの順に埋まり、`--db` / `--select` / `--write` / `--index-sql` でも指定できます（混在可）。位置指定のパスは、まだ指定されていない最初の役割に埋まります。`--d1` のときは、位置指定の2つのパスが SELECT と CREATE INDEX の役割に入ります。`--write` のときは、位置指定のパスが SELECT の代わりに書き込みファイルへ入ります。`--` の後は `-` で始まるパスとして扱います。
+
+`--sql <SQL>` は SELECT の本文をファイルの代わりに渡します。SELECT のパスが `-` のときは、その SELECT を標準入力から読みます（`qenome app.db - index.sql`、または `qenome app.db - --suggest`）。どちらも、1本の比較と `--suggest` と `--scale` で使えます。`--batch`・`--write`・`--record`・`--migration`・`--audit-indexes` では拒否します。これらはそれぞれのファイルを使います。`-` はインデックス、書き込み、batch、マイグレーションのパスとしては受け付けません。
 
 `select.sql` には読み取り専用の SELECT を1本、`index.sql` には候補の `CREATE INDEX` を1本書きます。複数文やその他の文は拒否します。`--migration` のファイルだけは例外で、`CREATE INDEX`・`CREATE UNIQUE INDEX`・`DROP INDEX`・`CREATE TABLE`・`ALTER TABLE` を複数書けます（「まとめて比べる（--batch）」を参照）。
 
@@ -26,7 +30,8 @@ qenome --record qenome-record.log --out qenome-manifest
 - `--db <PATH>`: 対象の SQLite データベース（必須、1回だけ。`--d1` とは併用しない）
 - `--d1 <BINDING>`: wrangler 設定の `d1_databases` にあるこのバインディングのローカル D1 データベースを `--db` の代わりに使う。「D1 のローカルデータベース」を参照
 - `--config <PATH>`: `--d1` が読む wrangler 設定（既定はカレントディレクトリの `wrangler.toml` / `wrangler.jsonc` / `wrangler.json`）
-- `--select <FILE>`: 比較する SELECT を1本書いたファイル（必須、1回だけ。`--write` とは併用しない）
+- `--select <FILE>`: 比較する SELECT を1本書いたファイル（必須、1回だけ。`--write` とは併用しない）。`-` は SELECT を標準入力から読む
+- `--sql <SQL>`: `--select` の代わりに、SELECT の本文そのもの。1本の比較、`--suggest`、`--scale` で使う。`--batch`・`--write`・`--record`・`--migration`・`--audit-indexes` とは併用しない
 - `--write <FILE>`: SELECT の代わりに、`INSERT`・`UPDATE`・`DELETE`・`REPLACE` を1本書いたファイル。サンドボックスの各コピーでトランザクションの中で実行してロールバックする。「書き込みを比べる」を参照。`--select`・`--batch`・`--migration`・`--suggest` とは併用できない
 - `--index-sql <FILE>`: 候補の CREATE INDEX を1本書いたファイル（必須、1回だけ）
 - `--batch <FILE>`: JSON のマニフェストにある全 SELECT を、全候補 CREATE INDEX と1回の実行で比べる。「まとめて比べる（--batch）」を参照。`--select` / `--index-sql` / `--bind` / 位置指定の SELECT・INDEX、`--runs`、`--format kv` とは併用できない
@@ -36,7 +41,7 @@ qenome --record qenome-record.log --out qenome-manifest
 - `--migration <FILE>`: `--batch` の全クエリを実行する前に、この SQL ファイルを variant にだけ適用する。`--batch` と、`candidates` を持たないマニフェストが必要。`--select` / `--index-sql` / `--bind` / `--runs` / `--suggest` / `--format kv` とは併用できない。`CREATE INDEX`・`CREATE UNIQUE INDEX`・`DROP INDEX`・`CREATE TABLE`（`AS SELECT` を除く）・`ALTER TABLE`（ADD / RENAME / DROP COLUMN と RENAME TO）を受け付け、データ変更・`DROP TABLE`・`ATTACH`・`PRAGMA`・その他の文は文番号付きで拒否する。マイグレーションで消した・名前を変えた列やテーブルを参照するクエリがあると実行全体が終了コード `1` で止まる。列を足す・消すと `SELECT *` は結果の列数が変わるため比較できず、終了コード `4` になる。「まとめて比べる（--batch）」を参照
 - `--seed-data <FILE>`: 比較の前に、この JSON の指定に従ってサンドボックスのコピーのテーブルを決まったダミーデータで置き換える。元のデータベースは変更しない。`--batch`・`--suggest`・`--migration` を含むすべてのモードで使える。「サンドボックス用のデータを作る」を参照
 - `--scale <ROWS,ROWS[,ROWS]>`: `--seed-data` と組み合わせて、2〜3の狭義増加する行数で同じ比較を1回の実行で行い、結果を並べて出す。各段階はそのサイズの新しいサンドボックスのコピーに seed する。spec の中で最も大きいテーブルがその段階の行数になり、ほかのテーブルも同じ倍率で増える。`--batch`・`--suggest`・`--migration`・`--audit-indexes`・`--record`・`--format kv` とは併用できない。「複数のサイズで測る（--scale）」を参照
-- `--suggest`: インデックスを自分で用意する代わりに、SQLite の expert に候補のインデックスを提案させ、その提案を比べる。`--batch` のときはマニフェストの `candidates` を省略できる。`--runs`、`--format kv`、インデックスのファイル（`--index-sql` または3番目の位置指定パス）とは併用できない。「候補のインデックスを提案させる（--suggest）」を参照
+- `--suggest`: インデックスを自分で用意する代わりに、SQLite の expert に候補のインデックスを提案させ、その提案を比べる。`--batch` のときはマニフェストの `candidates` を省略できる。SELECT はファイル、`--sql`、または標準入力の `-` で渡せる。`--runs`、`--format kv`、インデックスのファイル（`--index-sql` または3番目の位置指定パス）とは併用できない。今の計画にインデックスが要らないときは終了コード `0` で、その計画と読んだ行数を出して「no index needed」と報告する。「候補のインデックスを提案させる（--suggest）」を参照
 - `--bind <N>:<TYPE>[:<VALUE>]`: SELECT のパラメータ N に渡す型付きの値。繰り返し指定できる。N は SQLite のパラメータ番号で、名前付きパラメータは最初に現れたときの番号を共有し、`?NNN` は NNN を使う。TYPE は int / real / text / null（null は値を取らない）。1 からパラメータ数までの各番号をちょうど1回ずつ指定する必要があり、パラメータの無い SELECT に `--bind` は付けられない。値は引数の残り全体なので、text には `:` を含められる
 - `--runs <N>`: 結果が一致したあとの計測ラウンド数。各ラウンドは各コピーで SELECT を1回計測する。既定は 10、0 で計測しないが読んだ行数と判定は残る、最大 1000。1秒を超える計測は進捗を stderr に出す。`--write` では N は各コピーでロールバックしながら実行する回数（最低1回）で、計測は行わず、毎回同じ件数になることを確かめる
 - `--timeout-ms <MS>`: インデックス作成、SELECT 1回、`--write` の1回あたりの制限時間。既定は 30000、0 で無効。1回の実行は全体で、データベースのコピーに加えて `(3 + 4 × runs)` 回分の制限時間に加え、ANALYZE とサイズの診断、SELECT にパラメータがある場合の bind 依存の部分インデックス診断それぞれの制限時間までかかることがある

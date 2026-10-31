@@ -195,6 +195,12 @@ pub fn classifyError(message: []const u8) ErrorClass {
         }
         return .{ .code = "batch_workspace_failed", .hint = "Check the temporary directory and its permissions, then rerun." };
     }
+    if (std.mem.indexOf(u8, message, "string or blob too big") != null) {
+        return .{ .code = contract.code.sqlite_toobig, .hint = "A string or blob exceeds SQLite's length limit. Select fewer or shorter columns, then rerun." };
+    }
+    if (std.mem.startsWith(u8, message, "--suggest could not produce")) {
+        return .{ .code = contract.code.suggest_failed, .hint = "Fix the SELECT, or write a candidate CREATE INDEX file and compare it without --suggest." };
+    }
     if (std.mem.startsWith(u8, message, "sqlite3expert")) {
         return .{ .code = contract.code.suggest_failed, .hint = "Check that the SELECTs are valid read-only queries, or remove --suggest and compare a candidate CREATE INDEX file." };
     }
@@ -646,6 +652,9 @@ test "error text maps to a stable code and a next step" {
         .{ .message = "the index audit query 'q/a.sql' exceeded the time limit of 1 ms", .code = "audit_query_timeout" },
         .{ .message = "the index audit could not read the index catalog: disk I/O", .code = "audit_catalog_unreadable" },
         .{ .message = "the index audit could not read the index catalog within the time limit of 1 ms", .code = "audit_catalog_timeout" },
+        .{ .message = "--select failed while running on the baseline: string or blob too big", .code = contract.code.sqlite_toobig },
+        .{ .message = "sqlite3expert could not analyze the queries: string or blob too big", .code = contract.code.sqlite_toobig },
+        .{ .message = "--suggest could not produce a candidate index: SQLite could not analyze the query 'q.sql': no such table", .code = contract.code.suggest_failed },
         .{ .message = "sqlite3expert could not start: out of memory", .code = contract.code.suggest_failed },
         .{ .message = "sqlite3expert could not analyze the queries: no such table: nope", .code = contract.code.suggest_failed },
         .{ .message = "no candidate index to compare: SQLite suggested no index for these queries", .code = "no_candidates" },

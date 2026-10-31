@@ -59,7 +59,10 @@ pub const body =
     \\                       naming them, and compare the suggestions; with
     \\                       --batch the manifest may omit candidates
     \\  --select <FILE>      file holding one read-only SELECT (required, once;
-    \\                       not with --write)
+    \\                       not with --write). - reads the SELECT from stdin
+    \\  --sql <SQL>          the SELECT text itself, instead of --select, for
+    \\                       one comparison or --suggest; not with --batch,
+    \\                       --write, --record, or --migration
     \\  --write <FILE>       file holding one INSERT, UPDATE, DELETE, or REPLACE
     \\                       (required, once; not with --select). The statement
     \\                       runs in a transaction on each sandbox copy and is
@@ -121,11 +124,18 @@ pub const body =
     \\  qenome app.db select.sql index.sql --seed-data seed.json
     \\  qenome app.db select.sql index.sql --seed-data seed.json --scale 1000,10000
     \\  qenome app.db select.sql --suggest
+    \\  qenome app.db --sql "SELECT a FROM t WHERE a = 1" --suggest
+    \\  qenome app.db - index.sql
     \\  qenome app.db --batch batch.json --suggest
     \\  qenome --record record.log --out qenome-manifest
     \\  qenome --record record.log --out qenome-manifest --format json
     \\
     \\The same paths can be given as --db, --select and --index-sql.
+    \\--sql <SQL> passes the SELECT text instead of a file, for one comparison
+    \\or --suggest (and --scale). A SELECT path of - reads that SELECT from
+    \\stdin. --sql and - are rejected for --batch, --write, --record, and
+    \\--migration, which keep their own files. - is not an index, write,
+    \\batch, or migration path.
     \\With --d1, the two positional paths fill the SELECT and CREATE INDEX
     \\roles, whatever the order of the paths and the option. With --write,
     \\a positional path fills the write file instead of the SELECT file.
@@ -210,7 +220,11 @@ pub const body =
     \\at most 20 suggestions and at most 100 candidates with the manifest.
     \\A database whose schema is not one plain CREATE statement is
     \\rejected with status 1.
-    \\When nothing can be compared it stops with status 1 and no_candidates.
+    \\When the current plan already needs no index, it exits 0 and reports
+    \\no index needed, with that plan and the rows read. When a suggestion
+    \\cannot be produced, or every suggestion is rejected, it stops with
+    \\status 1 (suggest_failed or no_candidates). no_suggestions stays a
+    \\warning when manifest candidates are still compared.
     \\Do not use --suggest in CI gates; keep it for finding candidates.
     \\
     \\exit status: 0 result rows match, 1 rejected, 2 usage error,

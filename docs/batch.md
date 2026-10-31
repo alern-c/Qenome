@@ -181,9 +181,15 @@ The output is the batch report. Each `summary` entry adds `source` (`manifest` o
 | `suggest_query_skipped` | SQLite could not analyze one SELECT; the other SELECTs continue |
 | `suggestion_rejected` | A proposal failed the `CREATE INDEX` check |
 | `suggestions_truncated` | The 20 or 100 limit dropped the tail of the proposals |
-| `no_suggestions` | SQLite proposed nothing; the manifest candidates were compared |
-| `suggest_failed` | The expert could not start or analyze; the manifest candidates were compared |
+| `no_suggestions` | SQLite proposed nothing, and the manifest candidates were still compared. This is a warning, not a failure |
+| `suggest_failed` | The expert could not start or analyze. With manifest candidates, those were still compared. With none, the run stops |
 
-When nothing can be compared, the run stops with exit `1`, empty stdout, and error code `no_candidates`. A proposal weighs the same as a manifest candidate in the exit status and in the recommendation. The proposals are a starting point, not a verdict: the result rows, the rows read, and the exit status still come from the real comparison.
+When the expert runs and proposes nothing because the current plan already needs no index, the run exits `0`. Human output starts with `no index needed` and lists each query's plan and rows read. JSON is a `schema_version` 2 object with `index_needed` false, `result` `no_index_needed`, `verdict` `no-effect`, `baseline` set to the current plan and counters, and `variant` null. `queries` lists every measured query. These fields are additions; `schema_version` stays 2.
+
+When a suggestion cannot be produced, the run still exits `1` with empty stdout. A query that cannot be prepared is `batch_baseline_failed`. A query the expert cannot analyze, with no manifest candidate left, is `suggest_failed`. Every proposal that fails the `CREATE INDEX` check is `no_candidates`. `no_suggestions` is only the warning used when manifest candidates remain.
+
+Qualifying candidates are ordered by fewer rows read, then by removing a sort (`USE TEMP B-TREE` on the baseline plan and not on the variant), then by a smaller index, then by input order. A bind-dependent partial index warning is still reported and does not change this order.
+
+A proposal weighs the same as a manifest candidate in the exit status and in the recommendation. The proposals are a starting point, not a verdict: the result rows, the rows read, and the exit status still come from the real comparison.
 
 Use `--suggest` to find candidates. For a CI gate, compare a named index without `--suggest`, so that a change in SQLite's advice cannot change the build. The batch report keeps `batch_schema_version` `1`; `source`, `index_sql_text`, and `warnings` are additions.

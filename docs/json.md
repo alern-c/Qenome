@@ -49,7 +49,7 @@ On failure, read the line that starts with `{`. `human` and `kv` do not print th
 | `not_judged` | number or `null` | Queries that only the variant could run because the migration added the column or table. Each has `verdict` `not-judged` in its embedded comparison. The count does not affect `recommended` or the exit code |
 | `size_increase` | number or `null` | Variant minus baseline in bytes (signed). For `manifest` and `suggested` candidates it is the file size. For a `--migration` run it is the bytes in use, `(page_count - freelist_count) * page_size`, so a dropped index reports the freed bytes as a negative number. `null` when the change was not applied |
 
-A candidate qualifies for `recommended` when its status is `compared` and `mismatch`, `incomparable`, `needs_check`, and `timeout` are all `0` and `improved` is at least `1`. `not_judged` is not part of this check. In a `--migration` run, `needs_check` counts the `regressed` queries, so a migration that made a query worse never qualifies. Qualifying candidates come first in `summary`, in this order: more `improved`, then a candidate without a `bind_dependent_partial_index` warning before one with it, then smaller `size_increase`, then input order. Input order is the manifest order, and suggestions follow the manifest entries. A `--migration` run has exactly one candidate, so it is either first in this order or last. The remaining `compared` candidates follow in input order, and the `index_rejected` / `index_timeout` candidates come last in input order.
+A candidate qualifies for `recommended` when its status is `compared` and `mismatch`, `incomparable`, `needs_check`, and `timeout` are all `0` and `improved` is at least `1`. `not_judged` is not part of this check. In a `--migration` run, `needs_check` counts the `regressed` queries, so a migration that made a query worse never qualifies. Qualifying candidates come first in `summary`, in this order: fewer rows read (the sum of `variant` `rows_read` for that candidate), then more queries whose baseline plan has a `USE TEMP B-TREE` step and whose variant plan does not, then smaller `size_increase`, then input order. A `bind_dependent_partial_index` warning does not change this order. Input order is the manifest order, and suggestions follow the manifest entries. A `--migration` run has exactly one candidate, so it is either first in this order or last. The remaining `compared` candidates follow in input order, and the `index_rejected` / `index_timeout` candidates come last in input order.
 
 ### `results` entries
 
@@ -134,7 +134,8 @@ A candidate qualifies for `recommended` when its status is `compared` and `misma
 | `no_suggestions` | SQLite proposed nothing; the manifest candidates were still compared |
 | `suggest_failed` | The expert could not start or analyze; the manifest candidates were still compared |
 
-- When nothing can be compared (no manifest candidate and no surviving suggestion), the run stops with exit `1`, empty stdout, and error code `no_candidates`.
+- When the expert proposes nothing because the current plan needs no index, the run exits `0` and writes a `schema_version` 2 object (not a batch object) with `index_needed` false, `result` `no_index_needed`, `verdict` `no-effect`, `verdict_reasons` containing `no index needed`, `baseline` set to the current measurement, `variant` null, and a `queries` array of `{query, rows_read, plan}`. `schema_version` stays 2; the new fields are additions.
+- When a suggestion cannot be produced, or every suggestion is rejected, the run stops with exit `1`, empty stdout, and `suggest_failed` or `no_candidates`. A query that cannot be prepared is `batch_baseline_failed`. `no_suggestions` remains a warning on the batch report when manifest candidates are still compared.
 - With one SELECT file (no `--batch`), the SELECT is one batch query, `--bind` applies to it, and the report is the same batch object. `--suggest` does not take `--runs`, `--format kv`, or an index file.
 - Use `--suggest` to find candidates. For a CI gate that must not change when SQLite changes its advice, compare a named index without `--suggest`.
 
@@ -176,7 +177,8 @@ Batch error codes:
 | `batch_write_timeout` | 124 | Raise `--timeout-ms`, or narrow the write statement in the manifest |
 | `batch_index_failed` | 1 | Fix the candidate CREATE INDEX so it applies to this database |
 | `batch_workspace_failed` | 1 | Check the temporary directory and its permissions |
-| `no_candidates` | 1 | Check that a SELECT has a WHERE or ORDER BY clause, or write a candidate CREATE INDEX |
+| `no_candidates` | 1 | Every suggested index was rejected. Write a candidate CREATE INDEX, or compare without `--suggest` |
+| `sqlite_toobig` | 1 | A string or blob exceeds SQLite's length limit. Select fewer or shorter columns, then rerun. The same limit during row collection is `incomparable` (exit `4`) with the reason that the value exceeds the length limit |
 | `suggest_failed` | 1 | Check that the SELECTs are valid, or drop `--suggest` and name the index |
 | `suggest_schema_rejected` | 1 | Use a database whose `sqlite_schema` holds only plain CREATE statements, or compare a named index without `--suggest` |
 

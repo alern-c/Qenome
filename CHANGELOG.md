@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `--sql <SQL>` passes one SELECT as text, and a SELECT path of `-` reads it from stdin, for a single comparison, `--suggest`, and `--scale`. `--batch`, `--write`, `--record`, `--migration`, and `--audit-indexes` reject both, and `-` is not an index, write, batch, or migration path.
+- `--suggest` exits `0` when SQLite proposes nothing because the current plan needs no index. Human output starts with `no index needed` and shows the plan and the rows read. JSON stays `schema_version` 2 and adds `index_needed`, `result` `no_index_needed`, and `queries`, with `baseline` set to the current measurement and `variant` null. A query that cannot be prepared, an expert that cannot analyze, or a suggestion that is rejected still exits `1` (`batch_baseline_failed`, `suggest_failed`, or `no_candidates`). `no_suggestions` stays a warning when manifest candidates are compared.
+- Recommendations are ordered by fewer rows read, then by removing a sort (`USE TEMP B-TREE`), then by a smaller index. A string or blob over SQLite's length limit is `sqlite_toobig` (exit `1`) when the statement fails, and an incomparable result (exit `4`) when it is found while keeping result rows.
+
 ## [0.3.9] - 2026-10-31
 
 ### Added

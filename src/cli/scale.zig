@@ -22,6 +22,7 @@ pub const Inputs = struct {
     d1: ?report_model.D1 = null,
     unapplied_migrations: ?cli_d1_migrations.Pending = null,
     select_path: ?[:0]const u8 = null,
+    select_sql: ?[:0]const u8 = null,
     write_path: ?[:0]const u8 = null,
     index_path: [:0]const u8,
     binds: []const db.BindArg,
@@ -345,7 +346,7 @@ pub fn run(
     const select_path = write_path orelse inputs.select_path orelse return outOfMemory(stderr);
     var cleanup_failed = false;
     const option: []const u8 = if (write_path != null) "--write" else "--select";
-    const select_sql = readSql(io, arena, stderr, option, select_path) orelse return .rejected;
+    const select_sql = if (inputs.select_sql) |text| text else readSql(io, arena, stderr, option, select_path) orelse return .rejected;
     const index_sql = readSql(io, arena, stderr, "--index-sql", inputs.index_path) orelse return .rejected;
     var session = Session{
         .io = io,
