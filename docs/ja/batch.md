@@ -181,9 +181,15 @@ Qenome は baseline のコピーに2つ目の読み取り専用接続を開き�
 | `suggest_query_skipped` | 1本の SELECT を SQLite が解析できなかった。ほかの SELECT は続ける |
 | `suggestion_rejected` | 提案が `CREATE INDEX` の検査に落ちた |
 | `suggestions_truncated` | 20件または100件の上限で、提案の後ろを捨てた |
-| `no_suggestions` | SQLite の提案が0件だった。マニフェストの候補だけを比べた |
-| `suggest_failed` | expert を開始・解析できなかった。マニフェストの候補だけを比べた |
+| `no_suggestions` | SQLite の提案が0件で、マニフェストの候補は比べた。これは warning であり、失敗ではない |
+| `suggest_failed` | expert を開始・解析できなかった。マニフェストの候補があればそれは比べ、無ければそこで止まる |
 
-比べる候補が1件も残らないときは、終了コード `1`・stdout 空・エラーコード `no_candidates` で止まります。提案は、終了コードとおすすめの判定では、マニフェストの候補と同じ重さで数えます。提案は出発点であり、判定ではありません。結果の行・読んだ行数・終了コードは、実際の比較から出ます。
+expert が動いて提案が0件なのは、今の計画にインデックスが要らないときです。このときは終了コード `0` です。human は `no index needed` で始まり、各クエリの計画と読んだ行数を出します。JSON は `schema_version` 2 のオブジェクトで、`index_needed` は false、`result` は `no_index_needed`、`verdict` は `no-effect`、`baseline` は今の計画とカウンタ、`variant` は null です。`queries` は測ったクエリを並べます。これらは追加のフィールドで、`schema_version` は 2 のままです。
+
+提案を作れないときは、これまでどおり終了コード `1`、stdout は空です。準備できないクエリは `batch_baseline_failed`、expert が解析できずマニフェストの候補も残らないときは `suggest_failed`、提案がすべて `CREATE INDEX` の検査に落ちたときは `no_candidates` です。`no_suggestions` は、マニフェストの候補が残って比べるときの warning だけです。
+
+おすすめの並びは、読んだ行数が少ない順、次にソート（baseline の計画に `USE TEMP B-TREE` があり variant には無い）を外したもの、次に小さいインデックス、最後に入力順です。バインド依存の部分インデックスの warning は出しますが、この並びは変えません。
+
+提案は、終了コードとおすすめの判定では、マニフェストの候補と同じ重さで数えます。提案は出発点であり、判定ではありません。結果の行・読んだ行数・終了コードは、実際の比較から出ます。
 
 `--suggest` は候補を探すときに使ってください。CI の判定には `--suggest` を付けず、名前を付けたインデックスを比べます。そうすれば SQLite の助言が変わってもビルドの結果は変わりません。batch の報告は `batch_schema_version` `1` のままで、`source`、`index_sql_text`、`warnings` は追加です。

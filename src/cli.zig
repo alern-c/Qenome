@@ -22,6 +22,7 @@ const cli_record = @import("cli/record.zig");
 const cli_seed = @import("cli/seed.zig");
 const cli_scale = @import("cli/scale.zig");
 const cli_skill = @import("cli/skill.zig");
+const cli_sql_input = @import("cli/sql_input.zig");
 
 pub const max_sql_bytes = cli_args.max_sql_bytes;
 pub const SqlFileError = cli_args.SqlFileError;
@@ -194,11 +195,14 @@ fn runCaptured(
             stderr.writeAll("error: --scale needs --seed-data (see --help)\n") catch {};
             return .usage;
         };
+        const scale_query = if (args.write == null) cli_sql_input.loadSelect(io, arena, context.stdin, args.sql, args.select, stderr) else null;
+        if (args.write == null and scale_query == null) return .rejected;
         return cli_scale.run(io, arena, allocator, .{
             .database_path = database_path,
             .d1 = d1,
             .unapplied_migrations = unapplied,
-            .select_path = args.select,
+            .select_path = if (scale_query) |query| query.label else null,
+            .select_sql = if (scale_query) |query| query.sql else null,
             .write_path = args.write,
             .index_path = args.index_sql.?,
             .binds = args.binds,
@@ -267,11 +271,7 @@ fn runCaptured(
     }
 
     if (args.suggest) {
-        const suggest_select_path = args.select.?;
-        const suggest_select_sql = readSqlFile(io, arena, suggest_select_path) catch |err| {
-            reportSqlFileError(stderr, "--select", suggest_select_path, err) catch {};
-            return .rejected;
-        };
+        const suggest_query = cli_sql_input.loadSelect(io, arena, context.stdin, args.sql, args.select, stderr) orelse return .rejected;
         if (signalPending()) return reportInterrupted(stderr);
 
         const suggest_parent_path = tempParentPath(temp_parent);
@@ -285,9 +285,9 @@ fn runCaptured(
             defer suggest_work.remove(io, stderr, &suggest_cleanup_failed);
             if (prepareCopies(io, arena, database_path, &suggest_work, seed_spec, true, stderr, &suggest_cleanup_failed)) |failure| break :blk failure;
             var queries = [_]cli_batch.Query{.{
-                .label = suggest_select_path,
-                .path = suggest_select_path,
-                .sql = suggest_select_sql,
+                .label = suggest_query.label,
+                .path = suggest_query.label,
+                .sql = suggest_query.sql,
                 .binds = args.binds,
             }};
             break :blk cli_batch.run(io, arena, allocator, .{
@@ -310,12 +310,12 @@ fn runCaptured(
     }
 
     const write_path = args.write;
-    const select_path = write_path orelse args.select.?;
     const index_path = args.index_sql.?;
-
-    const option: []const u8 = if (write_path != null) "--write" else "--select";
-    const select_sql = readSqlFile(io, arena, select_path) catch |err| {
-        reportSqlFileError(stderr, option, select_path, err) catch {};
+    const loaded_select = if (write_path == null) cli_sql_input.loadSelect(io, arena, context.stdin, args.sql, args.select, stderr) else null;
+    if (write_path == null and loaded_select == null) return .rejected;
+    const select_path = if (loaded_select) |query| query.label else write_path.?;
+    const select_sql = if (loaded_select) |query| query.sql else readSqlFile(io, arena, write_path.?) catch |err| {
+        reportSqlFileError(stderr, "--write", write_path.?, err) catch {};
         return .rejected;
     };
     const index_sql = readSqlFile(io, arena, index_path) catch |err| {

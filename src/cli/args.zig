@@ -69,6 +69,7 @@ pub const Args = struct {
     seed_data: ?[:0]const u8 = null,
     scale: ?Scale = null,
     select: ?[:0]const u8 = null,
+    sql: ?[:0]const u8 = null,
     write: ?[:0]const u8 = null,
     index_sql: ?[:0]const u8 = null,
     binds: []const db.BindArg = &.{},
@@ -118,6 +119,9 @@ pub const ParseError = error{
     SuggestTakesTwoPaths,
     WriteRejectsSelect,
     WriteRequiresSingle,
+    SqlRejectsSelect,
+    SqlRejectedMode,
+    StdinNotQuery,
     WriteRejectsSuggest,
     WriteRejectsMigration,
     RecordTakesNoPaths,
@@ -235,7 +239,12 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
         } else if (std.mem.eql(u8, name, "--select")) {
             if (args.select != null) return error.DuplicateOption;
             if (args.write != null) return error.WriteRejectsSelect;
+            if (args.sql != null) return error.SqlRejectsSelect;
             args.select = try optionValue(argv, &index, inline_value);
+        } else if (std.mem.eql(u8, name, "--sql")) {
+            if (args.sql != null) return error.DuplicateOption;
+            if (args.select != null or args.write != null) return error.SqlRejectsSelect;
+            args.sql = try optionValue(argv, &index, inline_value);
         } else if (std.mem.eql(u8, name, "--write")) {
             if (args.write != null) return error.DuplicateOption;
             if (args.select != null) return error.WriteRejectsSelect;
@@ -273,6 +282,8 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
             const raw = try optionValue(argv, &index, inline_value);
             args.n_plus_one_threshold = try parseNPlusOneThreshold(raw);
             args.n_plus_one_threshold_given = true;
+        } else if (std.mem.eql(u8, arg, "-")) {
+            try assignPositional(&args, arg, d1_requested, batch_requested, suggest_requested, write_requested, record_requested);
         } else if (arg.len != 0 and arg[0] == '-') {
             return error.UnknownOption;
         } else {
@@ -409,6 +420,26 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
             return error.SuggestRejectsKv;
         }
     }
+    if (args.sql != null) {
+        if (args.select != null) {
+            offending.* = "--sql";
+            return error.SqlRejectsSelect;
+        }
+        if (args.batch != null or args.record != null or args.write != null or args.migration != null or args.audit_indexes) {
+            offending.* = "--sql";
+            return error.SqlRejectedMode;
+        }
+    }
+    if (isStdinPath(args.select)) {
+        if (args.batch != null or args.record != null or args.write != null or args.migration != null or args.audit_indexes) {
+            offending.* = "--select";
+            return error.SqlRejectedMode;
+        }
+    }
+    if (isStdinPath(args.index_sql) or isStdinPath(args.write) or isStdinPath(args.batch) or isStdinPath(args.migration)) {
+        offending.* = "-";
+        return error.StdinNotQuery;
+    }
     if (args.write != null) {
         if (args.suggest) {
             offending.* = "--write";
@@ -470,7 +501,7 @@ fn assignPositional(args: *Args, value: [:0]const u8, d1_requested: bool, batch_
         }
         return error.TooManyPaths;
     }
-    if (args.select == null) {
+    if (args.select == null and args.sql == null) {
         args.select = value;
         return;
     }
@@ -514,8 +545,8 @@ pub fn missingRequired(args: Args, buffer: *[required_option_count][]const u8) [
         count += 1;
     }
     if (args.batch == null) {
-        if (args.select == null and args.write == null) {
-            buffer[count] = "the SELECT or write file (a path, --select or --write)";
+        if (args.select == null and args.write == null and args.sql == null) {
+            buffer[count] = "the SELECT or write file (a path, --select, --sql, or --write)";
             count += 1;
         }
         if (args.index_sql == null and !args.suggest) {
@@ -538,6 +569,7 @@ const long_options = [_][]const u8{
     "--seed-data",
     "--scale",
     "--select",
+    "--sql",
     "--write",
     "--index-sql",
     "--bind",
@@ -553,6 +585,11 @@ const long_options = [_][]const u8{
 };
 
 const max_option_name = 32;
+
+fn isStdinPath(path: ?[:0]const u8) bool {
+    const text = path orelse return false;
+    return std.mem.eql(u8, text, "-");
+}
 
 fn isKnownLongOption(name: []const u8) bool {
     for (long_options) |option| {
@@ -698,6 +735,10 @@ pub const migration_usage_line = "       qenome <DB> --batch <FILE> --migration 
 
 pub const d1_migration_usage_line = "       qenome --d1 <BINDING> --batch <FILE> --migration <FILE> [options]";
 
+pub const sql_usage_line = "       qenome <DB> --sql <SQL> <INDEX_FILE> [options]";
+
+pub const sql_suggest_usage_line = "       qenome <DB> --sql <SQL> --suggest [options]";
+
 pub const suggest_usage_line = "       qenome <DB> <SELECT_FILE> --suggest [options]";
 
 pub const d1_suggest_usage_line = "       qenome --d1 <BINDING> <SELECT_FILE> --suggest [options]";
@@ -715,7 +756,7 @@ pub fn printVersion(writer: *Io.Writer) Io.Writer.Error!void {
 }
 
 pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
-    try writer.writeAll(usage_line ++ "\n" ++ d1_usage_line ++ "\n" ++ batch_usage_line ++ "\n" ++ d1_batch_usage_line ++ "\n" ++ audit_usage_line ++ "\n" ++ d1_audit_usage_line ++ "\n" ++ migration_usage_line ++ "\n" ++ d1_migration_usage_line ++ "\n" ++ suggest_usage_line ++ "\n" ++ d1_suggest_usage_line ++ "\n" ++ write_usage_line ++ "\n" ++ d1_write_usage_line ++ "\n" ++ record_usage_line ++ "\n" ++ usage_text.synopsis ++ "\n\n" ++ usage_text.body);
+    try writer.writeAll(usage_line ++ "\n" ++ d1_usage_line ++ "\n" ++ sql_usage_line ++ "\n" ++ batch_usage_line ++ "\n" ++ d1_batch_usage_line ++ "\n" ++ audit_usage_line ++ "\n" ++ d1_audit_usage_line ++ "\n" ++ migration_usage_line ++ "\n" ++ d1_migration_usage_line ++ "\n" ++ suggest_usage_line ++ "\n" ++ sql_suggest_usage_line ++ "\n" ++ d1_suggest_usage_line ++ "\n" ++ write_usage_line ++ "\n" ++ d1_write_usage_line ++ "\n" ++ record_usage_line ++ "\n" ++ usage_text.synopsis ++ "\n\n" ++ usage_text.body);
 }
 
 pub fn parseErrorMessage(err: ParseError) []const u8 {
@@ -764,6 +805,9 @@ fn parseErrorMessageForMode(err: ParseError) []const u8 {
         error.WriteRequiresSingle => "--write compares one statement; use --batch for a manifest (see --help)",
         error.WriteRejectsSuggest => "--write names the statement; remove --suggest (see --help)",
         error.WriteRejectsMigration => "--write compares one statement; remove --migration (see --help)",
+        error.SqlRejectsSelect => "--sql replaces the SELECT file; remove --select or the SELECT path (see --help)",
+        error.SqlRejectedMode => "--sql and a SELECT read from stdin are for one comparison or --suggest, not a manifest, --write, --record, or --migration (see --help)",
+        error.StdinNotQuery => "- reads the SELECT from stdin for one comparison or --suggest; it is not a path for the index, write, batch, or migration file (see --help)",
         error.RecordTakesNoPaths, error.RecordConflict, error.OutRequiresRecord, error.RecordRejectsFormat, error.InvalidNPlusOneThreshold, error.ThresholdRequiresRecord => unreachable,
         error.OutOfMemory => "out of memory",
     };
@@ -1081,7 +1125,7 @@ test "missing required options keep the usage order" {
     const all = missingRequired(none, &buffer);
     try testing.expectEqual(@as(usize, 3), all.len);
     try testing.expectEqualStrings("the database (a path, --db or --d1)", all[0]);
-    try testing.expectEqualStrings("the SELECT or write file (a path, --select or --write)", all[1]);
+    try testing.expectEqualStrings("the SELECT or write file (a path, --select, --sql, or --write)", all[1]);
     try testing.expectEqualStrings("the CREATE INDEX file (a path or --index-sql)", all[2]);
 
     const partial = try parseArgs(testing.allocator, &.{ "Qenome", "--select", "s" });
@@ -1219,6 +1263,7 @@ test "every known long option is accepted by the parser" {
         &.{ "Qenome", "--seed-data", "seed.json" },
         &.{ "Qenome", "--seed-data", "seed.json", "--scale", "1000,5000" },
         &.{ "Qenome", "--select", "s" },
+        &.{ "Qenome", "--sql", "SELECT 1" },
         &.{ "Qenome", "--write", "w" },
         &.{ "Qenome", "--index-sql", "i" },
         &.{ "Qenome", "--bind", "1:null" },

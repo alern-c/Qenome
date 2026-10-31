@@ -107,6 +107,10 @@ pub fn decide(
         switch (failure) {
             .over_budget => outcome.addReason(over_budget_reason, "narrow the rows with WHERE (not LIMIT) and run again"),
             .out_of_memory => outcome.addReason("out of memory while keeping the result rows", null),
+            .too_big => outcome.addReason(
+                "a string or blob in the result exceeds SQLite's length limit",
+                "select fewer or shorter columns, then run again",
+            ),
         }
         return outcome;
     }
@@ -375,6 +379,7 @@ test "a collector failure is incomparable with its reason" {
     const expected = [_]struct { failure: result.CollectFailure, reason: []const u8 }{
         .{ .failure = .over_budget, .reason = "the result rows exceed the 64 MiB" },
         .{ .failure = .out_of_memory, .reason = "out of memory while keeping the result rows" },
+        .{ .failure = .too_big, .reason = "exceeds SQLite's length limit" },
     };
     for (expected) |entry| {
         var budget: result.Budget = .{};

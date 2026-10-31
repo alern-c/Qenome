@@ -122,7 +122,7 @@ npx qenome --d1 DB select.sql --bind 1:int:1 --suggest --format json
 npx qenome app.db --batch batch.json --suggest --format json
 ```
 
-The output is the batch report (see below). Proposals are labelled `suggested:1`, `suggested:2`, …; at most 20 are compared, and at most 100 with the manifest candidates. When no candidate is left, the run stops with exit `1` and `no_candidates`. Qenome checks the database schema before the expert runs and rejects a database whose `sqlite_schema` holds anything other than one plain CREATE statement (`suggest_schema_rejected`, exit `1`), even with manifest candidates. Do not retry with `--suggest` on that database; compare a named index instead. Do not use `--suggest` in a CI gate; compare a named index there.
+The output is the batch report (see below) when a candidate is compared. Proposals are labelled `suggested:1`, `suggested:2`, …; at most 20 are compared, and at most 100 with the manifest candidates. A SELECT can be a file, `--sql "SELECT ..."`, or `-` to read stdin. `--sql` and `-` are rejected for a manifest, `--write`, `--record`, and `--migration`. When the expert proposes nothing because the current plan needs no index, the run exits `0` and the JSON is `schema_version` 2 with `index_needed` false, `result` `no_index_needed`, the current plan, and `rows_read`; tell the user no index is needed and quote the plan. When a suggestion cannot be produced, or every suggestion is rejected, the run stops with exit `1` (`suggest_failed`, `no_candidates`, or `batch_baseline_failed`). `no_suggestions` is only a warning when manifest candidates were still compared. Qenome checks the database schema before the expert runs and rejects a database whose `sqlite_schema` holds anything other than one plain CREATE statement (`suggest_schema_rejected`, exit `1`), even with manifest candidates. Do not retry with `--suggest` on that database; compare a named index instead. Do not use `--suggest` in a CI gate; compare a named index there.
 
 ## Compare many candidates (--batch)
 
@@ -267,6 +267,7 @@ Tell the user the process exit code, `schema_version`, `result`, `verdict`, and 
 | Process exit | Action |
 | --- | --- |
 | 0 and `verdict` `improved` | The candidate read at least 1% fewer rows than the baseline and the result rows match. It is a candidate to keep on this local copy. It is not a production measurement. With `bind_dependent_partial_index`, the improvement holds only for the bound values; say so and test other values. In a batch, an equal-improving candidate without the warning is recommended instead |
+| 0 and `index_needed` false | No index is needed. Quote the current plan and `rows_read`. Do not invent a candidate |
 | 0 and `verdict` `no-effect` | Do not add the index for this query. The variant did not read at least 1% fewer rows. If `verdict_reasons` names that minimum, the count did fall, but not by enough to call it `improved` |
 | 0 and `verdict` `needs-check` | Do not merge the index. Quote `verdict_reasons`. With `--write`, the reason is usually that the variant writes more rows |
 | 3 | Do not merge. The result rows differ. Offer `--show-rows` only if the user wants the example values in the log |

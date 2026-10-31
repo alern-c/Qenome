@@ -39,6 +39,8 @@ pub const code = struct {
     pub const usage_scale = "usage_scale";
     pub const batch_write_failed = "batch_write_failed";
     pub const batch_write_timeout = "batch_write_timeout";
+    pub const no_index_needed = "no_index_needed";
+    pub const sqlite_toobig = "sqlite_toobig";
 };
 
 pub const warning_codes = [_][]const u8{ code.no_analyze_stats, code.data_too_small };
