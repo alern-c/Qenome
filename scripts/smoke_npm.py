@@ -48,9 +48,7 @@ def install_and_run(pack_dir, version, target):
         manifest = {
             "private": True,
             "dependencies": {"qenome": "file:" + os.path.abspath(launcher)},
-            "overrides": {
-                name: "file:" + path for name, path in sorted(paths.items())
-            },
+            "overrides": {name: "file:" + path for name, path in sorted(paths.items())},
         }
         with open(os.path.join(work, "package.json"), "w", encoding="utf-8") as handle:
             handle.write(json.dumps(manifest, indent=2) + "\n")
@@ -99,7 +97,9 @@ def install_and_run(pack_dir, version, target):
         expected = "qenome " + version + "\n"
         if ran.returncode != 0 or output != expected:
             raise ValueError(
-                "expected " + repr(expected) + " with status 0, got "
+                "expected "
+                + repr(expected)
+                + " with status 0, got "
                 + repr(output)
                 + " with status "
                 + str(ran.returncode)

@@ -167,8 +167,14 @@ def comparison(**overrides: Any) -> dict[str, Any]:
     return value
 
 
-def observation(checker, report: dict[str, Any] | None = None, batch: dict[str, Any] | None = None,
-                error: dict[str, Any] | None = None, exit_code: int = 0, stderr: str = ""):
+def observation(
+    checker,
+    report: dict[str, Any] | None = None,
+    batch: dict[str, Any] | None = None,
+    error: dict[str, Any] | None = None,
+    exit_code: int = 0,
+    stderr: str = "",
+):
     stdout = ""
     if report is not None:
         stdout = json.dumps(report) + "\n"
@@ -180,8 +186,12 @@ def observation(checker, report: dict[str, Any] | None = None, batch: dict[str, 
     return checker.observation_from(done)
 
 
-def batch_report(recommended: str | None = None, counts: dict[str, int] | None = None,
-                 index_sql: str | None = None, results: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def batch_report(
+    recommended: str | None = None,
+    counts: dict[str, int] | None = None,
+    index_sql: str | None = None,
+    results: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     entry: dict[str, Any] = {"status": "compared", "index_sql_text": index_sql or INDEX}
     for key in COUNT_KEYS:
         entry[key] = 0
@@ -950,12 +960,27 @@ def human_tests(checker) -> None:
 
 def summary_tests(checker) -> None:
     rows: list[dict[str, Any]] = [
-        {"name": "a", "expected_verdict": "improved", "expected_result": "match", "verdicts": ["improved"],
-         "known_wrong": None},
-        {"name": "b", "expected_verdict": "no-effect", "expected_result": "match", "verdicts": ["no-effect"],
-         "known_wrong": None},
-        {"name": "c", "expected_verdict": "needs-check", "expected_result": "mismatch", "verdicts": [],
-         "known_wrong": None},
+        {
+            "name": "a",
+            "expected_verdict": "improved",
+            "expected_result": "match",
+            "verdicts": ["improved"],
+            "known_wrong": None,
+        },
+        {
+            "name": "b",
+            "expected_verdict": "no-effect",
+            "expected_result": "match",
+            "verdicts": ["no-effect"],
+            "known_wrong": None,
+        },
+        {
+            "name": "c",
+            "expected_verdict": "needs-check",
+            "expected_result": "mismatch",
+            "verdicts": [],
+            "known_wrong": None,
+        },
         {"name": "d", "expected_verdict": None, "expected_result": None, "verdicts": [], "known_wrong": None},
     ]
     line = checker.summary_line(rows)
@@ -994,14 +1019,38 @@ def summary_tests(checker) -> None:
     )
 
     rows = [
-        {"name": "a", "expected_verdict": "no-effect", "expected_result": "match", "verdicts": ["no-effect"],
-         "known_wrong": None, "status": "ok"},
-        {"name": "b", "expected_verdict": "no-effect", "expected_result": "match", "verdicts": ["improved"],
-         "known_wrong": None, "status": "FAIL"},
-        {"name": "c", "expected_verdict": "needs-check", "expected_result": "match", "verdicts": ["improved"],
-         "known_wrong": "https://example.test/1", "status": "known-wrong"},
-        {"name": "d", "expected_verdict": "no-effect", "expected_result": "match",
-         "verdicts": ["no-effect", "improved"], "known_wrong": "https://example.test/2", "status": "FAIL"},
+        {
+            "name": "a",
+            "expected_verdict": "no-effect",
+            "expected_result": "match",
+            "verdicts": ["no-effect"],
+            "known_wrong": None,
+            "status": "ok",
+        },
+        {
+            "name": "b",
+            "expected_verdict": "no-effect",
+            "expected_result": "match",
+            "verdicts": ["improved"],
+            "known_wrong": None,
+            "status": "FAIL",
+        },
+        {
+            "name": "c",
+            "expected_verdict": "needs-check",
+            "expected_result": "match",
+            "verdicts": ["improved"],
+            "known_wrong": "https://example.test/1",
+            "status": "known-wrong",
+        },
+        {
+            "name": "d",
+            "expected_verdict": "no-effect",
+            "expected_result": "match",
+            "verdicts": ["no-effect", "improved"],
+            "known_wrong": "https://example.test/2",
+            "status": "FAIL",
+        },
     ]
     buffer = io.StringIO()
     with contextlib.redirect_stdout(buffer):

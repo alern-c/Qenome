@@ -35,7 +35,7 @@ def main():
         "Summary\n"
         "  work-dir-parent: " + work_parent + "\n"
         "  debug build (no optimization): the times are slower than a release build\n"
-        '{\n'
+        "{\n"
         '  "qenome_version": "9.9.9",\n'
         '  "build_mode": "debug",\n'
         '  "os": "macos",\n'

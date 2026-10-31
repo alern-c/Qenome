@@ -11,9 +11,7 @@ DEFAULT_ROOT = os.path.dirname(HERE)
 GOLDEN_DIR = os.path.join("testdata", "golden")
 FIXTURE = os.path.join("testdata", "generated", "qenome-fixture.db")
 
-VOLATILE = re.compile(
-    r'(\\?")(qenome_version|build_mode|os|arch)(\\?": ?\\?")([^"\\]*)(\\?")'
-)
+VOLATILE = re.compile(r'(\\?")(qenome_version|build_mode|os|arch)(\\?": ?\\?")([^"\\]*)(\\?")')
 PLACEHOLDERS = {
     "qenome_version": "<version>",
     "build_mode": "<build-mode>",
@@ -104,13 +102,7 @@ def normalize(text, work_parent):
     text = text.replace(work_parent, "<work-dir-parent>")
 
     def replace(found):
-        return (
-            found.group(1)
-            + found.group(2)
-            + found.group(3)
-            + PLACEHOLDERS[found.group(2)]
-            + found.group(5)
-        )
+        return found.group(1) + found.group(2) + found.group(3) + PLACEHOLDERS[found.group(2)] + found.group(5)
 
     text = VOLATILE.sub(replace, text)
     return DEBUG_NOTE.sub("", text)
@@ -165,9 +157,7 @@ def run_sqlite(root, name):
     except OSError as error:
         raise Unusable("cannot run sqlite3: " + str(error)) from None
     if done.returncode != 0:
-        raise Unusable(
-            "sqlite3 failed on testdata/" + name + ": " + (done.stderr or done.stdout).strip()
-        )
+        raise Unusable("sqlite3 failed on testdata/" + name + ": " + (done.stderr or done.stdout).strip())
 
 
 def build_fixture(root):

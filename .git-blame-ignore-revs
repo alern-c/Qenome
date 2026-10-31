@@ -1,0 +1,3 @@
+# .git-blame-ignore-revs
+# style(scripts): format the Python code with ruff format
+a76b5f44d838477fa0bd191b5128e0ee85bea19b

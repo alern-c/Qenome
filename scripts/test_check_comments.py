@@ -35,13 +35,7 @@ CANONICAL_FILES = {
         ";\n"
     ),
     "build.zig.zon": (
-        ".{\n"
-        "    .name = .sample,\n"
-        '    .version = "0.0.0",\n'
-        "    .paths = .{\n"
-        '        "build.zig",\n'
-        "    },\n"
-        "}\n"
+        '.{\n    .name = .sample,\n    .version = "0.0.0",\n    .paths = .{\n        "build.zig",\n    },\n}\n'
     ),
     "README.md": "# excluded\n",
     "README.ja.md": "# excluded\n",
@@ -68,10 +62,7 @@ CANONICAL_FILES = {
         "}\n"
     ),
     "testdata/README.md": "# excluded\n",
-    "testdata/query.sql": (
-        "SELECT '--', \"--\", '/*', '*/';\n"
-        "SELECT 1 AS [--], 2 AS `--`;\n"
-    ),
+    "testdata/query.sql": ("SELECT '--', \"--\", '/*', '*/';\nSELECT 1 AS [--], 2 AS `--`;\n"),
     "vendor/sqlite3/PROVENANCE.txt": "# not checked\n",
     "vendor/sqlite3/sqlite3.c": "/* vendored */\n",
     "vendor/sqlite3/sqlite3.h": "/* vendored */\n",
@@ -105,9 +96,7 @@ def read_file(root, rel_path):
 
 
 def git(root, *args):
-    return subprocess.run(
-        ["git", "-C", root] + list(args), capture_output=True, text=True
-    )
+    return subprocess.run(["git", "-C", root] + list(args), capture_output=True, text=True)
 
 
 def init_repo(root):
@@ -235,9 +224,7 @@ def main():
     expect_rejected("a Zig doc comment fails", code, output, "src/main.zig:", "a Zig line comment")
 
     code, output = case(append("src/main.zig", "//! container doc\n"))
-    expect_rejected(
-        "a Zig container doc comment fails", code, output, "src/main.zig:", "a Zig line comment"
-    )
+    expect_rejected("a Zig container doc comment fails", code, output, "src/main.zig:", "a Zig line comment")
 
     code, output = case(append("src/main.zig", "const trailing = 1; // note\n"))
     expect_rejected(
@@ -249,9 +236,7 @@ def main():
     )
 
     code, output = case(prepend("src/main.zig", "// first line\n"))
-    expect_rejected(
-        "the reported line number is 1", code, output, "src/main.zig:1:", "a Zig line comment"
-    )
+    expect_rejected("the reported line number is 1", code, output, "src/main.zig:1:", "a Zig line comment")
 
     code, output = case(append("src/main.zig", 'const kept = "a // b";\n'))
     expect_clean("a Zig string with // passes", code, output)
@@ -259,42 +244,26 @@ def main():
     code, output = case(append("src/main.zig", "const kept_char = '/';\n"))
     expect_clean("a Zig char literal passes", code, output)
 
-    code, output = case(
-        append("src/main.zig", "const kept_multiline =\n    \\\\-- not a comment // no\n;\n")
-    )
+    code, output = case(append("src/main.zig", "const kept_multiline =\n    \\\\-- not a comment // no\n;\n"))
     expect_clean("a Zig multiline string passes", code, output)
 
     code, output = case(append("build.zig", "// note\n"))
     expect_rejected("a build.zig comment fails", code, output, "build.zig:", "a Zig line comment")
 
     code, output = case(append("build.zig.zon", "// note\n"))
-    expect_rejected(
-        "a build.zig.zon comment fails", code, output, "build.zig.zon:", "a Zig line comment"
-    )
+    expect_rejected("a build.zig.zon comment fails", code, output, "build.zig.zon:", "a Zig line comment")
 
     code, output = case(append("scripts/tool.py", "# note\n"))
-    expect_rejected(
-        "a Python comment fails", code, output, "scripts/tool.py:", "a Python comment"
-    )
+    expect_rejected("a Python comment fails", code, output, "scripts/tool.py:", "a Python comment")
 
-    code, output = case(
-        append("scripts/tool.py", 'def helper():\n    """doc"""\n    return 1\n')
-    )
-    expect_rejected(
-        "a Python function docstring fails", code, output, "scripts/tool.py:", "a Python docstring"
-    )
+    code, output = case(append("scripts/tool.py", 'def helper():\n    """doc"""\n    return 1\n'))
+    expect_rejected("a Python function docstring fails", code, output, "scripts/tool.py:", "a Python docstring")
 
-    code, output = case(
-        append("scripts/tool.py", 'class Box:\n    """doc"""\n\n    value = 1\n')
-    )
-    expect_rejected(
-        "a Python class docstring fails", code, output, "scripts/tool.py:", "a Python docstring"
-    )
+    code, output = case(append("scripts/tool.py", 'class Box:\n    """doc"""\n\n    value = 1\n'))
+    expect_rejected("a Python class docstring fails", code, output, "scripts/tool.py:", "a Python docstring")
 
     code, output = case(create("scripts/module.py", '"""module doc"""\n\nVALUE = 1\n'))
-    expect_rejected(
-        "a Python module docstring fails", code, output, "scripts/module.py:", "a Python docstring"
-    )
+    expect_rejected("a Python module docstring fails", code, output, "scripts/module.py:", "a Python docstring")
 
     code, output = case(
         append("scripts/tool.py", "def helper():\n    value = 1\n    'not a docstring'\n    return value\n")
@@ -308,14 +277,10 @@ def main():
     expect_clean("a Python triple-quoted value passes", code, output)
 
     code, output = case(append("testdata/query.sql", "SELECT 1; -- note\n"))
-    expect_rejected(
-        "a SQL line comment fails", code, output, "testdata/query.sql:", "a SQL line comment"
-    )
+    expect_rejected("a SQL line comment fails", code, output, "testdata/query.sql:", "a SQL line comment")
 
     code, output = case(append("testdata/query.sql", "/* note */\n"))
-    expect_rejected(
-        "a SQL block comment fails", code, output, "testdata/query.sql:", "a SQL block comment"
-    )
+    expect_rejected("a SQL block comment fails", code, output, "testdata/query.sql:", "a SQL block comment")
 
     code, output = case(append("testdata/query.sql", "SELECT '--', '/*';\n"))
     expect_clean("a SQL string with markers passes", code, output)
@@ -402,9 +367,7 @@ def main():
         "a YAML # character at column 12",
     )
 
-    code, output = case(
-        append(".github/workflows/quality.yml", 'key: !<tag:yaml.org,2002:str> "text # literal"\n')
-    )
+    code, output = case(append(".github/workflows/quality.yml", 'key: !<tag:yaml.org,2002:str> "text # literal"\n'))
     expect_rejected(
         "a YAML # inside a quoted value after a verbatim tag fails",
         code,
@@ -440,25 +403,19 @@ def main():
     expect_clean("a .gitignore marker inside a pattern passes", code, output)
 
     code, output = case(append(".gitattributes", "# note\n"))
-    expect_rejected(
-        "a .gitattributes comment fails", code, output, ".gitattributes:", "a comment line"
-    )
+    expect_rejected("a .gitattributes comment fails", code, output, ".gitattributes:", "a comment line")
 
     code, output = case(create("scripts/tool.sh", "set -euo pipefail\nprintf ok\n"))
     expect_clean("a shell script without a comment line passes", code, output)
 
     code, output = case(create("scripts/tool.sh", "set -euo pipefail\n# note\n"))
-    expect_rejected(
-        "a shell comment line fails", code, output, "scripts/tool.sh:", "a comment line"
-    )
+    expect_rejected("a shell comment line fails", code, output, "scripts/tool.sh:", "a comment line")
 
     code, output = case(create("docs/demo.tape", "Output demo.gif\nSet FontSize 18\n"))
     expect_clean("a tape file without a comment line passes", code, output)
 
     code, output = case(create("docs/demo.tape", "Output demo.gif\n# note\n"))
-    expect_rejected(
-        "a tape comment line fails", code, output, "docs/demo.tape:2:", "a comment line"
-    )
+    expect_rejected("a tape comment line fails", code, output, "docs/demo.tape:2:", "a comment line")
 
     code, output = case(create("examples/d1-toml/wrangler.toml", 'name = "sample"\n'))
     expect_clean("a TOML file without # passes", code, output)
@@ -481,9 +438,7 @@ def main():
         "a TOML # character at column 11",
     )
 
-    code, output = case(
-        create("pyproject.toml", '[project]\nname = "sample"\nrequires-python = ">=3.10"\n')
-    )
+    code, output = case(create("pyproject.toml", '[project]\nname = "sample"\nrequires-python = ">=3.10"\n'))
     expect_clean("a pyproject.toml without # passes", code, output)
 
     code, output = case(create("pyproject.toml", '# note\n[project]\nname = "sample"\n'))
@@ -504,9 +459,7 @@ def main():
     code, output = case(create("examples/d1-jsonc/wrangler.jsonc", '{\n  "name": "sample"\n}\n'))
     expect_clean("a JSONC file without a marker passes", code, output)
 
-    code, output = case(
-        create("examples/d1-jsonc/wrangler.jsonc", '{\n  // note\n  "name": "sample"\n}\n')
-    )
+    code, output = case(create("examples/d1-jsonc/wrangler.jsonc", '{\n  // note\n  "name": "sample"\n}\n'))
     expect_rejected(
         "a JSONC // fails",
         code,
@@ -515,9 +468,7 @@ def main():
         "a JSONC // at column 3",
     )
 
-    code, output = case(
-        create("examples/d1-jsonc/wrangler.jsonc", '{\n  /* note */\n  "name": "sample"\n}\n')
-    )
+    code, output = case(create("examples/d1-jsonc/wrangler.jsonc", '{\n  /* note */\n  "name": "sample"\n}\n'))
     expect_rejected(
         "a JSONC /* fails",
         code,
@@ -526,9 +477,7 @@ def main():
         "a JSONC /* at column 3",
     )
 
-    code, output = case(
-        create("examples/d1-jsonc/wrangler.jsonc", '{\n  "url": "https://example.com"\n}\n')
-    )
+    code, output = case(create("examples/d1-jsonc/wrangler.jsonc", '{\n  "url": "https://example.com"\n}\n'))
     expect_rejected(
         "a JSONC // inside a value fails",
         code,
@@ -579,14 +528,10 @@ def main():
         "a JSON block comment",
     )
 
-    code, output = case(
-        create("bin/tool.js", '#!/usr/bin/env node\nconst url = "https://example.com/*";\n')
-    )
+    code, output = case(create("bin/tool.js", '#!/usr/bin/env node\nconst url = "https://example.com/*";\n'))
     expect_clean("a JavaScript shebang and a string pass", code, output)
 
-    code, output = case(
-        create("bin/tool.js", "#!/usr/bin/env node\nconst value = `\nhttps://example.com\n`;\n")
-    )
+    code, output = case(create("bin/tool.js", "#!/usr/bin/env node\nconst value = `\nhttps://example.com\n`;\n"))
     expect_clean("a JavaScript template string passes", code, output)
 
     code, output = case(create("bin/tool.js", "#!/usr/bin/env node\n// note\n"))
@@ -623,9 +568,7 @@ def main():
     expect_rejected("an unclassified file fails", code, output, "unclassified-file", "data.txt")
 
     code, output = case(create("notes.md", "# note\n"))
-    expect_rejected(
-        "an unclassified document fails", code, output, "unclassified-file", "notes.md"
-    )
+    expect_rejected("an unclassified document fails", code, output, "unclassified-file", "notes.md")
 
     code, output = case(append("src/main.zig", "// one\n// two\n"))
     expect("two comments in one file fail", code == 1, "exit " + str(code))

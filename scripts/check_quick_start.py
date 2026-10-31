@@ -159,9 +159,7 @@ def parse_steps(name, lines, violations):
                 + step.command
             )
         elif not is_qenome(step.command) and step.expected is not None:
-            violations.append(
-                step.label() + ": the expect marker belongs on a qenome command: " + step.command
-            )
+            violations.append(step.label() + ": the expect marker belongs on a qenome command: " + step.command)
     return steps
 
 
@@ -218,9 +216,7 @@ def details(step, done, summary):
 
 def execute(root, step, violations):
     try:
-        done = subprocess.run(
-            ["sh", "-c", step.command], cwd=root, capture_output=True, text=True, timeout=600
-        )
+        done = subprocess.run(["sh", "-c", step.command], cwd=root, capture_output=True, text=True, timeout=600)
     except OSError as error:
         violations.append(step.label() + ": the command could not run: " + str(error))
         return False, None, None
@@ -245,7 +241,9 @@ def execute(root, step, violations):
             problems.append('the output has no "Recommendation:" line')
         elif step.expected["recommended"] != recommendation:
             problems.append(
-                "the recommendation differs: the " + SOURCE + " expects \""
+                "the recommendation differs: the "
+                + SOURCE
+                + ' expects "'
                 + str(step.expected["recommended"])
                 + '", the command reported "'
                 + recommendation
@@ -253,7 +251,9 @@ def execute(root, step, violations):
             )
         if done.returncode != step.expected["exit"]:
             problems.append(
-                "the exit status differs: the " + SOURCE + " expects "
+                "the exit status differs: the "
+                + SOURCE
+                + " expects "
                 + str(step.expected["exit"])
                 + ", the command exited "
                 + str(done.returncode)
@@ -274,7 +274,9 @@ def execute(root, step, violations):
             problems.append(
                 "the "
                 + key
-                + " differs: the " + SOURCE + ' expects "'
+                + " differs: the "
+                + SOURCE
+                + ' expects "'
                 + str(step.expected[key])
                 + '", the command reported "'
                 + observed
@@ -282,7 +284,9 @@ def execute(root, step, violations):
             )
     if done.returncode != step.expected["exit"]:
         problems.append(
-            "the exit status differs: the " + SOURCE + " expects "
+            "the exit status differs: the "
+            + SOURCE
+            + " expects "
             + str(step.expected["exit"])
             + ", the command exited "
             + str(done.returncode)
@@ -299,12 +303,7 @@ def describe_expected(expected):
     if "recommended" in expected:
         return "recommended=" + str(expected["recommended"]) + " exit=" + str(expected["exit"])
     return (
-        "result="
-        + str(expected["result"])
-        + " verdict="
-        + str(expected["verdict"])
-        + " exit="
-        + str(expected["exit"])
+        "result=" + str(expected["result"]) + " verdict=" + str(expected["verdict"]) + " exit=" + str(expected["exit"])
     )
 
 
@@ -335,16 +334,12 @@ def run(root):
             print(step.label() + ": result=" + str(result) + " verdict=" + str(verdict), flush=True)
     declared = [step.expected for step in steps if step.expected is not None]
     if not declared:
-        violations.append(
-            SOURCE + ': the Quick start has no command with an "# expect:" marker to check'
-        )
+        violations.append(SOURCE + ': the Quick start has no command with an "# expect:" marker to check')
     else:
         for required in REQUIRED_RESULTS:
             if required not in declared:
                 violations.append(
-                    SOURCE
-                    + ": the Quick start needs a checked example with "
-                    + describe_expected(required)
+                    SOURCE + ": the Quick start needs a checked example with " + describe_expected(required)
                 )
     return violations, checked
 
@@ -385,15 +380,7 @@ def main(argv):
     if violations:
         print("quick-start: " + str(len(violations)) + " violation(s), root=" + root)
         return 1
-    print(
-        "quick-start: ok ("
-        + str(checked)
-        + " commands checked in "
-        + SOURCE
-        + ", root="
-        + root
-        + ")"
-    )
+    print("quick-start: ok (" + str(checked) + " commands checked in " + SOURCE + ", root=" + root + ")")
     return 0
 
 
