@@ -74,3 +74,5 @@ npm publish --access public dist/npm/qenome
 provenance には、リポジトリが public であることが要る。`actions/setup-node` に `registry-url` を付けない。付けると空のトークンが `.npmrc` に入り、OIDC より先に使われることがある。
 
 `scripts/publish_npm.py` は、`--publish` が無く、GitHub Actions の OIDC が無く、または npm トークンがあるときは、レジストリへ送る前に止まる。
+
+この行はスキップ経路の確認だけに使う。
