@@ -1,0 +1,32 @@
+{
+  "description": "An index on a column the query does not filter, join or sort on leaves the plan and the rows read unchanged.",
+  "args": [
+    "--bind",
+    "1:text:ok"
+  ],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "verdict": "no-effect",
+    "plan_changed": false,
+    "baseline_plan": {
+      "contains": [
+        "SCAN events"
+      ],
+      "excludes": [
+        "USING INDEX"
+      ]
+    },
+    "variant_plan": {
+      "contains": [
+        "SCAN events"
+      ],
+      "excludes": [
+        "USING INDEX"
+      ]
+    },
+    "rows_read": "same",
+    "rows_written": "same"
+  }
+}

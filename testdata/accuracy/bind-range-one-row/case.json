@@ -1,0 +1,32 @@
+{
+  "description": "A range bind that matches one row: the index search reads one row where the scan reads 20,000.",
+  "args": [
+    "--bind",
+    "1:int:19999"
+  ],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "plan_changed": true,
+    "baseline_plan": {
+      "contains": [
+        "SCAN events"
+      ],
+      "excludes": [
+        "USING INDEX"
+      ]
+    },
+    "variant_plan": {
+      "contains": [
+        "SEARCH events USING INDEX idx_created (created_at>?)"
+      ]
+    },
+    "rows_written": "same",
+    "verdict": "improved",
+    "rows_read": {
+      "direction": "decrease",
+      "max_ratio": 0.01
+    }
+  }
+}

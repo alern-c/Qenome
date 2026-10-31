@@ -22,6 +22,15 @@
       "excludes": [
         "no_analyze_stats"
       ]
+    },
+    "human": {
+      "contains": [
+        "verdict       improved",
+        "data_too_small:"
+      ],
+      "excludes": [
+        "error:"
+      ]
     }
   }
 }

@@ -26,7 +26,9 @@ EXPECT_KEYS = (
     "variant_plan",
     "rows_read",
     "rows_written",
+    "effect",
     "warnings",
+    "human",
     "batch",
     "suggest",
     "error",
@@ -34,6 +36,7 @@ EXPECT_KEYS = (
 PLAN_KEYS = ("contains", "excludes")
 ROWS_KEYS = ("direction", "max_ratio")
 WARNING_KEYS = ("contains", "excludes")
+HUMAN_KEYS = ("contains", "excludes")
 BATCH_KEYS = ("recommended", "counts")
 SUGGEST_KEYS = ("recommended", "leads_with")
 ERROR_KEYS = ("code",)
@@ -76,6 +79,7 @@ COMPARISON_KEYS = (
     "variant_plan",
     "rows_read",
     "rows_written",
+    "effect",
     "warnings",
 )
 COLUMN_SPLIT = re.compile(r",(?![^()]*\))")
@@ -98,7 +102,7 @@ class Case:
         self.known_wrong = known_wrong
         self.timing = timing
 
-    def argv(self, binary):
+    def argv(self, binary, fmt="json"):
         argv = [binary, "db.sqlite"]
         if self.mode == "batch":
             argv += ["--batch", "batch.json"]
@@ -115,7 +119,7 @@ class Case:
         argv += self.args
         if self.mode in ("compare", "write") and not has_option(self.args, "--runs"):
             argv += ["--runs", "0"]
-        argv += ["--format", "json"]
+        argv += ["--format", fmt]
         return argv
 
     def timing_runs(self):
@@ -217,6 +221,26 @@ def check_warnings(name, value):
     return result
 
 
+def check_human(name, value):
+    require(isinstance(value, dict), name + " must be an object")
+    unknown_keys(name, value, HUMAN_KEYS)
+    result = {}
+    for key in HUMAN_KEYS:
+        if key in value:
+            result[key] = check_string_list(name + "." + key, value[key])
+    require(result, name + " needs contains or excludes")
+    return result
+
+
+def check_effect(name, value):
+    if isinstance(value, str):
+        value = [value]
+    require(isinstance(value, list) and bool(value), name + " must be an effect or an array of effects")
+    for item in value:
+        require(item in EFFECTS, name + " must hold one of: " + ", ".join(EFFECTS))
+    return list(value)
+
+
 def check_batch(name, value):
     require(isinstance(value, dict), name + " must be an object")
     unknown_keys(name, value, BATCH_KEYS)
@@ -300,8 +324,12 @@ def load_expect(case_name, value):
     for key in ("rows_read", "rows_written"):
         if key in value:
             result[key] = check_rows(case_name + ": expect." + key, value[key])
+    if "effect" in value:
+        result["effect"] = check_effect(case_name + ": expect.effect", value["effect"])
     if "warnings" in value:
         result["warnings"] = check_warnings(case_name + ": expect.warnings", value["warnings"])
+    if "human" in value:
+        result["human"] = check_human(case_name + ": expect.human", value["human"])
     if "batch" in value:
         result["batch"] = check_batch(case_name + ": expect.batch", value["batch"])
     if "suggest" in value:
@@ -409,6 +437,8 @@ def check_files(case):
         case.timing_runs()
     elif has_option(case.args, "--runs"):
         raise Unusable(case.name + ": args must not hold --runs; only a timing case sets it")
+    if "effect" in case.expect:
+        require(case.timing is not None, case.name + ': expect.effect needs "timing": "stable"')
 
 
 def check_manifest(case):
@@ -561,9 +591,19 @@ def comparison_failures(expect, comparison):
     for key in ("rows_read", "rows_written"):
         if key in expect:
             failures += rows_failures(key, comparison, expect[key])
+    if "effect" in expect:
+        failures += effect_failures(comparison, expect["effect"])
     if "warnings" in expect:
         failures += warning_failures(comparison.get("warnings"), expect["warnings"])
     return failures
+
+
+def effect_failures(comparison, allowed):
+    timing = comparison.get("timing")
+    effect = timing.get("effect") if isinstance(timing, dict) else None
+    if effect in allowed:
+        return []
+    return ["the timing effect is " + json.dumps(effect) + ", expected one of " + json.dumps(allowed)]
 
 
 def plan_details(side):
@@ -763,6 +803,20 @@ def error_failures(spec, error):
     return []
 
 
+def human_failures(spec, human):
+    if not isinstance(human, dict) or not isinstance(human.get("stdout"), str):
+        return ["there is no human report"]
+    text = human["stdout"]
+    failures = []
+    for needle in spec.get("contains", []):
+        if needle not in text:
+            failures.append("the human report has no " + json.dumps(needle))
+    for needle in spec.get("excludes", []):
+        if needle in text:
+            failures.append("the human report holds " + json.dumps(needle))
+    return failures
+
+
 def comparison_signature(comparison):
     result = {}
     for key in ("result", "verdict", "plan_changed"):
@@ -866,9 +920,9 @@ def timing_failures(observations):
     return []
 
 
-def judge(name, case_expect, known_wrong, timing, observations):
+def judge(name, case_expect, known_wrong, timing, observations, extra_failures=()):
     per_run = [fail_messages(case_expect, observation) for observation in observations]
-    failures = []
+    failures = list(extra_failures)
     for number, run_failures in enumerate(per_run, 1):
         for failure in run_failures:
             failures.append("run " + str(number) + ": " + failure)
@@ -880,7 +934,8 @@ def judge(name, case_expect, known_wrong, timing, observations):
     passing = [number for number, run_failures in enumerate(per_run, 1) if not run_failures]
     if known_wrong is not None:
         if len(passing) == len(observations):
-            return "FAIL", "the case passes now; remove known_wrong (" + known_wrong + ")"
+            details = ["the case passes now; remove known_wrong (" + known_wrong + ")"] + list(extra_failures)
+            return "FAIL", " ; ".join(details[:5])
         if passing or stability:
             details = []
             if passing:
@@ -932,6 +987,39 @@ def build_database(case, directory):
     return database
 
 
+def observed_verdicts(observations):
+    verdicts = []
+    for observation in observations:
+        for comparison in observation["comparisons"]:
+            verdict = comparison.get("verdict") if isinstance(comparison, dict) else None
+            if isinstance(verdict, str):
+                verdicts.append(verdict)
+    return verdicts
+
+
+def run_human(case, binary, directory, env):
+    argv = case.argv(binary, "human")
+    try:
+        done = subprocess.run(
+            argv,
+            cwd=directory,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            timeout=DEFAULT_TIMEOUT,
+            stdin=subprocess.DEVNULL,
+        )
+    except OSError as error:
+        raise Unusable("cannot run " + binary + ": " + str(error)) from None
+    except subprocess.TimeoutExpired:
+        raise Unusable(
+            case.name + ": qenome did not finish within " + str(DEFAULT_TIMEOUT) + " seconds: " + " ".join(argv)
+        ) from None
+    return {"stdout": done.stdout, "exit": done.returncode}
+
+
 def run_case(case, repeat, binary, work_parent):
     try:
         directory = tempfile.mkdtemp(prefix="case-", dir=work_parent)
@@ -965,7 +1053,12 @@ def run_case(case, repeat, binary, work_parent):
                 case.name + ": qenome did not finish within " + str(DEFAULT_TIMEOUT) + " seconds: " + " ".join(argv)
             ) from None
         observations.append(observation_from(done))
-    return judge(case.name, case.expect, case.known_wrong, case.timing, observations)
+    extra_failures = []
+    if "human" in case.expect:
+        human = run_human(case, binary, directory, env)
+        extra_failures = human_failures(case.expect["human"], human)
+    status, message = judge(case.name, case.expect, case.known_wrong, case.timing, observations, extra_failures)
+    return status, message, observed_verdicts(observations)
 
 
 def run(root, cases, repeat, binary):
@@ -975,9 +1068,20 @@ def run(root, cases, repeat, binary):
         raise Unusable("cannot create the work parent: " + str(error)) from None
     failures = 0
     known_wrong = 0
+    rows = []
     try:
         for case in cases:
-            status, message = run_case(case, repeat, binary, work_parent)
+            status, message, verdicts = run_case(case, repeat, binary, work_parent)
+            rows.append(
+                {
+                    "name": case.name,
+                    "expected_verdict": case.expect.get("verdict"),
+                    "expected_result": case.expect.get("result"),
+                    "verdicts": verdicts,
+                    "known_wrong": case.known_wrong,
+                    "status": status,
+                }
+            )
             if status == "ok":
                 print("ok " + case.name, flush=True)
             elif status == "known-wrong":
@@ -988,14 +1092,74 @@ def run(root, cases, repeat, binary):
                 print("FAIL " + case.name + ": " + message, flush=True)
     finally:
         shutil.rmtree(work_parent, ignore_errors=True)
-    return failures, known_wrong
+    return failures, known_wrong, rows
 
 
-def summarize(root, cases, repeat, failures, known_wrong):
+def count_phrase(label, values, counts):
+    parts = []
+    for value in values + (None,):
+        count = counts.get(value, 0)
+        if count:
+            parts.append((value if value is not None else "unstated") + " " + str(count))
+    return label + " " + ", ".join(parts)
+
+
+def summary_line(rows):
+    verdicts = {}
+    results = {}
+    for row in rows:
+        verdict = row["expected_verdict"]
+        result = row["expected_result"]
+        verdicts[verdict] = verdicts.get(verdict, 0) + 1
+        results[result] = results.get(result, 0) + 1
+    return (
+        "accuracy summary: "
+        + count_phrase("expected verdicts", VERDICT_VALUES, verdicts)
+        + "; "
+        + count_phrase("expected results", RESULT_VALUES, results)
+    )
+
+
+def improved_rows(rows):
+    wrong = []
+    known = []
+    for row in rows:
+        expected = row["expected_verdict"]
+        if expected is None or expected == "improved":
+            continue
+        if "improved" not in row["verdicts"]:
+            continue
+        if row["known_wrong"]:
+            known.append(row)
+        else:
+            wrong.append(row)
+    return wrong, known
+
+
+def uncounted_improved_rows(known):
+    return [row for row in known if row["status"] != "FAIL"]
+
+
+def summarize(root, cases, repeat, failures, known_wrong, rows):
+    print(summary_line(rows), flush=True)
+    wrong, known = improved_rows(rows)
+    if wrong:
+        print(
+            "accuracy: expected a verdict other than improved but got improved: "
+            + ", ".join(row["name"] for row in wrong),
+            flush=True,
+        )
+    if known:
+        print(
+            "accuracy: known-wrong cases that answer improved: "
+            + ", ".join(row["name"] + " (" + row["known_wrong"] + ")" for row in known),
+            flush=True,
+        )
+    total = failures + len(uncounted_improved_rows(known))
     if known_wrong:
         print(
             "accuracy: "
-            + str(failures)
+            + str(total)
             + " failure(s), "
             + str(known_wrong)
             + " known-wrong case(s), "
@@ -1005,7 +1169,7 @@ def summarize(root, cases, repeat, failures, known_wrong):
             + ", root="
             + root
         )
-    elif failures == 0:
+    elif total == 0:
         print(
             "accuracy: ok ("
             + str(len(cases))
@@ -1016,7 +1180,8 @@ def summarize(root, cases, repeat, failures, known_wrong):
             + ")"
         )
     else:
-        print("accuracy: " + str(failures) + " failure(s), root=" + root)
+        print("accuracy: " + str(total) + " failure(s), root=" + root)
+    return total
 
 
 def usage():
@@ -1083,12 +1248,12 @@ def main(argv):
         sys.stderr.write("accuracy: " + str(error) + "\n")
         return 2
     try:
-        failures, known_wrong = run(root, cases, repeat, binary)
+        failures, known_wrong, rows = run(root, cases, repeat, binary)
     except Unusable as error:
         sys.stderr.write("accuracy: " + str(error) + "\n")
         return 2
-    summarize(root, cases, repeat, failures, known_wrong)
-    return 1 if failures else 0
+    total_failures = summarize(root, cases, repeat, failures, known_wrong, rows)
+    return 1 if total_failures else 0
 
 
 if __name__ == "__main__":
