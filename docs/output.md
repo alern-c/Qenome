@@ -27,14 +27,14 @@ The verdict is in the top-level `verdict` field:
 
 | `verdict` | Meaning |
 | --- | --- |
-| `improved` | The rows match, and the variant reads fewer rows |
-| `no-effect` | The rows match, and the variant reads the same number of rows |
+| `improved` | The rows match, and the variant reads at least 1% fewer rows than the baseline |
+| `no-effect` | The rows match, and the variant does not. The same count and a smaller reduction both land here. A smaller reduction is named in `verdict_reasons` |
 | `needs-check` | The rows match, but the variant reads or writes more rows; `verdict_reasons` holds the reasons |
 | `not-judged` | The rows differ or cannot be compared; `verdict_reasons` holds the reasons |
 
 A `--migration` batch names the `needs-check` case `regressed`, because the migration is a change that is already written. A write statement that the manifest lists under `writes` follows the same name, and only its rows read decide it: more rows written is reported and leaves the verdict at `no-effect`. The standalone, `--batch`, and `--suggest` verdicts keep `needs-check`; the batch `summary` count likewise keeps the key `needs_check` and counts queries only. A query that only the variant can run is `not-judged` and keeps the exit code unchanged. See [Batch comparisons](batch.md#batch-comparisons).
 
-The verdict uses the rows read and the rows written, with the same counting as local D1 (workerd patch). The times are a reference only, so `--runs 0` keeps the verdict. The numbers have not yet been checked against production D1. In `--write`, `result` compares the `RETURNING` rows (empty without `RETURNING`), and the two copies must also report the same `changes` and `total_changes`; a difference is `mismatch` and exit `3`, and the row counts are not judged.
+The verdict uses the rows read and the rows written, with the same counting as local D1 (workerd patch). `improved` needs a read reduction of at least 1% of the baseline rows read; [Accuracy](accuracy.md#minimum-meaningful-improvement) defines that check. The times are a reference only, so `--runs 0` keeps the verdict. The numbers have not yet been checked against production D1. In `--write`, `result` compares the `RETURNING` rows (empty without `RETURNING`), and the two copies must also report the same `changes` and `total_changes`; a difference is `mismatch` and exit `3`, and the row counts are not judged.
 
 Print only the verdict:
 

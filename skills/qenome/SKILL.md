@@ -210,7 +210,7 @@ npx qenome --d1 DB --batch queries.json --migration 0002_replace_index.sql --for
 - The report is the batch object plus a top-level `migration` object with `path` and `statements` (`kind` is `create_index`, `drop_index`, `create_table`, or `alter_table`, and `sql`). Human output has a `migration:` block and a `not-judged` summary column instead.
 - `size_increase` counts the bytes in use, not the file size, so a `DROP INDEX` reports the freed bytes as a negative number. The file itself shrinks only after `VACUUM`.
 - Each `writes` entry runs on both copies after the queries, inside a transaction that is rolled back, so the next statement and the original database keep the same rows. Its embedded comparison is in the top-level `writes` array, with `statement` `write`, `rows read` and `rows written` for both copies, and the same `mismatch` rules as `--write`.
-- A write's verdict follows `rows read`: more rows is `regressed` (exit `6`, like a query), the same is `no-effect`, fewer is `improved`. `rows written` is reported and does not change the verdict, because an index the migration adds makes every `INSERT` or `UPDATE` write at least one more entry. The bundled D1 counting patch does not count secondary-index deletes, so a migration that drops an index does not lower `rows written`; do not claim a write saving from it. A `mismatch`, `incomparable`, timeout, or `regressed` write keeps the migration out of `recommended`.
+- A write's verdict follows `rows read`: more rows is `regressed` (exit `6`, like a query), the same count or a reduction below 1% of the baseline rows read is `no-effect`, and a reduction of at least 1% is `improved`. `rows written` is reported and does not change the verdict, because an index the migration adds makes every `INSERT` or `UPDATE` write at least one more entry. The bundled D1 counting patch does not count secondary-index deletes, so a migration that drops an index does not lower `rows written`; do not claim a write saving from it. A `mismatch`, `incomparable`, timeout, or `regressed` write keeps the migration out of `recommended`.
 - Exit `6` means the result rows matched, but at least one query read or wrote more rows after the migration, or a write statement read more rows. That query's verdict is `regressed` (the human `Results` column and `results[].comparison.verdict`); the JSON `summary` key stays `needs_check` and counts those queries. Do not keep the migration for a CI gate. Exit `3` (rows differ) and `4` (cannot compare) also stop the gate.
 
 ## Read the JSON
@@ -233,7 +233,7 @@ Emitted fields an agent should read:
 | `verdict` | `improved`, `no-effect`, `needs-check`, `regressed` (a `--migration` result only), or `not-judged` (the rows differ or cannot be compared, or a `--migration` query could only run on the variant) |
 | `statement` | `select` or `write` |
 | `result` | `match`, `mismatch`, or `incomparable` |
-| `verdict_reasons` | Why it is `needs-check`, `regressed`, or `not-judged` |
+| `verdict_reasons` | Why it is `needs-check`, `regressed`, or `not-judged`, or why a read reduction below 1% of the baseline rows read is `no-effect` |
 | `result_reasons` | Why the rows cannot be compared. Each item has `text` and `hint` |
 | `baseline` | The current schema's measurement. It is `null` for a variant-only `--migration` query; use `variant` for that query's plan and row counts |
 | `inputs.write` | With `--write`, the write-file path; `inputs.select` is absent |
@@ -266,8 +266,8 @@ Tell the user the process exit code, `schema_version`, `result`, `verdict`, and 
 
 | Process exit | Action |
 | --- | --- |
-| 0 and `verdict` `improved` | The candidate read fewer rows and the result rows match. It is a candidate to keep on this local copy. It is not a production measurement. With `bind_dependent_partial_index`, the improvement holds only for the bound values; say so and test other values. In a batch, an equal-improving candidate without the warning is recommended instead |
-| 0 and `verdict` `no-effect` | Do not add the index for this query. The variant did not read fewer rows |
+| 0 and `verdict` `improved` | The candidate read at least 1% fewer rows than the baseline and the result rows match. It is a candidate to keep on this local copy. It is not a production measurement. With `bind_dependent_partial_index`, the improvement holds only for the bound values; say so and test other values. In a batch, an equal-improving candidate without the warning is recommended instead |
+| 0 and `verdict` `no-effect` | Do not add the index for this query. The variant did not read at least 1% fewer rows. If `verdict_reasons` names that minimum, the count did fall, but not by enough to call it `improved` |
 | 0 and `verdict` `needs-check` | Do not merge the index. Quote `verdict_reasons`. With `--write`, the reason is usually that the variant writes more rows |
 | 3 | Do not merge. The result rows differ. Offer `--show-rows` only if the user wants the example values in the log |
 | 4 and stdout is a comparison | Do not call it a match. Quote `result_reasons` and their hints. `verdict` is `not-judged`. With `--migration`, a `SELECT *` after a column was added or dropped lands here; list the columns and rerun. With `--write`, a write that reads the schema, calls `random()`, or reads the current time lands here; the write was not run |

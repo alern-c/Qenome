@@ -52,6 +52,13 @@ pub const bind_dependent_partial_index_message = "The variant plan uses the part
 
 pub const unapplied_migrations_message = "wrangler has not applied these migrations to the local D1 database for {s}: {s}. Run `npx wrangler d1 migrations apply {s} --local` and compare again; the schema under test is older than the migrations describe.";
 
+pub const min_read_gain_percent: u32 = 1;
+
+pub const below_min_read_gain_reason = std.fmt.comptimePrint(
+    "the rows match, and the variant reads fewer rows, but the reduction is below {d}% of the baseline rows read",
+    .{min_read_gain_percent},
+);
+
 pub const record_log_permissions_message = "the record log '{s}' is readable by other users; create a new log with umask 077 and delete it after this run";
 
 pub const record_manifest_binds_message = "the manifest holds bind values; keep it local and do not commit it";

@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A read reduction is `improved` only when it is at least 1% of the baseline `rows_read` (`(baseline - variant) * 100 >= baseline`). A smaller reduction, including one row out of 50,000, is `no-effect`, and `verdict_reasons` names the minimum. The counters are unchanged, `schema_version` stays `2`, and the threshold is not a flag. The same check applies to `--write` and to a write in a `--migration` batch. See `docs/accuracy.md`.
 - `README.md`, `README.ja.md`, `docs/why-not.md`, and `docs/ja/why-not.md` say what EXPLAIN QUERY PLAN, a `wrangler dev` result `meta`, local `wrangler d1 execute`, and production `wrangler d1 insights` already give you. Qenome adds a repeatable baseline-vs-candidate verdict, an A/A timing noise band that does not decide it, `--scale` on generated sizes, a `--migration` regression check, and JSON for agents and CI. The local row counts are not a production D1 bill, and a lower count does not mean the bill will fall. `docs/accuracy.md` and `docs/ja/accuracy.md` say the same about `wrangler dev` `meta` and about billing.
 - `testdata/README.md` is in English. The fixture, the expected values, and the accuracy-corpus layout are unchanged. `AGENTS.md` no longer calls that file older Japanese text.
 
