@@ -114,6 +114,23 @@ pub fn writeJsonEnvironment(json: *std.json.Stringify, allocator: std.mem.Alloca
     try json.endObject();
 }
 
+fn writeSmallDataWarning(json: *std.json.Stringify, allocator: std.mem.Allocator, detail: cli_warnings.SmallData) Error!void {
+    try json.beginObject();
+    try json.objectField("code");
+    try json.write(contract.code.data_too_small);
+    try json.objectField("message");
+    try writeJsonText(json, allocator, detail.message);
+    try json.objectField("table");
+    try writeJsonText(json, allocator, detail.table);
+    try json.objectField("rows");
+    try json.write(detail.rows);
+    try json.objectField("full_scan");
+    try json.write(detail.full_scan);
+    try json.objectField("next_command");
+    try writeJsonText(json, allocator, detail.next_command);
+    try json.endObject();
+}
+
 fn writeJsonComparison(
     writer: *Io.Writer,
     allocator: std.mem.Allocator,
@@ -180,6 +197,12 @@ fn writeJsonComparison(
     const enabled = [_]bool{ report.warnings.no_analyze_stats, report.warnings.data_too_small };
     for (enabled, contract.warning_codes, contract.warning_messages) |active, code, message| {
         if (!active) continue;
+        if (std.mem.eql(u8, code, contract.code.data_too_small)) {
+            if (report.warnings.small_data) |detail| {
+                try writeSmallDataWarning(&json, allocator, detail);
+                continue;
+            }
+        }
         try json.write(.{ .code = code, .message = message });
     }
     if (report.warnings.bind_dependent_partial_index) |name| {

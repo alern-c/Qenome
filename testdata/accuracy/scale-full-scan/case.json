@@ -1,0 +1,71 @@
+{
+  "description": "A full scan reads little at 100 rows and about 100 times more at 10000, so the small count is not evidence that a missing index is harmless.",
+  "args": [
+    "--bind",
+    "1:int:1",
+    "--scale",
+    "100,10000"
+  ],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "scale": {
+      "grows": true,
+      "steps": [
+        {
+          "rows": 100,
+          "verdict": "improved",
+          "result": "match",
+          "plan_changed": true,
+          "baseline_plan": {
+            "contains": [
+              "SCAN events"
+            ]
+          },
+          "variant_plan": {
+            "contains": [
+              "USING INDEX"
+            ]
+          },
+          "rows_read": {
+            "direction": "decrease"
+          },
+          "warnings": {
+            "contains": [
+              "data_too_small"
+            ]
+          },
+          "baseline_rows_read_at_most": 500
+        },
+        {
+          "rows": 10000,
+          "verdict": "improved",
+          "result": "match",
+          "plan_changed": true,
+          "baseline_plan": {
+            "contains": [
+              "SCAN events"
+            ]
+          },
+          "warnings": {
+            "excludes": [
+              "data_too_small"
+            ]
+          },
+          "baseline_rows_read_at_least": 5000
+        }
+      ]
+    },
+    "human": {
+      "contains": [
+        "data_too_small",
+        "The table \"events\"",
+        "1000,10000",
+        "10,000"
+      ],
+      "excludes": [
+        "error:"
+      ]
+    }
+  }
+}

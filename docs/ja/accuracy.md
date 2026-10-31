@@ -49,11 +49,13 @@ Qenome は同梱の SQLite（このツリーでは 3.53.4）を、Cloudflare の
 | コード | 意味 | 対処 |
 | --- | --- | --- |
 | `no_analyze_stats` | 候補のインデックスのテーブルに、baseline のコピーで空でない `sqlite_stat1` エントリがない。 | 代表的なデータを入れて `ANALYZE` したコピーで試す。Qenome は `ANALYZE` を実行しない。`--seed-data` は spec に書いたテーブルで実行する。 |
-| `data_too_small` | 候補のインデックスのテーブルが 1,000 行未満。 | より代表的なデータで試す。この警告は目安で、データが代表的である証明ではない。 |
+| `data_too_small` | 候補のインデックスのテーブルが 1,000 行未満。 | human の Summary がテーブル名と `next` のコマンドを出す。そのテーブルを seed の spec に書き、`--seed-data` と `--scale`（例: `--scale 1000,10000`）で測り直す。この警告は目安で、データが代表的である証明ではない。 |
 | `bind_dependent_partial_index` | variant の計画が、バインド値が `WHERE` 句を満たすためだけに部分インデックスを使っている。 | 実際にデプロイする値で試す。改善はこの実行の値でだけ成り立ち、別のバインド値やパラメータの渡し方ではインデックスが使われなくなることがある。 |
 | `unapplied_migrations` | ローカルの D1 データベースに、wrangler の設定にあるこれらのマイグレーションが適用されていない。 | `npx wrangler d1 migrations apply <BINDING> --local` を実行してから、もう一度比較する。テストしているスキーマがマイグレーションより古いため。 |
 
 `--migration` の batch は、マイグレーションが複数のテーブルを触り得るため、`no_analyze_stats` と `data_too_small` を出しません。
+
+`data_too_small` のとき、human の Summary はクエリ計画の前に `data` と `next` を足します。`data` はテーブル名と行数です。baseline の計画がそのテーブルの素の `SCAN` なら、フルスキャンはすべての行を読むので、小さい `rows_read` はインデックスがなくても無害だという意味ではない、と書きます。`next` は同じファイルに `--seed-data seed.json --scale 1000,10000` を付けたコマンドです。`--d1` のときは `--d1` とバインディングを使います。`--suggest` では、提案された SQL を先に `index.sql` として保存するよう書きます。`--scale` は `--suggest` や `--batch` と併用できないためです。候補のテーブルがその大きさのとき、`Recommendation:` の下にも同じ注意を出します。JSON の警告は `code` と `message` を保ったまま `table`、`rows`、`full_scan`、`next_command` を足します。`schema_version` は `2` のままです。判定は行数の比較のままなので、読んだ行が減るインデックスは `improved` のままです。[testdata/accuracy/scale-full-scan/](../../testdata/accuracy/scale-full-scan/) が既知の答えです。100 行では baseline のスキャンが少ししか読まず `data_too_small` を出し、10,000 行では同じスキャンの `rows_read` が少なくとも 10 倍になります。
 
 ## 意味のある最小の改善
 

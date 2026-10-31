@@ -50,6 +50,12 @@ pub const warning_messages = [_][]const u8{
     "The candidate index table has fewer than 1000 rows. This heuristic does not establish representative performance; test with more representative data.",
 };
 
+pub const data_too_small_message = "The table \"{s}\" has {d} rows, fewer than 1000 rows, so this result is not meaningful yet. {s}Write a seed spec that lists {s} and rerun: {s}";
+
+pub const data_too_small_full_scan = "A full scan reads every row, so a small count does not mean a missing index is harmless. ";
+
+pub const data_too_small_suggested = "Save the suggested index as index.sql first; --scale does not run with --suggest. ";
+
 pub const bind_dependent_partial_index_message = "The variant plan uses the partial index \"{s}\" only because the bound values satisfy its WHERE clause. A different bound value changes the plan, so test with the values you deploy.";
 
 pub const unapplied_migrations_message = "wrangler has not applied these migrations to the local D1 database for {s}: {s}. Run `npx wrangler d1 migrations apply {s} --local` and compare again; the schema under test is older than the migrations describe.";

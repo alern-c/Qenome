@@ -158,6 +158,7 @@ fn controlStopError(control: *StepControl) ?StepError {
 pub const TableWarnings = struct {
     no_analyze_stats: bool = false,
     data_too_small: bool = false,
+    rows: u64 = 0,
 };
 
 pub const Clues = struct {
@@ -973,7 +974,7 @@ pub const Db = struct {
         const sql = try allocator.dupeSentinel(u8, query.written(), 0);
         defer allocator.free(sql);
         const rows = try self.diagnosticInt(sql, &.{}, control);
-        return .{ .no_analyze_stats = !has_stats, .data_too_small = rows < 1000 };
+        return .{ .no_analyze_stats = !has_stats, .data_too_small = rows < 1000, .rows = if (rows > 0) @as(u64, @intCast(rows)) else 0 };
     }
 
     fn diagnosticText(self: *Db, allocator: std.mem.Allocator, sql: [:0]const u8, binds: []const BindArg, control: *StepControl) !?[]const u8 {
@@ -3814,8 +3815,7 @@ test "table warning checks target stats and actual bounded cardinality" {
     var cancel = std.atomic.Value(bool).init(false);
     var control = StepControl.init(testing.io, 30000, &cancel);
     const warnings = try database.tableWarnings(testing.allocator, "t", &control);
-    try testing.expect(warnings.no_analyze_stats);
-    try testing.expect(!warnings.data_too_small);
+    try testing.expect(warnings.no_analyze_stats and !warnings.data_too_small and warnings.rows == 1000);
     const other = try database.tableWarnings(testing.allocator, "other", &control);
     try testing.expect(!other.no_analyze_stats);
     try testing.expect(other.data_too_small);

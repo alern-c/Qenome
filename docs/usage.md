@@ -119,6 +119,14 @@ The human Summary adds `seed data` and `seed` lines; `kv` adds `seed-data`, `see
 
 ## Measuring at several sizes (--scale)
 
+When the candidate table has fewer than 1,000 rows, the human Summary says so on the `data` line and the `next` line is the command to run next. A full scan of that table reads every row, so a small `rows_read` does not mean a missing index is harmless. Write a seed spec that lists the table, then rerun:
+
+```sh
+qenome app.db select.sql index.sql --seed-data seed.json --scale 1000,10000 --runs 0
+```
+
+The paths are the ones from this run. `--suggest` and `--batch` print the same note under `Recommendation:`; save a suggested index as `index.sql` and rerun that one comparison, because `--scale` does not combine with those modes. The JSON warning adds `table`, `rows`, `full_scan`, and `next_command` and keeps `schema_version` `2`. See [Accuracy and production D1](accuracy.md#what-the-verdicts-mean).
+
 `--scale 1000,10000` runs the same comparison at 2 or 3 row counts and shows the results side by side, so you can see whether an improvement still holds when the table is larger. It needs `--seed-data`, because the seed spec is the only input that describes the distribution of the data separately from its size. Each step sets the row count of the largest table in the spec to that size and scales the other listed tables by the same factor (rounded, at least 1 row), so the ratio between the tables stays the same; a listed table with `rows: 0` gets at least 1 row. When every listed table has `rows: 0`, there is no ratio to keep, so every table takes the step size. Tables that the spec does not list keep their rows, as with `--seed-data`.
 
 ```sh

@@ -207,6 +207,7 @@ PRODUCTION_IMPORTS = {
         "src/cli/timing.zig",
         "src/cli/workspace.zig",
         "src/cli/write_runner.zig",
+        "src/cli/warnings.zig",
     ],
     "src/cli/audit.zig": [
         "src/db.zig",
@@ -561,6 +562,9 @@ CONTRACT_VALUES = [
     "warning_messages",
     "bind_dependent_partial_index_message",
     "unapplied_migrations_message",
+    "data_too_small_message",
+    "data_too_small_full_scan",
+    "data_too_small_suggested",
 ]
 
 CONTRACT_ALIASES = ["ExitCode"]

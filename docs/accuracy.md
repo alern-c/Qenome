@@ -47,11 +47,13 @@ Warnings advise; they never change the verdict, a row count, or the exit status.
 | Code | Meaning | What to do |
 | --- | --- | --- |
 | `no_analyze_stats` | The candidate index's table has no non-empty `sqlite_stat1` entry in the baseline copy. | Test an `ANALYZE`'d copy with representative data. Qenome does not run `ANALYZE`; `--seed-data` runs it on the tables in the spec. |
-| `data_too_small` | The candidate index's table has fewer than 1,000 rows. | Test with more representative data. The warning is a heuristic, not proof that the data is representative. |
+| `data_too_small` | The candidate index's table has fewer than 1,000 rows. | The human Summary names the table and a `next` command. Write a seed spec that lists that table and rerun with `--seed-data` and `--scale`, for example `--scale 1000,10000`. The warning is a heuristic, not proof that the data is representative. |
 | `bind_dependent_partial_index` | The variant plan uses a partial index only because the bound values satisfy its `WHERE` clause. | Test the values you deploy. The improvement holds only for this run; another bound value or parameter style can drop the index. |
 | `unapplied_migrations` | The local D1 database has not applied these migrations from the wrangler config. | Run `npx wrangler d1 migrations apply <BINDING> --local` and compare again; the schema under test is older than the migrations describe. |
 
 A `--migration` batch does not emit `no_analyze_stats` or `data_too_small`, because a migration can touch several tables.
+
+When `data_too_small` is set, the human Summary adds `data` and `next` before the query plan. `data` names the table and the row count. If the baseline plan is a bare `SCAN` of that table, it also says that a full scan reads every row, so a small `rows_read` does not mean a missing index is harmless. `next` is a command for the same files with `--seed-data seed.json --scale 1000,10000`. With `--d1`, the command uses `--d1` and the binding. With `--suggest`, it says to save the suggested SQL as `index.sql` first, because `--scale` does not run with `--suggest` or `--batch`. The same note is printed under `Recommendation:` when a candidate's table is that small. The JSON warning keeps `code` and `message` and adds `table`, `rows`, `full_scan`, and `next_command`. `schema_version` stays `2`. The verdict stays the row-count comparison: an index that reads fewer rows is still `improved`. [testdata/accuracy/scale-full-scan/](../testdata/accuracy/scale-full-scan/) is the known-answer case: at 100 rows the baseline scan reads little and warns `data_too_small`; at 10,000 rows the same scan's `rows_read` is at least ten times larger.
 
 ## Minimum meaningful improvement
 

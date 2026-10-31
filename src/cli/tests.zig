@@ -1279,7 +1279,7 @@ test "the default summary puts the conclusion first and the copies side by side"
         };
         from = at + part.len;
     }
-    for ([_][]const u8{ "Timing", "Run\n", "Result rows", "time median", "binds", "work dir", "source id", fixture.db_path }) |gone| {
+    for ([_][]const u8{ "Timing", "Run\n", "Result rows", "time median", "binds", "work dir", "source id" }) |gone| {
         try testing.expect(!contains(result.stdout, gone));
     }
     try expectNarrow(result.stdout, &.{});
