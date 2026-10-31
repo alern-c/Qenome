@@ -1,6 +1,9 @@
 name: publish-npm
 
 on:
+  workflow_run:
+    workflows: [release]
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -12,6 +15,12 @@ concurrency:
 
 jobs:
   guard:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      startsWith(github.event.workflow_run.head_branch, 'v'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -22,6 +31,7 @@ jobs:
       - name: Require main at the released tag
         env:
           GH_TOKEN: ${{ github.token }}
+          WORKFLOW_RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: python3 scripts/require_npm_release.py
 
   quality:

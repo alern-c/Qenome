@@ -441,11 +441,33 @@ def test_release_guard():
         require_npm_release.remote_problem(sha, "0.3.7", sha.upper(), "v0.3.7") is None,
         require_npm_release.remote_problem(sha, "0.3.7", sha.upper(), "v0.3.7"),
     )
+    expect(
+        "a workflow_run at this commit passes the trigger guard",
+        require_npm_release.trigger_problem("workflow_run", sha.upper(), sha) is None,
+        require_npm_release.trigger_problem("workflow_run", sha.upper(), sha),
+    )
+    expect(
+        "a workflow_run at another commit is refused",
+        require_npm_release.trigger_problem("workflow_run", other, sha) is not None,
+        "accepted a different triggering commit",
+    )
+    expect(
+        "a workflow_run without a commit is refused",
+        require_npm_release.trigger_problem("workflow_run", "", sha) is not None,
+        "accepted a missing triggering commit",
+    )
+    expect(
+        "a manual run does not need a triggering commit",
+        require_npm_release.trigger_problem("workflow_dispatch", "", sha) is None,
+        require_npm_release.trigger_problem("workflow_dispatch", "", sha),
+    )
     script = os.path.join(HERE, "require_npm_release.py")
     env = dict(os.environ)
     env.pop("GITHUB_REF", None)
     env.pop("GITHUB_SHA", None)
     env.pop("GITHUB_REPOSITORY", None)
+    env.pop("GITHUB_EVENT_NAME", None)
+    env.pop("WORKFLOW_RUN_HEAD_SHA", None)
     done = subprocess.run(
         [sys.executable, script],
         capture_output=True,
@@ -455,6 +477,34 @@ def test_release_guard():
     )
     expect("the release guard refuses outside Actions", done.returncode == 1, done.stderr)
     expect("the refusal names the ref", "refs/heads/main" in done.stderr, done.stderr)
+    env = dict(os.environ)
+    env["GITHUB_REF"] = "refs/heads/main"
+    env["GITHUB_SHA"] = sha
+    env["GITHUB_EVENT_NAME"] = "workflow_run"
+    env["WORKFLOW_RUN_HEAD_SHA"] = other
+    env.pop("GITHUB_REPOSITORY", None)
+    done = subprocess.run(
+        [sys.executable, script],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        env=env,
+    )
+    expect("the guard refuses a triggering run at another commit", done.returncode == 1, done.stderr)
+    expect("the refusal names the triggering run", "triggering run" in done.stderr, done.stderr)
+    env["WORKFLOW_RUN_HEAD_SHA"] = sha.upper()
+    done = subprocess.run(
+        [sys.executable, script],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        env=env,
+    )
+    expect(
+        "a triggering run at this commit passes the trigger guard",
+        "GITHUB_REPOSITORY is missing" in done.stderr,
+        done.stderr,
+    )
 
 
 def test_parse_pack_json():
