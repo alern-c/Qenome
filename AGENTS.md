@@ -19,6 +19,17 @@ Commit messages, PR titles and bodies, issues, CHANGELOG and code comments are w
 - A change to a verdict, plan reading, counters or warnings must keep `python3 scripts/check_accuracy.py` green, and a new rule needs a case in `testdata/accuracy/`.
 - A file must not grow past the line count its check records. Split the file instead of raising the number; raising it is a deliberate decision for a human.
 
+## Workflow
+
+1. Problem (PR section 1): who is affected, what goes wrong, what happens if it is left alone, and one branch per issue from an up-to-date `origin/main`, named `<type>/<short-name>` (feat, fix, docs, test, refactor or chore; no issue number).
+2. Approaches (PR section 3): the approaches really considered, compared on the same points, starting with whether each solves the problem; a purely mechanical change says why there is no comparison.
+3. Implement (PR section 2): a failing Zig test or accuracy case first for a behaviour change, golden regeneration for an intended output change, no mixed behaviour and structural change, stay in scope, and the README/CHANGELOG rules.
+4. Verify (PR section 4): try the approaches or say why not, record each result and why the chosen one won; a change to CLI behaviour or output, `npm/` or `skills/` attaches a PNG/GIF of a real run and does not commit it.
+5. Check (PR section 6): run `python3 scripts/check_all.py`, then reread `git diff origin/main...HEAD`.
+6. Commit and PR: Conventional Commits `<type>(<scope>): <summary>` in English, one logical change per commit, commit only the files the change needs; merge `origin/main` to update, no rebase or force-push; PR title in Conventional Commits, body from the template with the six headings verbatim, `Closes #<n>` at the end of section 2.
+
+The details, including every evidence rule, are in [the workflow](CONTRIBUTING.md#workflow).
+
 ## Dependencies
 
 - Code (Zig in `src/`, Python in `scripts/`, JavaScript in `npm/`) uses only each language's standard library. The only external code the program uses is SQLite, vendored in `vendor/sqlite3/`. The only other allowed code is the development tools used by the checks (ruff and mypy, in the `dev` group of `pyproject.toml`).

@@ -1,6 +1,6 @@
 # Contributing to Qenome
 
-`README.md` and the pages under `docs/` are the user guide. This file holds the build-from-source Quick start, the checks that CI runs, and how to update the golden test output. `AGENTS.md` records the repository rules (language, dependencies, architecture, and comments).
+`README.md` and the pages under `docs/` are the user guide. This file holds the build-from-source Quick start, the checks that CI runs, and how to update the golden test output. `AGENTS.md` records the repository rules and the workflow from branch to PR (language, dependencies, architecture, comments, and the PR body in `.github/pull_request_template.md`).
 
 ## Build from source
 
@@ -78,6 +78,17 @@ A proposed index, without an index file. `--suggest` asks SQLite which index wou
 ```
 
 The first database build takes about a second, and each timed example a few seconds. `testdata/README.md` records the fixture, the queries, and their expected plan and counters.
+
+## Workflow
+
+The steps follow the work, and each one produces the material for one section of the pull request. The body comes from `.github/pull_request_template.md`.
+
+1. Problem (PR section 1): before changing anything, write down who is affected, what goes wrong and what happens if it is left alone. Create one branch per issue from an up-to-date `origin/main`, named `<type>/<short-name>` with `<type>` one of `feat`, `fix`, `docs`, `test`, `refactor` or `chore`; leave the issue number out of the name.
+2. Approaches (PR section 3): before implementing, list the approaches really considered and compare them on the same points, starting with whether each solves the problem. A purely mechanical change says why there is no comparison.
+3. Implement (PR section 2): a behaviour change starts with the failing Zig test or accuracy case (see [Checks before you finish](AGENTS.md#checks-before-you-finish) in `AGENTS.md`). For an intended output change, regenerate the golden output with `python3 scripts/check_golden.py --update` and review the diff. Do not mix a behaviour change with a structural change (refactor), and stay within the issue's scope. `README.md` and `README.ja.md` move together (see the Language rule in `AGENTS.md`). A change to CLI behaviour, output or the README gets an entry under `[Unreleased]` in `CHANGELOG.md`; a change only to tests or checkers does not.
+4. Verify (PR section 4): try the approaches, or say which were not tried and why, and record the result of each and why the chosen one won. For a change to CLI behaviour or output, to the npm launcher (`npm/`) or to the bundled skill (`skills/`, shown as a screenshot of an agent session that uses it; a wording-only change is exempt), capture a PNG or GIF of a real run during this step, before and after when the behaviour changes. A terminal screenshot is enough, and vhs is optional. The image adds to the golden and accuracy checks (see [Checks before you finish](AGENTS.md#checks-before-you-finish)); it does not replace them. No image is needed when the output is unchanged (for example a refactor whose golden and accuracy checks pass), or for a docs-, test-, checker- or build-only change; say why in section 4. Attach images to the PR (drag them into the GitHub form, or `gh pr create --attach` / `gh pr edit --attach`), keep them outside the repository, and do not commit them; the README demos in `docs/*.gif` are recorded only as [Golden output](#golden-output) describes. The repository is public: images must not show secrets, tokens, personal data or real user data.
+5. Check (PR section 6): run `python3 scripts/check_all.py`, then reread `git diff origin/main...HEAD` before committing.
+6. Commit and PR: commits follow Conventional Commits, `<type>(<scope>): <summary>` in English, with one logical change per commit; commit only the files the change needs. To update a branch, merge `origin/main` into it; do not rebase or force-push a pushed branch. The PR has a Conventional Commits title, and its body comes from `.github/pull_request_template.md` with the six headings verbatim, because `gh pr create --body` and `--body-file` do not load the template. Put `Closes #<n>` at the end of section 2, and attach the images.
 
 ## Development checks
 
