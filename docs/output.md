@@ -21,7 +21,7 @@ Input paths other than `--seed-data`, the SQLite and Zig versions, the build mod
 
 ## json
 
-`--format json` prints one JSON object with a trailing newline after a comparison finishes. With `--batch` it prints the separate `batch_schema_version` 1 object described above (see [Batch comparisons](batch.md#batch-comparisons) and [docs/json.md](json.md)). With `--seed-data`, both objects add a top-level `seed_data` object. The fields, including names reserved for the next core change, are specified in [docs/json.md](json.md). When an input is rejected, the time limit is reached, or the run is interrupted, stdout stays empty. With `--format json`, stderr is then one JSON object (`schema_version`, `exit_code`, and `error` with `code`, `message`, and `hint`). `human` and `kv` keep the text `error:` line.
+`--format json` prints one JSON object with a trailing newline after a comparison finishes. With `--batch` it prints the separate `batch_schema_version` 1 object described above (see [Batch comparisons](batch.md#batch-comparisons) and [docs/json.md](json.md)). With `--scale` it prints the separate `scale_schema_version` 1 object with one comparison per size (see [Measuring at several sizes](usage.md#measuring-at-several-sizes---scale)). With `--seed-data`, both objects add a top-level `seed_data` object. The fields, including names reserved for the next core change, are specified in [docs/json.md](json.md). When an input is rejected, the time limit is reached, or the run is interrupted, stdout stays empty. With `--format json`, stderr is then one JSON object (`schema_version`, `exit_code`, and `error` with `code`, `message`, and `hint`). `human` and `kv` keep the text `error:` line.
 
 The verdict is in the top-level `verdict` field:
 

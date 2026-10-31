@@ -46,6 +46,15 @@ pub const body =
     \\                       with deterministic dummy rows before comparing;
     \\                       the original database is not changed; see the
     \\                       README for the JSON spec
+    \\  --scale <ROWS,ROWS[,ROWS]>
+    \\                       with --seed-data, measure the same comparison
+    \\                       at 2 or 3 strictly increasing row counts and
+    \\                       show the results side by side; the largest
+    \\                       table in the spec gets the step size and the
+    \\                       other tables scale with it; each step seeds a
+    \\                       fresh copy; not with --batch, --suggest,
+    \\                       --migration, --audit-indexes, --record, or
+    \\                       --format kv
     \\  --suggest            ask SQLite for candidate indexes instead of
     \\                       naming them, and compare the suggestions; with
     \\                       --batch the manifest may omit candidates
@@ -110,6 +119,7 @@ pub const body =
     \\  qenome app.db --batch batch.json --audit-indexes
     \\  qenome app.db --batch batch.json --migration 0002.sql
     \\  qenome app.db select.sql index.sql --seed-data seed.json
+    \\  qenome app.db select.sql index.sql --seed-data seed.json --scale 1000,10000
     \\  qenome app.db select.sql --suggest
     \\  qenome app.db --batch batch.json --suggest
     \\  qenome --record record.log --out qenome-manifest

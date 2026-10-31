@@ -47,6 +47,17 @@ pub const Format = enum {
     json,
 };
 
+pub const max_scale_steps = 3;
+
+pub const Scale = struct {
+    values: [max_scale_steps]u64 = undefined,
+    len: u8 = 0,
+
+    pub fn steps(self: *const Scale) []const u64 {
+        return self.values[0..self.len];
+    }
+};
+
 pub const Args = struct {
     db: ?[:0]const u8 = null,
     d1: ?[:0]const u8 = null,
@@ -56,6 +67,7 @@ pub const Args = struct {
     out: ?[:0]const u8 = null,
     migration: ?[:0]const u8 = null,
     seed_data: ?[:0]const u8 = null,
+    scale: ?Scale = null,
     select: ?[:0]const u8 = null,
     write: ?[:0]const u8 = null,
     index_sql: ?[:0]const u8 = null,
@@ -87,6 +99,9 @@ pub const ParseError = error{
     InvalidRuns,
     InvalidFormat,
     InvalidNPlusOneThreshold,
+    InvalidScale,
+    ScaleConflict,
+    ScaleRequiresSeedData,
     ConflictingDatabase,
     ConfigRequiresD1,
     BatchTakesOnlyDatabasePath,
@@ -127,6 +142,9 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
     var suggest_requested = false;
     var write_requested = false;
     var record_requested = false;
+    var scale_requested = false;
+    var scale_conflict: ?[:0]const u8 = null;
+    const scale_conflicting_options = [_][:0]const u8{ "--batch", "--suggest", "--migration", "--audit-indexes", "--record" };
     for (rest) |arg| {
         if (std.mem.eql(u8, arg, "--record") or std.mem.startsWith(u8, arg, "--record=")) record_requested = true;
         if (std.mem.eql(u8, arg, "--")) break;
@@ -140,11 +158,26 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
         if (std.mem.eql(u8, arg, "--batch") or std.mem.startsWith(u8, arg, "--batch=")) batch_requested = true;
         if (std.mem.eql(u8, arg, "--suggest")) suggest_requested = true;
         if (std.mem.eql(u8, arg, "--write") or std.mem.startsWith(u8, arg, "--write=")) write_requested = true;
+        if (std.mem.eql(u8, arg, "--scale") or std.mem.startsWith(u8, arg, "--scale=")) scale_requested = true;
+        if (scale_conflict == null) {
+            for (scale_conflicting_options) |name| {
+                if (std.mem.eql(u8, arg, name) or (arg.len > name.len and arg[name.len] == '=' and std.mem.eql(u8, arg[0..name.len], name))) {
+                    scale_conflict = name;
+                    break;
+                }
+            }
+        }
     }
     if (version_requested) {
         args.version = true;
         offending.* = null;
         return args;
+    }
+    if (scale_requested) {
+        if (scale_conflict) |name| {
+            offending.* = name;
+            return error.ScaleConflict;
+        }
     }
 
     var binds: std.ArrayList(db.BindArg) = .empty;
@@ -196,6 +229,9 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
         } else if (std.mem.eql(u8, name, "--seed-data")) {
             if (args.seed_data != null) return error.DuplicateOption;
             args.seed_data = try optionValue(argv, &index, inline_value);
+        } else if (std.mem.eql(u8, name, "--scale")) {
+            if (args.scale != null) return error.DuplicateOption;
+            args.scale = try parseScale(try optionValue(argv, &index, inline_value));
         } else if (std.mem.eql(u8, name, "--select")) {
             if (args.select != null) return error.DuplicateOption;
             if (args.write != null) return error.WriteRejectsSelect;
@@ -244,6 +280,22 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
         }
     }
     offending.* = null;
+    if (args.scale != null) {
+        if (args.seed_data == null) return error.ScaleRequiresSeedData;
+        const conflicts = [_]struct { name: [:0]const u8, present: bool }{
+            .{ .name = "--batch", .present = args.batch != null },
+            .{ .name = "--suggest", .present = args.suggest },
+            .{ .name = "--migration", .present = args.migration != null },
+            .{ .name = "--audit-indexes", .present = args.audit_indexes },
+            .{ .name = "--record", .present = args.record != null },
+            .{ .name = "--format", .present = args.format == .kv },
+        };
+        for (conflicts) |conflict| {
+            if (!conflict.present) continue;
+            offending.* = conflict.name;
+            return error.ScaleConflict;
+        }
+    }
     if (args.out != null and args.record == null) {
         offending.* = "--out";
         return error.OutRequiresRecord;
@@ -484,6 +536,7 @@ const long_options = [_][]const u8{
     "--out",
     "--migration",
     "--seed-data",
+    "--scale",
     "--select",
     "--write",
     "--index-sql",
@@ -577,6 +630,22 @@ pub fn parseNPlusOneThreshold(raw: []const u8) ParseError!u32 {
     const value = std.fmt.parseUnsigned(u32, raw, 10) catch return error.InvalidNPlusOneThreshold;
     if (value != 0 and (value < 2 or value > max_n_plus_one_threshold)) return error.InvalidNPlusOneThreshold;
     return value;
+}
+
+pub fn parseScale(raw: []const u8) ParseError!Scale {
+    var scale: Scale = .{};
+    var previous: u64 = 0;
+    var iterator = std.mem.splitScalar(u8, raw, ',');
+    while (iterator.next()) |text| {
+        if (scale.len == max_scale_steps) return error.InvalidScale;
+        const value = std.fmt.parseUnsigned(u64, text, 10) catch return error.InvalidScale;
+        if (value == 0 or value <= previous) return error.InvalidScale;
+        scale.values[scale.len] = value;
+        scale.len += 1;
+        previous = value;
+    }
+    if (scale.len < 2) return error.InvalidScale;
+    return scale;
 }
 
 pub fn parseBind(raw: [:0]const u8) ParseError!db.BindArg {
@@ -674,6 +743,9 @@ fn parseErrorMessageForMode(err: ParseError) []const u8 {
         error.InvalidTimeout => "--timeout-ms expects a non-negative integer",
         error.InvalidRuns => std.fmt.comptimePrint("--runs expects an integer from 0 to {d}", .{max_runs}),
         error.InvalidFormat => "--format expects human, kv or json",
+        error.InvalidScale => "--scale expects 2 or 3 strictly increasing row counts, for example --scale 1000,10000 (see --help)",
+        error.ScaleConflict => "--scale takes only its row counts; remove --batch, --suggest, --migration, --audit-indexes, --record, or --format kv (see --help)",
+        error.ScaleRequiresSeedData => "--scale needs --seed-data (see --help)",
         error.ConflictingDatabase => "use either --db <PATH> or --d1 <BINDING>, not both (see --help)",
         error.ConfigRequiresD1 => "--config is only used with --d1 (see --help)",
         error.BatchTakesOnlyDatabasePath => "--batch takes only the database path; put the SELECT and CREATE INDEX files in the manifest (see --help)",
@@ -1145,6 +1217,7 @@ test "every known long option is accepted by the parser" {
         &.{ "Qenome", "--record", "record.log", "--out", "manifest-dir", "--n-plus-one-threshold", "20" },
         &.{ "Qenome", "--batch", "batch.json", "--migration", "m.sql" },
         &.{ "Qenome", "--seed-data", "seed.json" },
+        &.{ "Qenome", "--seed-data", "seed.json", "--scale", "1000,5000" },
         &.{ "Qenome", "--select", "s" },
         &.{ "Qenome", "--write", "w" },
         &.{ "Qenome", "--index-sql", "i" },
