@@ -32,6 +32,7 @@ EXPECT_KEYS = (
     "batch",
     "suggest",
     "error",
+    "writes",
 )
 PLAN_KEYS = ("contains", "excludes")
 ROWS_KEYS = ("direction", "max_ratio")
@@ -287,6 +288,40 @@ def check_error(name, value):
     return {"code": code}
 
 
+def check_comparison(name, value):
+    require(isinstance(value, dict), name + " must be an object")
+    unknown_keys(name, value, COMPARISON_KEYS)
+    result = {}
+    if "result" in value:
+        require(value["result"] in RESULT_VALUES, name + ".result must be one of: " + ", ".join(RESULT_VALUES))
+        result["result"] = value["result"]
+    if "verdict" in value:
+        require(value["verdict"] in VERDICT_VALUES, name + ".verdict must be one of: " + ", ".join(VERDICT_VALUES))
+        result["verdict"] = value["verdict"]
+    if "plan_changed" in value:
+        require(isinstance(value["plan_changed"], bool), name + ".plan_changed must be true or false")
+        result["plan_changed"] = value["plan_changed"]
+    for key in ("baseline_plan", "variant_plan"):
+        if key in value:
+            result[key] = check_plan(name + "." + key, value[key])
+    for key in ("rows_read", "rows_written"):
+        if key in value:
+            result[key] = check_rows(name + "." + key, value[key])
+    if "warnings" in value:
+        result["warnings"] = check_warnings(name + ".warnings", value["warnings"])
+    return result
+
+
+def check_writes(name, value):
+    require(isinstance(value, list) and bool(value), name + " must be a non-empty array")
+    result = []
+    for index, entry in enumerate(value):
+        spec = check_comparison(name + "[" + str(index) + "]", entry)
+        require(spec, name + "[" + str(index) + "] needs a comparison check")
+        result.append(spec)
+    return result
+
+
 def load_expect(case_name, value):
     require(isinstance(value, dict), case_name + ": expect must be an object")
     unknown_keys(case_name + ": expect", value, EXPECT_KEYS)
@@ -302,31 +337,11 @@ def load_expect(case_name, value):
         whole("exit")
     if "exit_code" in value:
         whole("exit_code")
-    if "result" in value:
-        require(
-            value["result"] in RESULT_VALUES,
-            case_name + ": expect.result must be one of: " + ", ".join(RESULT_VALUES),
-        )
-        result["result"] = value["result"]
-    if "verdict" in value:
-        require(
-            value["verdict"] in VERDICT_VALUES,
-            case_name + ": expect.verdict must be one of: " + ", ".join(VERDICT_VALUES),
-        )
-        result["verdict"] = value["verdict"]
-    if "plan_changed" in value:
-        require(isinstance(value["plan_changed"], bool), case_name + ": expect.plan_changed must be true or false")
-        result["plan_changed"] = value["plan_changed"]
-    for key in ("baseline_plan", "variant_plan"):
-        if key in value:
-            result[key] = check_plan(case_name + ": expect." + key, value[key])
-    for key in ("rows_read", "rows_written"):
-        if key in value:
-            result[key] = check_rows(case_name + ": expect." + key, value[key])
+    result.update(
+        check_comparison(case_name + ": expect", {key: value[key] for key in COMPARISON_KEYS if key in value})
+    )
     if "effect" in value:
         result["effect"] = check_effect(case_name + ": expect.effect", value["effect"])
-    if "warnings" in value:
-        result["warnings"] = check_warnings(case_name + ": expect.warnings", value["warnings"])
     if "human" in value:
         result["human"] = check_human(case_name + ": expect.human", value["human"])
     if "batch" in value:
@@ -335,6 +350,8 @@ def load_expect(case_name, value):
         result["suggest"] = check_suggest(case_name + ": expect.suggest", value["suggest"])
     if "error" in value:
         result["error"] = check_error(case_name + ": expect.error", value["error"])
+    if "writes" in value:
+        result["writes"] = check_writes(case_name + ": expect.writes", value["writes"])
     require(result, case_name + ": expect holds no check")
     return result
 
@@ -472,6 +489,18 @@ def check_manifest(case):
         require(candidates is None or candidates == [], case.name + ": a --migration manifest must omit candidates")
     else:
         require(candidates is not None, case.name + ": batch.json needs candidates without --migration")
+    writes = manifest.get("writes")
+    if writes is not None:
+        require(isinstance(writes, list) and bool(writes), case.name + ": writes must be a non-empty array")
+        require(has_migration, case.name + ": a manifest with writes needs --migration")
+        for write in writes:
+            require(isinstance(write, dict), case.name + ": every writes entry must be an object")
+            path = write.get("write")
+            require(isinstance(path, str) and bool(path), case.name + ": every writes entry needs a write path")
+            require(
+                os.path.isfile(os.path.join(case.path, path)),
+                case.name + ": batch.json names a missing write file: " + path,
+            )
 
 
 def case_names(root):
@@ -510,6 +539,7 @@ def observation_from(done):
         "batch": None,
         "comparison": None,
         "comparisons": [],
+        "writes": [],
         "error": None,
     }
     stdout = done.stdout.strip()
@@ -530,6 +560,11 @@ def observation_from(done):
             observation["comparisons"] = comparisons
             if len(comparisons) == 1:
                 observation["comparison"] = comparisons[0]
+            writes = []
+            for entry in report.get("writes") or []:
+                if isinstance(entry, dict) and isinstance(entry.get("comparison"), dict):
+                    writes.append(entry["comparison"])
+            observation["writes"] = writes
         else:
             observation["comparison"] = report
             observation["comparisons"] = [report]
@@ -559,6 +594,8 @@ def fail_messages(expect, observation):
                 + " comparison objects; the case checks exactly one"
             ]
         failures += comparison_failures(expect, comparison)
+    if "writes" in expect:
+        failures += write_failures(expect["writes"], observation["writes"])
     if "exit" in expect and observation["exit"] != expect["exit"]:
         failures.append("exit is " + str(observation["exit"]) + ", expected " + str(expect["exit"]))
     if "exit_code" in expect and observation["exit_code"] != expect["exit_code"]:
@@ -571,6 +608,15 @@ def fail_messages(expect, observation):
         failures += suggest_failures(expect["suggest"], observation["batch"])
     if "error" in expect:
         failures += error_failures(expect["error"], observation["error"])
+    return failures
+
+
+def write_failures(specs, observed):
+    if len(observed) != len(specs):
+        return ["the report holds " + str(len(observed)) + " write comparisons; the case checks " + str(len(specs))]
+    failures = []
+    for index, (spec, comparison) in enumerate(zip(specs, observed)):
+        failures += ["writes[" + str(index) + "]: " + failure for failure in comparison_failures(spec, comparison)]
     return failures
 
 
@@ -882,6 +928,7 @@ def signature(observation):
     if isinstance(observation["error"], dict):
         result["error.code"] = (observation["error"].get("error") or {}).get("code")
     result["comparisons"] = [comparison_signature(comparison) for comparison in observation["comparisons"]]
+    result["writes"] = [comparison_signature(comparison) for comparison in observation["writes"]]
     batch = observation["batch"]
     if isinstance(batch, dict):
         result["recommended"] = batch.get("recommended")

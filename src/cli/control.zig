@@ -162,6 +162,15 @@ pub fn classifyError(message: []const u8) ErrorClass {
     if (std.mem.startsWith(u8, message, "cannot read the batch SQL file")) {
         return .{ .code = "batch_sql_unreadable", .hint = "Check the SQL paths in the manifest; they are relative to the manifest file." };
     }
+    if (std.mem.indexOf(u8, message, "the batch write") != null) {
+        if (std.mem.indexOf(u8, message, "exceeded the time limit") != null) {
+            return .{ .code = contract.code.batch_write_timeout, .hint = "Raise --timeout-ms, or narrow the write statement in the manifest." };
+        }
+        if (std.mem.indexOf(u8, message, "cannot open") != null) {
+            return .{ .code = contract.code.batch_write_failed, .hint = "Check that the sandbox copy can be opened for writing, then rerun. The original database was not changed." };
+        }
+        return .{ .code = contract.code.batch_write_failed, .hint = "Read the SQLite message and fix the write statement in the manifest, then rerun. The original database was not changed." };
+    }
     if (std.mem.startsWith(u8, message, "--batch ")) {
         return .{ .code = "usage_batch_conflict", .hint = "With --batch, put the SELECT, CREATE INDEX and binds in the manifest. Use --format human or json, and do not pass --runs." };
     }
@@ -627,6 +636,10 @@ test "error text maps to a stable code and a next step" {
         .{ .message = "the batch candidate 'c/a.sql': the index could not be created: disk I/O", .code = "batch_index_failed" },
         .{ .message = "the batch candidate 'c/a.sql': --index-sql: the statement is not one CREATE INDEX", .code = "batch_index_failed" },
         .{ .message = "the batch candidate 'c/a.sql': the variant could not be removed: FileBusy", .code = "batch_workspace_failed" },
+        .{ .message = "the batch write 'w/a.sql': the variant cannot prepare the write: the statement is not valid for this database: no such column: note", .code = contract.code.batch_write_failed },
+        .{ .message = "the batch write 'w/a.sql' failed on the variant: disk I/O", .code = contract.code.batch_write_failed },
+        .{ .message = "the batch write 'w/a.sql' exceeded the time limit of 1 ms on the baseline", .code = contract.code.batch_write_timeout },
+        .{ .message = "the batch write: cannot open the baseline '/tmp/x/baseline.db' for writing: the file is missing, is not a database, or is locked", .code = contract.code.batch_write_failed },
         .{ .message = "--audit-indexes needs --batch and a manifest (see --help)", .code = "usage_audit_conflict" },
         .{ .message = "--audit-indexes does not take --suggest (see --help)", .code = "usage_audit_conflict" },
         .{ .message = "the index audit query 'q/a.sql': --select: the statement is not valid for this database: no such column: missing", .code = "audit_query_failed" },

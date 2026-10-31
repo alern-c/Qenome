@@ -32,7 +32,7 @@ json は、比較が終わったときに stdout へ JSON オブジェクトを1
 | `needs-check` | 結果は一致するが、variant の読んだ行数か書いた行数が増えた。`verdict_reasons` に理由が入る |
 | `not-judged` | 結果が不一致・比較不能。`verdict_reasons` に理由が入る |
 
-`--migration` の batch では、`needs-check` と同じ条件を `regressed` と呼びます。マイグレーションはすでに書かれた変更だからです。単発・`--batch`・`--suggest` の判定は `needs-check` のままです。batch の `summary` の件数キーも `needs_check` のままです。variant だけで実行できるクエリは `not-judged` で、終了コードは変わりません。「まとめて比べる（--batch）」を参照。
+`--migration` の batch では、`needs-check` と同じ条件を `regressed` と呼びます。マイグレーションはすでに書かれた変更だからです。マニフェストの `writes` に並べた書き込み文も同じ名前を使い、判定は `rows read` だけで決まります。`rows written` が増えても数値を出すだけで、判定は `no-effect` のままです。単発・`--batch`・`--suggest` の判定は `needs-check` のままです。batch の `summary` の件数キーも `needs_check` のままで、数えるのはクエリだけです。variant だけで実行できるクエリは `not-judged` で、終了コードは変わりません。「まとめて比べる（--batch）」を参照。
 
 判定は、ローカル D1 と同じ数え方（workerd のパッチ）で数えた読んだ行数と書いた行数で決まります。時間は参考値なので、`--runs 0` でも判定は出ます。この数値は、まだ本番 D1 と照合していません。`--write` では、`result` は `RETURNING` の行（`RETURNING` が無ければ空）を比べ、両方のコピーの `changes` と `total_changes` も一致しなければなりません。違えば `mismatch` と終了コード `3` になり、行数からは判定しません。
 
@@ -94,7 +94,7 @@ fi
 | 3 | 結果が一致しない、または `--write` が違う変更をした（`changes` か `total_changes`） |
 | 4 | 結果を比較できない、`--write` がスキーマ・現在時刻・非決定的な関数を読むため実行されなかった、または `--d1` がローカルデータベースをちょうど1つに決められない（設定が無い、設定が複数、設定が読めない・不正、バインディングが不明か重複、database id が無い、ローカルファイルが未作成、ローカルファイルを開けない） |
 | 5 | 比較のあとの後片付けに失敗した（0 のときだけ置き換え、それ以外のコードはそのまま） |
-| 6 | `--migration` で結果の行は一致したが、クエリの読んだ行数か書いた行数が増えた。`--migration` の batch だけが返す |
+| 6 | `--migration` で結果の行は一致したが、クエリの読んだ行数か書いた行数が増えた、または書き込み文の読んだ行数が増えた。`--migration` の batch だけが返す |
 | 124 | 時間上限に達した（`--timeout-ms`） |
 | 129 / 130 / 143 | `SIGHUP` / `SIGINT` / `SIGTERM` による中断（POSIX） |
 

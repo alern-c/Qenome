@@ -146,6 +146,9 @@ pub const body =
     \\"candidates":[{"index_sql":"i.sql"}]}. The paths are relative to the
     \\manifest. Each list takes 1 to 100 entries, and the same path cannot
     \\repeat. --suggest lets the candidates list be omitted or empty.
+    \\With --migration the manifest may also hold writes: [{"write":
+    \\"w.sql","binds":["1:int:1"]}], one INSERT, UPDATE, DELETE, or
+    \\REPLACE per entry. Without --migration the manifest is rejected.
     \\--batch compares every query with every candidate, keeps going
     \\when one candidate is rejected, and prints a batch report with a
     \\recommendation. It does not time the runs and does not take --bind,
@@ -181,7 +184,14 @@ pub const body =
     \\counts are reported with verdict not-judged, and it does not
     \\change the exit status. If the result rows match but a query reads
     \\or writes more rows after the migration, the run exits with status
-    \\6 so that a CI gate can stop.
+    \\6 so that a CI gate can stop. The optional writes entries run on
+    \\both copies after the queries, each inside a transaction that is
+    \\rolled back, and report the rows read and written for both copies.
+    \\A write that reads more rows is regressed; more rows written is
+    \\reported but does not change the verdict, because an index the
+    \\migration adds makes every write touch one more entry. The bundled
+    \\D1 counting patch does not count secondary-index deletes, so a
+    \\dropped index does not lower the rows written.
     \\
     \\--seed-data reads a JSON spec, replaces the listed tables in the
     \\baseline copy, and copies that baseline to the variant. The tables

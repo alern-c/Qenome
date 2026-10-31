@@ -192,6 +192,27 @@ pub fn judgeRows(before: Measurement, after: Measurement) Judgement {
     return judgeRowsWith(before, after, .needs_check);
 }
 
+pub fn judgeMigrationWrite(before: Measurement, after: Measurement) Judgement {
+    var judgement: Judgement = .{ .verdict = .regressed };
+    const baseline = before.counters;
+    const variant = after.counters;
+    if (variant.rows_read > baseline.rows_read) {
+        judgement.add("the rows match, but the variant reads more rows than the baseline");
+        return judgement;
+    }
+    if (variant.rows_written > baseline.rows_written) {
+        judgement.add("the rows match, but the variant writes more rows; rows written is reported and does not change the verdict");
+    } else if (variant.rows_written < baseline.rows_written) {
+        judgement.add("the rows match, and the variant writes fewer rows; rows written is reported and does not change the verdict");
+    }
+    if (variant.rows_read == baseline.rows_read) {
+        judgement.verdict = .no_effect;
+        return judgement;
+    }
+    judgement.verdict = .improved;
+    return judgement;
+}
+
 pub fn judgeRowsWith(before: Measurement, after: Measurement, worsening: Worsening) Judgement {
     var judgement: Judgement = .{ .verdict = switch (worsening) {
         .needs_check => .needs_check,
@@ -216,6 +237,14 @@ pub fn judgeRowsWith(before: Measurement, after: Measurement, worsening: Worseni
     }
     judgement.verdict = .improved;
     return judgement;
+}
+
+pub fn comparisonExitCode(verdict: Verdict) u8 {
+    return switch (verdict) {
+        .match => 0,
+        .mismatch => 3,
+        .incomparable => 4,
+    };
 }
 
 pub fn samePlan(before: db.Plan, after: db.Plan) bool {
@@ -294,6 +323,14 @@ test "judgeRowsWith names a worse row count regressed" {
     try expectJudgement(.regressed, "the variant writes more", judgeRowsWith(testMeasurement(1000, 5), testMeasurement(1000, 6), .regressed));
     try expectJudgement(.improved, null, judgeRowsWith(testMeasurement(1000, 0), testMeasurement(1, 0), .regressed));
     try expectJudgement(.no_effect, null, judgeRowsWith(testMeasurement(1000, 0), testMeasurement(1000, 0), .regressed));
+}
+
+test "judgeMigrationWrite judges a write by the rows read" {
+    try expectJudgement(.regressed, "reads more rows", judgeMigrationWrite(testMeasurement(10, 1), testMeasurement(2000, 1)));
+    try expectJudgement(.no_effect, "writes more rows", judgeMigrationWrite(testMeasurement(10, 1), testMeasurement(10, 3)));
+    try expectJudgement(.no_effect, "writes fewer rows", judgeMigrationWrite(testMeasurement(10, 3), testMeasurement(10, 1)));
+    try expectJudgement(.improved, null, judgeMigrationWrite(testMeasurement(2000, 1), testMeasurement(10, 1)));
+    try expectJudgement(.no_effect, null, judgeMigrationWrite(testMeasurement(10, 0), testMeasurement(10, 0)));
 }
 
 test "judgeRows ignores the plan and the times" {
