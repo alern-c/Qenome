@@ -15,11 +15,23 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Require the main branch
-        run: test "$GITHUB_REF" = "refs/heads/main"
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Require main at the released tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/require_npm_release.py
+
+  quality:
+    needs: guard
+    permissions:
+      contents: read
+    uses: ./.github/workflows/quality.yml
 
   publish:
-    needs: guard
+    needs: [guard, quality]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -47,3 +59,6 @@ jobs:
 
       - name: Publish with OIDC and provenance
         run: python3 scripts/publish_npm.py --publish
+
+      - name: Install the published version and compare one case
+        run: python3 scripts/verify_published_npm.py
