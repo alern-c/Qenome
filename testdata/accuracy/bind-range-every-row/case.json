@@ -1,0 +1,29 @@
+{
+  "description": "The same query and index with a bind that matches every row: the index search reads as many rows as the scan, so the verdict is no-effect.",
+  "args": [
+    "--bind",
+    "1:int:0"
+  ],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "plan_changed": true,
+    "baseline_plan": {
+      "contains": [
+        "SCAN events"
+      ],
+      "excludes": [
+        "USING INDEX"
+      ]
+    },
+    "variant_plan": {
+      "contains": [
+        "SEARCH events USING INDEX idx_created (created_at>?)"
+      ]
+    },
+    "rows_written": "same",
+    "verdict": "no-effect",
+    "rows_read": "same"
+  }
+}

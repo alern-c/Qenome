@@ -1,0 +1,7 @@
+WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 20000)
+INSERT INTO events(id, customer_id, status, created_at, note, name)
+SELECT i, (i % 2000) + 1,
+  CASE WHEN i % 100 = 0 THEN 'ok' WHEN i % 100 = 1 THEN 'OK' ELSE 'failed' END, i,
+  'note-' || i, 'name-' || i
+FROM n;
+ANALYZE;

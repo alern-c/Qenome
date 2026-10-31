@@ -1,4 +1,6 @@
 import importlib.util
+import io
+import contextlib
 import json
 import os
 import shutil
@@ -393,6 +395,12 @@ def parser_tests(checker) -> None:
         )
         refuse_case(
             checker,
+            "an effect without a timing case is refused",
+            with_case(document(expect={"effect": "no-difference"})),
+            "timing",
+        )
+        refuse_case(
+            checker,
             "an unknown result value is refused",
             with_case(document(expect={"result": "fine"})),
             "result",
@@ -523,11 +531,44 @@ def parser_value_tests(checker) -> None:
         normalized = checker.load_expect("x", {"error": {"code": "no_candidates"}})
         expect("an error code is kept", normalized == {"error": {"code": "no_candidates"}}, normalized)
 
+        normalized = checker.load_expect("x", {"effect": "no-difference"})
+        expect(
+            "an effect string is normalized to a list",
+            normalized == {"effect": ["no-difference"]},
+            normalized,
+        )
+        normalized = checker.load_expect("x", {"effect": ["no-difference", "insufficient-samples"]})
+        expect(
+            "an effect list is kept",
+            normalized == {"effect": ["no-difference", "insufficient-samples"]},
+            normalized,
+        )
+        normalized = checker.load_expect("x", {"human": {"contains": ["verdict"], "excludes": ["error:"]}})
+        expect(
+            "a human spec is kept",
+            normalized == {"human": {"contains": ["verdict"], "excludes": ["error:"]}},
+            normalized,
+        )
+
         refuse_expect(checker, "an empty expect is refused", {}, "no check")
         refuse_expect(checker, "a plan without checks is refused", {"baseline_plan": {}}, "contains")
         refuse_expect(checker, "a warning spec without checks is refused", {"warnings": {}}, "contains")
         refuse_expect(checker, "a batch spec without checks is refused", {"batch": {}}, "recommended")
         refuse_expect(checker, "a suggest spec without checks is refused", {"suggest": {}}, "recommended")
+        refuse_expect(checker, "a human spec without checks is refused", {"human": {}}, "contains")
+        refuse_expect(
+            checker,
+            "an unknown human key is refused",
+            {"human": {"holds": ["x"]}},
+            "holds",
+        )
+        refuse_expect(
+            checker,
+            "an unknown effect is refused",
+            {"effect": "faster-but-not"},
+            "no-difference",
+        )
+        refuse_expect(checker, "an empty effect list is refused", {"effect": []}, "array")
         refuse_expect(
             checker,
             "a bad plan value is refused",
@@ -627,6 +668,17 @@ def expectation_tests(checker) -> None:
         zero,
         "above 0",
     )
+
+    timed = observation(checker, report=comparison(timing={"effect": "no-difference", "rounds": 6}))
+    check_pass(checker, "an allowed timing effect passes", {"effect": ["no-difference"]}, timed)
+    check_pass(
+        checker,
+        "one of several allowed timing effects passes",
+        {"effect": ["no-difference", "insufficient-samples"]},
+        timed,
+    )
+    check_fail(checker, "a disallowed timing effect fails", {"effect": ["faster"]}, timed, "the timing effect is")
+    check_fail(checker, "a missing timing effect fails", {"effect": ["faster"]}, good, "the timing effect is")
 
     check_pass(checker, "a contained warning passes", {"warnings": {"contains": ["data_too_small"]}}, good)
     check_fail(
@@ -860,6 +912,130 @@ def judge_tests(checker) -> None:
         message,
     )
 
+    extra = ['the human report has no "verdict"']
+    status, message = checker.judge("case", {"verdict": "improved"}, None, None, [flipped, flipped], extra)
+    expect(
+        "an extra failure fails the case once",
+        status == "FAIL" and message.startswith('the human report has no "verdict"'),
+        message,
+    )
+
+    status, message = checker.judge("case", {"verdict": "improved"}, "https://example.test/1", None, [flipped], extra)
+    expect("a known-wrong case keeps its extra failure", status == "known-wrong" and "human report" in message, message)
+
+    status, message = checker.judge("case", {"verdict": "improved"}, "https://example.test/1", None, [good], extra)
+    expect(
+        "a known-wrong case whose answer is right reports both the marker and the extra failure",
+        status == "FAIL" and "remove known_wrong" in message and "human report" in message,
+        message,
+    )
+
+
+def human_tests(checker) -> None:
+    output = {
+        "stdout": "Summary\n  verdict       improved: the rows match\n\nWarnings\n  warning: data_too_small: small\n",
+        "exit": 0,
+    }
+    failures = checker.human_failures({"contains": ["verdict       improved", "data_too_small:"]}, output)
+    expect("a contained human string passes", failures == [], failures)
+    failures = checker.human_failures({"contains": ["no_analyze_stats:"]}, output)
+    expect("a missing human string fails", bool(failures) and "no_analyze_stats:" in failures[0], failures)
+    failures = checker.human_failures({"excludes": ["data_too_small:"]}, output)
+    expect("an excluded human string fails", bool(failures) and "holds" in failures[0], failures)
+    failures = checker.human_failures({"excludes": ["error:"]}, output)
+    expect("an absent human string passes an exclusion", failures == [], failures)
+    failures = checker.human_failures({"contains": ["verdict"]}, None)
+    expect("a missing human report fails", bool(failures) and "no human report" in failures[0], failures)
+
+
+def summary_tests(checker) -> None:
+    rows: list[dict[str, Any]] = [
+        {"name": "a", "expected_verdict": "improved", "expected_result": "match", "verdicts": ["improved"],
+         "known_wrong": None},
+        {"name": "b", "expected_verdict": "no-effect", "expected_result": "match", "verdicts": ["no-effect"],
+         "known_wrong": None},
+        {"name": "c", "expected_verdict": "needs-check", "expected_result": "mismatch", "verdicts": [],
+         "known_wrong": None},
+        {"name": "d", "expected_verdict": None, "expected_result": None, "verdicts": [], "known_wrong": None},
+    ]
+    line = checker.summary_line(rows)
+    expect(
+        "the summary line counts the expected verdicts",
+        "expected verdicts improved 1, no-effect 1, needs-check 1, unstated 1" in line,
+        line,
+    )
+    expect(
+        "the summary line counts the expected results",
+        "expected results match 2, mismatch 1, unstated 1" in line,
+        line,
+    )
+    wrong, known = checker.improved_rows(rows)
+    expect("no case answers improved wrongly", wrong == [] and known == [], (wrong, known))
+    rows[1]["verdicts"] = ["improved"]
+    wrong, known = checker.improved_rows(rows)
+    expect(
+        "a case that expects no-effect and answers improved is listed",
+        [row["name"] for row in wrong] == ["b"],
+        wrong,
+    )
+    rows[1]["known_wrong"] = "https://example.test/1"
+    wrong, known = checker.improved_rows(rows)
+    expect(
+        "a known-wrong case that answers improved is listed apart",
+        wrong == [] and [row["name"] for row in known] == ["b"],
+        (wrong, known),
+    )
+    rows[0]["verdicts"] = ["no-effect"]
+    wrong, known = checker.improved_rows(rows)
+    expect(
+        "an improved expectation that answers no-effect is not listed",
+        wrong == [] and [row["name"] for row in known] == ["b"],
+        (wrong, known),
+    )
+
+    rows = [
+        {"name": "a", "expected_verdict": "no-effect", "expected_result": "match", "verdicts": ["no-effect"],
+         "known_wrong": None, "status": "ok"},
+        {"name": "b", "expected_verdict": "no-effect", "expected_result": "match", "verdicts": ["improved"],
+         "known_wrong": None, "status": "FAIL"},
+        {"name": "c", "expected_verdict": "needs-check", "expected_result": "match", "verdicts": ["improved"],
+         "known_wrong": "https://example.test/1", "status": "known-wrong"},
+        {"name": "d", "expected_verdict": "no-effect", "expected_result": "match",
+         "verdicts": ["no-effect", "improved"], "known_wrong": "https://example.test/2", "status": "FAIL"},
+    ]
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        total = checker.summarize("/root", [], 3, 2, 2, rows)
+    text = buffer.getvalue()
+    expect(
+        "the summary line prints the case counts",
+        "accuracy summary: expected verdicts no-effect 3, needs-check 1" in text,
+        text,
+    )
+    expect(
+        "a case that answers improved wrongly is listed",
+        "expected a verdict other than improved but got improved: b" in text,
+        text,
+    )
+    expect(
+        "a known-wrong case that answers improved is listed apart",
+        "known-wrong cases that answer improved: c (https://example.test/1), d (https://example.test/2)" in text,
+        text,
+    )
+    expect("a known-wrong case that answers improved fails the run", total == 3, total)
+    expect(
+        "the last line counts the improved failures once",
+        "accuracy: 3 failure(s), 2 known-wrong case(s), 0 cases, repeat 3, root=/root" in text,
+        text,
+    )
+
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        quiet = checker.summarize("/root", [], 3, 0, 0, rows[0:1])
+    expect("a run without failures and without improvements is ok", quiet == 0, quiet)
+    quiet_text = buffer.getvalue()
+    expect("the quiet run ends with ok", "accuracy: ok (0 cases, repeat 3, root=/root)" in quiet_text, quiet_text)
+
 
 def column_tests(checker) -> None:
     single = checker.index_columns("CREATE INDEX x ON events(customer_id);")
@@ -957,6 +1133,8 @@ def main() -> int:
     repeat_tests(checker)
     timing_tests(checker)
     judge_tests(checker)
+    human_tests(checker)
+    summary_tests(checker)
     column_tests(checker)
     observation_tests(checker)
     command_line_tests(checker)

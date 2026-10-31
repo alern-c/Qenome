@@ -1,0 +1,32 @@
+{
+  "description": "One row fewer out of 50,000 is still reported as improved; issue #107 decides whether that is right.",
+  "args": [
+    "--bind",
+    "1:int:49999"
+  ],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "verdict": "improved",
+    "plan_changed": true,
+    "baseline_plan": {
+      "contains": [
+        "SCAN events"
+      ],
+      "excludes": [
+        "USING INDEX"
+      ]
+    },
+    "variant_plan": {
+      "contains": [
+        "SEARCH events USING COVERING INDEX idx_created (created_at<?)"
+      ]
+    },
+    "rows_read": {
+      "direction": "decrease",
+      "max_ratio": 0.99999
+    },
+    "rows_written": "same"
+  }
+}
