@@ -9,7 +9,8 @@ const cli_args = @import("args.zig");
 const cli_batch = @import("batch.zig");
 const cli_control = @import("control.zig");
 const cli_query = @import("query.zig");
-const cli_report = @import("report.zig");
+const report_human = @import("../report/human.zig");
+const report_json = @import("../report/json.zig");
 const cli_warnings = @import("warnings.zig");
 
 const ExitCode = cli_control.ExitCode;
@@ -458,7 +459,7 @@ fn writeHuman(
     if (inputs.unapplied_migrations) |pending| {
         try stdout.writeAll("\nWarnings\n");
         const message = try cli_warnings.unappliedMigrationsText(allocator, pending);
-        try cli_report.writeHumanWarning(stdout, allocator, contract.code.unapplied_migrations, message);
+        try report_human.writeHumanWarning(stdout, allocator, contract.code.unapplied_migrations, message);
     }
 }
 
@@ -482,7 +483,7 @@ fn writeJson(
     try json.objectField("exit_code");
     try json.write(@as(u8, 0));
     try json.objectField("database");
-    try cli_report.writeJsonText(&json, allocator, inputs.database_path);
+    try report_json.writeJsonText(&json, allocator, inputs.database_path);
     try json.objectField("queries");
     try json.write(query_count);
     try json.objectField("redundancy_judged");
@@ -493,13 +494,13 @@ fn writeJson(
         const constraint = constraintTag(entry.info);
         try json.beginObject();
         try json.objectField("name");
-        try cli_report.writeJsonText(&json, allocator, entry.info.name);
+        try report_json.writeJsonText(&json, allocator, entry.info.name);
         try json.objectField("table");
-        try cli_report.writeJsonText(&json, allocator, entry.info.table);
+        try report_json.writeJsonText(&json, allocator, entry.info.table);
         try json.objectField("columns");
         try json.beginArray();
         for (entry.info.columns) |column| {
-            try cli_report.writeJsonText(&json, allocator, column.name);
+            try report_json.writeJsonText(&json, allocator, column.name);
         }
         try json.endArray();
         try json.objectField("unique");
@@ -513,7 +514,7 @@ fn writeJson(
         try json.objectField("used");
         if (constraint != null) try json.write(null) else try json.write(entry.used);
         try json.objectField("redundant_by");
-        if (entry.redundant_by) |name| try cli_report.writeJsonText(&json, allocator, name) else try json.write(null);
+        if (entry.redundant_by) |name| try report_json.writeJsonText(&json, allocator, name) else try json.write(null);
         try json.endObject();
     }
     try json.endArray();
@@ -526,7 +527,7 @@ fn writeJson(
         try json.objectField("code");
         try json.write(contract.code.unapplied_migrations);
         try json.objectField("message");
-        try cli_report.writeJsonText(&json, allocator, message);
+        try report_json.writeJsonText(&json, allocator, message);
         try json.endObject();
     }
     try json.endArray();

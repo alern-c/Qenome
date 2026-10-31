@@ -6,9 +6,8 @@ const result_rows = @import("../result.zig");
 const cli_d1_migrations = @import("../d1/migrations.zig");
 const cli_comparison = @import("comparison.zig");
 const cli_control = @import("control.zig");
-const cli_d1 = @import("d1.zig");
 const cli_query = @import("query.zig");
-const cli_report = @import("report.zig");
+const report_model = @import("../report/model.zig");
 const cli_timing = @import("timing.zig");
 const cli_workspace = @import("workspace.zig");
 
@@ -26,7 +25,7 @@ pub const Inputs = struct {
     database_path: [:0]const u8,
     baseline_path: [:0]const u8,
     variant_path: [:0]const u8,
-    d1: ?cli_d1.Resolved = null,
+    d1: ?report_model.D1 = null,
     unapplied_migrations: ?cli_d1_migrations.Pending = null,
     select_path: [:0]const u8,
     index_path: [:0]const u8,
@@ -46,7 +45,7 @@ pub const Computed = struct {
     before: cli_comparison.Measurement,
     after: cli_comparison.Measurement,
     outcome: cli_comparison.Outcome,
-    report: cli_report.Report,
+    report: report_model.Report,
 };
 
 pub const RowBuffers = struct {
@@ -132,7 +131,7 @@ pub fn compute(
         .limit_or_offset = db.mentionsLimitOrOffset(inputs.select_sql),
     });
 
-    var report: cli_report.Report = .{ .judgement = .{ .verdict = .not_judged } };
+    var report: report_model.Report = .{ .judgement = .{ .verdict = .not_judged } };
     if (outcome.verdict == .mismatch) {
         report.judgement.add("the result rows do not match, so the row counts are not judged");
     } else if (outcome.verdict == .incomparable) {
@@ -456,14 +455,14 @@ fn computeWrite(
     if (!variant.open(inputs.variant_path, write_sql, inputs.binds, .variant, stderr, &failure)) return .{ .failed = failure };
     const after_plan = variant.plan(arena, write_sql, inputs.binds, &control, .variant, stderr, &failure) orelse return .{ .failed = failure };
 
-    const sizes: cli_report.Sizes = .{
+    const sizes: report_model.Sizes = .{
         .baseline = fileSize(io, inputs.baseline_path, .baseline, stderr) orelse return .{ .failed = .rejected },
         .variant = fileSize(io, inputs.variant_path, .variant, stderr) orelse return .{ .failed = .rejected },
     };
 
     if (signalPending()) return .{ .failed = reportInterrupted(stderr) };
 
-    var report: cli_report.Report = .{ .judgement = .{ .verdict = .not_judged }, .sizes = sizes };
+    var report: report_model.Report = .{ .judgement = .{ .verdict = .not_judged }, .sizes = sizes };
     report.warnings.unapplied_migrations = inputs.unapplied_migrations;
     const clues = db.Clues.merge(baseline.database.clues, variant.database.clues);
     if (cli_comparison.writeIncomparable(arena, clues)) |outcome| {
@@ -539,7 +538,7 @@ fn applyWriteCandidate(work: *const WorkDir, index_sql: [:0]const u8, control: *
 
 fn tryWriteWarnings(
     arena: std.mem.Allocator,
-    report: *cli_report.Report,
+    report: *report_model.Report,
     baseline: *WriteSession,
     candidate_table: []const u8,
     control: *db.StepControl,

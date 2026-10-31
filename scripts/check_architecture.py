@@ -16,8 +16,16 @@ APPROVED_FILES = [
     "src/cli/query.zig",
     "src/cli/workspace.zig",
     "src/cli/timing.zig",
-    "src/cli/report.zig",
-    "src/cli/report_time.zig",
+    "src/report/model.zig",
+    "src/report/format.zig",
+    "src/report/human.zig",
+    "src/report/kv.zig",
+    "src/report/json.zig",
+    "src/report/time.zig",
+    "src/report/format_tests.zig",
+    "src/report/human_tests.zig",
+    "src/report/kv_tests.zig",
+    "src/report/json_tests.zig",
     "src/cli/pair.zig",
     "src/cli/batch.zig",
     "src/cli/batch_report.zig",
@@ -43,6 +51,10 @@ APPROVED_FILES = [
 ]
 
 TEST_FILES = [
+    "src/report/format_tests.zig",
+    "src/report/human_tests.zig",
+    "src/report/kv_tests.zig",
+    "src/report/json_tests.zig",
     "src/cli/tests.zig",
     "src/cli/skill_tests.zig",
     "src/cli/d1_tests.zig",
@@ -74,7 +86,10 @@ PRODUCTION_IMPORTS = {
         "src/cli/query.zig",
         "src/cli/workspace.zig",
         "src/cli/timing.zig",
-        "src/cli/report.zig",
+        "src/report/model.zig",
+        "src/report/human.zig",
+        "src/report/kv.zig",
+        "src/report/json.zig",
         "src/cli/pair.zig",
         "src/cli/batch.zig",
         "src/cli/audit.zig",
@@ -107,15 +122,47 @@ PRODUCTION_IMPORTS = {
         "src/cli/control.zig",
         "src/cli/query.zig",
     ],
-    "src/cli/report.zig": [
-        "src/result.zig",
-        "src/contract/values.zig",
-        "src/cli/args.zig",
-        "src/cli/d1.zig",
+    "src/report/model.zig": [
+        "src/db.zig",
         "src/cli/comparison.zig",
-        "src/cli/report_time.zig",
         "src/cli/timing.zig",
         "src/cli/warnings.zig",
+    ],
+    "src/report/format.zig": [
+        "src/db.zig",
+        "src/result.zig",
+        "src/report/model.zig",
+        "src/report/format_tests.zig",
+    ],
+    "src/report/human.zig": [
+        "src/contract/values.zig",
+        "src/result.zig",
+        "src/cli/comparison.zig",
+        "src/cli/warnings.zig",
+        "src/report/model.zig",
+        "src/report/format.zig",
+        "src/report/human_tests.zig",
+    ],
+    "src/report/kv.zig": [
+        "src/result.zig",
+        "src/cli/warnings.zig",
+        "src/report/model.zig",
+        "src/report/format.zig",
+        "src/report/time.zig",
+        "src/report/kv_tests.zig",
+    ],
+    "src/report/json.zig": [
+        "src/contract/values.zig",
+        "src/result.zig",
+        "src/cli/comparison.zig",
+        "src/cli/timing.zig",
+        "src/cli/warnings.zig",
+        "src/report/model.zig",
+        "src/report/format.zig",
+        "src/report/json_tests.zig",
+    ],
+    "src/report/time.zig": [
+        "src/cli/timing.zig",
     ],
     "src/cli/pair.zig": [
         "src/db.zig",
@@ -123,10 +170,9 @@ PRODUCTION_IMPORTS = {
         "src/result.zig",
         "src/cli/comparison.zig",
         "src/cli/control.zig",
-        "src/cli/d1.zig",
         "src/d1/migrations.zig",
         "src/cli/query.zig",
-        "src/cli/report.zig",
+        "src/report/model.zig",
         "src/cli/timing.zig",
         "src/cli/workspace.zig",
     ],
@@ -140,7 +186,8 @@ PRODUCTION_IMPORTS = {
         "src/cli/control.zig",
         "src/d1/migrations.zig",
         "src/cli/query.zig",
-        "src/cli/report.zig",
+        "src/report/human.zig",
+        "src/report/json.zig",
         "src/cli/warnings.zig",
     ],
     "src/cli/batch.zig": [
@@ -152,11 +199,11 @@ PRODUCTION_IMPORTS = {
         "src/cli/batch_report.zig",
         "src/cli/comparison.zig",
         "src/cli/control.zig",
-        "src/cli/d1.zig",
         "src/d1/migrations.zig",
         "src/cli/pair.zig",
         "src/cli/query.zig",
-        "src/cli/report.zig",
+        "src/report/model.zig",
+        "src/report/json.zig",
         "src/cli/suggest.zig",
         "src/cli/warnings.zig",
         "src/cli/workspace.zig",
@@ -172,7 +219,8 @@ PRODUCTION_IMPORTS = {
         "src/db.zig",
         "src/cli/comparison.zig",
         "src/cli/control.zig",
-        "src/cli/report.zig",
+        "src/report/model.zig",
+        "src/report/json.zig",
         "src/cli/suggest.zig",
     ],
     "src/cli/record.zig": [
@@ -185,7 +233,8 @@ PRODUCTION_IMPORTS = {
     ],
     "src/cli/record_shapes.zig": [
         "src/contract/values.zig",
-        "src/cli/report.zig",
+        "src/report/model.zig",
+        "src/report/json.zig",
     ],
     "src/cli/seed.zig": [
         "src/sqlite.zig",
@@ -218,6 +267,29 @@ TEST_ENTRY_IMPORTER = "src/cli.zig"
 TEST_ENTRY_TARGET = "src/cli/tests.zig"
 TEST_ENTRY_PATH_TEXT = "cli/tests.zig"
 TEST_IMPORTS = {
+    "src/report/format_tests.zig": [
+        "src/report/format.zig",
+    ],
+    "src/report/human_tests.zig": [
+        "src/db.zig",
+        "src/result.zig",
+        "src/report/model.zig",
+        "src/report/format.zig",
+        "src/report/human.zig",
+    ],
+    "src/report/kv_tests.zig": [
+        "src/db.zig",
+        "src/result.zig",
+        "src/report/model.zig",
+        "src/report/kv.zig",
+    ],
+    "src/report/json_tests.zig": [
+        "src/db.zig",
+        "src/result.zig",
+        "src/report/model.zig",
+        "src/report/format.zig",
+        "src/report/json.zig",
+    ],
     "src/cli/d1_tests.zig": [
         "src/cli.zig",
         "src/db.zig",
@@ -235,7 +307,6 @@ TEST_IMPORTS = {
         "src/cli/query.zig",
         "src/cli/workspace.zig",
         "src/cli/timing.zig",
-        "src/cli/report.zig",
         "src/cli/pair.zig",
         "src/cli/batch.zig",
         "src/cli/audit.zig",
@@ -258,6 +329,14 @@ TEST_IMPORTS = {
 
 BUILTIN_IMPORTS = ["std", "builtin"]
 
+PENDING_MOVE_IMPORTS = {
+    "report": [
+        "src/cli/comparison.zig",
+        "src/cli/timing.zig",
+        "src/cli/warnings.zig",
+    ],
+}
+
 MODULE_IMPORTS = {
     "src/main.zig": ["Qenome"],
     "src/cli/args.zig": ["build_options"],
@@ -271,6 +350,7 @@ LAYERS = [
     ("src/d1/", "d1"),
     ("src/db.zig", "engine"),
     ("src/result.zig", "engine"),
+    ("src/report/", "report"),
     ("src/cli/", "cli"),
     ("src/cli.zig", "cli"),
     ("src/root.zig", "main"),
@@ -296,7 +376,6 @@ LAYER_RANK = {
 LINE_LIMITS = {
     "src/cli/tests.zig": 5744,
     "src/db.zig": 4055,
-    "src/cli/report.zig": 2353,
     "src/cli/batch.zig": 1901,
     "src/cli/args.zig": 1780,
     "src/cli/d1.zig": 566,
@@ -307,7 +386,16 @@ LINE_LIMITS = {
 
 MAX_LINES = 800
 
-WRITE_ALLOWED = ["src/cli.zig", "src/cli/report.zig", "src/cli/warnings.zig", "src/main.zig"]
+WRITE_ALLOWED = [
+    "src/cli.zig",
+    "src/cli/warnings.zig",
+    "src/main.zig",
+    "src/report/format.zig",
+    "src/report/human.zig",
+    "src/report/kv.zig",
+    "src/report/json.zig",
+    "src/report/time.zig",
+]
 
 WRITE_DEBT = [
     "src/cli/audit.zig",
@@ -321,7 +409,6 @@ WRITE_DEBT = [
     "src/cli/record_shapes.zig",
     "src/cli/seed.zig",
     "src/cli/timing.zig",
-    "src/cli/report_time.zig",
     "src/cli/workspace.zig",
 ]
 
@@ -465,6 +552,7 @@ def check_files(root, sources, violations):
             violations.append((rel_path, 0, "missing-file", "the approved file is missing"))
     check_directory(root, "src", violations)
     check_directory(root, "src/cli", violations)
+    check_directory(root, "src/report", violations)
     check_directory(root, "src/contract", violations)
     check_directory(root, "src/skill", violations)
     check_directory(root, "src/d1", violations)
@@ -495,6 +583,8 @@ def check_layers(sources, violations):
             if target is None:
                 continue
             if LAYER_RANK[target] > LAYER_RANK[layer]:
+                if resolved in PENDING_MOVE_IMPORTS.get(layer, []):
+                    continue
                 violations.append(
                     (
                         rel_path,

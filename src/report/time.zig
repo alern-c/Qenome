@@ -1,6 +1,6 @@
 const std = @import("std");
 const Io = std.Io;
-const cli_timing = @import("timing.zig");
+const cli_timing = @import("../cli/timing.zig");
 
 pub fn writeEvidence(stdout: *Io.Writer, evidence: cli_timing.Evidence) Io.Writer.Error!void {
     try stdout.print("time-effect: {s} (reference only)\ntime-median-difference-ns: {d} (variant - baseline, paired rounds)\ntime-noise-band-ns: {d} (baseline A/A absolute difference p95; {d} pairs; empirical)\n", .{ cli_timing.effectText(evidence.effect), evidence.median_difference_ns, evidence.noise_band.threshold_ns, evidence.noise_band.pairs });
