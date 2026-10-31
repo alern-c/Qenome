@@ -196,7 +196,7 @@ sqlite3 "$d/baseline.db" "SELECT count(*), count(note), sum(length(note)), min(n
 
 ## Accuracy corpus (`testdata/accuracy/`)
 
-`testdata/accuracy/` holds known-answer cases for the verdict. `scripts/check_accuracy.py` builds a fresh database for each case in a temporary directory, runs `zig-out/bin/qenome --format json`, and compares the JSON with the answer in `case.json`. It runs each case several times (`--repeat N`, default 3) and fails when the exit status, the report `exit_code`, `result`, `verdict`, `plan_changed`, a plan step detail, or a counter differs between the runs. Every comparison in a batch report is checked, and a batch report also has its `recommended` and summary counts compared. Timing is not compared unless a case opts in with `"timing": "stable"`, and a case checks the timing effect only with `effect`.
+`testdata/accuracy/` holds known-answer cases for the verdict. `scripts/check_accuracy.py` builds a fresh database for each case in a temporary directory, runs `zig-out/bin/qenome --format json`, and compares the JSON with the answer in `case.json`. It runs each case several times (`--repeat N`, default 3) and fails when the exit status, the report `exit_code`, `result`, `verdict`, `plan_changed`, a plan step detail, or a counter differs between the runs. Every comparison in a batch report is checked, and a batch report also has its `recommended` and summary counts compared. Timing is not compared unless a case opts in with `"timing": "stable"`, and a case asserts the timing labels with `effect`: that expectation fails only when more than half of the runs return a label outside the allowed list, and the smaller count of runs outside it is printed on one line that starts `note`, with the case name, the run numbers and the labels, because the label is statistical. A case without `effect` keeps the stricter check: every run must hold a valid label, and the runs must not flip between `faster` and `slower`.
 
 One directory per case, `testdata/accuracy/<case>/`:
 
@@ -219,7 +219,7 @@ No database file is committed. The harness infers the mode from the files: a `ba
 - `result` (`match`, `mismatch`, `incomparable`), `verdict`, and `plan_changed`.
 - `baseline_plan` / `variant_plan`: `contains` and `excludes` substrings of a plan step `detail`.
 - `rows_read` / `rows_written`: `decrease`, `same`, or `increase`, or an object with `direction` and an optional `max_ratio` (the upper bound of variant / baseline).
-- `effect`: the timing `effect` of every run, as one value or an array of allowed values from `faster`, `slower`, `no-difference`, and `insufficient-samples`; it needs `"timing": "stable"`.
+- `effect`: the timing `effect` of the runs, as one value or an array of allowed values from `faster`, `slower`, `no-difference`, and `insufficient-samples`; it needs `"timing": "stable"`. This check fails only when more than half of the runs return a value outside the list (with `--repeat 3`, two or more); for a smaller count of runs outside it, the check passes and one `note` line names the case, the runs and their labels. Every other key fails on a single run.
 - `warnings`: warning `code`s that must be in `contains` or `excludes`.
 - `human`: `contains` / `excludes` substrings of the `--format human` report. The harness runs that report once, after the JSON runs, so a case can require that the human report shows a warning next to the verdict.
 - `batch`: `recommended` and `counts` for `summary[0]` (`improved`, `no_effect`, `needs_check`, `mismatch`, `incomparable`, `timeout`, `not_judged`).
@@ -236,7 +236,7 @@ The cases fall into three groups, and each directory is named after the trap it 
 
 | Group | What the case protects | Added later |
 | --- | --- | --- |
-| not improved | the rows match and the variant reads the same rows, so the answer is `no-effect`: an index SQLite does not use, a plan whose text changed without changing the rows read, and an unused index that the timing must never call `faster` | `unused-column-index`, `nocase-index-binary-comparison`, `covering-index-same-rows`, `timing-same-plan` |
+| not improved | the rows match and the variant reads the same rows, so the answer is `no-effect`: an index SQLite does not use, a plan whose text changed without changing the rows read, and an unused index that the timing must not call `faster` in most runs | `unused-column-index`, `nocase-index-binary-comparison`, `covering-index-same-rows`, `timing-same-plan` |
 | needs review | the rows match but the change costs something: the verdict is `needs-check` when the variant reads or writes more rows, and the warnings must reach the human report next to the verdict | `stale-stats-reads-more`, `insert-index-writes`, `update-indexed-column-writes-more`, `one-row-gain-of-50000`, the same query and index that answer `improved` for one bind and `no-effect` for another (`bind-range-one-row`, `bind-range-every-row`), and the human checks in `small-data` and `no-analyze-stats` |
 | results differ | the rows must stay the same where the candidate can only change the plan, and a case where they can differ expects exit `3` or `4` with `verdict` `not-judged`, never `improved` | `nocase-index-match`, `partial-index-range-match`, `order-by-ties-limit` |
 

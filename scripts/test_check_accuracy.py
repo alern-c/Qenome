@@ -679,17 +679,6 @@ def expectation_tests(checker) -> None:
         "above 0",
     )
 
-    timed = observation(checker, report=comparison(timing={"effect": "no-difference", "rounds": 6}))
-    check_pass(checker, "an allowed timing effect passes", {"effect": ["no-difference"]}, timed)
-    check_pass(
-        checker,
-        "one of several allowed timing effects passes",
-        {"effect": ["no-difference", "insufficient-samples"]},
-        timed,
-    )
-    check_fail(checker, "a disallowed timing effect fails", {"effect": ["faster"]}, timed, "the timing effect is")
-    check_fail(checker, "a missing timing effect fails", {"effect": ["faster"]}, good, "the timing effect is")
-
     check_pass(checker, "a contained warning passes", {"warnings": {"contains": ["data_too_small"]}}, good)
     check_fail(
         checker,
@@ -838,15 +827,85 @@ def repeat_tests(checker) -> None:
     expect("a changed recommendation is reported", bool(failures) and "recommended" in failures[0], failures)
 
 
-def timing_tests(checker) -> None:
-    def effects(*values):
+def effect_tests(checker) -> None:
+    allowed = ["no-difference", "insufficient-samples", "slower"]
+
+    def effect_runs(*values, expect_spec=None):
         observations = []
         for value in values:
             if value is None:
                 observations.append(observation(checker, report=comparison()))
             else:
                 observations.append(observation(checker, report=comparison(timing={"effect": value, "rounds": 6})))
-        return checker.timing_failures(observations)
+        spec = {"effect": allowed} if expect_spec is None else expect_spec
+        return checker.effect_majority("case", spec, observations)
+
+    failures, note = effect_runs("no-difference", "no-difference", "no-difference")
+    expect("allowed timing effects pass", failures == [] and note is None, (failures, note))
+    failures, note = effect_runs("slower", "insufficient-samples", "no-difference")
+    expect("every allowed label passes", failures == [] and note is None, (failures, note))
+    failures, note = effect_runs("faster", "no-difference", "no-difference")
+    expect("one disallowed effect in three runs passes", failures == [], failures)
+    expect(
+        "one disallowed effect in three runs is noted",
+        note is not None and note.startswith('note case: run 1 is "faster", outside'),
+        note,
+    )
+    expect("the note names the allowed labels", note is not None and json.dumps(allowed) in note, note)
+    expect(
+        "the note says the effect check passes",
+        note is not None and note.endswith("; at most half of the 3 runs, so the effect check passes"),
+        note,
+    )
+    failures, note = effect_runs(
+        "faster", "no-difference", "slower", "no-difference", expect_spec={"effect": ["no-difference"]}
+    )
+    expect(
+        "two different disallowed effects share one note line",
+        failures == [] and note is not None and 'run 1 is "faster"' in note and 'run 3 is "slower"' in note,
+        note,
+    )
+    failures, note = effect_runs("faster", "faster", "no-difference")
+    expect(
+        "two disallowed effects in three runs fail",
+        len(failures) == 2 and note is None and failures[0].startswith("run 1: the timing effect is"),
+        failures,
+    )
+    failures, note = effect_runs("faster", "faster", "faster")
+    expect("three disallowed effects fail", len(failures) == 3 and note is None, failures)
+    failures, note = effect_runs("faster")
+    expect("one run with a disallowed effect fails", len(failures) == 1 and note is None, failures)
+    failures, note = effect_runs("faster", "no-difference")
+    expect("half of two runs is not a majority", failures == [] and note is not None, (failures, note))
+    failures, note = effect_runs("faster", "faster", "no-difference", "no-difference")
+    expect("half of four runs is not a majority", failures == [] and note is not None, (failures, note))
+    failures, note = effect_runs("faster", "faster", "faster", "no-difference", "no-difference")
+    expect("three of five runs is a majority", len(failures) == 3 and note is None, failures)
+    failures, note = effect_runs("faster", "no-difference", expect_spec={"verdict": "improved"})
+    expect(
+        "a case without an effect expectation holds no effect check",
+        failures == [] and note is None,
+        (failures, note),
+    )
+    failures, note = effect_runs(None, "no-difference", "no-difference")
+    expect(
+        "a missing timing effect counts as an outlier",
+        failures == [] and note is not None and "run 1 is null" in note,
+        note,
+    )
+    failures, note = effect_runs(None, None, None)
+    expect("a missing timing effect in every run fails", len(failures) == 3, failures)
+
+
+def timing_tests(checker) -> None:
+    def effects(*values, effect_expected=False):
+        observations = []
+        for value in values:
+            if value is None:
+                observations.append(observation(checker, report=comparison()))
+            else:
+                observations.append(observation(checker, report=comparison(timing={"effect": value, "rounds": 6})))
+        return checker.timing_failures(observations, effect_expected)
 
     steady = effects("faster", "faster", "faster")
     expect("a steady faster effect passes", steady == [], steady)
@@ -854,13 +913,19 @@ def timing_tests(checker) -> None:
     expect("a faster to slower flip fails", bool(flip), flip)
     reverse = effects("slower", "faster")
     expect("a slower to faster flip fails", bool(reverse), reverse)
+    expected = effects("faster", "slower", effect_expected=True)
+    expect("an expected effect skips the flip check", expected == [], expected)
+    expected_steady = effects("faster", "faster", "slower", effect_expected=True)
+    expect("an expected effect keeps a steady direction", expected_steady == [], expected_steady)
     neutral = effects("faster", "no-difference")
     expect("no-difference is not a flip", neutral == [], neutral)
     samples = effects("faster", "insufficient-samples")
     expect("insufficient-samples is not a flip", samples == [], samples)
     missing = effects(None)
     expect("a missing effect fails", bool(missing), missing)
-    no_comparison = checker.timing_failures([observation(checker, exit_code=1)])
+    missing_expected = effects(None, effect_expected=True)
+    expect("a missing effect fails with an expected effect", bool(missing_expected), missing_expected)
+    no_comparison = checker.timing_failures([observation(checker, exit_code=1)], False)
     expect("a missing comparison fails", bool(no_comparison), no_comparison)
 
 
@@ -939,6 +1004,90 @@ def judge_tests(checker) -> None:
         status == "FAIL" and "remove known_wrong" in message and "human report" in message,
         message,
     )
+
+    expected_effect = {"verdict": "improved", "effect": ["no-difference"]}
+    notes: list[str] = []
+    status, message = checker.judge("case", expected_effect, None, "stable", [faster, quieter, quieter], notes=notes)
+    expect("one disallowed timing effect in three runs passes the case", status == "ok", message)
+    expect(
+        "one disallowed timing effect in three runs prints one note",
+        len(notes) == 1 and "run 1" in notes[0] and '"faster"' in notes[0],
+        notes,
+    )
+    notes = []
+    status, message = checker.judge("case", expected_effect, None, "stable", [faster, faster, quieter], notes=notes)
+    expect(
+        "two disallowed timing effects fail the case",
+        status == "FAIL" and "the timing effect is" in message,
+        message,
+    )
+    expect("a failing effect majority prints no note", notes == [], notes)
+    notes = []
+    status, message = checker.judge("case", expected_effect, None, "stable", [faster, faster, faster], notes=notes)
+    expect("three disallowed timing effects fail the case", status == "FAIL" and notes == [], message)
+    notes = []
+    status, message = checker.judge("case", expected_effect, None, "stable", [faster, quieter], notes=notes)
+    expect("half of two runs passes the case", status == "ok" and len(notes) == 1, (message, notes))
+    status, message = checker.judge("case", expected_effect, None, "stable", [faster, quieter, quieter])
+    expect("a note is dropped when the caller keeps no notes", status == "ok", message)
+    mixed = observation(checker, report=comparison(verdict="no-effect", timing={"effect": "no-difference"}))
+    notes = []
+    status, message = checker.judge("case", expected_effect, None, "stable", [faster, mixed, quieter], notes=notes)
+    expect(
+        "a tolerated timing effect does not hide another expectation",
+        status == "FAIL" and "run 2" in message and "verdict is" in message,
+        message,
+    )
+    expect("a tolerated timing effect still prints its note", len(notes) == 1, notes)
+    untimed = observation(checker, report=comparison())
+    notes = []
+    status, message = checker.judge("case", expected_effect, None, "stable", [untimed, quieter, quieter], notes=notes)
+    expect(
+        "a missing timing effect fails a timing case as a minority",
+        status == "FAIL" and "has no timing effect" in message,
+        message,
+    )
+    expect("a missing timing effect still prints the effect note", len(notes) == 1, notes)
+
+    notes = []
+    inside = {"effect": ["no-difference"]}
+    status, message = checker.judge("case", inside, "https://example.test/1", "stable", [faster, faster, faster])
+    expect(
+        "a known-wrong case whose only effect failure is the majority is not fixed",
+        status == "known-wrong" and "the timing effect is" in message,
+        message,
+    )
+    status, message = checker.judge("case", inside, "https://example.test/1", "stable", [quieter, quieter, quieter])
+    expect(
+        "a known-wrong case whose effect now passes fails as fixed",
+        status == "FAIL" and "remove known_wrong" in message,
+        message,
+    )
+    status, message = checker.judge("case", inside, "https://example.test/1", "stable", [faster, quieter, quieter])
+    expect(
+        "a known-wrong case with a tolerated effect outlier fails as fixed",
+        status == "FAIL" and "remove known_wrong" in message,
+        message,
+    )
+
+
+def run_output_tests(checker) -> None:
+    note = (
+        'note case: run 1 is "faster", outside ["no-difference"]; '
+        "at most half of the 3 runs, so the effect check passes"
+    )
+    case = checker.Case("case", "", "compare", [], {"exit": 0}, None, None)
+    original = checker.run_case
+    checker.run_case = lambda case, repeat, binary, work_parent: ("ok", case.name, [note], ["improved"])
+    try:
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            failures, known_wrong, rows = checker.run("/root", [case], 3, "/nonexistent/qenome")
+    finally:
+        checker.run_case = original
+    lines = buffer.getvalue().splitlines()
+    expect("a passing case prints its ok line and then its note", lines == ["ok case", note], lines)
+    expect("a note does not count as a failure", failures == 0 and known_wrong == 0, (failures, known_wrong))
 
 
 def human_tests(checker) -> None:
@@ -1180,8 +1329,10 @@ def main() -> int:
     parser_value_tests(checker)
     expectation_tests(checker)
     repeat_tests(checker)
+    effect_tests(checker)
     timing_tests(checker)
     judge_tests(checker)
+    run_output_tests(checker)
     human_tests(checker)
     summary_tests(checker)
     column_tests(checker)

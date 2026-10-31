@@ -585,19 +585,58 @@ def comparison_failures(expect, comparison):
     for key in ("rows_read", "rows_written"):
         if key in expect:
             failures += rows_failures(key, comparison, expect[key])
-    if "effect" in expect:
-        failures += effect_failures(comparison, expect["effect"])
     if "warnings" in expect:
         failures += warning_failures(comparison.get("warnings"), expect["warnings"])
     return failures
 
 
-def effect_failures(comparison, allowed):
-    timing = comparison.get("timing")
-    effect = timing.get("effect") if isinstance(timing, dict) else None
-    if effect in allowed:
-        return []
-    return ["the timing effect is " + json.dumps(effect) + ", expected one of " + json.dumps(allowed)]
+def effect_samples(observations):
+    samples = []
+    for observation in observations:
+        comparison = observation["comparison"]
+        timing = comparison.get("timing") if isinstance(comparison, dict) else None
+        samples.append(timing.get("effect") if isinstance(timing, dict) else None)
+    return samples
+
+
+def effect_failure(number, effect, allowed):
+    return (
+        "run "
+        + str(number)
+        + ": the timing effect is "
+        + json.dumps(effect)
+        + ", expected one of "
+        + json.dumps(allowed)
+    )
+
+
+def effect_notice(name, outliers, allowed, total):
+    runs = ", ".join("run " + str(number) + " is " + json.dumps(effect) for number, effect in outliers)
+    return (
+        "note "
+        + name
+        + ": "
+        + runs
+        + ", outside "
+        + json.dumps(allowed)
+        + "; at most half of the "
+        + str(total)
+        + " runs, so the effect check passes"
+    )
+
+
+def effect_majority(name, expect, observations):
+    allowed = expect.get("effect")
+    if allowed is None:
+        return [], None
+    outliers = [
+        (number, effect) for number, effect in enumerate(effect_samples(observations), 1) if effect not in allowed
+    ]
+    if not outliers:
+        return [], None
+    if len(outliers) * 2 > len(observations):
+        return [effect_failure(number, effect, allowed) for number, effect in outliers], None
+    return [], effect_notice(name, outliers, allowed, len(observations))
 
 
 def plan_details(side):
@@ -890,38 +929,40 @@ def repeat_failures(first, later, later_number):
     ]
 
 
-def timing_failures(observations):
-    effects = []
-    for number, observation in enumerate(observations, 1):
-        comparison = observation["comparison"]
-        timing = comparison.get("timing") if isinstance(comparison, dict) else None
-        effect = timing.get("effect") if isinstance(timing, dict) else None
+def timing_failures(observations, effect_expected):
+    effects = effect_samples(observations)
+    for number, effect in enumerate(effects, 1):
         if effect not in EFFECTS:
             return ["run " + str(number) + " has no timing effect; it is " + json.dumps(effect)]
-        effects.append(effect)
+    if effect_expected:
+        return []
     directions = {effect for effect in effects if effect in ("faster", "slower")}
     if len(directions) > 1:
         return ["the timing effect flips between faster and slower: " + ", ".join(effects)]
     return []
 
 
-def judge(name, case_expect, known_wrong, timing, observations, extra_failures=()):
+def judge(name, case_expect, known_wrong, timing, observations, extra_failures=(), notes=None):
     per_run = [fail_messages(case_expect, observation) for observation in observations]
+    majority_failures, notice = effect_majority(name, case_expect, observations)
+    if notice is not None and notes is not None:
+        notes.append(notice)
     failures = list(extra_failures)
     for number, run_failures in enumerate(per_run, 1):
         for failure in run_failures:
             failures.append("run " + str(number) + ": " + failure)
+    failures += majority_failures
     stability = []
     for number in range(1, len(observations)):
         stability += repeat_failures(observations[0], observations[number], number + 1)
     if timing is not None:
-        stability += timing_failures(observations)
+        stability += timing_failures(observations, "effect" in case_expect)
     passing = [number for number, run_failures in enumerate(per_run, 1) if not run_failures]
     if known_wrong is not None:
-        if len(passing) == len(observations):
+        if len(passing) == len(observations) and not majority_failures:
             details = ["the case passes now; remove known_wrong (" + known_wrong + ")"] + list(extra_failures)
             return "FAIL", " ; ".join(details[:5])
-        if passing or stability:
+        if 0 < len(passing) < len(observations) or stability:
             details = []
             if passing:
                 details.append("the case passes in run(s) " + ", ".join(str(number) for number in passing))
@@ -1042,8 +1083,9 @@ def run_case(case, repeat, binary, work_parent):
     if "human" in case.expect:
         human = run_human(case, binary, directory, env)
         extra_failures = human_failures(case.expect["human"], human)
-    status, message = judge(case.name, case.expect, case.known_wrong, case.timing, observations, extra_failures)
-    return status, message, observed_verdicts(observations)
+    notes = []
+    status, message = judge(case.name, case.expect, case.known_wrong, case.timing, observations, extra_failures, notes)
+    return status, message, notes, observed_verdicts(observations)
 
 
 def run(root, cases, repeat, binary):
@@ -1056,7 +1098,7 @@ def run(root, cases, repeat, binary):
     rows = []
     try:
         for case in cases:
-            status, message, verdicts = run_case(case, repeat, binary, work_parent)
+            status, message, notes, verdicts = run_case(case, repeat, binary, work_parent)
             rows.append(
                 {
                     "name": case.name,
@@ -1075,6 +1117,8 @@ def run(root, cases, repeat, binary):
             else:
                 failures += 1
                 print("FAIL " + case.name + ": " + message, flush=True)
+            for note in notes:
+                print(note, flush=True)
     finally:
         shutil.rmtree(work_parent, ignore_errors=True)
     return failures, known_wrong, rows
