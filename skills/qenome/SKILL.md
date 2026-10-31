@@ -204,7 +204,7 @@ npx qenome --d1 DB --batch qenome-manifest/manifest.json --rank --format json
 ```
 
 - The manifest needs only `queries`. `candidates` and `writes` are ignored. A query may include `executions`, a whole number of at least 1. `--record` writes that count into `manifest.json`.
-- Each query runs once on the baseline copy. Read `rows_read`, `rows_returned`, `read_ratio` (`null` when no rows come back), `fullscan_steps`, and `scan_steps` (plan lines that are a table `SCAN`, not `SCAN ... USING`).
+- Each query runs once on the baseline copy. Read `rows_read`, `rows_returned`, `read_ratio` (`null` when no rows come back), `fullscan_steps`, and `scan_steps` (plan lines that are a table `SCAN`, not `SCAN ... USING`, a co-routine that a `CO-ROUTINE` line of the same plan names, a constant row set, or a `VALUES` clause).
 - `likely_full_scan` is true when `fullscan_steps` is above zero or `scan_steps` is not empty. Say so plainly. Exit `7` means the report was written and at least one query is flagged. Exit `0` means none is. Do not treat `7` as a rejected input: stdout holds the report.
 - Order is by `relative_rows` (`rows_read` times `executions`) when `executions` is set, otherwise by `rows_read`, highest first. `relative_rows` is a relative indicator, not a bill. The object says that in `note`. Never call the figure a bill or a charge.
 - `next.select` is the top query. The path is relative to the manifest. The next command is `npx qenome <DB> <that file> --suggest`.

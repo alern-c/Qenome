@@ -171,7 +171,7 @@ qenome app.db --batch manifest.json --rank
 qenome --d1 DB --batch qenome-manifest/manifest.json --rank --format json
 ```
 
-各クエリは1回実行します。報告には、読んだ行数、返した行数、読んだ行数 / 返した行数（0行のときは `n/a`）、フルスキャンのステップ数、インデックスを使わない `SCAN`（`USING` が付かない `SCAN`）が出ます。フルスキャンのカウンタが 0 より大きいか、その `SCAN` が1つでもあれば、そのクエリは likely full scan です。human は `flag: likely full scan` と出します。
+各クエリは1回実行します。報告には、読んだ行数、返した行数、読んだ行数 / 返した行数（0行のときは `n/a`）、フルスキャンのステップ数、インデックスを使わない `SCAN`（`USING` が付かない `SCAN`）が出ます。同じ計画の `CO-ROUTINE` 行が宣言する名前の `SCAN`（materialize されたサブクエリや CTE）、行数が固定の `SCAN`、`VALUES` の `SCAN` は、テーブルの `SCAN` ではありません。フルスキャンのカウンタが 0 より大きいか、そのテーブルの `SCAN` が1つでもあれば、そのクエリは likely full scan です。human は `flag: likely full scan` と出します。
 
 並びは重みの大きい順です。クエリに `executions` があれば読んだ行数とその回数の積、無ければ読んだ行数だけを使います。同じ重みなら likely full scan を先に、次に比率の大きい順、最後にマニフェストの順です。`rows read x runs` は相対的な指標であり、請求ではありません。`note` の行と、回数を掛けた各行にその旨を書きます。報告の数値は料金ではありません。
 

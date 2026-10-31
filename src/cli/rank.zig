@@ -88,9 +88,8 @@ fn rankLessThan(_: void, left: Measured, right: Measured) bool {
     const right_weight = weightOf(right);
     if (left_weight != right_weight) return left_weight > right_weight;
     if (left.likely_full_scan != right.likely_full_scan) return left.likely_full_scan;
-    const left_ratio = ratioKey(left);
-    const right_ratio = ratioKey(right);
-    if (left_ratio != right_ratio) return left_ratio > right_ratio;
+    if (readRatioRanksBefore(left.rows_read, left.rows_returned, right.rows_read, right.rows_returned)) return true;
+    if (readRatioRanksBefore(right.rows_read, right.rows_returned, left.rows_read, left.rows_returned)) return false;
     return left.input_index < right.input_index;
 }
 
@@ -100,9 +99,10 @@ fn weightOf(row: Measured) u128 {
     return reads;
 }
 
-fn ratioKey(row: Measured) u128 {
-    if (row.rows_returned == 0) return 0;
-    return (row.rows_read * 1000) / row.rows_returned;
+pub fn readRatioRanksBefore(left_read: u64, left_returned: u64, right_read: u64, right_returned: u64) bool {
+    if (left_returned == 0) return false;
+    if (right_returned == 0) return true;
+    return @as(u128, left_read) * @as(u128, right_returned) > @as(u128, right_read) * @as(u128, left_returned);
 }
 
 fn relativeProduct(rows_read: u64, executions: ?u64) ?u64 {
@@ -110,10 +110,32 @@ fn relativeProduct(rows_read: u64, executions: ?u64) ?u64 {
     return std.math.mul(u64, rows_read, count) catch null;
 }
 
-pub fn isTableScan(detail: []const u8) bool {
+pub fn isTableScan(detail: []const u8, coroutines: []const []const u8) bool {
     if (!std.mem.startsWith(u8, detail, "SCAN ")) return false;
-    if (std.mem.startsWith(u8, detail, "SCAN CONSTANT ROW")) return false;
-    return std.mem.indexOf(u8, detail, " USING ") == null;
+    if (std.mem.indexOf(u8, detail, " USING ") != null) return false;
+    const name = detail["SCAN ".len..];
+    if (std.mem.endsWith(u8, name, "CONSTANT ROW")) return false;
+    if (std.mem.endsWith(u8, name, "VALUES CLAUSE")) return false;
+    if (std.mem.startsWith(u8, name, "SUBQUERY ")) return false;
+    if (std.mem.startsWith(u8, name, "(subquery-")) return false;
+    for (coroutines) |coroutine| {
+        if (std.mem.eql(u8, name, coroutine)) return false;
+    }
+    return true;
+}
+
+const coroutine_prefix = "CO-ROUTINE ";
+
+fn collectCoroutines(arena: std.mem.Allocator, rows: []const db.PlanRow) ?[]const []const u8 {
+    var names: std.ArrayList([]const u8) = .empty;
+    for (rows) |row| {
+        if (!std.mem.startsWith(u8, row.detail, coroutine_prefix)) continue;
+        const name = std.mem.trim(u8, row.detail[coroutine_prefix.len..], " \t");
+        if (name.len == 0) continue;
+        const copy = arena.dupe(u8, name) catch return null;
+        names.append(arena, copy) catch return null;
+    }
+    return names.toOwnedSlice(arena) catch null;
 }
 
 fn measureQuery(
@@ -152,10 +174,14 @@ fn measureQuery(
         return null;
     };
 
+    const coroutines = collectCoroutines(arena, plan.rows) orelse {
+        failure.* = outOfMemory(stderr);
+        return null;
+    };
     const counters = session.counters();
     var steps: std.ArrayList([]const u8) = .empty;
     for (plan.rows) |row| {
-        if (!isTableScan(row.detail)) continue;
+        if (!isTableScan(row.detail, coroutines)) continue;
         const copy = arena.dupe(u8, row.detail) catch {
             failure.* = outOfMemory(stderr);
             return null;
@@ -257,7 +283,10 @@ fn writeHuman(
     }
     const top = measured[0];
     try stdout.writeAll("\nnext: qenome <DB> ");
-    try result_rows.writeEscapedText(stdout, top.label);
+    var token: std.ArrayList(u8) = .empty;
+    defer token.deinit(allocator);
+    try cli_warnings.appendToken(&token, allocator, top.label);
+    try stdout.writeAll(token.items);
     try stdout.writeAll(" --suggest\n");
     if (inputs.unapplied_migrations) |pending| {
         try stdout.writeAll("\nWarnings\n");

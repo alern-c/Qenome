@@ -182,8 +182,8 @@ pub const body =
     \\orders the queries by rows read, highest first. When a query has
     \\executions, the order uses rows read x runs instead. That figure is
     \\a relative indicator, not a bill. A query is a likely full scan when
-    \\its full-scan counter is above zero or its plan has a SCAN step that
-    \\does not use an index. The report flags those queries and exits 7
+    \\its full-scan counter is above zero or its plan has a table SCAN step
+    \\that does not use an index. The report flags those queries and exits 7
     \\when at least one is flagged; otherwise it exits 0. The manifest
     \\needs only queries, so a manifest from --record works, and candidates
     \\and writes are ignored. The last line names the top query for

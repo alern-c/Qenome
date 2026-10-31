@@ -171,7 +171,7 @@ qenome app.db --batch manifest.json --rank
 qenome --d1 DB --batch qenome-manifest/manifest.json --rank --format json
 ```
 
-Each query runs once. The report gives rows read, rows returned, the rows-read / rows-returned ratio (`n/a` when the query returns no rows), full-scan steps, and the plan steps that are a table `SCAN` (a `SCAN` that does not say `USING`). A query is a likely full scan when the full-scan counter is above zero or one of those `SCAN` steps is present. The human report marks it with `flag: likely full scan`.
+Each query runs once. The report gives rows read, rows returned, the rows-read / rows-returned ratio (`n/a` when the query returns no rows), full-scan steps, and the plan steps that are a table `SCAN` (a `SCAN` that does not say `USING`). A `SCAN` of a co-routine (a name that the plan's own `CO-ROUTINE` line declares, so a materialized subquery or a CTE), of a constant row set, or of a `VALUES` clause is not a table `SCAN`. A query is a likely full scan when the full-scan counter is above zero or one of those table `SCAN` steps is present. The human report marks it with `flag: likely full scan`.
 
 The order is the weight, highest first: `rows read` multiplied by `executions` when the query has that count, otherwise `rows read` alone. A likely full scan, then a higher ratio, then manifest order, break ties. `rows read x runs` is a relative indicator, not a bill. The report says that in the `note` line and on each weighted row. Nothing in the report is a charge.
 

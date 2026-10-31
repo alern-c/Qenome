@@ -252,7 +252,7 @@ Semantics and limits:
 | `rows_returned` | number | Result rows of that run |
 | `read_ratio` | number or `null` | `rows_read / rows_returned` when that division is exact, a JSON number otherwise, `null` when `rows_returned` is 0 |
 | `fullscan_steps` | number | SQLite's full-scan step counter |
-| `scan_steps` | array of strings | Plan details that are a table `SCAN` (`SCAN` without `USING`, and not `SCAN CONSTANT ROW`) |
+| `scan_steps` | array of strings | Plan details that are a table `SCAN` (`SCAN` without `USING`, and not a name that a `CO-ROUTINE` line of the same plan declares, a constant row set, or a `VALUES` clause) |
 | `likely_full_scan` | boolean | True when `fullscan_steps` is above zero or `scan_steps` is not empty |
 | `executions` | number or `null` | The manifest's `executions`, or `null` when the manifest has none |
 | `relative_rows` | number or `null` | `rows_read * executions` when `executions` is set and the product fits in 64 bits, otherwise `null`. A relative indicator, not a bill |
