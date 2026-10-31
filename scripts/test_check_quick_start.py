@@ -15,10 +15,8 @@ CHECKER = os.path.join(HERE, "check_quick_start.py")
 FAILURES: list[str] = []
 
 COMMANDS = (
-    "./tools/qenome result=match verdict=improved code=0  "
-    "# expect: result=match verdict=improved exit=0",
-    "./tools/qenome result=match verdict=no-effect code=0  "
-    "# expect: result=match verdict=no-effect exit=0",
+    "./tools/qenome result=match verdict=improved code=0  # expect: result=match verdict=improved exit=0",
+    "./tools/qenome result=match verdict=no-effect code=0  # expect: result=match verdict=no-effect exit=0",
     "./tools/qenome result=incomparable verdict=not-judged code=4  "
     "# expect: result=incomparable verdict=not-judged exit=4",
     "./tools/qenome --batch batch.json recommended=cases/improved.index.sql  "
@@ -120,9 +118,7 @@ def contributing(commands):
         "mkdir -p work\n"
         "```\n"
         "\n"
-        "```sh\n"
-        + "\n".join(commands)
-        + "\n"
+        "```sh\n" + "\n".join(commands) + "\n"
         "```\n"
         "\n"
         "## Development checks\n"
@@ -260,9 +256,7 @@ def main():
             "# expect: result=match verdict=improved exit=0",
         )
     )
-    expect_rejected(
-        "a verdict that differs fails", code, output, "the verdict differs: the CONTRIBUTING.md expects"
-    )
+    expect_rejected("a verdict that differs fails", code, output, "the verdict differs: the CONTRIBUTING.md expects")
 
     code, output = case(
         patch(
@@ -282,9 +276,7 @@ def main():
     )
     expect_rejected("a recommendation that differs fails", code, output, "the recommendation differs")
 
-    code, output = case(
-        patch("CONTRIBUTING.md", "# expect: result=incomparable", "# expect: result=mismatch")
-    )
+    code, output = case(patch("CONTRIBUTING.md", "# expect: result=incomparable", "# expect: result=mismatch"))
     expect_rejected("a result that differs fails", code, output, "the result differs")
 
     code, output = case(rewrite("CONTRIBUTING.md", contributing(COMMANDS[0:2])))
@@ -298,8 +290,7 @@ def main():
     replaced = (
         COMMANDS[0],
         COMMANDS[1],
-        "./tools/qenome result=match verdict=improved code=0  "
-        "# expect: result=match verdict=improved exit=0",
+        "./tools/qenome result=match verdict=improved code=0  # expect: result=match verdict=improved exit=0",
     )
 
     code, output = case(rewrite("CONTRIBUTING.md", contributing(replaced)))
@@ -317,9 +308,7 @@ def main():
             "",
         )
     )
-    expect_rejected(
-        "a qenome command without a marker fails", code, output, 'has no "# expect:'
-    )
+    expect_rejected("a qenome command without a marker fails", code, output, 'has no "# expect:')
 
     code, output = case(
         patch(
@@ -328,9 +317,7 @@ def main():
             "```bash\n./tools/qenome result=match verdict=improved",
         )
     )
-    expect_rejected(
-        "a block that is not sh fails", code, output, 'the code block is not "```sh"'
-    )
+    expect_rejected("a block that is not sh fails", code, output, 'the code block is not "```sh"')
 
     code, output = case(
         insert_before(
@@ -364,12 +351,8 @@ def main():
     )
     expect_rejected("a marker on a setup command fails", code, output, "belongs on a qenome command")
 
-    code, output = case(
-        insert_before("CONTRIBUTING.md", "## Development checks", "```sh\nfalse\n```\n\n")
-    )
-    expect_rejected(
-        "a setup command that fails stops the check", code, output, "the setup command exited with 1"
-    )
+    code, output = case(insert_before("CONTRIBUTING.md", "## Development checks", "```sh\nfalse\n```\n\n"))
+    expect_rejected("a setup command that fails stops the check", code, output, "the setup command exited with 1")
 
     code, output = case(
         patch(
@@ -407,21 +390,15 @@ def main():
     )
     expect_rejected("an expect marker with a bad token fails", code, output, "needs result=")
 
-    code, output = case(
-        insert_before("CONTRIBUTING.md", "## Development checks", "```sh\necho one \\\n  two\n```\n\n")
-    )
-    expect_rejected(
-        "a command that continues on the next line fails", code, output, "continues on the next line"
-    )
+    code, output = case(insert_before("CONTRIBUTING.md", "## Development checks", "```sh\necho one \\\n  two\n```\n\n"))
+    expect_rejected("a command that continues on the next line fails", code, output, "continues on the next line")
 
     code, output = case(insert_before("CONTRIBUTING.md", "## Development checks", "```sh\necho open\n"))
     expect_unusable("an unclosed code block is unusable", code, output, "is not closed")
 
     missing_heading = contributing(COMMANDS).replace("## Quick start", "## Getting started")
     code, output = case(rewrite("CONTRIBUTING.md", missing_heading))
-    expect_unusable(
-        "a missing Quick start section is unusable", code, output, 'has no "## Quick start"'
-    )
+    expect_unusable("a missing Quick start section is unusable", code, output, 'has no "## Quick start"')
 
     code, output = case(rewrite("CONTRIBUTING.md", contributing(("mkdir -p work",))))
     expect_rejected(
@@ -435,9 +412,7 @@ def main():
     expect_clean("a command outside the section is ignored", code, output)
 
     code, output = case(patch("README.ja.md", "[CONTRIBUTING.md](CONTRIBUTING.md)", "the guide"))
-    expect_rejected(
-        "a README without the link fails", code, output, "the README must link to CONTRIBUTING.md"
-    )
+    expect_rejected("a README without the link fails", code, output, "the README must link to CONTRIBUTING.md")
 
     code, output = case(remove_file("CONTRIBUTING.md"))
     expect_unusable("a missing CONTRIBUTING.md is unusable", code, output, "cannot read")

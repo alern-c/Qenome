@@ -132,8 +132,7 @@ class Case:
             raise Unusable(self.name + ": --runs value is not a whole number: " + raw) from None
         if run_count < 6:
             raise Unusable(
-                self.name
-                + ": a timing case needs at least 6 --runs, because fewer rounds report insufficient-samples"
+                self.name + ": a timing case needs at least 6 --runs, because fewer rounds report insufficient-samples"
             )
         return run_count
 
@@ -564,10 +563,7 @@ def fail_messages(expect, observation):
         failures.append("exit is " + str(observation["exit"]) + ", expected " + str(expect["exit"]))
     if "exit_code" in expect and observation["exit_code"] != expect["exit_code"]:
         failures.append(
-            "the report exit_code is "
-            + str(observation["exit_code"])
-            + ", expected "
-            + str(expect["exit_code"])
+            "the report exit_code is " + str(observation["exit_code"]) + ", expected " + str(expect["exit_code"])
         )
     if "batch" in expect:
         failures += batch_failures(expect["batch"], observation["batch"])
@@ -582,9 +578,7 @@ def comparison_failures(expect, comparison):
     failures = []
     for key in ("result", "verdict", "plan_changed"):
         if key in expect and comparison.get(key) != expect[key]:
-            failures.append(
-                key + " is " + json.dumps(comparison.get(key)) + ", expected " + json.dumps(expect[key])
-            )
+            failures.append(key + " is " + json.dumps(comparison.get(key)) + ", expected " + json.dumps(expect[key]))
     for key in ("baseline_plan", "variant_plan"):
         if key in expect:
             failures += plan_failures(key, comparison.get(key[: -len("_plan")]), expect[key])
@@ -621,15 +615,11 @@ def plan_failures(name, side, spec):
     failures = []
     for needle in spec.get("contains", []):
         if not any(needle in detail for detail in details):
-            failures.append(
-                name + " has no step with " + json.dumps(needle) + "; steps: " + json.dumps(details)
-            )
+            failures.append(name + " has no step with " + json.dumps(needle) + "; steps: " + json.dumps(details))
     for needle in spec.get("excludes", []):
         for detail in details:
             if needle in detail:
-                failures.append(
-                    name + " has a step with " + json.dumps(needle) + ": " + json.dumps(detail)
-                )
+                failures.append(name + " has a step with " + json.dumps(needle) + ": " + json.dumps(detail))
                 break
     return failures
 
@@ -699,10 +689,7 @@ def batch_failures(spec, batch):
     failures = []
     if "recommended" in spec and batch.get("recommended") != spec["recommended"]:
         failures.append(
-            "recommended is "
-            + json.dumps(batch.get("recommended"))
-            + ", expected "
-            + json.dumps(spec["recommended"])
+            "recommended is " + json.dumps(batch.get("recommended")) + ", expected " + json.dumps(spec["recommended"])
         )
     counts = spec.get("counts")
     if counts is not None:
@@ -713,9 +700,7 @@ def batch_failures(spec, batch):
         entry = summary[0]
         for key, count in counts.items():
             if entry.get(key) != count:
-                failures.append(
-                    "summary[0]." + key + " is " + json.dumps(entry.get(key)) + ", expected " + str(count)
-                )
+                failures.append("summary[0]." + key + " is " + json.dumps(entry.get(key)) + ", expected " + str(count))
     return failures
 
 
@@ -1170,15 +1155,7 @@ def summarize(root, cases, repeat, failures, known_wrong, rows):
             + root
         )
     elif total == 0:
-        print(
-            "accuracy: ok ("
-            + str(len(cases))
-            + " cases, repeat "
-            + str(repeat)
-            + ", root="
-            + root
-            + ")"
-        )
+        print("accuracy: ok (" + str(len(cases)) + " cases, repeat " + str(repeat) + ", root=" + root + ")")
     else:
         print("accuracy: " + str(total) + " failure(s), root=" + root)
     return total
@@ -1231,11 +1208,7 @@ def main(argv):
         all_cases = load_corpus(root)
         if len(all_cases) < MINIMUM_CASES:
             raise Unusable(
-                "the corpus holds "
-                + str(len(all_cases))
-                + " cases; at least "
-                + str(MINIMUM_CASES)
-                + " are expected"
+                "the corpus holds " + str(len(all_cases)) + " cases; at least " + str(MINIMUM_CASES) + " are expected"
             )
         if name is not None:
             cases = [case for case in all_cases if case.name == name]

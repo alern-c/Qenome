@@ -24,6 +24,7 @@ def configured(pattern):
 def line_count(body):
     return body.count("\n")
 
+
 CANONICAL_FILES = {
     "build.zig": '// the module is built as @import("Qenome")\n',
     "src/main.zig": 'const std = @import("std");\nconst Qenome = @import("Qenome");\n',
@@ -110,15 +111,9 @@ CANONICAL_FILES = {
         'const contract = @import("../contract/values.zig");\n'
         "pub const ExitCode = contract.ExitCode;\n"
     ),
-    "src/cli/d1.zig": (
-        'const std = @import("std");\n'
-        'const config = @import("../d1/config.zig");\n'
-    ),
+    "src/cli/d1.zig": ('const std = @import("std");\nconst config = @import("../d1/config.zig");\n'),
     "src/d1/config.zig": 'const std = @import("std");\n',
-    "src/d1/migrations.zig": (
-        'const std = @import("std");\n'
-        'const sqlite = @import("../sqlite.zig");\n'
-    ),
+    "src/d1/migrations.zig": ('const std = @import("std");\nconst sqlite = @import("../sqlite.zig");\n'),
     "src/cli/warnings.zig": (
         'const std = @import("std");\n'
         'const contract = @import("../contract/values.zig");\n'
@@ -132,9 +127,7 @@ CANONICAL_FILES = {
         'const cli = @import("../cli.zig");\n'
     ),
     "src/cli/comparison.zig": (
-        'const std = @import("std");\n'
-        'const db = @import("../db.zig");\n'
-        'const result = @import("../result.zig");\n'
+        'const std = @import("std");\nconst db = @import("../db.zig");\nconst result = @import("../result.zig");\n'
     ),
     "src/cli/query.zig": (
         'const std = @import("std");\n'
@@ -218,14 +211,8 @@ CANONICAL_FILES = {
         '    _ = @import("json_tests.zig");\n'
         "}\n"
     ),
-    "src/report/time.zig": (
-        'const std = @import("std");\n'
-        'const cli_timing = @import("../cli/timing.zig");\n'
-    ),
-    "src/report/format_tests.zig": (
-        'const std = @import("std");\n'
-        'const format = @import("format.zig");\n'
-    ),
+    "src/report/time.zig": ('const std = @import("std");\nconst cli_timing = @import("../cli/timing.zig");\n'),
+    "src/report/format_tests.zig": ('const std = @import("std");\nconst format = @import("format.zig");\n'),
     "src/report/human_tests.zig": (
         'const std = @import("std");\n'
         'const db = @import("../db.zig");\n'
@@ -294,9 +281,7 @@ CANONICAL_FILES = {
         'const cli_control = @import("control.zig");\n'
     ),
     "src/cli/suggest.zig": (
-        'const std = @import("std");\n'
-        'const db = @import("../db.zig");\n'
-        'const sqlite = @import("../sqlite.zig");\n'
+        'const std = @import("std");\nconst db = @import("../db.zig");\nconst sqlite = @import("../sqlite.zig");\n'
     ),
     "src/cli/seed.zig": (
         'const std = @import("std");\n'
@@ -334,26 +319,19 @@ CANONICAL_FILES = {
         'const report_json = @import("../report/json.zig");\n'
     ),
     "src/cli/record_tests.zig": (
-        'const std = @import("std");\n'
-        'const cli = @import("../cli.zig");\n'
-        'const cli_record = @import("record.zig");\n'
+        'const std = @import("std");\nconst cli = @import("../cli.zig");\nconst cli_record = @import("record.zig");\n'
     ),
-    "src/sql/shape.zig": (
-        'const std = @import("std");\n'
-        'const lexer = @import("lexer.zig");\n'
-    ),
+    "src/sql/shape.zig": ('const std = @import("std");\nconst lexer = @import("lexer.zig");\n'),
     "src/cli/skill_tests.zig": (
         'const std = @import("std");\n'
         'const cli = @import("../cli.zig");\n'
         'const cli_skill = @import("skill.zig");\n'
         'const skill = @import("../skill/skill.zig");\n'
     ),
-    "src/skill/skill.zig": (
-        'const std = @import("std");\n'
-        'const diff = @import("diff.zig");\n'
-    ),
+    "src/skill/skill.zig": ('const std = @import("std");\nconst diff = @import("diff.zig");\n'),
     "src/skill/diff.zig": 'const std = @import("std");\n',
 }
+
 
 def write_file(root, rel_path, text):
     path = os.path.join(root, rel_path)
@@ -361,9 +339,11 @@ def write_file(root, rel_path, text):
     with open(path, "w", encoding="utf-8") as handle:
         handle.write(text)
 
+
 def write_canonical_tree(root):
     for rel_path, text in CANONICAL_FILES.items():
         write_file(root, rel_path, text)
+
 
 def run_checker(root, cwd=None, with_root=True, script=None):
     args = [sys.executable, script or CHECKER]
@@ -371,6 +351,7 @@ def run_checker(root, cwd=None, with_root=True, script=None):
         args += ["--root", root]
     done = subprocess.run(args, capture_output=True, text=True, cwd=cwd)
     return done.returncode, done.stdout + done.stderr
+
 
 def case(mutate, extra_check=None, cwd=None, with_root=True):
     root = tempfile.mkdtemp(prefix="qenome-arch-")
@@ -385,6 +366,7 @@ def case(mutate, extra_check=None, cwd=None, with_root=True):
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
+
 def expect(name, condition, detail):
     if condition:
         print("ok: " + name)
@@ -392,14 +374,17 @@ def expect(name, condition, detail):
     FAILURES.append(name)
     print("FAIL: " + name + ": " + str(detail))
 
+
 def expect_clean(name, code, output):
     expect(name, code == 0, "exit " + str(code) + ", output: " + output.strip())
+
 
 def expect_rejected(name, code, output, rule, mention=None):
     expect(name, code == 1, "exit " + str(code) + ", output: " + output.strip())
     expect(name + " names the rule", rule in output, output.strip())
     if mention is not None:
         expect(name + " names the place", mention in output, output.strip())
+
 
 def main():
     code, output = case(None)
@@ -413,9 +398,7 @@ def main():
     expect_rejected("a missing module fails", code, output, "missing-file", "src/cli/query.zig")
 
     for rel_path in ("src/sqlite.zig", "src/result.zig", "src/db.zig", "src/root.zig", "src/main.zig"):
-        code, output = case(
-            lambda root, rel_path=rel_path: os.remove(os.path.join(root, rel_path))
-        )
+        code, output = case(lambda root, rel_path=rel_path: os.remove(os.path.join(root, rel_path)))
         expect_rejected("a missing " + rel_path + " fails", code, output, "missing-file", rel_path)
 
     code, output = case(lambda root: write_file(root, "src/cli/extra.zig", "// new\n"))
@@ -425,9 +408,7 @@ def main():
     expect_rejected("an unknown file under src fails", code, output, "unknown-file", "src/extra.zig")
 
     code, output = case(lambda root: write_file(root, "src/skill/rogue.zig", "// new\n"))
-    expect_rejected(
-        "an unknown file under src/skill fails", code, output, "unknown-file", "src/skill/rogue.zig"
-    )
+    expect_rejected("an unknown file under src/skill fails", code, output, "unknown-file", "src/skill/rogue.zig")
 
     code, output = case(lambda root: shutil.rmtree(os.path.join(root, "src/cli")))
     expect_rejected("a missing src/cli directory fails", code, output, "missing-file", "src/cli/args.zig")
@@ -444,9 +425,7 @@ def main():
             root, "src/sqlite.zig", 'const std = @import("std");\nconst cli = @import("cli.zig");\n'
         )
     )
-    expect_rejected(
-        "the bottom layer may not import the CLI", code, output, "unapproved-import", "src/cli.zig"
-    )
+    expect_rejected("the bottom layer may not import the CLI", code, output, "unapproved-import", "src/cli.zig")
 
     code, output = case(
         lambda root: write_file(
@@ -464,16 +443,10 @@ def main():
         "src/cli/query.zig",
     )
 
-    code, output = case(
-        lambda root: write_file(root, "src/main.zig", 'const db = @import("db.zig");\n')
-    )
-    expect_rejected(
-        "the executable may not import a path", code, output, "unapproved-import", "src/db.zig"
-    )
+    code, output = case(lambda root: write_file(root, "src/main.zig", 'const db = @import("db.zig");\n'))
+    expect_rejected("the executable may not import a path", code, output, "unapproved-import", "src/db.zig")
 
-    code, output = case(
-        lambda root: write_file(root, "src/db.zig", 'const Qenome = @import("Qenome");\n')
-    )
+    code, output = case(lambda root: write_file(root, "src/db.zig", 'const Qenome = @import("Qenome");\n'))
     expect_rejected(
         "only the executable may import the module name",
         code,
@@ -488,15 +461,9 @@ def main():
             write_file(root, "src/db.zig", 'const result = @import("result.zig");\n'),
         )
     )
-    expect_rejected(
-        "a cycle outside the CLI layer fails", code, output, "cycle", "src/result.zig"
-    )
+    expect_rejected("a cycle outside the CLI layer fails", code, output, "cycle", "src/result.zig")
 
-    code, output = case(
-        lambda root: write_file(
-            root, "src/cli/args.zig", 'const cli = @import("../cli.zig");\n'
-        )
-    )
+    code, output = case(lambda root: write_file(root, "src/cli/args.zig", 'const cli = @import("../cli.zig");\n'))
     expect_rejected("a child may not import the coordinator", code, output, "unapproved-import", "src/cli.zig")
 
     code, output = case(
@@ -504,15 +471,11 @@ def main():
     )
     expect_rejected("an import outside the root fails", code, output, "outside-root", "outside.zig")
 
-    code, output = case(
-        lambda root: write_file(root, "src/cli/args.zig", 'const db = @import("some_module");\n')
-    )
+    code, output = case(lambda root: write_file(root, "src/cli/args.zig", 'const db = @import("some_module");\n'))
     expect_rejected("an unknown module fails", code, output, "unapproved-import", "some_module")
 
     code, output = case(
-        lambda root: write_file(
-            root, "src/cli/control.zig", 'const build_options = @import("build_options");\n'
-        )
+        lambda root: write_file(root, "src/cli/control.zig", 'const build_options = @import("build_options");\n')
     )
     expect_rejected(
         "only the argument parser may import the build options",
@@ -522,16 +485,10 @@ def main():
         "build_options",
     )
 
-    code, output = case(
-        lambda root: write_file(root, "src/cli/args.zig", "const db = @import(name);\n")
-    )
+    code, output = case(lambda root: write_file(root, "src/cli/args.zig", "const db = @import(name);\n"))
     expect_rejected("a non-literal import fails", code, output, "import-form", "args.zig:1")
 
-    code, output = case(
-        lambda root: write_file(
-            root, "src/cli/args.zig", 'const db = @import(\n    "../db.zig");\n'
-        )
-    )
+    code, output = case(lambda root: write_file(root, "src/cli/args.zig", 'const db = @import(\n    "../db.zig");\n'))
     expect_rejected("a multi-line import fails", code, output, "import-form", "args.zig:1")
 
     code, output = case(
@@ -539,26 +496,18 @@ def main():
     )
     expect_rejected("a space before the argument fails", code, output, "import-form", "args.zig:1")
 
-    code, output = case(
-        lambda root: write_file(root, "src/cli/args.zig", 'const db = @import\n    ("../db.zig");\n')
-    )
+    code, output = case(lambda root: write_file(root, "src/cli/args.zig", 'const db = @import\n    ("../db.zig");\n'))
     expect_rejected("an argument on the next line fails", code, output, "import-form", "args.zig:1")
 
-    code, output = case(
-        lambda root: write_file(root, "src/cli/args.zig", 'const db = @import("../db" ++ ".zig");\n')
-    )
+    code, output = case(lambda root: write_file(root, "src/cli/args.zig", 'const db = @import("../db" ++ ".zig");\n'))
     expect_rejected("a joined path fails", code, output, "import-form", "args.zig:1")
 
     code, output = case(
-        lambda root: write_file(
-            root, "src/cli/args.zig", 'const message = "see @import(\\"db.zig\\")";\n'
-        )
+        lambda root: write_file(root, "src/cli/args.zig", 'const message = "see @import(\\"db.zig\\")";\n')
     )
     expect_rejected("an import-like text in a string fails conservatively", code, output, "import-form", "args.zig:1")
 
-    code, output = case(
-        lambda root: write_file(root, "src/cli/args.zig", '// see @import("../db.zig")\n')
-    )
+    code, output = case(lambda root: write_file(root, "src/cli/args.zig", '// see @import("../db.zig")\n'))
     expect_rejected("an import inside a comment fails conservatively", code, output, "import-form", "args.zig:1")
 
     code, output = case(
@@ -625,7 +574,7 @@ def main():
             'const report_kv = @import("report/kv.zig");\n'
             'const report_json = @import("report/json.zig");\n'
             '\ntest {\n    _ = @import("cli/tests.zig");\n'
-            "    _ = @import(\"cli/tests.zig\");\n}\n",
+            '    _ = @import("cli/tests.zig");\n}\n',
         )
     )
     expect_rejected("two test entries fail", code, output, "test-entry", "found 2")
@@ -768,8 +717,7 @@ def main():
         lambda root: write_file(
             root,
             "src/cli/d1.zig",
-            CANONICAL_FILES["src/cli/d1.zig"]
-            + 'test "a writer in a test" {\n    stdout.print("x", .{});\n}\n',
+            CANONICAL_FILES["src/cli/d1.zig"] + 'test "a writer in a test" {\n    stdout.print("x", .{});\n}\n',
         )
     )
     expect_clean("a write inside a test block passes", code, output)
@@ -850,8 +798,10 @@ def main():
         os.makedirs(os.path.join(root, "scripts"), exist_ok=True)
         shutil.copyfile(CHECKER, os.path.join(root, "scripts", "check_architecture.py"))
 
-    for name, cwd in (("the root resolves from the script location", None),
-                      ("the check does not depend on the working directory", os.path.abspath(os.sep))):
+    for name, cwd in (
+        ("the root resolves from the script location", None),
+        ("the check does not depend on the working directory", os.path.abspath(os.sep)),
+    ):
         root = tempfile.mkdtemp(prefix="qenome-arch-")
         try:
             write_canonical_tree(root)
@@ -863,9 +813,7 @@ def main():
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
-    done = subprocess.run(
-        [sys.executable, CHECKER, "--root"], capture_output=True, text=True
-    )
+    done = subprocess.run([sys.executable, CHECKER, "--root"], capture_output=True, text=True)
     expect("a missing --root value is a usage error", done.returncode == 2, done.returncode)
 
     done = subprocess.run(
@@ -880,6 +828,7 @@ def main():
         return 1
     print("all cases passed")
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())

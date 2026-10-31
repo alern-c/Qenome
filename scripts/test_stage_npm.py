@@ -89,8 +89,7 @@ def test_render(version):
     optional = rendered["optionalDependencies"]
     expect(
         "render sets every optional dependency to the zon version",
-        set(optional) == {platform["npm"] for platform in stage_npm.PLATFORMS}
-        and set(optional.values()) == {version},
+        set(optional) == {platform["npm"] for platform in stage_npm.PLATFORMS} and set(optional.values()) == {version},
         optional,
     )
     broken = dict(before)
@@ -122,9 +121,7 @@ def test_stage(version):
         launcher = stage_npm.load_json(os.path.join(dest, "qenome", "package.json"))
         expect("staged launcher version", launcher["version"] == version, launcher["version"])
         expect("staged launcher is publishable", "private" not in launcher, launcher.get("private"))
-        source_launcher = stage_npm.load_json(
-            stage_npm.source_manifest_path(ROOT, stage_npm.MAIN_DIR)
-        )
+        source_launcher = stage_npm.load_json(stage_npm.source_manifest_path(ROOT, stage_npm.MAIN_DIR))
         expect(
             "staged launcher keeps the keywords",
             launcher.get("keywords") == source_launcher.get("keywords"),
@@ -142,8 +139,7 @@ def test_stage(version):
         staged_skill = os.path.join(dest, "qenome", "skills", "qenome", "SKILL.md")
         expect(
             "staged launcher ships the bundled skill",
-            os.path.isfile(staged_skill)
-            and open(staged_skill, "rb").read() == open(source_skill, "rb").read(),
+            os.path.isfile(staged_skill) and open(staged_skill, "rb").read() == open(source_skill, "rb").read(),
             staged_skill,
         )
         for platform in stage_npm.PLATFORMS:
@@ -156,13 +152,10 @@ def test_stage(version):
                 manifest["version"] == version and "private" not in manifest,
                 manifest.get("version"),
             )
-            source_platform = stage_npm.load_json(
-                stage_npm.source_manifest_path(ROOT, platform["dir"])
-            )
+            source_platform = stage_npm.load_json(stage_npm.source_manifest_path(ROOT, platform["dir"]))
             expect(
                 "staged " + platform["dir"] + " keywords",
-                manifest.get("keywords") == source_platform.get("keywords")
-                and bool(source_platform.get("keywords")),
+                manifest.get("keywords") == source_platform.get("keywords") and bool(source_platform.get("keywords")),
                 manifest.get("keywords"),
             )
             expect(
@@ -256,9 +249,7 @@ def test_build_binary():
 
 def test_parallel_builds():
     work = tempfile.mkdtemp(prefix="qenome-parallel-")
-    targets = [
-        (platform, os.path.join(work, platform["dir"], "bin", "qenome")) for platform in stage_npm.PLATFORMS
-    ]
+    targets = [(platform, os.path.join(work, platform["dir"], "bin", "qenome")) for platform in stage_npm.PLATFORMS]
     barrier = threading.Barrier(len(targets), timeout=30)
     seen = []
     lock = threading.Lock()
@@ -365,9 +356,7 @@ def test_launcher_permissions():
         with open(binary, "wb") as handle:
             handle.write(b"#!/bin/sh\necho launcher-ok\n")
         os.chmod(binary, 0o500)
-        done = subprocess.run(
-            ["node", script], capture_output=True, text=True, stdin=subprocess.DEVNULL
-        )
+        done = subprocess.run(["node", script], capture_output=True, text=True, stdin=subprocess.DEVNULL)
         output = done.stdout.replace("\r\n", "\n")
         expect(
             "an executable binary starts without chmod",
@@ -377,9 +366,7 @@ def test_launcher_permissions():
         mode = stat.S_IMODE(os.stat(binary).st_mode)
         expect("an executable binary keeps its mode", mode == 0o500, oct(mode))
         os.chmod(binary, 0o644)
-        done = subprocess.run(
-            ["node", script], capture_output=True, text=True, stdin=subprocess.DEVNULL
-        )
+        done = subprocess.run(["node", script], capture_output=True, text=True, stdin=subprocess.DEVNULL)
         output = done.stdout.replace("\r\n", "\n")
         expect(
             "a binary without the execute bits still starts",

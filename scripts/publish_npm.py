@@ -16,14 +16,10 @@ def guard(argv):
         sys.stderr.write("publish_npm: refusing to publish without --publish\n")
         return 2
     if os.environ.get("NPM_TOKEN") or os.environ.get("NODE_AUTH_TOKEN"):
-        sys.stderr.write(
-            "publish_npm: refusing because an npm token is set. This path uses trusted publishing.\n"
-        )
+        sys.stderr.write("publish_npm: refusing because an npm token is set. This path uses trusted publishing.\n")
         return 2
     if not os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL"):
-        sys.stderr.write(
-            "publish_npm: refusing because GitHub Actions did not provide an OIDC token.\n"
-        )
+        sys.stderr.write("publish_npm: refusing because GitHub Actions did not provide an OIDC token.\n")
         return 2
     return None
 
@@ -86,11 +82,7 @@ def main(argv):
         path = os.path.join(dest, directory)
         manifest_path = os.path.join(path, "package.json")
         if not os.path.isfile(manifest_path):
-            sys.stderr.write(
-                "publish_npm: missing "
-                + manifest_path
-                + ". Run python3 scripts/stage_npm.py first.\n"
-            )
+            sys.stderr.write("publish_npm: missing " + manifest_path + ". Run python3 scripts/stage_npm.py first.\n")
             return 1
         manifest = stage_npm.load_json(manifest_path)
         if manifest.get("version") != version or "private" in manifest:

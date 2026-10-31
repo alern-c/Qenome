@@ -454,8 +454,8 @@ ALIAS_DECLARATION = re.compile(
 )
 CONTRACT_CODE_TEXT = re.compile(r'"(' + "|".join(CONTRACT_CODES) + r')"')
 
-class Source:
 
+class Source:
     def __init__(self, path, lines):
         self.path = path
         self.lines = lines
@@ -463,12 +463,14 @@ class Source:
         self.test_blocks = []
         self.test_bodies = []
 
+
 def read_source(root, rel_path):
     try:
         with open(os.path.join(root, rel_path), encoding="utf-8") as handle:
             return Source(rel_path, handle.read().split("\n")), None
     except (OSError, UnicodeDecodeError) as error:
         return None, str(error)
+
 
 def parse(source, violations):
     for index, line in enumerate(source.lines):
@@ -483,9 +485,7 @@ def parse(source, violations):
         if entry:
             source.imports.append((number, entry.group(1), "entry"))
             continue
-        violations.append(
-            (source.path, number, "import-form", "unsupported @import form: " + line.strip()[:72])
-        )
+        violations.append((source.path, number, "import-form", "unsupported @import form: " + line.strip()[:72]))
     depth = 0
     start = None
     for index, line in enumerate(source.lines):
@@ -511,16 +511,17 @@ def parse(source, violations):
             source.test_bodies.append((start + 1, index + 1))
             start = None
 
+
 def inside(spans, number):
     return any(first <= number <= last for first, last in spans)
 
+
 def resolve(importer, path_text):
-    resolved = os.path.normpath(
-        os.path.join(os.path.dirname(importer), path_text.replace("/", os.sep))
-    )
+    resolved = os.path.normpath(os.path.join(os.path.dirname(importer), path_text.replace("/", os.sep)))
     if resolved.startswith("..") or os.path.isabs(resolved):
         return None
     return resolved.replace(os.sep, "/")
+
 
 def check_directory(root, rel_dir, violations):
     directory = os.path.join(root, rel_dir.replace("/", os.sep))
@@ -528,9 +529,7 @@ def check_directory(root, rel_dir, violations):
         names = sorted(os.listdir(directory))
     except OSError as error:
         if os.path.exists(directory):
-            violations.append(
-                (rel_dir, 0, "unreadable-directory", f"could not list {rel_dir}: {error}")
-            )
+            violations.append((rel_dir, 0, "unreadable-directory", f"could not list {rel_dir}: {error}"))
         return
     for name in names:
         if not name.endswith(".zig"):
@@ -546,6 +545,7 @@ def check_directory(root, rel_dir, violations):
                 )
             )
 
+
 def check_files(root, sources, violations):
     for rel_path in APPROVED_FILES:
         if rel_path not in sources:
@@ -558,19 +558,19 @@ def check_files(root, sources, violations):
     check_directory(root, "src/d1", violations)
     check_directory(root, "src/sql", violations)
 
+
 def layer_of(rel_path):
     for prefix, layer in LAYERS:
         if rel_path == prefix or rel_path.startswith(prefix):
             return layer
     return None
 
+
 def check_layers(sources, violations):
     for rel_path, source in sorted(sources.items()):
         layer = layer_of(rel_path)
         if layer is None:
-            violations.append(
-                (rel_path, 0, "unknown-layer", "the rules do not place this file in a layer")
-            )
+            violations.append((rel_path, 0, "unknown-layer", "the rules do not place this file in a layer"))
             continue
         modules = MODULE_IMPORTS.get(rel_path, [])
         for number, path_text, _form in source.imports:
@@ -594,10 +594,12 @@ def check_layers(sources, violations):
                     )
                 )
 
+
 def count_lines(lines):
     if lines and lines[-1] == "":
         return len(lines) - 1
     return len(lines)
+
 
 def check_sizes(sources, violations):
     for rel_path, source in sorted(sources.items()):
@@ -612,6 +614,7 @@ def check_sizes(sources, violations):
                     f"{lines} lines is more than the limit of {limit}; split the file instead",
                 )
             )
+
 
 def check_writes(sources, violations):
     allowed = WRITE_ALLOWED + WRITE_DEBT
@@ -631,6 +634,7 @@ def check_writes(sources, violations):
                         "only report/ and cli/ write to stdout or stderr: " + line.strip()[:72],
                     )
                 )
+
 
 def check_contract(sources, violations):
     contract = sources.get("src/contract/values.zig")
@@ -692,6 +696,7 @@ def check_contract(sources, violations):
                     )
                 )
 
+
 def check_imports(sources, violations):
     for rel_path, source in sorted(sources.items()):
         table = PRODUCTION_IMPORTS.get(rel_path)
@@ -726,6 +731,7 @@ def check_imports(sources, violations):
                     )
                 )
 
+
 def check_test_entry(sources, violations):
     importers = []
     for rel_path, source in sorted(sources.items()):
@@ -749,7 +755,7 @@ def check_test_entry(sources, violations):
                 rel_path,
                 number,
                 "test-entry",
-                f'only {TEST_ENTRY_IMPORTER}\'s test block may import {TEST_ENTRY_TARGET} '
+                f"only {TEST_ENTRY_IMPORTER}'s test block may import {TEST_ENTRY_TARGET} "
                 f'as _ = @import("{TEST_ENTRY_PATH_TEXT}");',
             )
         )
@@ -778,6 +784,7 @@ def check_test_entry(sources, violations):
             )
         )
 
+
 def check_cycles(sources, violations):
     graph = {}
     for rel_path in PRODUCTION_FILES:
@@ -801,10 +808,8 @@ def check_cycles(sources, violations):
         stack.append(node)
         for neighbour in graph.get(node, []):
             if state.get(neighbour, 0) == 1:
-                cycle = stack[stack.index(neighbour):] + [neighbour]
-                violations.append(
-                    (neighbour, 0, "cycle", "the production dependency cycle: " + " -> ".join(cycle))
-                )
+                cycle = stack[stack.index(neighbour) :] + [neighbour]
+                violations.append((neighbour, 0, "cycle", "the production dependency cycle: " + " -> ".join(cycle)))
                 return True
             if state.get(neighbour, 0) == 0 and walk(neighbour):
                 return True
@@ -816,6 +821,7 @@ def check_cycles(sources, violations):
         if state.get(node, 0) == 0 and walk(node):
             return
 
+
 def run(root):
     violations = []
     sources = {}
@@ -824,9 +830,7 @@ def run(root):
             continue
         source, error = read_source(root, rel_path)
         if error is not None:
-            violations.append(
-                (rel_path, 0, "unreadable-file", f"could not read the file: {error}")
-            )
+            violations.append((rel_path, 0, "unreadable-file", f"could not read the file: {error}"))
             continue
         sources[rel_path] = source
     check_files(root, sources, violations)
@@ -840,6 +844,7 @@ def run(root):
     check_test_entry(sources, violations)
     check_cycles(sources, violations)
     return violations
+
 
 def main(argv):
     root = None
@@ -865,6 +870,7 @@ def main(argv):
         return 1
     print(f"architecture: ok ({len(APPROVED_FILES)} files checked, root={root})")
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv))

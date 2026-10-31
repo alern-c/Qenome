@@ -226,14 +226,10 @@ def check_readme(root, rel_path, violations):
     text = read_text(root, rel_path)
     line_count = len(text.splitlines())
     if line_count > README_MAX_LINES:
-        violations.append(
-            rel_path + ": " + str(line_count) + " lines, over the cap of " + str(README_MAX_LINES)
-        )
+        violations.append(rel_path + ": " + str(line_count) + " lines, over the cap of " + str(README_MAX_LINES))
     levels = heading_levels(text)
     if levels != README_HEADING_LEVELS:
-        violations.append(
-            rel_path + ": headings " + str(levels) + " do not match " + str(README_HEADING_LEVELS)
-        )
+        violations.append(rel_path + ": headings " + str(levels) + " do not match " + str(README_HEADING_LEVELS))
     links = contents_links(text, CONTENTS_HEADINGS[rel_path])
     if links is None:
         violations.append(rel_path + ": no ## " + CONTENTS_HEADINGS[rel_path] + " section")
@@ -253,9 +249,7 @@ def check_agents(root, violations):
     text = read_text(root, AGENTS_FILE)
     line_count = len(text.splitlines())
     if line_count > AGENTS_MAX_LINES:
-        violations.append(
-            AGENTS_FILE + ": " + str(line_count) + " lines, over the cap of " + str(AGENTS_MAX_LINES)
-        )
+        violations.append(AGENTS_FILE + ": " + str(line_count) + " lines, over the cap of " + str(AGENTS_MAX_LINES))
     for level, title in headings(text):
         if level > AGENTS_MAX_HEADING_LEVEL:
             violations.append(AGENTS_FILE + ": heading is too deep for an index: " + title)
@@ -375,15 +369,7 @@ def main(argv):
             print("docs: " + violation)
         print("docs: " + str(len(violations)) + " violation(s), root=" + root)
         return 1
-    print(
-        "docs: ok ("
-        + str(checked)
-        + " files checked, "
-        + str(len(PAGE_PAIRS))
-        + " page pairs, root="
-        + root
-        + ")"
-    )
+    print("docs: ok (" + str(checked) + " files checked, " + str(len(PAGE_PAIRS)) + " page pairs, root=" + root + ")")
     return 0
 
 

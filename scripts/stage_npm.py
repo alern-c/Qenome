@@ -11,12 +11,8 @@ import tempfile
 
 PLACEHOLDER_VERSION = "0.0.0"
 MAIN_DIR = "qenome"
-SEMVER = re.compile(
-    r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
-)
-LAUNCHER_MAP = re.compile(
-    r'"((?:darwin|linux)-(?:arm64|x64))": "(@qenome-cli/(?:darwin|linux)-(?:arm64|x64))"'
-)
+SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
+LAUNCHER_MAP = re.compile(r'"((?:darwin|linux)-(?:arm64|x64))": "(@qenome-cli/(?:darwin|linux)-(?:arm64|x64))"')
 REQUIRED_FILES = ["bin", "LICENSE", "NOTICE", "README.md"]
 PLATFORMS = [
     {
@@ -187,9 +183,7 @@ def render_manifest(manifest, version):
     if optional is not None:
         for key in list(optional):
             if optional[key] != PLACEHOLDER_VERSION:
-                raise ValueError(
-                    "optional dependency " + key + " must use the placeholder version"
-                )
+                raise ValueError("optional dependency " + key + " must use the placeholder version")
             optional[key] = version
     return rendered
 
@@ -200,9 +194,7 @@ def readme_text(manifest):
     if name == "qenome":
         return (
             "# qenome\n"
-            "\n"
-            + description
-            + "\n"
+            "\n" + description + "\n"
             "\n"
             "```sh\n"
             "npx qenome --version\n"
@@ -218,12 +210,8 @@ def readme_text(manifest):
             "Source: https://github.com/alern-c/Qenome\n"
         )
     return (
-        "# "
-        + name
-        + "\n"
-        "\n"
-        + description
-        + "\n"
+        "# " + name + "\n"
+        "\n" + description + "\n"
         "\n"
         "Install the `qenome` package. npm selects this binary when the machine matches it.\n"
     )
