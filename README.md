@@ -54,6 +54,7 @@ To try Qenome without installing it, run `npx qenome`. Windows is not an npm tar
 - **Your database stays untouched.** Qenome opens the original read-only and compares sandbox copies, so a candidate index that does not help can be dropped before the merge.
 - **The verdict comes from the rows read, not the time.** Rows read and rows written use the same counting as local D1 (workerd patch); `--runs 0` keeps the verdict and skips the timing.
 - **The result rows are checked too.** Both copies must return the same rows as a multiset; a mismatch or an incomparable result is reported instead of a pass.
+- **See whether an improvement holds as the table grows.** `--seed-data` with `--scale` measures the same comparison at 2 or 3 sizes and shows the rows read side by side; see [Measuring at several sizes](docs/usage.md#measuring-at-several-sizes---scale).
 - **See what an index costs a write.** `--write` runs one `INSERT`, `UPDATE`, `DELETE`, or `REPLACE` in a rolled-back transaction on each copy and reports the rows written on both sides, including secondary-index inserts, triggers, and foreign-key cascades. See [Comparing a write](docs/usage.md#comparing-a-write).
 - **A local D1 binding is enough.** `--d1 <BINDING>` finds the local database from a wrangler config, and `--config` names the config.
 - **Compare many queries in one run.** `--batch <FILE>` pairs every SELECT in a JSON manifest with every candidate `CREATE INDEX` and reports each pair; see [Batch comparisons](docs/batch.md#batch-comparisons).

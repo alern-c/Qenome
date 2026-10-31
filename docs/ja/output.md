@@ -21,7 +21,7 @@ kv は全項目を1行1項目の `key: value` で出し、スクリプトとロ�
 
 ## json
 
-json は、比較が終わったときに stdout へ JSON オブジェクトを1個だけ（末尾改行付きで）出します。`--batch` のときは、上記で説明した別の `batch_schema_version` 1 のオブジェクトを出します（「まとめて比べる（--batch）」と [docs/json.md](../json.md) を参照）。`--seed-data` のときは、どちらのオブジェクトにもトップレベルの `seed_data` が加わります。フィールド（次のコア変更で予約している名前を含む）は [docs/json.md](../json.md) が仕様です。入力拒否・時間上限・中断のときは stdout を空のままにします。`--format json` のとき、stderr は JSON オブジェクト1個です（`schema_version`、`exit_code`、`error` の `code` / `message` / `hint`）。`human` と `kv` はテキストの `error:` 行のままです。
+json は、比較が終わったときに stdout へ JSON オブジェクトを1個だけ（末尾改行付きで）出します。`--batch` のときは、上記で説明した別の `batch_schema_version` 1 のオブジェクトを出します（「まとめて比べる（--batch）」と [docs/json.md](../json.md) を参照）。`--scale` のときは、サイズごとの比較を並べた別の `scale_schema_version` 1 のオブジェクトを出します（[複数のサイズで測る](usage.md#複数のサイズで測る--scale)を参照）。`--seed-data` のときは、どちらのオブジェクトにもトップレベルの `seed_data` が加わります。フィールド（次のコア変更で予約している名前を含む）は [docs/json.md](../json.md) が仕様です。入力拒否・時間上限・中断のときは stdout を空のままにします。`--format json` のとき、stderr は JSON オブジェクト1個です（`schema_version`、`exit_code`、`error` の `code` / `message` / `hint`）。`human` と `kv` はテキストの `error:` 行のままです。
 
 判定はトップレベルの `verdict` で読めます。
 

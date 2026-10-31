@@ -1,6 +1,6 @@
 # JSON contract (schema_version 2)
 
-`--format json` is the machine-readable interface. This file is the contract for `schema_version` 2. The JSON Schema files next to it check the same shape: [qenome-report.schema.json](qenome-report.schema.json) for a finished comparison, [qenome-error.schema.json](qenome-error.schema.json) for a failure, [qenome-batch.schema.json](qenome-batch.schema.json) for a `--batch` report (`batch_schema_version` 1), [qenome-index-audit.schema.json](qenome-index-audit.schema.json) for an `--audit-indexes` report (`audit_schema_version` 1), and [qenome-record.schema.json](qenome-record.schema.json) for a `--record` report (`record_schema_version` 1).
+`--format json` is the machine-readable interface. This file is the contract for `schema_version` 2. The JSON Schema files next to it check the same shape: [qenome-report.schema.json](qenome-report.schema.json) for a finished comparison, [qenome-error.schema.json](qenome-error.schema.json) for a failure, [qenome-batch.schema.json](qenome-batch.schema.json) for a `--batch` report (`batch_schema_version` 1), [qenome-index-audit.schema.json](qenome-index-audit.schema.json) for an `--audit-indexes` report (`audit_schema_version` 1), [qenome-record.schema.json](qenome-record.schema.json) for a `--record` report (`record_schema_version` 1), and [qenome-scale.schema.json](qenome-scale.schema.json) for a `--scale` report (`scale_schema_version` 1).
 
 `schema_version` is already `2` in this tree. `1` was the time verdict. Do not treat a missing pending field as a version bump. The pending names below are part of version 2 and are reserved until the core change emits them.
 
@@ -243,6 +243,35 @@ Semantics and limits:
 - When the log holds no read-only statement, `--format json` writes the `skipped:` breakdown into the `message` of the `record_log_invalid` error object instead of dropping it; the human report writes the same breakdown on the next line. The JSON error contract (`schema_version` 2) does not change.
 - Bind values never appear: only `example` and `previous_shape_example` hold SQL text.
 
+## Scale report (scale_schema_version 1)
+
+`--scale ROWS[,ROWS[,ROWS]]` with `--seed-data` compares at every given size and writes one object with `scale_schema_version` 1 and a trailing newline. It is a separate contract from the batch report: `schema_version` 2, `batch_schema_version` 1, `audit_schema_version` 1 and `record_schema_version` 1 do not change. [qenome-scale.schema.json](qenome-scale.schema.json) checks the same shape. [The usage page](usage.md#measuring-at-several-sizes---scale) describes the command and the human output.
+
+| Key | Type | Meaning |
+| `scale_schema_version` | number | `1` |
+| `exit_code` | number | The heaviest step exit in the comparison order: `3`, then `4`, then `124`, then `1`, otherwise `0`. The process can still exit `5` after this object when cleanup fails and the code is `0` |
+| `inputs` | object | `database`, `select` (or `write`), `index_sql`, `seed_data` (the spec path), and `scale` (the step sizes as given) |
+| `environment` | object | The same keys as the comparison object: `qenome_version`, `sqlite_version`, `sqlite_source_id`, `zig_version`, `build_mode`, `os`, `arch`, `work_dir_parent` |
+| `steps` | array | One object per step, in the order given: `rows`, `tables`, and `comparison` |
+| `warnings` | array | Run-wide `{ "code", "message" }` entries: with `--d1`, `unapplied_migrations`. The per-step comparison warnings stay in `steps[].comparison.warnings` |
+
+`steps` entries:
+
+| Key | Type | Meaning |
+| `rows` | number | The step size: the row count of the largest table in the spec |
+| `tables` | array | One `{ "table", "rows" }` object per table in the spec, with the row count at this step |
+| `comparison` | object | The full `schema_version` 2 comparison object for this step, minified. Its `inputs` name the same database, SELECT or write, and index file, and its `seed_data` holds the tables at this step's sizes |
+
+Semantics and limits:
+
+- 2 or 3 steps, strictly increasing, each at most 10,000,000. The scaled spec must stay within 10,000,000 rows per table and 20,000,000 in total. Any other shape is a usage error with `usage_scale` (exit `2`) before a copy is made.
+- The largest table in the spec takes the step size. Every other listed table is scaled by the same factor, rounded, at least 1 row, so the ratio between the tables stays the same. A listed table with 0 rows gets at least 1 row; when every listed table has 0 rows, every table takes the step size. Tables that the spec does not list keep their rows.
+- Each step copies the original database into a new sandbox, seeds it, builds the candidate index on the variant, and runs the existing comparison. The copies are removed before the next step.
+- The step's `comparison.exit_code` is that step's result: `0`, `3`, or `4`. The top-level `exit_code` is the heaviest of the steps, in the order above. A step that cannot run stops the run before the report: stdout is empty and stderr holds the error object. Its code is the heavier of the finished steps and that failure, in the same order.
+- `--scale` is rejected with `usage_scale` together with `--batch`, `--suggest`, `--migration`, `--audit-indexes`, `--record`, and `--format kv`.
+- Every step runs the same comparison, so the keys inside `comparison` follow the comparison object above. Its `timing` is `null` with `--runs 0` and in `--write` mode.
+- A growth classification (a growth class, an exponent, or a finding such as "only faster at small sizes") is not part of `scale_schema_version` 1. Extra keys are allowed by the contract rules above, so it can be added without a version bump.
+
 ## Status in this tree
 
 | Name | Status |
@@ -384,6 +413,7 @@ The comparison object's `exit_code` is `0`, `3`, or `4`. The process can still e
 | `usage_runs` | 2 | Use an integer from 0 to 1000 |
 | `usage_timeout` | 2 | Use a non-negative millisecond count |
 | `usage_bind` | 2 | Use `--bind N:TYPE:VALUE` |
+| `usage_scale` | 2 | Use `--scale` with `--seed-data` and 2 or 3 strictly increasing row counts; remove `--batch`, `--suggest`, `--migration`, `--audit-indexes`, `--record`, or `--format kv` |
 | `usage_conflicting_database` | 2 | Pass `--db` or `--d1`, not both |
 | `usage_config_requires_d1` | 2 | Add `--d1`, or drop `--config` |
 | `usage_suggest_conflict` | 2 | With `--suggest`, give one SELECT file or a manifest; do not pass `--runs`, `--format kv`, or an index file |
