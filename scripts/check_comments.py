@@ -6,6 +6,7 @@ import sys
 import tokenize
 
 EXCLUDED_FILES = [
+    ".github/pull_request_template.md",
     ".python-version",
     "AGENTS.md",
     "CHANGELOG.md",

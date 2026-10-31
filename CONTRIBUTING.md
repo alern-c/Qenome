@@ -1,6 +1,6 @@
 # Contributing to Qenome
 
-`README.md` is the user guide. This file holds the build-from-source Quick start, the checks that CI runs, and how to update the golden test output. `AGENTS.md` records the repository rules (language, dependencies, architecture, and comments).
+`README.md` is the user guide. This file holds the build-from-source Quick start, the checks that CI runs, and how to update the golden test output. `AGENTS.md` records the repository rules and the workflow from branch to PR (language, dependencies, architecture, comments, and the PR body in `.github/pull_request_template.md`).
 
 ## Build from source
 
