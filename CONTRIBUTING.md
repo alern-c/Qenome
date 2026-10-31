@@ -111,23 +111,24 @@ The stages are:
 5. test
 6. show the Python version
 7. ruff
-8. mypy
-9. the architecture checker's self-test
-10. the architecture check
-11. the comment checker's self-test
-12. the comment check
-13. the docs checker's self-test
-14. the docs check
-15. the PR format checker's self-test
-16. the npm publish-tree test
-17. the record wrapper test
-18. the golden checker's self-test
-19. the golden output check
-20. the accuracy checker's self-test
-21. the Quick start checker's self-test
-22. the CONTRIBUTING Quick start
+8. `ruff format --check .`
+9. mypy
+10. the architecture checker's self-test
+11. the architecture check
+12. the comment checker's self-test
+13. the comment check
+14. the docs checker's self-test
+15. the docs check
+16. the PR format checker's self-test
+17. the npm publish-tree test
+18. the record wrapper test
+19. the golden checker's self-test
+20. the golden output check
+21. the accuracy checker's self-test
+22. the Quick start checker's self-test
+23. the CONTRIBUTING Quick start
 
-ruff and mypy run through `uv run --locked`, so the checks need uv 0.13.1 or newer.
+ruff, `ruff format` and mypy run through `uv run --locked`, so the checks need uv 0.13.1 or newer.
 
 `scripts/check_docs.py` keeps the documentation in shape. It holds the list of pages cut from the README, checks that each has its `docs/ja/` pair with the same sequence of heading levels, caps the README and `AGENTS.md` line counts, and checks every relative link, anchor and image in `README.md`, `README.ja.md`, `AGENTS.md`, this file, `skills/qenome/SKILL.md` and the pages under `docs/`. Add a page to its list when you add one; a new `docs/*.md` that is neither a paired page nor a listed developer page fails the check.
 

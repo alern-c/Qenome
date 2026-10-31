@@ -15,6 +15,7 @@ Commit messages, PR titles and bodies, issues, CHANGELOG and code comments are w
 
 - Run `python3 scripts/check_all.py` before you report a finished task. CI runs the same script.
 - ruff and mypy run through `uv run --locked`, so the checks need uv 0.13.1 or newer (`required-version` under `[tool.uv]` in `pyproject.toml`). CI pins 0.13.1 in `.github/workflows/quality.yml`, so raise that floor as well when you raise the requirement.
+- Python is formatted with `ruff format` (`line-length = 120` in `pyproject.toml`); the checks fail when a file would be reformatted.
 - The stages, and what each one covers, are listed once in [the development checks](CONTRIBUTING.md#development-checks).
 - A change to a verdict, plan reading, counters or warnings must keep `python3 scripts/check_accuracy.py` green, and a new rule needs a case in `testdata/accuracy/`.
 - A file must not grow past the line count its check records. Split the file instead of raising the number; raising it is a deliberate decision for a human.
