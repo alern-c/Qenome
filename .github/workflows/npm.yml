@@ -146,6 +146,7 @@ jobs:
 
   smoke:
     needs: pack
+    if: ${{ !cancelled() && needs.pack.result == 'success' }}
     strategy:
       fail-fast: false
       matrix:
