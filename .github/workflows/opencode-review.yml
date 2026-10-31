@@ -66,13 +66,15 @@ jobs:
           zig build
           ./zig-out/bin/qenome --version
 
+      - name: Name the findings file
+        run: echo "REVIEW_FINDINGS_PATH=$RUNNER_TEMP/opencode-review-findings.json" >> "$GITHUB_ENV"
+
       - name: Run OpenCode
         uses: anomalyco/opencode/github@github-v1.2.28
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENCODE_PERMISSION: '{"external_directory": {"${{ runner.temp }}/*": "allow"}}'
-          REVIEW_FINDINGS_PATH: ${{ runner.temp }}/opencode-review-findings.json
         with:
           model: opencode-go/glm-5.3-flash
           use_github_token: true
@@ -97,10 +99,9 @@ jobs:
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          FINDINGS: ${{ runner.temp }}/opencode-review-findings.json
           PR: ${{ github.event.pull_request.number }}
           COMMIT: ${{ github.event.pull_request.head.sha }}
-        run: python3 scripts/post_review_findings.py "$FINDINGS" --pull-request "$PR" --commit "$COMMIT"
+        run: python3 scripts/post_review_findings.py "$REVIEW_FINDINGS_PATH" --pull-request "$PR" --commit "$COMMIT"
 
   mention:
     if: |

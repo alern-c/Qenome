@@ -165,8 +165,12 @@ def inline_comment(finding):
         "path": finding["path"],
         "line": finding["line"],
         "side": "RIGHT",
-        "body": severity_prefix(finding) + finding["body"],
+        "body": (severity_prefix(finding) + finding["body"])[:MAX_COMMENT_BODY],
     }
+
+
+def body_findings(text):
+    return sum(1 for line in text.split("\n") if line.startswith("- `"))
 
 
 def review_body(findings, skipped):
@@ -301,8 +305,11 @@ def run(argv):
     if dry_run:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
         return 0
-    if not payload["comments"] and not payload["body"]:
-        print("post_review_findings: no finding is on a line of the diff; nothing to post")
+    if not payload["comments"] and body_findings(payload["body"]) == 0:
+        if skipped:
+            warn("post_review_findings: nothing to post; " + str(skipped) + " finding(s) were skipped")
+        else:
+            print("post_review_findings: no finding is on a line of the diff; nothing to post")
         return 0
     post_review(options["repo"], options["pull_request"], payload)
     return 0

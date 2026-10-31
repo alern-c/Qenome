@@ -126,7 +126,7 @@ def main():
         findings,
     )
     findings, _ = poster.clean_findings([{"path": "a.py", "line": 1, "severity": "see the note", "body": "t"}])
-    expect("an unusable severity is dropped", findings[0]["severity"] == "see the note", findings)
+    expect("a severity with a space is kept", findings[0]["severity"] == "see the note", findings)
     findings, _ = poster.clean_findings([{"path": "a.py", "line": 1, "severity": "#1 urgent", "body": "t"}])
     expect("a severity with a markdown character is dropped", findings[0]["severity"] == "", findings)
 
@@ -141,6 +141,12 @@ def main():
 
     findings, _ = poster.clean_findings([{"path": "a.py", "line": 1, "body": "x" * 5000}])
     expect("a long body is cut", len(findings[0]["body"]) == poster.MAX_COMMENT_BODY, len(findings[0]["body"]))
+    comment = poster.inline_comment(finding(body="x" * poster.MAX_COMMENT_BODY))
+    expect(
+        "the severity prefix stays inside the cap",
+        len(comment["body"]) == poster.MAX_COMMENT_BODY,
+        len(comment["body"]),
+    )
 
     inline, outside = poster.split_findings([finding(line=3), finding(line=9), finding(path="docs/usage.md")], allowed)
     expect("a finding on a line of the diff stays inline", inline == [finding(line=3)], inline)
@@ -195,6 +201,7 @@ def main():
 
     workdir = tempfile.mkdtemp(prefix="post-review-findings-")
     findings_path = os.path.join(workdir, "findings.json")
+    skipped_only = os.path.join(workdir, "skipped.json")
     try:
         with open(findings_path, "w", encoding="utf-8") as handle:
             json.dump([finding(line=3), finding(line=40)], handle)
@@ -226,6 +233,15 @@ def main():
         with open(findings_path, "w", encoding="utf-8") as handle:
             handle.write("[]")
         expect("an empty list posts nothing", poster.run(["post", findings_path, "--repo", "o/r"]) == 0)
+        expect("an empty list reaches no review", posted == [], posted)
+        with open(skipped_only, "w", encoding="utf-8") as handle:
+            json.dump([{"path": "/etc/passwd", "line": 1, "body": "b"}], handle)
+        expect(
+            "a file whose only finding is unusable reaches no review",
+            poster.run(["post", skipped_only, "--repo", "o/r", "--pull-request", "7", "--commit", "abc"]) == 0,
+            posted,
+        )
+        expect("a skipped-only file posts no note-only review", posted == [], posted)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
