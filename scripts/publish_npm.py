@@ -65,6 +65,10 @@ def publish_one(directory, manifest):
     return done.returncode
 
 
+def publish_directories():
+    return [platform["dir"] for platform in stage_npm.PLATFORMS] + [stage_npm.MAIN_DIR]
+
+
 def main(argv):
     refused = guard(argv)
     if refused is not None:
@@ -79,8 +83,7 @@ def main(argv):
     if version == stage_npm.PLACEHOLDER_VERSION:
         sys.stderr.write("publish_npm: refusing placeholder version\n")
         return 1
-    directories = [platform["dir"] for platform in stage_npm.PLATFORMS]
-    directories.append(stage_npm.MAIN_DIR)
+    directories = publish_directories()
     planned = []
     for directory in directories:
         path = os.path.join(dest, directory)
