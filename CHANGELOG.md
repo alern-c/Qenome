@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A pull request labeled `automerge` can squash-merge itself when the required checks pass. `review-gate` passes only when the OpenCode review records `matches` for that head, with no `blocker` or `major` finding, after the head and the merge base both built. `automerge-guard` fails for a version bump, a changelog version heading, release or npm packaging, a verdict-rule or accuracy-answer change, and any workflow or gate change. `docs/automerge.md` lists the checks and the repository settings a maintainer turns on by hand.
 
+### Changed
+
+- `README.md`, `README.ja.md`, `docs/why-not.md`, and `docs/ja/why-not.md` say what EXPLAIN QUERY PLAN, a `wrangler dev` result `meta`, local `wrangler d1 execute`, and production `wrangler d1 insights` already give you. Qenome adds a repeatable baseline-vs-candidate verdict, an A/A timing noise band that does not decide it, `--scale` on generated sizes, a `--migration` regression check, and JSON for agents and CI. The local row counts are not a production D1 bill, and a lower count does not mean the bill will fall. `docs/accuracy.md` and `docs/ja/accuracy.md` say the same about `wrangler dev` `meta` and about billing.
+- `testdata/README.md` is in English. The fixture, the expected values, and the accuracy-corpus layout are unchanged. `AGENTS.md` no longer calls that file older Japanese text.
+
 ## [0.3.9] - 2026-10-31
 
 ### Added

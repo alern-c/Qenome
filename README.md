@@ -4,7 +4,7 @@
 
 # Qenome
 
-**Did the rows read or written spike? Check the index before you merge it.**
+**Did the local rows read or written spike? Check the index before you merge it.**
 
 [![npm version](https://img.shields.io/npm/v/qenome?style=flat-square)](https://www.npmjs.com/package/qenome)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square)](LICENSE)
@@ -51,11 +51,11 @@ To try Qenome without installing it, run `npx qenome`. Windows is not an npm tar
 
 ## Features
 
-- **Your database stays untouched.** Qenome opens the original read-only and compares sandbox copies, so a candidate index that does not help can be dropped before the merge.
-- **The verdict comes from the rows read, not the time.** Rows read and rows written use the same counting as local D1 (workerd patch); `--runs 0` keeps the verdict and skips the timing.
+- **Your database stays untouched.** Qenome opens the original read-only and compares sandbox copies, so a candidate that does not lower the local row counts can be dropped before the merge.
+- **The verdict comes from the row counts, not the time.** Rows read and rows written use the same counting as local D1 (workerd patch), on this build. `--runs 0` keeps the verdict and skips the timing.
 - **The result rows are checked too.** Both copies must return the same rows as a multiset; a mismatch or an incomparable result is reported instead of a pass.
-- **See whether an improvement holds as the table grows.** `--seed-data` with `--scale` measures the same comparison at 2 or 3 sizes and shows the rows read side by side; see [Measuring at several sizes](docs/usage.md#measuring-at-several-sizes---scale).
-- **See what an index costs a write.** `--write` runs one `INSERT`, `UPDATE`, `DELETE`, or `REPLACE` in a rolled-back transaction on each copy and reports the rows written on both sides, including secondary-index inserts, triggers, and foreign-key cascades. See [Comparing a write](docs/usage.md#comparing-a-write).
+- **Compare one statement at two or three generated sizes.** `--seed-data` with `--scale` measures the same comparison at each size and shows the rows read side by side; see [Measuring at several sizes](docs/usage.md#measuring-at-several-sizes---scale).
+- **See how many extra rows an index writes.** `--write` runs one `INSERT`, `UPDATE`, `DELETE`, or `REPLACE` in a rolled-back transaction on each copy and reports the rows written on both sides, including secondary-index inserts, triggers, and foreign-key cascades. See [Comparing a write](docs/usage.md#comparing-a-write).
 - **A local D1 binding is enough.** `--d1 <BINDING>` finds the local database from a wrangler config, and `--config` names the config.
 - **Compare many queries in one run.** `--batch <FILE>` pairs every SELECT in a JSON manifest with every candidate `CREATE INDEX` and reports each pair; see [Batch comparisons](docs/batch.md#batch-comparisons).
 - **Find the indexes a manifest does not use.** `--batch manifest.json --audit-indexes` lists the indexes that no query plan named, the indexes whose leading columns another index or the primary key covers, and the UNIQUE and PRIMARY KEY indexes that stay for their constraint; see [Index audit (--audit-indexes)](docs/batch.md#index-audit---audit-indexes).
@@ -64,7 +64,7 @@ To try Qenome without installing it, run `npx qenome`. Windows is not an npm tar
 - **JSON for AI agents and CI.** `--format json` gives the report with `schema_version` 2, and the exit status separates a match, a mismatch, and an incomparable result.
 - **The evidence stays next to the verdict.** The query plan, the median times, the size increase of the whole database, and advisory warnings are in the report.
 
-> The row numbers have not yet been checked against production D1. Qenome measures the local database only. See [Accuracy and production D1](docs/accuracy.md) for how the rows are counted and what can differ from production D1.
+> The row numbers are a local comparison on Qenome's build of the D1 row-count patch. They have not been checked against production D1, they can differ from the `rows_read` in a `wrangler dev` result `meta`, and they are not a D1 bill. A lower local count does not mean the bill will fall. See [Accuracy and production D1](docs/accuracy.md).
 
 ## Contents
 
@@ -73,7 +73,7 @@ To try Qenome without installing it, run `npx qenome`. Windows is not an npm tar
 - [Installation details](docs/installation.md): npm, prebuilt binaries, checksums, and a build from source
 - [Check a local D1](docs/local-d1.md): the first comparison, from a wrangler project
 - [Use with AI agents](docs/agents.md): the skill, the JSON report, and the install commands
-- [Why not ...](docs/why-not.md): EXPLAIN QUERY PLAN, wrangler, production metrics, and applying the index
+- [Why not ...](docs/why-not.md): what EXPLAIN QUERY PLAN, `wrangler dev`, and `d1 insights` already give you
 - [Usage](docs/usage.md): every option, writes, seed data, and D1 local databases
 - [Batch comparisons](docs/batch.md): many queries and candidates, index audit, recording, and suggestions
 - [Output formats](docs/output.md): human, kv, json, exit status, and timing evidence
@@ -82,7 +82,7 @@ To try Qenome without installing it, run `npx qenome`. Windows is not an npm tar
 - [Contributing](#contributing)
 - [License](#license)
 
-From this README, a D1 developer or their AI agent can get that verdict on a local D1 in a few minutes. See [Check a local D1](docs/local-d1.md) and [Use with AI agents](docs/agents.md).
+From this README, a D1 developer or their AI agent can run that comparison on a local D1. See [Check a local D1](docs/local-d1.md) and [Use with AI agents](docs/agents.md).
 
 ## Contributing
 
