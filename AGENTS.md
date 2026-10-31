@@ -33,6 +33,7 @@ Commit messages, PR titles and bodies, issues, CHANGELOG and code comments are w
 
 - The README is an index: an introduction, the first example, and links to `docs/`. Put details on a `docs/` page, with its `docs/ja/` pair.
 - Do not add comments to code. The source of truth is `scripts/check_comments.py`; when you add a new kind of file, check it or list it in `EXCLUDED_FILES`.
+- When you add a page, register its English and Japanese pair in `scripts/check_docs.py`. That check owns the page list, the README line caps, the link, anchor and image checks, and the heading-pair check.
 
 ## npm
 

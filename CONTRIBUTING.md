@@ -85,7 +85,33 @@ The first database build takes about a second, and each timed example a few seco
 python3 scripts/check_all.py
 ```
 
-The quality workflow in CI runs the same script. It checks the effective Zig version, runs `zig fmt --check .`, the build, the tests, the Python checks, the architecture and comment checks, the npm staging test, the golden output, and the Quick start above, in order, and stops at the first stage that fails.
+The quality workflow in CI runs the same script. It stops at the first stage that fails. The stages are:
+
+1. verify the effective Zig version
+2. `zig fmt --check .`
+3. build
+4. the accuracy corpus check
+5. test
+6. show the Python version
+7. ruff
+8. mypy
+9. the architecture checker's self-test
+10. the architecture check
+11. the comment checker's self-test
+12. the comment check
+13. the docs checker's self-test
+14. the docs check
+15. the npm publish-tree test
+16. the record wrapper test
+17. the golden checker's self-test
+18. the golden output check
+19. the accuracy checker's self-test
+20. the Quick start checker's self-test
+21. the CONTRIBUTING Quick start
+
+ruff and mypy run through `uv run --locked`, so the checks need uv 0.13.1 or newer.
+
+`scripts/check_docs.py` keeps the documentation in shape. It holds the list of pages cut from the README, checks that each has its `docs/ja/` pair with the same sequence of heading levels, caps the README and `AGENTS.md` line counts, and checks every relative link, anchor and image in `README.md`, `README.ja.md`, `AGENTS.md`, this file, `skills/qenome/SKILL.md` and the pages under `docs/`. Add a page to its list when you add one; a new `docs/*.md` that is neither a paired page nor a listed developer page fails the check.
 
 `scripts/check_quick_start.py` runs the commands in the [Quick start](#quick-start) as written and compares each result with its `# expect:` marker. An example added to the Quick start needs that marker, so that CI checks it too, and the section keeps a checked example for `improved`, `no-effect`, and `incomparable`. The check also requires `README.md` and `README.ja.md` to link to this file. The Quick start stages run on Linux and macOS; on Windows they print a skip and the other stages still run.
 
