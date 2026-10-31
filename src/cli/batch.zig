@@ -16,7 +16,9 @@ const cli_query = @import("query.zig");
 const report_model = @import("../report/model.zig");
 const report_json = @import("../report/json.zig");
 const report_batch_writes = @import("../report/batch_writes.zig");
+const cli_recommend = @import("recommend.zig");
 const cli_suggest = @import("suggest.zig");
+const cli_suggest_none = @import("suggest_none.zig");
 const cli_warnings = @import("warnings.zig");
 const cli_workspace = @import("workspace.zig");
 
@@ -87,6 +89,7 @@ const Suggested = struct {
 const SuggestOutcome = union(enum) {
     ready: Suggested,
     failed: ExitCode,
+    sufficient,
 };
 
 pub const Migration = cli_batch_report.Migration;
@@ -441,6 +444,7 @@ pub fn run(
                 suggested_rejected = suggested.rejected;
             },
             .failed => |code| return code,
+            .sufficient => return reportSufficient(io, arena, &baseline, inputs, loaded.queries, suggest_warnings.items, stdout, stderr),
         }
     }
     if (candidates.len == 0) return reportNoCandidates(stderr, inputs.manifest, suggested_rejected);
@@ -551,6 +555,8 @@ pub fn run(
 
         summary.no_analyze_stats = warnings.no_analyze_stats;
         summary.data_too_small = warnings.data_too_small;
+        summary.small_table = if (warnings.data_too_small) tables[index] else "";
+        summary.small_rows = warnings.rows;
 
         var variant: QuerySession = .{};
         var variant_done = false;
@@ -661,6 +667,7 @@ pub fn run(
                     .baseline_missing = true,
                     .reason = reason,
                     .variant_rows = @as(u64, after.counters.rows_read),
+                    .variant_temp_btree = cli_recommend.planHasTempBtree(after.plan),
                     .comparison = variant_comparison,
                     .partial_index = if (partial_index) |name| arena.dupe(u8, name) catch return outOfMemoryCode(stderr) else null,
                 }) catch return outOfMemoryCode(stderr);
@@ -693,6 +700,17 @@ pub fn run(
                 },
             }
             report.warnings = .{ .no_analyze_stats = warnings.no_analyze_stats, .data_too_small = warnings.data_too_small };
+            var scan = false;
+            for (before.plan.rows) |row| scan = scan or cli_warnings.bareScan(row.detail, tables[index]);
+            if (scan) summary.small_full_scan = true;
+            if (summary.small_select.len == 0) summary.small_select = query.label;
+            cli_warnings.attachSmallData(child, &report.warnings, tables[index], warnings.rows, scan, .{
+                .database = inputs.database_path,
+                .binding = if (inputs.d1) |d1| d1.binding else null,
+                .select_path = query.label,
+                .index_path = candidate.label,
+                .suggested = candidate.source == .suggested,
+            }) catch return outOfMemoryCode(stderr);
             const partial_index = variant.database.findBindDependentPartialIndex(child, after.plan, query.sql, query.binds, &control) catch null;
             report.warnings.bind_dependent_partial_index = partial_index;
             report.sizes = .{ .baseline = baseline_size, .variant = variant_size };
@@ -722,6 +740,8 @@ pub fn run(
                 .outcome = outcome.verdict,
                 .judgement = report.judgement.verdict,
                 .rows = .{ .baseline = before.counters.rows_read, .variant = after.counters.rows_read },
+                .baseline_temp_btree = cli_recommend.planHasTempBtree(before.plan),
+                .variant_temp_btree = cli_recommend.planHasTempBtree(after.plan),
                 .comparison = comparison,
                 .partial_index = if (partial_index) |name| arena.dupe(u8, name) catch return outOfMemoryCode(stderr) else null,
             }) catch return outOfMemoryCode(stderr);
@@ -770,8 +790,8 @@ pub fn run(
         return .rejected;
     }
 
-    const order = summaryOrder(arena, summaries) catch return outOfMemoryCode(stderr);
-    const recommended = if (cli_batch_writes.blocksRecommendation(write_results.items)) null else recommendedIndex(summaries, order);
+    const order = cli_recommend.order(arena, summaries, results.items) catch return outOfMemoryCode(stderr);
+    const recommended = if (cli_batch_writes.blocksRecommendation(write_results.items)) null else cli_recommend.pick(summaries, order);
     const code = batchExitCode(summaries, results.items, write_results.items, migration_report != null);
 
     switch (inputs.format) {
@@ -936,6 +956,13 @@ fn suggestCandidates(
             for (build.warnings) |warning| {
                 warnings.append(arena, warning) catch return .{ .failed = outOfMemoryCode(stderr) };
             }
+            if (build.statements.len == 0 and loaded.candidates.len == 0) {
+                if (build.generated == 0 and build.rejected == 0 and !queriesSkipped(ready.warnings)) return .sufficient;
+                if (queriesSkipped(ready.warnings)) {
+                    reportSkippedSuggestions(stderr, ready.warnings);
+                    return .{ .failed = .rejected };
+                }
+            }
             if (build.generated == 0) {
                 warnings.append(arena, .{ .code = contract.code.no_suggestions, .message = "SQLite suggested no index for these queries" }) catch return .{ .failed = outOfMemoryCode(stderr) };
             }
@@ -954,6 +981,40 @@ fn reportSchemaRejection(stderr: *Io.Writer, rejection: cli_suggest.SchemaReject
     stderr.writeAll("error: --suggest: the schema entry is not allowed: ") catch {};
     result_rows.writeText(stderr, rejection.name) catch {};
     stderr.print(": {s}\n", .{rejection.reason}) catch {};
+}
+
+fn queriesSkipped(warnings: []const cli_suggest.Warning) bool {
+    for (warnings) |warning| {
+        if (std.mem.eql(u8, warning.code, contract.code.suggest_query_skipped)) return true;
+    }
+    return false;
+}
+
+fn reportSkippedSuggestions(stderr: *Io.Writer, warnings: []const cli_suggest.Warning) void {
+    const detail = for (warnings) |warning| {
+        if (std.mem.eql(u8, warning.code, contract.code.suggest_query_skipped)) break warning.message;
+    } else "SQLite could not analyze the queries";
+    stderr.writeAll("error: --suggest could not produce a candidate index: ") catch {};
+    result_rows.writeEscapedText(stderr, detail) catch {};
+    stderr.writeByte('\n') catch {};
+    stderr.writeAll("hint: Fix the SELECT, or write a candidate CREATE INDEX file and compare it without --suggest.\n") catch {};
+}
+
+fn reportSufficient(
+    io: Io,
+    arena: std.mem.Allocator,
+    baseline: *QuerySession,
+    inputs: Inputs,
+    queries: []const Query,
+    warnings: []const cli_suggest.Warning,
+    stdout: *Io.Writer,
+    stderr: *Io.Writer,
+) ExitCode {
+    const selects = arena.alloc(cli_suggest_none.Select, queries.len) catch return outOfMemoryCode(stderr);
+    for (queries, 0..) |query, index| {
+        selects[index] = .{ .label = query.label, .sql = query.sql, .binds = query.binds };
+    }
+    return cli_suggest_none.report(io, arena, baseline, inputs.database_path, inputs.timeout_ms, inputs.format, selects, warnings, stdout, stderr);
 }
 
 fn reportNoCandidates(stderr: *Io.Writer, manifest: bool, rejected: usize) ExitCode {
@@ -1219,50 +1280,6 @@ fn candidateJudgement(before: Measurement, after: Measurement, migration: bool) 
     return cli_comparison.judgeRowsWith(before, after, if (migration) .regressed else .needs_check);
 }
 
-fn isEligible(summary: CandidateSummary) bool {
-    return summary.status == .compared and
-        summary.mismatch == 0 and
-        summary.incomparable == 0 and
-        summary.needs_check == 0 and
-        summary.timeout == 0 and
-        summary.improved >= 1;
-}
-
-fn eligibleLessThan(summaries: []const CandidateSummary, a: usize, b: usize) bool {
-    const left = summaries[a];
-    const right = summaries[b];
-    if (left.improved != right.improved) return left.improved > right.improved;
-    const left_warned = left.partial_index_warnings != 0;
-    const right_warned = right.partial_index_warnings != 0;
-    if (left_warned != right_warned) return !left_warned;
-    if (left.size_increase != right.size_increase) return left.size_increase < right.size_increase;
-    return a < b;
-}
-
-fn summaryOrder(arena: std.mem.Allocator, summaries: []const CandidateSummary) ![]usize {
-    var order: std.ArrayList(usize) = .empty;
-    var eligible: std.ArrayList(usize) = .empty;
-    for (summaries, 0..) |summary, index| {
-        if (isEligible(summary)) try eligible.append(arena, index);
-    }
-    std.mem.sort(usize, eligible.items, @as([]const CandidateSummary, summaries), eligibleLessThan);
-    for (eligible.items) |index| try order.append(arena, index);
-    for (summaries, 0..) |summary, index| {
-        if (summary.status == .compared and !isEligible(summary)) try order.append(arena, index);
-    }
-    for (summaries, 0..) |summary, index| {
-        if (summary.status != .compared) try order.append(arena, index);
-    }
-    return order.items;
-}
-
-fn recommendedIndex(summaries: []const CandidateSummary, order: []const usize) ?usize {
-    for (order) |index| {
-        if (isEligible(summaries[index])) return index;
-    }
-    return null;
-}
-
 fn batchExitCode(summaries: []const CandidateSummary, results: []const ResultEntry, writes: []const report_batch_writes.Result, migration: bool) ExitCode {
     const write_severity = cli_batch_writes.severity(writes);
     var mismatch = write_severity.mismatch;
@@ -1432,6 +1449,17 @@ fn writeBatchHuman(
         try stdout.writeAll("none");
     }
     try stdout.writeByte('\n');
+    if (smallRankingIndex(summaries, recommended)) |index| {
+        const summary = summaries[index];
+        const select_path = if (summary.small_select.len != 0) summary.small_select else "select.sql";
+        try cli_warnings.writeSmallDataRanking(stdout, allocator, summary.small_table, summary.small_rows, summary.small_full_scan, .{
+            .database = std.fs.path.basename(inputs.database_path),
+            .binding = if (inputs.d1) |d1| d1.binding else null,
+            .select_path = std.fs.path.basename(select_path),
+            .index_path = candidate_names[index],
+            .suggested = summary.source == .suggested,
+        });
+    }
 
     try stdout.writeAll("\nResults\n  ");
     try writeCell(stdout, "query", query_width);
@@ -1481,8 +1509,12 @@ fn writeBatchHuman(
     if (writes.len != 0) try report_batch_writes.writeHuman(stdout, allocator, writes);
 
     var candidate_warnings: std.ArrayList(cli_warnings.CandidateWarning) = .empty;
-    defer candidate_warnings.deinit(allocator);
-    try appendCandidateWarnings(allocator, &candidate_warnings, summaries, candidate_names, order);
+    defer {
+        for (candidate_warnings.items) |entry| if (entry.owned) allocator.free(entry.message);
+        candidate_warnings.deinit(allocator);
+    }
+    const binding = if (inputs.d1) |d1| d1.binding else null;
+    try appendCandidateWarnings(allocator, &candidate_warnings, summaries, candidate_names, order, inputs.database_path, binding);
 
     var comparisons: std.ArrayList(cli_warnings.Comparison) = .empty;
     defer comparisons.deinit(allocator);
@@ -1534,25 +1566,45 @@ fn writeBatchHuman(
     try cli_warnings.writeRunWarnings(stdout, warnings);
 }
 
+fn smallRankingIndex(summaries: []const CandidateSummary, recommended: ?usize) ?usize {
+    if (recommended) |index| if (summaries[index].small_table.len != 0) return index;
+    for (summaries, 0..) |summary, index| if (summary.small_table.len != 0) return index;
+    return null;
+}
+
 fn appendCandidateWarnings(
     allocator: std.mem.Allocator,
     list: *std.ArrayList(cli_warnings.CandidateWarning),
     summaries: []const CandidateSummary,
     candidate_names: []const []const u8,
     order: []const usize,
+    database: []const u8,
+    binding: ?[]const u8,
 ) !void {
     for (order) |index| {
         const summary = summaries[index];
         if (summary.status != .compared) continue;
-        const active = [_]bool{ summary.no_analyze_stats, summary.data_too_small };
-        for (active, contract.warning_codes, contract.warning_messages) |on, code, message| {
-            if (!on) continue;
-            try list.append(allocator, .{
-                .candidate = candidate_names[index],
-                .code = code,
-                .message = message,
-            });
-        }
+        if (summary.no_analyze_stats) try list.append(allocator, .{
+            .candidate = candidate_names[index],
+            .code = contract.code.no_analyze_stats,
+            .message = contract.warning_messages[0],
+        });
+        if (!summary.data_too_small) continue;
+        const owned = summary.small_table.len != 0;
+        const select_path = if (summary.small_select.len != 0) summary.small_select else "select.sql";
+        const message = if (!owned) contract.warning_messages[1] else try cli_warnings.smallDataMessage(allocator, summary.small_table, summary.small_rows, summary.small_full_scan, .{
+            .database = std.fs.path.basename(database),
+            .binding = binding,
+            .select_path = std.fs.path.basename(select_path),
+            .index_path = candidate_names[index],
+            .suggested = summary.source == .suggested,
+        });
+        try list.append(allocator, .{
+            .candidate = candidate_names[index],
+            .code = contract.code.data_too_small,
+            .message = message,
+            .owned = owned,
+        });
     }
 }
 
@@ -1715,35 +1767,6 @@ test "a non-constraint apply failure is fatal" {
     }
 }
 
-test "summaryOrder puts eligible candidates first by improved and size" {
-    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena_state.deinit();
-    var summaries = [_]CandidateSummary{
-        .{ .candidate = "first.sql", .status = .compared, .improved = 1, .no_effect = 1, .size_increase = 100 },
-        .{ .candidate = "small.sql", .status = .compared, .improved = 1, .no_effect = 1, .size_increase = 50 },
-        .{ .candidate = "best.sql", .status = .compared, .improved = 2, .size_increase = 300 },
-        .{ .candidate = "plain.sql", .status = .compared, .improved = 0, .no_effect = 2, .size_increase = 10 },
-        .{ .candidate = "rejected.sql", .status = .index_rejected, .failure_code = "index_rejected" },
-        .{ .candidate = "late.sql", .status = .index_timeout, .failure_code = "index_timeout" },
-    };
-    const order = try summaryOrder(arena_state.allocator(), &summaries);
-    try testing.expectEqualSlices(usize, &.{ 2, 1, 0, 3, 4, 5 }, order);
-    try testing.expectEqual(@as(?usize, 2), recommendedIndex(&summaries, order));
-}
-
-test "summaryOrder puts a warned candidate after an equal candidate without the warning" {
-    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena_state.deinit();
-    var summaries = [_]CandidateSummary{
-        .{ .candidate = "warned-small.sql", .status = .compared, .improved = 1, .no_effect = 1, .size_increase = 10, .partial_index_warnings = 1 },
-        .{ .candidate = "clean-large.sql", .status = .compared, .improved = 1, .no_effect = 1, .size_increase = 500 },
-        .{ .candidate = "warned-best.sql", .status = .compared, .improved = 2, .partial_index_warnings = 1 },
-    };
-    const order = try summaryOrder(arena_state.allocator(), &summaries);
-    try testing.expectEqualSlices(usize, &.{ 2, 1, 0 }, order);
-    try testing.expectEqual(@as(?usize, 2), recommendedIndex(&summaries, order));
-}
-
 test "only a migration candidate names a worse row count regressed" {
     const scan = [_]db.PlanRow{.{ .id = 2, .parent = 0, .label = .{ .kind = .scan }, .detail = "SCAN t" }};
     const before: Measurement = .{
@@ -1808,7 +1831,7 @@ test "a compared candidate keeps its warnings even when every query timed out" {
     const order = [_]usize{ 0, 1, 2 };
     var list: std.ArrayList(cli_warnings.CandidateWarning) = .empty;
     defer list.deinit(arena_state.allocator());
-    try appendCandidateWarnings(arena_state.allocator(), &list, &summaries, &names, &order);
+    try appendCandidateWarnings(arena_state.allocator(), &list, &summaries, &names, &order, "db.sqlite", null);
     try testing.expectEqual(@as(usize, 3), list.items.len);
     try testing.expectEqualStrings("a.sql", list.items[0].candidate);
     try testing.expectEqualStrings(contract.code.no_analyze_stats, list.items[0].code);

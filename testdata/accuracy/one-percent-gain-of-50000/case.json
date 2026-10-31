@@ -1,0 +1,38 @@
+{
+  "description": "A reduction of exactly 1% of the baseline rows read is the smallest saving reported as improved.",
+  "args": [
+    "--bind",
+    "1:int:49500"
+  ],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "verdict": "improved",
+    "plan_changed": true,
+    "baseline_plan": {
+      "contains": [
+        "SCAN events"
+      ],
+      "excludes": [
+        "USING INDEX"
+      ]
+    },
+    "variant_plan": {
+      "contains": [
+        "SEARCH events USING COVERING INDEX idx_created (created_at<?)"
+      ]
+    },
+    "rows_read": {
+      "direction": "decrease",
+      "max_ratio": 0.99
+    },
+    "rows_written": "same",
+    "human": {
+      "contains": [
+        "improved",
+        "50,000 -> 49,500"
+      ]
+    }
+  }
+}

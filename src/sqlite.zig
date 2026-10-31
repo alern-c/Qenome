@@ -30,7 +30,9 @@ pub const ProgressCallback = fn (?*anyopaque) callconv(.c) c_int;
 pub const SQLITE_OK = 0;
 pub const SQLITE_ERROR = 1;
 pub const SQLITE_BUSY = 5;
+pub const SQLITE_NOMEM = 7;
 pub const SQLITE_READONLY = 8;
+pub const SQLITE_TOOBIG = 18;
 pub const SQLITE_INTERRUPT = 9;
 pub const SQLITE_CONSTRAINT = 19;
 pub const SQLITE_AUTH = 23;
@@ -77,6 +79,7 @@ pub extern fn sqlite3_open_v2(filename: [*:0]const u8, ppDb: *?*sqlite3, flags: 
 pub extern fn sqlite3_close(db: ?*sqlite3) c_int;
 pub extern fn sqlite3_errmsg(db: ?*sqlite3) [*:0]const u8;
 pub extern fn sqlite3_errcode(db: ?*sqlite3) c_int;
+pub extern fn sqlite3_db_handle(stmt: ?*sqlite3_stmt) ?*sqlite3;
 pub extern fn sqlite3_db_readonly(db: ?*sqlite3, zDbName: [*:0]const u8) c_int;
 pub extern fn sqlite3_db_config(db: ?*sqlite3, op: c_int, ...) c_int;
 pub extern fn sqlite3_exec(db: ?*sqlite3, sql: [*:0]const u8, callback: ?*const ExecCallback, arg: ?*anyopaque, errmsg: ?*?[*:0]u8) c_int;

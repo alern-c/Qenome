@@ -14,11 +14,15 @@ qenome app.db --batch batch.json --audit-indexes
 qenome app.db --batch batch.json --rank
 qenome app.db --batch batch.json --migration 0002_replace_index.sql
 qenome app.db select.sql --suggest
+qenome app.db --sql "SELECT id FROM events WHERE customer_id = 1" --suggest
+qenome app.db - index.sql
 qenome app.db --batch batch.json --suggest
 qenome --record qenome-record.log --out qenome-manifest
 ```
 
 The three paths fill the roles in this order: database, SELECT (or write) file, CREATE INDEX file. Each role can also be given with `--db`, `--select`/`--write`, or `--index-sql`, and the two forms can be mixed; a positional path fills the first role that is still empty. With `--d1`, the two positional paths fill the SELECT and CREATE INDEX roles. With `--write`, a positional path fills the write file instead of the SELECT file. After `--`, every argument is treated as a path, including paths that start with `-`.
+
+`--sql <SQL>` passes the SELECT text instead of a file. A SELECT path of `-` reads that SELECT from stdin (`qenome app.db - index.sql`, or `qenome app.db - --suggest`). Both work for one comparison, `--suggest`, and `--scale`. They are rejected for `--batch`, `--write`, `--record`, `--migration`, and `--audit-indexes`, which keep their own files. `-` is not accepted as the index, write, batch, or migration path.
 
 `select.sql` holds one read-only `SELECT`; `index.sql` holds one candidate `CREATE INDEX`. Qenome rejects multiple statements and any other statement. A `--migration` file is the one exception: it may hold several `CREATE INDEX`, `CREATE UNIQUE INDEX`, `DROP INDEX`, `CREATE TABLE`, and `ALTER TABLE` statements; see [Batch comparisons](batch.md#batch-comparisons).
 
@@ -27,7 +31,8 @@ The three paths fill the roles in this order: database, SELECT (or write) file, 
 - `--db <PATH>`: the SQLite database to read (required, once; not with `--d1`)
 - `--d1 <BINDING>`: the local D1 database of this `d1_databases` binding in a wrangler config, instead of `--db`. See [D1 local databases](#d1-local-databases)
 - `--config <PATH>`: the wrangler config for `--d1` (default: `wrangler.toml`, `wrangler.jsonc`, or `wrangler.json` in the current directory)
-- `--select <FILE>`: a file holding the one `SELECT` to compare (required, once; not with `--write`)
+- `--select <FILE>`: a file holding the one `SELECT` to compare (required, once; not with `--write`). `-` reads the SELECT from stdin
+- `--sql <SQL>`: the SELECT text itself, instead of `--select`, for one comparison, `--suggest`, or `--scale`. Not with `--batch`, `--write`, `--record`, `--migration`, or `--audit-indexes`
 - `--write <FILE>`: a file holding one `INSERT`, `UPDATE`, `DELETE`, or `REPLACE` to compare instead of a `SELECT`; it runs in a transaction on each sandbox copy and is rolled back. See [Comparing a write](#comparing-a-write). It cannot be combined with `--select`, `--batch`, `--migration`, or `--suggest`
 - `--index-sql <FILE>`: a file holding the one candidate `CREATE INDEX` (required, once)
 - `--batch <FILE>`: compare every SELECT in a JSON manifest with every candidate `CREATE INDEX` in one run; see [Batch comparisons](batch.md#batch-comparisons). It cannot be combined with `--select`, `--index-sql`, `--bind`, positional SELECT or INDEX paths, `--runs`, or `--format kv`
@@ -38,7 +43,7 @@ The three paths fill the roles in this order: database, SELECT (or write) file, 
 - `--migration <FILE>`: apply this SQL file to the variant only before the `--batch` queries run. It needs `--batch` and a manifest without `candidates`; it cannot be combined with `--select`, `--index-sql`, `--bind`, `--runs`, `--suggest`, or `--format kv`. `CREATE INDEX`, `CREATE UNIQUE INDEX`, `DROP INDEX`, `CREATE TABLE` (a column list, not `AS SELECT`), and `ALTER TABLE` (ADD / RENAME / DROP COLUMN and RENAME TO) are accepted; data changes, `DROP TABLE`, `ATTACH`, `PRAGMA`, and other statements are rejected with the statement number. A query that uses a column or table the migration drops or renames cannot run on the variant, so the whole run stops with exit `1`; a `SELECT *` cannot be compared after a column is added or dropped, so list the columns you need. See [Batch comparisons](batch.md#batch-comparisons)
 - `--seed-data <FILE>`: replace the tables listed in this JSON spec with deterministic dummy rows in the sandbox copy before comparing; the original database is not changed. It works with every mode, including `--batch`, `--suggest`, and `--migration`. See [Generating sandbox data](#generating-sandbox-data)
 - `--scale <ROWS,ROWS[,ROWS]>`: with `--seed-data`, compare at 2 or 3 strictly increasing row counts in one run and show the results side by side; each step seeds a fresh sandbox copy at that size. The largest table in the spec gets the step size, and the other tables scale with it. It cannot be combined with `--batch`, `--suggest`, `--migration`, `--audit-indexes`, `--rank`, `--record`, or `--format kv`. See [Measuring at several sizes](#measuring-at-several-sizes---scale)
-- `--suggest`: ask SQLite's expert for candidate indexes instead of naming one, and compare the proposals. With `--batch`, the manifest may omit `candidates`. It cannot be combined with `--runs`, `--format kv`, or an index file (`--index-sql` or a third positional path). See [Suggesting candidate indexes](batch.md#suggesting-candidate-indexes)
+- `--suggest`: ask SQLite's expert for candidate indexes instead of naming one, and compare the proposals. With `--batch`, the manifest may omit `candidates`. The SELECT can be a file, `--sql`, or `-` for stdin. It cannot be combined with `--runs`, `--format kv`, or an index file (`--index-sql` or a third positional path). When the current plan already needs no index, the run exits `0` and reports that, with the plan and the rows read. See [Suggesting candidate indexes](batch.md#suggesting-candidate-indexes)
 - `--bind <N>:<TYPE>[:<VALUE>]`: a typed value bound to parameter `N`; repeatable. `N` is SQLite's parameter number: named parameters share the number of their first appearance, and `?NNN` uses `NNN`. `TYPE` is `int`, `real`, `text`, or `null` (null takes no value). Every number in `1..parameter count` must be given exactly once, and a `SELECT` without parameters takes no `--bind`. The value is the rest of the argument, so text may contain `:`.
 - `--runs <N>`: timed rounds after the results match; each round adds two baseline A/A executions and times the `SELECT` once per copy. The default is `10`; `0` skips the timing but keeps the row counts and the verdict; the maximum is `1000`. A timing that takes longer than a second reports its progress on stderr. With `--write`, `N` is the number of rolled-back executions per copy (at least one), no timing runs, and every execution must report the same counts.
 - `--timeout-ms <MS>`: time limit for building the index, for each `SELECT` run, and for each `--write` execution; the default is `30000`; `0` disables the limit. The comparison and timing can take the database copy plus `(3 + 4 × runs)` time limits, with additional bounded diagnostic statements (the ANALYZE and size checks, and when the SELECT has parameters the bind-dependent partial index check) each using the same timeout.
@@ -115,6 +120,14 @@ The same spec and `seed` give the same rows on every run, so a reported comparis
 The human Summary adds `seed data` and `seed` lines; `kv` adds `seed-data`, `seed`, `seed-rows`, `seed-tables`, and one `seed-table` line per table; `json` adds a top-level `seed_data` object with `path`, `seed`, `rows`, and `tables`.
 
 ## Measuring at several sizes (--scale)
+
+When the candidate table has fewer than 1,000 rows, the human Summary says so on the `data` line and the `next` line is the command to run next. A full scan of that table reads every row, so a small `rows_read` does not mean a missing index is harmless. Write a seed spec that lists the table, then rerun:
+
+```sh
+qenome app.db select.sql index.sql --seed-data seed.json --scale 1000,10000 --runs 0
+```
+
+The paths are the ones from this run. `--suggest` and `--batch` print the same note under `Recommendation:`; save a suggested index as `index.sql` and rerun that one comparison, because `--scale` does not combine with those modes. The JSON warning adds `table`, `rows`, `full_scan`, and `next_command` and keeps `schema_version` `2`. See [Accuracy and production D1](accuracy.md#what-the-verdicts-mean).
 
 `--scale 1000,10000` runs the same comparison at 2 or 3 row counts and shows the results side by side, so you can see whether an improvement still holds when the table is larger. It needs `--seed-data`, because the seed spec is the only input that describes the distribution of the data separately from its size. Each step sets the row count of the largest table in the spec to that size and scales the other listed tables by the same factor (rounded, at least 1 row), so the ratio between the tables stays the same; a listed table with `rows: 0` gets at least 1 row. When every listed table has `rows: 0`, there is no ratio to keep, so every table takes the step size. Tables that the spec does not list keep their rows, as with `--seed-data`.
 

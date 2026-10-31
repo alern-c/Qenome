@@ -1,5 +1,5 @@
 {
-  "description": "One row fewer out of 50,000 is still reported as improved; issue #107 decides whether that is right.",
+  "description": "One row fewer out of 50,000 is below the 1% minimum, so the verdict is no-effect and verdict_reasons names that minimum.",
   "args": [
     "--bind",
     "1:int:49999"
@@ -8,7 +8,14 @@
     "exit": 0,
     "exit_code": 0,
     "result": "match",
-    "verdict": "improved",
+    "verdict": "no-effect",
+    "human": {
+      "contains": [
+        "no-effect",
+        "below 1% of the baseline rows read",
+        "50,000 -> 49,999"
+      ]
+    },
     "plan_changed": true,
     "baseline_plan": {
       "contains": [

@@ -31,7 +31,7 @@ PAGE_PAIRS = (
     "accuracy",
     "rules",
 )
-UNPAIRED_DOCS = ("docs/architecture.md", "docs/bill-spiked.md", "docs/json.md", "docs/npm.md")
+UNPAIRED_DOCS = ("docs/architecture.md", "docs/automerge.md", "docs/bill-spiked.md", "docs/json.md", "docs/npm.md")
 ENGLISH_ONLY_DOCS = ("docs/bill-spiked.md",)
 
 HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*$")

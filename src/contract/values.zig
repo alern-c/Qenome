@@ -42,6 +42,8 @@ pub const code = struct {
     pub const usage_scale = "usage_scale";
     pub const batch_write_failed = "batch_write_failed";
     pub const batch_write_timeout = "batch_write_timeout";
+    pub const no_index_needed = "no_index_needed";
+    pub const sqlite_toobig = "sqlite_toobig";
 };
 
 pub const warning_codes = [_][]const u8{ code.no_analyze_stats, code.data_too_small };
@@ -51,9 +53,22 @@ pub const warning_messages = [_][]const u8{
     "The candidate index table has fewer than 1000 rows. This heuristic does not establish representative performance; test with more representative data.",
 };
 
+pub const data_too_small_message = "The table \"{s}\" has {d} rows, fewer than 1000 rows, so this result is not meaningful yet. {s}Write a seed spec that lists {s} and rerun: {s}";
+
+pub const data_too_small_full_scan = "A full scan reads every row, so a small count does not mean a missing index is harmless. ";
+
+pub const data_too_small_suggested = "Save the suggested index as index.sql first; --scale does not run with --suggest. ";
+
 pub const bind_dependent_partial_index_message = "The variant plan uses the partial index \"{s}\" only because the bound values satisfy its WHERE clause. A different bound value changes the plan, so test with the values you deploy.";
 
 pub const unapplied_migrations_message = "wrangler has not applied these migrations to the local D1 database for {s}: {s}. Run `npx wrangler d1 migrations apply {s} --local` and compare again; the schema under test is older than the migrations describe.";
+
+pub const min_read_gain_percent: u32 = 1;
+
+pub const below_min_read_gain_reason = std.fmt.comptimePrint(
+    "the rows match, and the variant reads fewer rows, but the reduction is below {d}% of the baseline rows read",
+    .{min_read_gain_percent},
+);
 
 pub const record_log_permissions_message = "the record log '{s}' is readable by other users; create a new log with umask 077 and delete it after this run";
 

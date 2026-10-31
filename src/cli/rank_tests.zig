@@ -113,10 +113,49 @@ fn jsonGet(value: std.json.Value, key: []const u8) !std.json.Value {
 }
 
 test "a table scan is a SCAN step that does not use an index" {
-    try testing.expect(cli_rank.isTableScan("SCAN events"));
-    try testing.expect(!cli_rank.isTableScan("SCAN events USING INDEX idx_events_customer"));
-    try testing.expect(!cli_rank.isTableScan("SCAN CONSTANT ROW"));
-    try testing.expect(!cli_rank.isTableScan("SEARCH events USING INDEX idx_events_customer"));
+    try testing.expect(cli_rank.isTableScan("SCAN events", &.{}));
+    try testing.expect(!cli_rank.isTableScan("SCAN events USING INDEX idx_events_customer", &.{}));
+    try testing.expect(!cli_rank.isTableScan("SCAN CONSTANT ROW", &.{}));
+    try testing.expect(!cli_rank.isTableScan("SEARCH events USING INDEX idx_events_customer", &.{}));
+}
+
+test "a SCAN of a co-routine, a constant row set, or a values clause is not a table scan" {
+    try testing.expect(!cli_rank.isTableScan("SCAN (subquery-1)", &.{}));
+    try testing.expect(!cli_rank.isTableScan("SCAN SUBQUERY 1", &.{}));
+    try testing.expect(!cli_rank.isTableScan("SCAN 2-ROW VALUES CLAUSE", &.{}));
+    try testing.expect(!cli_rank.isTableScan("SCAN 2 CONSTANT ROW", &.{}));
+    try testing.expect(cli_rank.isTableScan("SCAN v", &.{}));
+    try testing.expect(!cli_rank.isTableScan("SCAN v", &.{"v"}));
+    try testing.expect(!cli_rank.isTableScan("SCAN totals", &.{ "t", "totals" }));
+    try testing.expect(cli_rank.isTableScan("SCAN events AS e", &.{"e"}));
+}
+
+test "a co-routine scan is not reported as a likely full scan" {
+    var fixture = try Fixture.init();
+    defer fixture.deinit();
+    try fixture.write("values.sql", "SELECT * FROM (VALUES (1), (2))\n");
+    try fixture.write("cte.sql", "WITH c(x) AS (SELECT 1 UNION ALL SELECT 2) SELECT * FROM c\n");
+    try fixture.write("aliased.sql", "SELECT * FROM (SELECT 1 AS x UNION ALL SELECT 2) AS v\n");
+    try fixture.write("batch.json",
+        \\{"queries":[{"select":"values.sql"},{"select":"cte.sql"},{"select":"aliased.sql"}]}
+        \\
+    );
+    var human = try fixture.run(&.{"--rank"});
+    defer human.deinit();
+    try testing.expectEqual(ExitCode.ok, human.code);
+    try testing.expect(contains(human.stdout, "likely full scans: 0\n"));
+    try testing.expect(!contains(human.stdout, "flag: likely full scan\n"));
+    try testing.expect(contains(human.stdout, "scan: none\n"));
+}
+
+test "the read ratio tie-break compares exactly, not at three decimals" {
+    try testing.expect(cli_rank.readRatioRanksBefore(10_000, 9_998, 10_000, 9_999));
+    try testing.expect(!cli_rank.readRatioRanksBefore(10_000, 9_999, 10_000, 9_998));
+    try testing.expect(cli_rank.readRatioRanksBefore(10, 1, 0, 1));
+    try testing.expect(!cli_rank.readRatioRanksBefore(10, 1, 10, 1));
+    try testing.expect(!cli_rank.readRatioRanksBefore(5, 0, 1, 1));
+    try testing.expect(cli_rank.readRatioRanksBefore(1, 1, 5, 0));
+    try testing.expect(!cli_rank.readRatioRanksBefore(5, 0, 5, 0));
 }
 
 test "a full scan ranks above an indexed query and is flagged" {
@@ -209,6 +248,30 @@ test "executions from the manifest weight the rank and stay out of a comparison"
     try testing.expectEqual(ExitCode.ok, compared.code);
     try testing.expect(!contains(compared.stderr, "executions"));
     try testing.expect(contains(compared.stdout, "rows read"));
+}
+
+test "the next suggest hint quotes a path that the shell would split" {
+    var fixture = try Fixture.init();
+    defer fixture.deinit();
+    try fixture.write("a;b c.sql", "SELECT note FROM events WHERE id = 1\n");
+    try fixture.write("batch.json",
+        \\{"queries":[{"select":"a;b c.sql"}]}
+        \\
+    );
+    var human = try fixture.run(&.{"--rank"});
+    defer human.deinit();
+    try testing.expectEqual(ExitCode.ok, human.code);
+    try testing.expect(contains(human.stdout, "next: qenome <DB> 'a;b c.sql' --suggest\n"));
+
+    try fixture.write("a\\b.sql", "SELECT note FROM events WHERE id = 2\n");
+    try fixture.write("batch.json",
+        \\{"queries":[{"select":"a\\b.sql"}]}
+        \\
+    );
+    var backslash = try fixture.run(&.{"--rank"});
+    defer backslash.deinit();
+    try testing.expectEqual(ExitCode.ok, backslash.code);
+    try testing.expect(contains(backslash.stdout, "next: qenome <DB> 'a\\b.sql' --suggest\n"));
 }
 
 test "a rank manifest rejects a zero execution count" {

@@ -14,7 +14,7 @@ From that project directory:
 npx qenome --d1 DB select.sql index.sql --runs 0 --format json
 ```
 
-`--runs 0` skips the timing and still returns the verdict. Exit status `0` means the result rows match. Read `verdict` in the JSON: `improved` means the variant read fewer rows, `no-effect` means it did not, and `needs-check` means it read or wrote more. The numbers use the same counting as local D1 (workerd patch). The numbers have not yet been checked against production D1.
+`--runs 0` skips the timing and still returns the verdict. Exit status `0` means the result rows match. Read `verdict` in the JSON: `improved` means the variant read at least 1% fewer rows, `no-effect` means it did not (including a smaller reduction), and `needs-check` means it read or wrote more. The numbers use the same counting as local D1 (workerd patch). The numbers have not yet been checked against production D1.
 
 `--config <PATH>` names a wrangler file outside the current directory. The lookup rules are in [D1 local databases](usage.md#d1-local-databases). The JSON fields are in [docs/json.md](json.md).
 

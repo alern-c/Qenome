@@ -14,7 +14,7 @@ npx wrangler d1 execute DB --local --command "SELECT 1"
 npx qenome --d1 DB select.sql index.sql --runs 0 --format json
 ```
 
-`--runs 0` は計時を飛ばし、判定は出します。終了ステータス `0` は結果の行が一致したという意味です。JSON の `verdict` を読みます。`improved` は variant の読んだ行数が減った、`no-effect` は減らなかった、`needs-check` は読んだ行数か書いた行数が増えた、という意味です。数値はローカル D1 と同じ数え方（workerd のパッチ）です。この数値は、まだ本番 D1 と照合していません。
+`--runs 0` は計時を飛ばし、判定は出します。終了ステータス `0` は結果の行が一致したという意味です。JSON の `verdict` を読みます。`improved` は variant の読んだ行数が少なくとも 1% 減った、`no-effect` はそこまで減らなかった（それより小さい減少を含む）、`needs-check` は読んだ行数か書いた行数が増えた、という意味です。数値はローカル D1 と同じ数え方（workerd のパッチ）です。この数値は、まだ本番 D1 と照合していません。
 
 カレントディレクトリ以外の wrangler ファイルは `--config <PATH>` で指定します。探し方は [D1 のローカルデータベース](usage.md#d1-のローカルデータベース)に、JSON のフィールドは [docs/json.md](../json.md) に書いてあります。
 

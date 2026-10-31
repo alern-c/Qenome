@@ -11,6 +11,7 @@ const report_model = @import("../report/model.zig");
 const cli_timing = @import("timing.zig");
 const cli_workspace = @import("workspace.zig");
 const cli_write_runner = @import("write_runner.zig");
+const cli_warnings = @import("warnings.zig");
 
 const measure = cli_query.measure;
 const decide = cli_comparison.decide;
@@ -151,6 +152,10 @@ pub fn compute(
         .no_analyze_stats = warnings.no_analyze_stats,
         .data_too_small = warnings.data_too_small,
         .unapplied_migrations = inputs.unapplied_migrations,
+    };
+    noteSmallData(arena, &report, inputs, candidate_table, warnings.rows, before.plan) catch {
+        stderr.writeAll("error: out of memory\n") catch {};
+        return .{ .failed = .rejected };
     };
     report.warnings.bind_dependent_partial_index = variant.database.findBindDependentPartialIndex(arena, after.plan, inputs.select_sql, inputs.binds, &control) catch null;
     report.sizes = .{
@@ -449,7 +454,7 @@ fn computeWrite(
         const before = skippedWriteMeasurement(before_plan, baseline.columnCount());
         const after = skippedWriteMeasurement(after_plan, variant.columnCount());
         report.judgement.add("the write was not run, so the row counts are not judged");
-        tryWriteWarnings(arena, &report, &baseline, candidate_table, &control) catch |err| {
+        tryWriteWarnings(arena, &report, &baseline, candidate_table, before_plan, inputs, &control) catch |err| {
             return .{ .failed = writeDiagnosticFailure(err, &baseline, &control, stderr) };
         };
         return .{ .computed = .{ .before = before, .after = after, .outcome = outcome, .report = report } };
@@ -491,7 +496,7 @@ fn computeWrite(
     }
     report.write_runs = before.executions;
 
-    tryWriteWarnings(arena, &report, &baseline, candidate_table, &control) catch |err| {
+    tryWriteWarnings(arena, &report, &baseline, candidate_table, before.plan, inputs, &control) catch |err| {
         return .{ .failed = writeDiagnosticFailure(err, &baseline, &control, stderr) };
     };
 
@@ -516,16 +521,38 @@ fn applyWriteCandidate(work: *const WorkDir, index_sql: [:0]const u8, control: *
     return null;
 }
 
+fn noteSmallData(
+    arena: std.mem.Allocator,
+    report: *report_model.Report,
+    inputs: Inputs,
+    table: []const u8,
+    rows: u64,
+    plan: db.Plan,
+) !void {
+    var scan = false;
+    for (plan.rows) |row| scan = scan or cli_warnings.bareScan(row.detail, table);
+    try cli_warnings.attachSmallData(arena, &report.warnings, table, rows, scan, .{
+        .database = inputs.database_path,
+        .binding = if (inputs.d1) |d1| d1.binding else null,
+        .select_path = inputs.select_path,
+        .write_path = if (inputs.write_sql != null) inputs.select_path else null,
+        .index_path = inputs.index_path,
+    });
+}
+
 fn tryWriteWarnings(
     arena: std.mem.Allocator,
     report: *report_model.Report,
     baseline: *WriteSession,
     candidate_table: []const u8,
+    plan: db.Plan,
+    inputs: Inputs,
     control: *db.StepControl,
 ) !void {
     const warnings = try baseline.runner.database.tableWarnings(arena, candidate_table, control);
     report.warnings.no_analyze_stats = warnings.no_analyze_stats;
     report.warnings.data_too_small = warnings.data_too_small;
+    try noteSmallData(arena, report, inputs, candidate_table, warnings.rows, plan);
 }
 
 fn writeDiagnosticFailure(err: anyerror, session: *WriteSession, control: *db.StepControl, stderr: *Io.Writer) ExitCode {

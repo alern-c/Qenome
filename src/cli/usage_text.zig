@@ -1,3 +1,6 @@
+const std = @import("std");
+const contract = @import("../contract/values.zig");
+
 pub const synopsis = "       qenome skill <print|install|uninstall|status> [options]";
 
 pub const body =
@@ -67,7 +70,10 @@ pub const body =
     \\                       naming them, and compare the suggestions; with
     \\                       --batch the manifest may omit candidates
     \\  --select <FILE>      file holding one read-only SELECT (required, once;
-    \\                       not with --write)
+    \\                       not with --write). - reads the SELECT from stdin
+    \\  --sql <SQL>          the SELECT text itself, instead of --select, for
+    \\                       one comparison or --suggest; not with --batch,
+    \\                       --write, --record, or --migration
     \\  --write <FILE>       file holding one INSERT, UPDATE, DELETE, or REPLACE
     \\                       (required, once; not with --select). The statement
     \\                       runs in a transaction on each sandbox copy and is
@@ -130,11 +136,18 @@ pub const body =
     \\  qenome app.db select.sql index.sql --seed-data seed.json
     \\  qenome app.db select.sql index.sql --seed-data seed.json --scale 1000,10000
     \\  qenome app.db select.sql --suggest
+    \\  qenome app.db --sql "SELECT a FROM t WHERE a = 1" --suggest
+    \\  qenome app.db - index.sql
     \\  qenome app.db --batch batch.json --suggest
     \\  qenome --record record.log --out qenome-manifest
     \\  qenome --record record.log --out qenome-manifest --format json
     \\
     \\The same paths can be given as --db, --select and --index-sql.
+    \\--sql <SQL> passes the SELECT text instead of a file, for one comparison
+    \\or --suggest (and --scale). A SELECT path of - reads that SELECT from
+    \\stdin. --sql and - are rejected for --batch, --write, --record, and
+    \\--migration, which keep their own files. - is not an index, write,
+    \\batch, or migration path.
     \\With --d1, the two positional paths fill the SELECT and CREATE INDEX
     \\roles, whatever the order of the paths and the option. With --write,
     \\a positional path fills the write file instead of the SELECT file.
@@ -169,8 +182,8 @@ pub const body =
     \\orders the queries by rows read, highest first. When a query has
     \\executions, the order uses rows read x runs instead. That figure is
     \\a relative indicator, not a bill. A query is a likely full scan when
-    \\its full-scan counter is above zero or its plan has a SCAN step that
-    \\does not use an index. The report flags those queries and exits 7
+    \\its full-scan counter is above zero or its plan has a table SCAN step
+    \\that does not use an index. The report flags those queries and exits 7
     \\when at least one is flagged; otherwise it exits 0. The manifest
     \\needs only queries, so a manifest from --record works, and candidates
     \\and writes are ignored. The last line names the top query for
@@ -231,7 +244,11 @@ pub const body =
     \\at most 20 suggestions and at most 100 candidates with the manifest.
     \\A database whose schema is not one plain CREATE statement is
     \\rejected with status 1.
-    \\When nothing can be compared it stops with status 1 and no_candidates.
+    \\When the current plan already needs no index, it exits 0 and reports
+    \\no index needed, with that plan and the rows read. When a suggestion
+    \\cannot be produced, or every suggestion is rejected, it stops with
+    \\status 1 (suggest_failed or no_candidates). no_suggestions stays a
+    \\warning when manifest candidates are still compared.
     \\Do not use --suggest in CI gates; keep it for finding candidates.
     \\
     \\exit status: 0 result rows match, 1 rejected, 2 usage error,
@@ -293,8 +310,9 @@ pub const body =
     \\  ORDER BY or among equal ORDER BY keys, and ORDER BY itself is not
     \\  checked.
     \\  Verdict, from the rows read: improved (the rows match and the variant
-    \\  reads fewer rows), no-effect (the rows match and both copies read the
-    \\  same number of rows), needs-check (the rows match but the variant reads
+    \\  reads at least 1% fewer rows, and writes no more), no-effect (the rows
+    \\  match and the variant does not, including a smaller reduction, which
+    \\  the reasons explain), needs-check (the rows match but the variant reads
     \\  or writes more, with the reasons), or not-judged (the rows differ or
     \\  cannot be compared, with the reasons; --runs 0 is still judged). A
     \\  migration batch calls the needs-check case regressed, and its JSON
@@ -311,3 +329,8 @@ pub const body =
     \\AI agents: use `qenome skill print` or `qenome skill install`.
     \\
 ;
+
+test "the verdict help names the minimum read gain" {
+    const needle = std.fmt.comptimePrint("at least {d}% fewer", .{contract.min_read_gain_percent});
+    try std.testing.expect(std.mem.indexOf(u8, body, needle) != null);
+}
