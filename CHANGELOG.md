@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `README.md` and `README.ja.md` name the `time noise` line of the human Summary: the empirical A/A p95 and the number of pairs, shown only when timed, for reference only, and never changing the verdict or the exit code.
 
+### Fixed
+
+- `--record --format json` writes the warnings that the human report shows: the record object now has a `warnings` array with `record_manifest_binds` for the manifest's bind values and, when the log is readable by other users, `record_log_permissions` with the log path. On the no-SELECT error path the JSON error message carries the same `skipped:` breakdown that the human report writes on the next line, so a JSON reader no longer loses the counts. `record_schema_version` stays `1`, and the human output is unchanged.
+- An invalid `--n-plus-one-threshold` value is reported as `usage_n_plus_one_threshold` with a hint that gives the valid range (0, or 2 to 1,000,000) instead of `usage_record_conflict`; using the flag without `--record` still reports `usage_record_conflict`.
+
 ## [0.3.7] - 2026-10-31
 
 ### Added

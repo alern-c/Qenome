@@ -1,5 +1,6 @@
 const std = @import("std");
 const Io = std.Io;
+const builtin = @import("builtin");
 const contract = @import("../contract/values.zig");
 const cli_report = @import("report.zig");
 
@@ -312,8 +313,21 @@ pub fn printSkippedSummary(writer: *Io.Writer, skipped: Skipped) Io.Writer.Error
     try writer.writeAll("\n");
 }
 
+pub fn logPermissionsExposed(io: Io, log_path: []const u8) bool {
+    if (builtin.os.tag == .windows) return false;
+    const stat = Io.Dir.cwd().statFile(io, log_path, .{}) catch return false;
+    const mode = stat.permissions.toMode() & 0o777;
+    return mode & 0o077 != 0;
+}
+
+pub fn printLogPermissionsWarning(writer: *Io.Writer, log_path: []const u8) Io.Writer.Error!void {
+    try writer.print("warning: " ++ contract.record_log_permissions_message ++ "\n", .{log_path});
+}
+
 pub const Summary = struct {
     out_path: []const u8,
+    log_path: []const u8,
+    log_permissions: bool,
     json: bool,
     records: u64,
     executions: u64,
@@ -324,6 +338,8 @@ pub const Summary = struct {
 
 pub const Report = struct {
     manifest: []const u8,
+    log_path: []const u8,
+    log_permissions: bool,
     records: u64,
     queries: []const QueryLine,
     skipped: Skipped,
@@ -336,6 +352,8 @@ pub fn printSummary(writer: *Io.Writer, arena: std.mem.Allocator, summary: Summa
     if (summary.json) {
         return writeJson(writer, arena, .{
             .manifest = manifest,
+            .log_path = summary.log_path,
+            .log_permissions = summary.log_permissions,
             .records = summary.records,
             .queries = summary.queries,
             .skipped = summary.skipped,
@@ -361,7 +379,7 @@ pub fn printSummary(writer: *Io.Writer, arena: std.mem.Allocator, summary: Summa
     }
     try printShapes(writer, summary.shapes);
     try printSkippedSummary(writer, summary.skipped);
-    try writer.writeAll("warning: the manifest holds bind values; keep it local and do not commit it\n");
+    try writer.print("warning: " ++ contract.record_manifest_binds_message ++ "\n", .{});
 }
 
 pub fn printDistinctLimit(writer: *Io.Writer, count: usize, limit: usize, shapes: *const Shapes) Io.Writer.Error!void {
@@ -374,6 +392,15 @@ pub fn printDistinctLimit(writer: *Io.Writer, count: usize, limit: usize, shapes
         try printExample(writer, top.example, example_width);
     }
     try writer.writeAll("\n");
+}
+
+fn writeWarning(json: *std.json.Stringify, allocator: std.mem.Allocator, code: []const u8, message: []const u8) cli_report.Error!void {
+    try json.beginObject();
+    try json.objectField("code");
+    try json.write(code);
+    try json.objectField("message");
+    try cli_report.writeJsonText(json, allocator, message);
+    try json.endObject();
 }
 
 fn writeJson(writer: *Io.Writer, allocator: std.mem.Allocator, report: Report) cli_report.Error!void {
@@ -423,6 +450,15 @@ fn writeJson(writer: *Io.Writer, allocator: std.mem.Allocator, report: Report) c
     try json.objectField("version");
     try json.write(report.skipped.version);
     try json.endObject();
+    try json.objectField("warnings");
+    try json.beginArray();
+    if (report.log_permissions) {
+        const message = try std.fmt.allocPrint(allocator, contract.record_log_permissions_message, .{report.log_path});
+        defer allocator.free(message);
+        try writeWarning(&json, allocator, contract.code.record_log_permissions, message);
+    }
+    try writeWarning(&json, allocator, contract.code.record_manifest_binds, contract.record_manifest_binds_message);
+    try json.endArray();
     try json.objectField("repeated_shapes");
     try json.beginArray();
     for (report.findings) |finding| {

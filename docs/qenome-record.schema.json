@@ -12,6 +12,7 @@
     "records",
     "queries",
     "skipped",
+    "warnings",
     "repeated_shapes",
     "repeated_shapes_dropped"
   ],
@@ -65,6 +66,11 @@
         "version": { "description": "Records with another record_version.", "type": "integer", "minimum": 0 }
       }
     },
+    "warnings": {
+      "description": "Advisory warnings, in report order: record_log_permissions when the log is readable by other users, then record_manifest_binds, which is always present.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/warning" }
+    },
     "repeated_shapes": {
       "description": "At most 20 shapes, ordered by distinct_values, then executions, then first appearance.",
       "type": "array",
@@ -89,6 +95,15 @@
           "pattern": "^queries/q[0-9]{3}\\.sql$"
         },
         "executions": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "warning": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "enum": ["record_log_permissions", "record_manifest_binds"] },
+        "message": { "type": "string", "minLength": 1 }
       }
     },
     "shape": {

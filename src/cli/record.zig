@@ -104,7 +104,11 @@ pub fn run(
         return .rejected;
     }
     if (collected.queries.len == 0) {
-        stderr.writeAll("error: the record log holds no read-only statement to put in a manifest\n") catch {};
+        if (format == .json) {
+            stderr.writeAll("error: the record log holds no read-only statement to put in a manifest; ") catch {};
+        } else {
+            stderr.writeAll("error: the record log holds no read-only statement to put in a manifest\n") catch {};
+        }
         cli_record_shapes.printSkippedSummary(stderr, collected.skipped) catch {};
         return .rejected;
     }
@@ -124,8 +128,9 @@ pub fn run(
 
     if (writeOutput(io, arena, out_path, collected.queries, manifest, stderr)) |failure| return failure;
 
-    warnLogPermissions(io, log_path, stderr);
-    printSummary(stdout, arena, out_path, format, collected, &shapes) catch {
+    const log_permissions = cli_record_shapes.logPermissionsExposed(io, log_path);
+    if (format != .json and log_permissions) cli_record_shapes.printLogPermissionsWarning(stderr, log_path) catch {};
+    printSummary(stdout, arena, out_path, log_path, format, collected, &shapes, log_permissions) catch {
         stderr.writeAll("error: the summary could not be written\n") catch {};
         return .rejected;
     };
@@ -551,24 +556,15 @@ fn writeOutput(
     return null;
 }
 
-fn warnLogPermissions(io: Io, log_path: []const u8, stderr: *Io.Writer) void {
-    if (builtin.os.tag == .windows) return;
-    const stat = Io.Dir.cwd().statFile(io, log_path, .{}) catch return;
-    const mode = stat.permissions.toMode() & 0o777;
-    if (mode & 0o077 == 0) return;
-    stderr.print(
-        "warning: the record log '{s}' is readable by other users; create a new log with umask 077 and delete it after this run\n",
-        .{log_path},
-    ) catch {};
-}
-
 fn printSummary(
     stdout: *Io.Writer,
     arena: std.mem.Allocator,
     out_path: []const u8,
+    log_path: []const u8,
     format: cli_args.Format,
     collected: Collected,
     shapes: *const cli_record_shapes.Shapes,
+    log_permissions: bool,
 ) !void {
     var lines: std.ArrayList(cli_record_shapes.QueryLine) = .empty;
     for (collected.queries, 0..) |query, position| {
@@ -576,6 +572,8 @@ fn printSummary(
     }
     try cli_record_shapes.printSummary(stdout, arena, .{
         .out_path = out_path,
+        .log_path = log_path,
+        .log_permissions = log_permissions,
         .json = format == .json,
         .records = collected.records,
         .executions = collected.executions,
