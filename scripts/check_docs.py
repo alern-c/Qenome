@@ -23,7 +23,6 @@ FIXED_FILES = (
 PAGE_PAIRS = (
     "installation",
     "local-d1",
-    "bill-spiked",
     "agents",
     "why-not",
     "usage",
@@ -32,7 +31,8 @@ PAGE_PAIRS = (
     "accuracy",
     "rules",
 )
-UNPAIRED_DOCS = ("docs/architecture.md", "docs/json.md", "docs/npm.md")
+UNPAIRED_DOCS = ("docs/architecture.md", "docs/bill-spiked.md", "docs/json.md", "docs/npm.md")
+ENGLISH_ONLY_DOCS = ("docs/bill-spiked.md",)
 
 HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*$")
 FENCE = re.compile(r"^\s*```")
@@ -216,6 +216,8 @@ def contents_links(text, heading):
 
 
 def in_other_tree(rel_path, path):
+    if rel_path == "README.ja.md" and path in ENGLISH_ONLY_DOCS:
+        return False
     if not path.startswith("docs/"):
         return False
     if rel_path == "README.md":
@@ -244,6 +246,9 @@ def check_readme(root, rel_path, violations):
         expected = language_tree + name + ".md"
         if expected not in links:
             violations.append(rel_path + ": the contents do not link to " + expected)
+    for path in ENGLISH_ONLY_DOCS:
+        if path not in links:
+            violations.append(rel_path + ": the contents do not link to " + path)
 
 
 def check_agents(root, violations):

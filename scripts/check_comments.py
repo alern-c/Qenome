@@ -29,7 +29,6 @@ EXCLUDED_FILES = [
     "docs/ja/accuracy.md",
     "docs/ja/agents.md",
     "docs/ja/batch.md",
-    "docs/ja/bill-spiked.md",
     "docs/ja/installation.md",
     "docs/ja/local-d1.md",
     "docs/ja/output.md",
