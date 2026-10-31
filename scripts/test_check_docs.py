@@ -28,6 +28,7 @@ One line.
 - [Features](#features)
 - [Installation](docs/installation.md)
 - [Check a local D1](docs/local-d1.md)
+- [My D1 bill spiked](docs/bill-spiked.md)
 - [Use with AI agents](docs/agents.md)
 - [Why not ...](docs/why-not.md)
 - [Usage](docs/usage.md)
@@ -67,6 +68,7 @@ npm install -g qenome
 - [特徴](#特徴)
 - [インストール](docs/ja/installation.md)
 - [ローカル D1 を調べる](docs/ja/local-d1.md)
+- [D1 の請求が跳ねたとき](docs/ja/bill-spiked.md)
 - [AI エージェントと使う](docs/ja/agents.md)
 - [なぜ他の方法ではないのか](docs/ja/why-not.md)
 - [使い方](docs/ja/usage.md)
@@ -115,6 +117,7 @@ PAGE_BODIES = {
         "",
     ),
     "local-d1": ("# Check a local D1\n", "# ローカル D1 を調べる\n", ""),
+    "bill-spiked": ("# My D1 bill spiked\n", "# D1 の請求が跳ねたとき\n", ""),
     "agents": ("# Use with AI agents\n\n## Install\n", "# AI エージェントと使う\n\n## インストール\n", ""),
     "why-not": ("# Why not ...\n", "# なぜ他の方法ではないのか\n", ""),
     "usage": (

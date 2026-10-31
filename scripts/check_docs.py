@@ -23,6 +23,7 @@ FIXED_FILES = (
 PAGE_PAIRS = (
     "installation",
     "local-d1",
+    "bill-spiked",
     "agents",
     "why-not",
     "usage",
