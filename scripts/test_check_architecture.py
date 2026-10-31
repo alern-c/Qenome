@@ -128,6 +128,12 @@ CANONICAL_FILES = {
         'const contract = @import("../contract/values.zig");\n'
         'const cli = @import("../cli.zig");\n'
     ),
+    "src/cli/write_runner.zig": (
+        'const std = @import("std");\n'
+        'const db = @import("../db.zig");\n'
+        'const sqlite = @import("../sqlite.zig");\n'
+        'const result = @import("../result.zig");\n'
+    ),
     "src/cli/comparison.zig": (
         'const std = @import("std");\nconst db = @import("../db.zig");\nconst result = @import("../result.zig");\n'
     ),
@@ -395,7 +401,7 @@ def expect_rejected(name, code, output, rule, mention=None):
 def main():
     code, output = case(None)
     expect_clean("the smallest approved tree passes", code, output)
-    expect("the whole tree is checked", "(49 files checked" in output, output.strip())
+    expect("the whole tree is checked", "(50 files checked" in output, output.strip())
 
     code, output = case(lambda root: os.remove(os.path.join(root, "src/cli/tests.zig")))
     expect_rejected("a missing test file fails", code, output, "missing-file", "src/cli/tests.zig")

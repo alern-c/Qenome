@@ -42,6 +42,7 @@ APPROVED_FILES = [
     "src/cli/skill_tests.zig",
     "src/cli/usage_text.zig",
     "src/cli/warnings.zig",
+    "src/cli/write_runner.zig",
     "src/cli/tests.zig",
     "src/cli/d1_tests.zig",
     "src/cli/record_tests.zig",
@@ -192,6 +193,7 @@ PRODUCTION_IMPORTS = {
         "src/report/model.zig",
         "src/cli/timing.zig",
         "src/cli/workspace.zig",
+        "src/cli/write_runner.zig",
     ],
     "src/cli/audit.zig": [
         "src/db.zig",
@@ -281,6 +283,11 @@ PRODUCTION_IMPORTS = {
         "src/skill/skill.zig",
     ],
     "src/cli/usage_text.zig": [],
+    "src/cli/write_runner.zig": [
+        "src/db.zig",
+        "src/sqlite.zig",
+        "src/result.zig",
+    ],
     "src/cli/warnings.zig": [
         "src/contract/values.zig",
         "src/result.zig",
