@@ -8,12 +8,14 @@ const sqlite = @import("../sqlite.zig");
 const cli_d1_migrations = @import("../d1/migrations.zig");
 const cli_args = @import("args.zig");
 const cli_batch_report = @import("batch_report.zig");
+const cli_batch_writes = @import("batch_writes.zig");
 const cli_comparison = @import("comparison.zig");
 const cli_control = @import("control.zig");
 const cli_pair = @import("pair.zig");
 const cli_query = @import("query.zig");
 const report_model = @import("../report/model.zig");
 const report_json = @import("../report/json.zig");
+const report_batch_writes = @import("../report/batch_writes.zig");
 const cli_suggest = @import("suggest.zig");
 const cli_warnings = @import("warnings.zig");
 const cli_workspace = @import("workspace.zig");
@@ -66,6 +68,7 @@ pub const Candidate = struct {
 pub const Loaded = struct {
     queries: []const Query,
     candidates: []const Candidate,
+    writes: []const cli_batch_writes.Write = &.{},
 };
 
 pub const ManifestOptions = struct {
@@ -133,6 +136,8 @@ pub fn load(io: Io, arena: std.mem.Allocator, path: [:0]const u8, stderr: *Io.Wr
     if (suggest and migration) {
         return invalidManifest(stderr, path, "use --suggest or --migration, not both", .{});
     }
+    const manifest_dir = std.fs.path.dirname(path) orelse ".";
+
     if (root.get("queries") == null) {
         if (suggest or migration) return invalidManifest(stderr, path, "it must have the key queries", .{});
         return invalidManifest(stderr, path, "it must have exactly the keys queries and candidates", .{});
@@ -141,14 +146,14 @@ pub fn load(io: Io, arena: std.mem.Allocator, path: [:0]const u8, stderr: *Io.Wr
     while (root_keys.next()) |entry| {
         if (std.mem.eql(u8, entry.key_ptr.*, "queries")) continue;
         if (std.mem.eql(u8, entry.key_ptr.*, "candidates")) continue;
+        if (std.mem.eql(u8, entry.key_ptr.*, "writes")) continue;
         if (suggest or migration) return invalidManifest(stderr, path, "it must have only the keys queries and candidates", .{});
         return invalidManifest(stderr, path, "it must have exactly the keys queries and candidates", .{});
     }
+    const writes = cli_batch_writes.loadManifest(io, arena, root, manifest_dir, path, migration, stderr) orelse return null;
     if (!suggest and !migration and !audit and root.get("candidates") == null) {
         return invalidManifest(stderr, path, "it must have exactly the keys queries and candidates", .{});
     }
-
-    const manifest_dir = std.fs.path.dirname(path) orelse ".";
 
     var queries: std.ArrayList(Query) = .empty;
     var candidates: std.ArrayList(Candidate) = .empty;
@@ -267,6 +272,7 @@ pub fn load(io: Io, arena: std.mem.Allocator, path: [:0]const u8, stderr: *Io.Wr
     return .{
         .queries = queries.items,
         .candidates = candidates.items,
+        .writes = writes,
     };
 }
 
@@ -462,6 +468,7 @@ pub fn run(
         return .rejected;
     };
     var results: std.ArrayList(ResultEntry) = .empty;
+    var write_results: std.ArrayList(report_batch_writes.Result) = .empty;
 
     for (candidates, 0..) |*candidate, index| {
         if (cli_control.signalPending()) return cli_control.reportInterrupted(stderr);
@@ -689,7 +696,7 @@ pub fn run(
                 .binds = query.binds,
                 .show_binds = inputs.show_binds,
                 .show_rows = inputs.show_rows,
-                .exit_code = comparisonExitCode(outcome.verdict),
+                .exit_code = cli_comparison.comparisonExitCode(outcome.verdict),
                 .d1 = inputs.d1,
             };
             var rendered: Io.Writer.Allocating = .init(child);
@@ -720,6 +727,21 @@ pub fn run(
             return .rejected;
         }
 
+        if (loaded.writes.len != 0) {
+            switch (cli_batch_writes.compare(arena, allocator, loaded.writes, inputs.baseline_path, inputs.variant_path, candidate.label, .{
+                .database_path = inputs.database_path,
+                .work_parent = inputs.work_parent,
+                .d1 = inputs.d1,
+                .show_binds = inputs.show_binds,
+                .show_rows = inputs.show_rows,
+                .baseline_size = baseline_size,
+                .variant_size = variant_size,
+            }, &control, &write_results, stderr, cleanup_failed)) {
+                .done => {},
+                .failed => |code| return code,
+            }
+        }
+
         if (!cleanupVariant(io, arena, inputs.variant_path, candidate.label, stderr)) return .rejected;
         summaries[index] = summary;
     }
@@ -736,14 +758,14 @@ pub fn run(
     }
 
     const order = summaryOrder(arena, summaries) catch return outOfMemoryCode(stderr);
-    const recommended = recommendedIndex(summaries, order);
-    const code = batchExitCode(summaries, results.items, migration_report != null);
+    const recommended = if (cli_batch_writes.blocksRecommendation(write_results.items)) null else recommendedIndex(summaries, order);
+    const code = batchExitCode(summaries, results.items, write_results.items, migration_report != null);
 
     switch (inputs.format) {
-        .json => cli_batch_report.writeBatchJson(stdout, allocator, summaries, order, results.items, suggest_warnings.items, recommended, migration_report, inputs.seed, code) catch |err| {
+        .json => cli_batch_report.writeBatchJson(stdout, allocator, summaries, order, results.items, write_results.items, suggest_warnings.items, recommended, migration_report, inputs.seed, code) catch |err| {
             return reportWriteFailure(err, stderr);
         },
-        .human => writeBatchHuman(stdout, allocator, inputs, loaded.queries.len, summaries, order, results.items, suggest_warnings.items, recommended, migration_report) catch |err| {
+        .human => writeBatchHuman(stdout, allocator, inputs, loaded.queries.len, summaries, order, results.items, write_results.items, suggest_warnings.items, recommended, migration_report) catch |err| {
             return reportWriteFailure(err, stderr);
         },
         .kv => unreachable,
@@ -1180,14 +1202,6 @@ fn applyFailureIsCandidate(error_code: c_int) bool {
     return error_code == sqlite.SQLITE_CONSTRAINT or error_code == sqlite.SQLITE_ERROR;
 }
 
-fn comparisonExitCode(verdict: cli_comparison.Verdict) u8 {
-    return switch (verdict) {
-        .match => 0,
-        .mismatch => 3,
-        .incomparable => 4,
-    };
-}
-
 fn candidateJudgement(before: Measurement, after: Measurement, migration: bool) cli_comparison.Judgement {
     return cli_comparison.judgeRowsWith(before, after, if (migration) .regressed else .needs_check);
 }
@@ -1236,10 +1250,11 @@ fn recommendedIndex(summaries: []const CandidateSummary, order: []const usize) ?
     return null;
 }
 
-fn batchExitCode(summaries: []const CandidateSummary, results: []const ResultEntry, migration: bool) ExitCode {
-    var mismatch = false;
-    var incomparable = false;
-    var timeout = false;
+fn batchExitCode(summaries: []const CandidateSummary, results: []const ResultEntry, writes: []const report_batch_writes.Result, migration: bool) ExitCode {
+    const write_severity = cli_batch_writes.severity(writes);
+    var mismatch = write_severity.mismatch;
+    var incomparable = write_severity.incomparable;
+    var timeout = write_severity.timeout;
     for (results) |result| {
         switch (result.status) {
             .variant_timeout => timeout = true,
@@ -1266,6 +1281,7 @@ fn batchExitCode(summaries: []const CandidateSummary, results: []const ResultEnt
         for (summaries) |summary| {
             if (summary.status == .compared and summary.needs_check != 0) return .regression;
         }
+        if (write_severity.regression) return .regression;
     }
     return .ok;
 }
@@ -1278,6 +1294,7 @@ fn writeBatchHuman(
     summaries: []const CandidateSummary,
     order: []const usize,
     results: []const ResultEntry,
+    writes: []const report_batch_writes.Result,
     warnings: []const cli_suggest.Warning,
     recommended: ?usize,
     migration: ?Migration,
@@ -1308,10 +1325,17 @@ fn writeBatchHuman(
     for (results) |result| result_candidate_width = @max(result_candidate_width, displayNameOf(candidate_names, summary_labels, result.candidate).len);
 
     if (migration) |value| {
-        try stdout.print(
-            "batch: {d} {s}, 1 migration ({d} {s})\nmigration: {s}\n",
-            .{ query_count, word(query_count, "query", "queries"), value.statements.len, word(value.statements.len, "statement", "statements"), value.path },
-        );
+        if (writes.len != 0) {
+            try stdout.print(
+                "batch: {d} {s}, {d} {s}, 1 migration ({d} {s})\nmigration: {s}\n",
+                .{ query_count, word(query_count, "query", "queries"), writes.len, word(writes.len, "write", "writes"), value.statements.len, word(value.statements.len, "statement", "statements"), value.path },
+            );
+        } else {
+            try stdout.print(
+                "batch: {d} {s}, 1 migration ({d} {s})\nmigration: {s}\n",
+                .{ query_count, word(query_count, "query", "queries"), value.statements.len, word(value.statements.len, "statement", "statements"), value.path },
+            );
+        }
         for (value.statements, 0..) |statement, index| {
             try stdout.print("  {d}: ", .{index + 1});
             try result_rows.writeEscapedText(stdout, statement.sql);
@@ -1441,6 +1465,8 @@ fn writeBatchHuman(
         try stdout.writeByte('\n');
     }
 
+    if (writes.len != 0) try report_batch_writes.writeHuman(stdout, allocator, writes);
+
     var candidate_warnings: std.ArrayList(cli_warnings.CandidateWarning) = .empty;
     defer candidate_warnings.deinit(allocator);
     try appendCandidateWarnings(allocator, &candidate_warnings, summaries, candidate_names, order);
@@ -1466,6 +1492,16 @@ fn writeBatchHuman(
         }
         try stdout.print("  {s}: ", .{displayNameOf(query_names, distinct_queries, result.query)});
         try result_rows.writeEscapedText(stdout, result.reason);
+        try stdout.writeByte('\n');
+    }
+    for (writes) |entry| {
+        if (!entry.baseline_missing) continue;
+        if (!not_judged_printed) {
+            try stdout.writeAll("\nNot judged\n");
+            not_judged_printed = true;
+        }
+        try stdout.print("  {s}: ", .{entry.write});
+        try result_rows.writeEscapedText(stdout, entry.reason);
         try stdout.writeByte('\n');
     }
 
@@ -1616,9 +1652,9 @@ test "a variant-only result does not change the batch exit code" {
         .baseline_missing = true,
         .variant_rows = 10,
     }};
-    try testing.expectEqual(ExitCode.ok, batchExitCode(&summary, &variant_only, true));
-    try testing.expectEqual(ExitCode.mismatch, batchExitCode(&summary, &[_]ResultEntry{ variant_only[0], batchResult(.compared, .mismatch) }, true));
-    try testing.expectEqual(ExitCode.incomparable, batchExitCode(&summary, &[_]ResultEntry{ variant_only[0], batchResult(.compared, .incomparable) }, true));
+    try testing.expectEqual(ExitCode.ok, batchExitCode(&summary, &variant_only, &.{}, true));
+    try testing.expectEqual(ExitCode.mismatch, batchExitCode(&summary, &[_]ResultEntry{ variant_only[0], batchResult(.compared, .mismatch) }, &.{}, true));
+    try testing.expectEqual(ExitCode.incomparable, batchExitCode(&summary, &[_]ResultEntry{ variant_only[0], batchResult(.compared, .incomparable) }, &.{}, true));
 }
 
 test "a variant timeout is a candidate failure without an error line" {
@@ -1733,18 +1769,18 @@ test "batchExitCode keeps 3 > 1 > 124 > 4 > 6 > 0" {
         batchResult(.variant_timeout, null),
     };
 
-    try testing.expectEqual(ExitCode.ok, batchExitCode(&compared, &none, false));
-    try testing.expectEqual(ExitCode.ok, batchExitCode(&compared, &match, false));
-    try testing.expectEqual(ExitCode.incomparable, batchExitCode(&compared, &incomparable, false));
-    try testing.expectEqual(ExitCode.timeout, batchExitCode(&compared, &variant_timeout, false));
-    try testing.expectEqual(ExitCode.rejected, batchExitCode(&rejected, &none, false));
-    try testing.expectEqual(ExitCode.mismatch, batchExitCode(&rejected, &mismatch, false));
-    try testing.expectEqual(ExitCode.timeout, batchExitCode(&index_timeout, &incomparable, false));
-    try testing.expectEqual(ExitCode.rejected, batchExitCode(&rejected, &variant_timeout, false));
-    try testing.expectEqual(ExitCode.mismatch, batchExitCode(&rejected, &everything, false));
-    try testing.expectEqual(ExitCode.ok, batchExitCode(&regressed, &match, false));
-    try testing.expectEqual(ExitCode.regression, batchExitCode(&regressed, &match, true));
-    try testing.expectEqual(ExitCode.mismatch, batchExitCode(&regressed, &everything, true));
+    try testing.expectEqual(ExitCode.ok, batchExitCode(&compared, &none, &.{}, false));
+    try testing.expectEqual(ExitCode.ok, batchExitCode(&compared, &match, &.{}, false));
+    try testing.expectEqual(ExitCode.incomparable, batchExitCode(&compared, &incomparable, &.{}, false));
+    try testing.expectEqual(ExitCode.timeout, batchExitCode(&compared, &variant_timeout, &.{}, false));
+    try testing.expectEqual(ExitCode.rejected, batchExitCode(&rejected, &none, &.{}, false));
+    try testing.expectEqual(ExitCode.mismatch, batchExitCode(&rejected, &mismatch, &.{}, false));
+    try testing.expectEqual(ExitCode.timeout, batchExitCode(&index_timeout, &incomparable, &.{}, false));
+    try testing.expectEqual(ExitCode.rejected, batchExitCode(&rejected, &variant_timeout, &.{}, false));
+    try testing.expectEqual(ExitCode.mismatch, batchExitCode(&rejected, &everything, &.{}, false));
+    try testing.expectEqual(ExitCode.ok, batchExitCode(&regressed, &match, &.{}, false));
+    try testing.expectEqual(ExitCode.regression, batchExitCode(&regressed, &match, &.{}, true));
+    try testing.expectEqual(ExitCode.mismatch, batchExitCode(&regressed, &everything, &.{}, true));
 }
 
 test "a compared candidate keeps its warnings even when every query timed out" {
@@ -1786,7 +1822,7 @@ test "the human batch report keeps the warnings of a candidate whose queries all
         .variant_path = "",
         .timeout_ms = 0,
         .work_parent = "/tmp",
-    }, 1, &summaries, &order, &.{}, &.{}, null, null);
+    }, 1, &summaries, &order, &.{}, &.{}, &.{}, null, null);
     const output = stdout.buffered();
     try testing.expect(std.mem.indexOf(u8, output, "slow.sql: no_analyze_stats: ") != null);
     try testing.expect(std.mem.indexOf(u8, output, "slow.sql: data_too_small: ") != null);

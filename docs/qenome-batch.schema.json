@@ -76,6 +76,13 @@
       "maxItems": 10000,
       "items": { "$ref": "#/$defs/result" }
     },
+    "writes": {
+      "description": "Present only when the manifest has writes, which needs --migration: one object per write statement, in manifest order.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100,
+      "items": { "$ref": "#/$defs/write" }
+    },
     "warnings": {
       "description": "What --suggest dropped or could not do, plus unapplied_migrations with --d1. Empty without --suggest and without an unapplied migration.",
       "type": "array",
@@ -220,6 +227,44 @@
               "failure": {
                 "properties": { "code": { "const": "index_timeout" } }
               }
+            }
+          }
+        }
+      ]
+    },
+    "write": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["write", "candidate", "status", "comparison"],
+      "properties": {
+        "write": { "type": "string" },
+        "candidate": {
+          "description": "The --migration path.",
+          "type": "string"
+        },
+        "status": { "enum": ["compared", "variant_timeout"] },
+        "comparison": {
+          "description": "The schema_version 2 comparison object with statement write, or null when the variant run reached the time limit. A write the baseline cannot run before the migration has baseline null and verdict not-judged.",
+          "anyOf": [
+            { "type": "null" },
+            { "$ref": "qenome-report.schema.json" }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "status": { "const": "compared" } },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "comparison": { "$ref": "qenome-report.schema.json" }
+            }
+          },
+          "else": {
+            "properties": {
+              "comparison": { "type": "null" }
             }
           }
         }

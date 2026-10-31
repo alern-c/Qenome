@@ -2,13 +2,16 @@
 
 ## まとめて比べる（--batch）
 
-`--batch manifest.json` は、マニフェストにある全 SELECT を、全候補 `CREATE INDEX` と比べます。マニフェストは2つの配列を持つ JSON オブジェクトです。
+`--batch manifest.json` は、マニフェストにある全 SELECT を、全候補 `CREATE INDEX` と比べます。マニフェストは、必要な配列を持つ JSON オブジェクトです。
 
 ```json
 {
   "queries": [
     { "select": "queries/orders.sql", "binds": ["1:int:1234"] },
     { "select": "queries/recent.sql" }
+  ],
+  "writes": [
+    { "write": "writes/mark.sql", "binds": ["1:int:1234"] }
   ],
   "candidates": [
     { "index_sql": "candidates/a.sql" },
@@ -18,15 +21,18 @@
 ```
 
 - `queries` は1〜100件。`candidates` は1〜100件で、`--suggest` が提案を足すとき、または `--migration` が variant の変更を渡すときは省略（または `[]`）できる。マニフェストは1 MiBまで。
-- 同じパスを `queries` の中で2回、または `candidates` の中で2回書くことはできない。
-- `--migration` のとき、`candidates` は省略または `[]` にし、マニフェストは `queries` だけを持つ。
-- `select` と `index_sql` はファイルのパス。カレントディレクトリではなく、マニフェストのディレクトリを基準に解決する。各ファイルは読み取り専用の SELECT 1本、または `CREATE INDEX` 1本で、1 MiBまで。
-- `binds` は任意で、`--bind` と同じ `N:TYPE:VALUE` 形式。パスとバインド値は NUL バイトを含まない JSON 文字列にする。
-- `select` と `index_sql` の文字列は、JSON の報告には書いたとおりに出す。human の報告では、絶対パスを、同じ一覧のほかのパスと末尾が重ならない最短の部分に短くして出す（別のディレクトリにある候補は `a/x.sql` と `b/x.sql` のように区別できる）。相対パスと `suggested:N` のラベルは書いたとおりに出す。フルパスは JSON の報告に残り、`--migration` では `migration:` の行にも出る。
+- `writes` は1〜100件で、`--migration` のときだけ受け付ける。`--migration` なしで書くと、何も実行する前に終了コード `1` と `batch_manifest_invalid` で拒否する。各項目は、`INSERT`・`UPDATE`・`DELETE`・`REPLACE` のいずれか1本を持つファイルのパス。先頭の `WITH` と末尾の `RETURNING` は使え、`--write` と同じ検査と制限時間がかかる。
+- 同じパスを `queries` の中で2回、`writes` の中で2回、または `candidates` の中で2回書くことはできない。
+- `--migration` のとき、`candidates` は省略または `[]` にし、マニフェストは `queries` と任意の `writes` を持つ。
+- `select`・`write`・`index_sql` はファイルのパス。カレントディレクトリではなく、マニフェストのディレクトリを基準に解決する。各ファイルは読み取り専用の SELECT 1本、書き込み文1本、または `CREATE INDEX` 1本で、1 MiBまで。
+- `binds` は任意で、`--bind` と同じ `N:TYPE:VALUE` 形式。クエリと書き込み文はそれぞれ自分の `binds` を持つ。パスとバインド値は NUL バイトを含まない JSON 文字列にする。
+- `select`・`write`・`index_sql` の文字列は、JSON の報告には書いたとおりに出す。human の報告では、絶対パスを、同じ一覧のほかのパスと末尾が重ならない最短の部分に短くして出す（別のディレクトリにある候補は `a/x.sql` と `b/x.sql` のように区別できる）。相対パスと `suggested:N` のラベルは書いたとおりに出す。フルパスは JSON の報告に残り、`--migration` では `migration:` の行にも出る。
 
-Qenome はデータベースを1回コピーし、何かを実行する前に全 SELECT と全候補を検査します。そのあと候補をマニフェスト順に処理し、候補ごとに baseline をもう一度コピーして、そのコピーにだけインデックスを作り、全クエリを両方のコピーで実行します。baseline の SELECT は候補ごとに実行し直します。
+Qenome はデータベースを1回コピーし、何かを実行する前に全 SELECT・全書き込み文・全候補を検査します。そのあと候補をマニフェスト順に処理し、候補ごとに baseline をもう一度コピーして、そのコピーにだけインデックスを作り、全クエリを両方のコピーで実行します。baseline の SELECT は候補ごとに実行し直します。`--migration` のときは、候補のクエリのあとに、マニフェストの全書き込み文を同じ2つのコピーで実行します。
 
 `--migration <FILE>` を付けると、variant の変更は候補インデックスではなく、マイグレーションのファイル全体になります。ファイルは 1 MiB までです。Qenome は variant を触る前にファイルを検査し、セミコロンで区切った `CREATE INDEX`・`CREATE UNIQUE INDEX`・`DROP INDEX`・`CREATE TABLE`（`AS SELECT` を除く）・`ALTER TABLE`（ADD COLUMN / RENAME COLUMN / DROP COLUMN / RENAME TO）を許可します。`INSERT`・`UPDATE`・`DELETE`・`DROP TABLE`・`ATTACH`・`PRAGMA`・その他の文は文番号付きで拒否し、variant と元のデータベースは触りません。そのあと文をファイル順に variant にだけ適用するので、列を追加してインデックスを張る、列やテーブルの名前を変える、同じ名前のインデックスを落として作り直す、といった変更ができます。各文は `--timeout-ms` の制限時間を持ちます。元のデータベースは変更しません。レポートには、human では `migration:` の節、json ではトップレベルの `migration` オブジェクトとして、パスと適用した全文を出します。マイグレーションが追加した列やテーブルを使うクエリは baseline では実行できないため、variant だけで計測し、計画と行数を判定 `not-judged` として出します。理由は `verdict_reasons` に入り、終了コードは変わりません。human は `not-judged` の summary 列と `Not judged` の一覧を追加し、JSON は `summary.not_judged` で数え、比較オブジェクトの `baseline` を `null` にします。マイグレーションが壊すクエリがあると、実行全体が止まります。マニフェストが、マイグレーションで消した・名前を変えた列やテーブルを参照していると、variant ではその `SELECT` を準備できないため、stdout には何も書かずに終了コード `1` で止まり、`error:` 行でどのクエリかとマイグレーションのファイルのパスを示します（JSON では `batch_variant_failed`）。CI もそこで 0 以外で止まります。マニフェストにはマイグレーション後の名前を書いてください。列を足す・消すと、`SELECT *` は結果の列数が変わるため比較できず、`incomparable` になり、batch は終了コード `4` で終わります。比べたいときは、必要な列を明示した `SELECT` をマニフェストに書いてください。結果の行が一致しても、マイグレーション後にクエリの読んだ行数か書いた行数が増えた場合、そのクエリの判定は `regressed` になります。human の `Results` 表は `regressed`、JSON は `results[].comparison.verdict` が `"regressed"` です。`summary` の件数キーは `needs_check` のままで、そのクエリを数えます。batch の終了コードは `6` です。結果の不一致 `3`、変更の拒否 `1`、時間切れ `124`、比較不能 `4` が優先されます。`no-effect` だけなら `0` です。ほかのモードでは同じ条件を `needs-check` と呼びます。`no_analyze_stats` と `data_too_small` の警告は、マイグレーションが複数のテーブルを触り得るため出しません。`bind_dependent_partial_index` の警告は variant の計画だけで判定できるため、マイグレーションでも出します。
+
+`writes` は `--migration` の実行で書き込み文を比べます。候補のクエリのあと、Qenome は各書き込み文を baseline と variant の両方で実行し、それぞれトランザクションの中で実行してロールバックします。次の文は同じ行から始まり、元のデータベースにもサンドボックスのコピーにも変更は残りません。各文は実行前に `EXPLAIN` で計画を読み、`--timeout-ms` は計画の読み取り・baseline の実行・variant の実行にそれぞれかかります。報告には両方のコピーの `rows read` と `rows written` を出します。判定はクエリと同じく `rows read` で決まります。増えたら `regressed`（batch は終了コード `6`）、同じなら `no-effect`、減ったら `improved` です。`rows written` は報告するだけで判定は変えません。マイグレーションが足すインデックスの分、`INSERT` や `UPDATE` は必ず1件以上多く書くためです。行の一致は `--write` と同じで、`RETURNING` の行、`changes`、`total_changes` の差が両方のコピーで同じでなければならず、違えば `mismatch` で終了コード `3` です。スキーマ・現在時刻・非決定的な関数を読む書き込み文は実行せず、判定 `not-judged`・`result` `incomparable` として終了コード `4` に寄与します。同梱の D1 の行数パッチは二次インデックスの削除を数えないため、インデックスを消すマイグレーションでは `rows written` は減らず、変化は `rows read` にだけ出ます（[accuracy](accuracy.md) を参照）。マイグレーションが追加した列やテーブルを使う書き込み文は baseline では実行できないため、variant だけで実行し、クエリと同じく baseline の理由と variant の行数を `not-judged` として報告し、終了コードは変えません。variant が準備できない書き込み文や、実行に失敗する書き込み文（たとえばマイグレーションが足した UNIQUE 制約に違反する場合）は、報告の前に実行全体を止めます。stdout は空、終了コードは `1`、エラーコードは `batch_write_failed` です。計画の読み取りが `--timeout-ms` に達した場合も同じく止まり、`batch_write_timeout` と終了コード `124` になります。variant の実行が `--timeout-ms` に達した書き込み文は、比較なしの `timeout` として記録し、batch は終了コード `124` で続行します。マイグレーションは、クエリが推薦の条件を満たし、かつ `mismatch`・`incomparable`・timeout・`regressed` の書き込み文がないときだけ `Recommendation:` になります。`not-judged` の書き込み文は推薦を妨げません。human は `Writes` の節を追加し、文ごとの行と数え方の限界の注記を出します。`Summary` の表はクエリの件数だけを数えます。JSON はマニフェストに `writes` があるときだけトップレベルの `writes` 配列を追加します。書き込み文が失敗したときの `error:` 行は SQLite のメッセージをそのまま含むため、データベースの行やバインド値の文字列（トリガーの `RAISE()` のメッセージなど）が入ることがあります。stderr はマニフェストと同じくらい慎重に扱い、保存する CI のログにも同じ注意を払ってください。
 
 `--migration` の `size increase` は、ファイルサイズの差ではなく、使用中ページが持つバイト数（`(page_count - freelist_count) * page_size`）の差です。`DROP INDEX` はページを SQLite の freelist に移すだけでファイルを縮めないため、ファイルサイズの差は `0 B` のままですが、使用中のバイト数では解放された量が `-2.06 MiB` のような負の値で出ます。ファイル自体が縮むのは `VACUUM` の後です。`--migration` を使わない実行は、これまでどおりファイルサイズの差を出します。
 
@@ -41,11 +47,11 @@ Qenome はデータベースを1回コピーし、何かを実行する前に全
 | `index_timeout` | インデックスの作成が `--timeout-ms` に達した | `124` |
 | `variant_timeout` | variant 側の SELECT が `--timeout-ms` に達した。そのクエリは判定せず、ほかのクエリの結果は残す | `124` |
 
-全体に影響する失敗では、報告を書く前に止まり、stdout は空のままです。baseline の SELECT の失敗・時間切れ、マイグレーションの後に variant で実行できない SELECT（消した・名前を変えた列やテーブルを使うもの）、シグナル、variant / baseline の接続の失敗、一時コピーの作成・削除の失敗、ディスク不足などの保存の失敗が該当します。候補単位の失敗は `error:` 行にはしません。
+全体に影響する失敗では、報告を書く前に止まり、stdout は空のままです。baseline の SELECT の失敗・時間切れ、マイグレーションの後に variant で実行できない SELECT（消した・名前を変えた列やテーブルを使うもの）、variant が準備できない・実行できない書き込み文、baseline の書き込み実行や計画の読み取りの失敗・時間切れ、シグナル、variant / baseline の接続の失敗、一時コピーの作成・削除の失敗、ディスク不足などの保存の失敗が該当します。候補単位の失敗は `error:` 行にはしません。variant で制限時間に達した書き込み文は `Writes` と `writes` の中で `timeout` として記録し、実行は続きます。
 
-報告を書けた場合、終了コードは、結果の不一致 `3`、インデックスまたはマイグレーションの作成失敗 `1`、候補の時間切れ `124`、比較不能 `4`、`--migration` の退行 `6`、`0` のうち一番重いものです。後片付けの失敗は `0` のときだけ `5` に置き換えます。そのため batch は、報告を書きながら `1`・`6`・`124` で終わることがあります。どれかは stdout で見分けます。
+報告を書けた場合、終了コードは、結果の不一致 `3`、インデックスまたはマイグレーションの作成失敗 `1`、候補の時間切れ `124`、比較不能 `4`、クエリまたは書き込み文の `--migration` の退行 `6`、`0` のうち一番重いものです。後片付けの失敗は `0` のときだけ `5` に置き換えます。そのため batch は、報告を書きながら `1`・`6`・`124` で終わることがあります。どれかは stdout で見分けます。
 
-human 出力は候補の表、`Recommendation:`、クエリと候補の判定表を出します。おすすめは、不一致・比較不能・`needs-check`（`--migration` では `needs_check` が `regressed` のクエリを数える）・時間切れがなく、改善が1件以上ある候補のうち、改善したクエリが最も多いものです。variant だけで計測した `not-judged` のクエリは、それだけではおすすめの条件を外しません。`Results` 表では、そのクエリの `result` 列が `variant-only`、`verdict` 列が `not-judged` になり、比較オブジェクト（JSON）の `result` は `baseline` を `null` にしたまま `incomparable` です。同じなら `bind_dependent_partial_index` 警告のない候補が先、次に容量の増分が小さい順、次に入力順（マニフェストの候補の後ろに提案）です。警告は判定・batch の件数・終了コードを変えません。human は判定表の後に `Warnings` の節を出し、候補ごとの警告を `<候補>: <code>: <message>` の形で（`no_analyze_stats` と `data_too_small`）、比較ごとの警告を `<クエリ> -> <候補>: <code>: <message>` の形で（`bind_dependent_partial_index`）1行ずつ示します。パスとインデックス名はほかの警告と同じ規則で制御文字を可視化し、パスは上で説明した短い表示を使います。batch のトップレベルの `warnings`（`--suggest` の警告と `unapplied_migrations`）はそのあとに `warning: <code>: <message>` の形で出します。`--format json` では [docs/json.md](../json.md) に書いた `batch_schema_version` 1 のオブジェクトを出します。
+human 出力は候補の表、`Recommendation:`、クエリと候補の判定表を出し、`--migration` と `writes` があるときは `Writes` の節も出します。おすすめは、不一致・比較不能・`needs-check`（`--migration` では `needs_check` が `regressed` のクエリを数える）・時間切れがなく、改善が1件以上ある候補のうち、改善したクエリが最も多いものです。`mismatch`・`incomparable`・timeout・`regressed` の書き込み文があると、そのマイグレーションは `Recommendation:` になりません。variant だけで計測した `not-judged` の書き込み文は、推薦を妨げません。variant だけで計測した `not-judged` のクエリは、それだけではおすすめの条件を外しません。`Results` 表では、そのクエリの `result` 列が `variant-only`、`verdict` 列が `not-judged` になり、比較オブジェクト（JSON）の `result` は `baseline` を `null` にしたまま `incomparable` です。同じなら `bind_dependent_partial_index` 警告のない候補が先、次に容量の増分が小さい順、次に入力順（マニフェストの候補の後ろに提案）です。警告は判定・batch の件数・終了コードを変えません。human は判定表の後に `Warnings` の節を出し、候補ごとの警告を `<候補>: <code>: <message>` の形で（`no_analyze_stats` と `data_too_small`）、比較ごとの警告を `<クエリ> -> <候補>: <code>: <message>` の形で（`bind_dependent_partial_index`）1行ずつ示します。パスとインデックス名はほかの警告と同じ規則で制御文字を可視化し、パスは上で説明した短い表示を使います。batch のトップレベルの `warnings`（`--suggest` の警告と `unapplied_migrations`）はそのあとに `warning: <code>: <message>` の形で出します。`--format json` では [docs/json.md](../json.md) に書いた `batch_schema_version` 1 のオブジェクトを出します。
 
 インデックスの作成・SELECT 1回・診断文1回は、それぞれ `--timeout-ms` の制限時間を持ちます。batch は全体で、データベースのコピー1回と、候補ループの前に全クエリの baseline SELECT を1回ずつ実行する分に加えて、候補ごとにインデックスの作成1回とクエリごとの SELECT 2回、さらに診断文（ANALYZE とサイズの警告に最大3つ、パラメータがあるクエリでは bind 依存の部分インデックス診断として計画1回・カタログ1回・使用インデックスごとに最大2文（テーブル名の取得と `PRAGMA index_list`））それぞれの制限時間までかかることがあります。`--show-binds` と `--show-rows` は各比較オブジェクトに適用します。
 

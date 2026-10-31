@@ -10,6 +10,7 @@ const cli_query = @import("query.zig");
 const report_model = @import("../report/model.zig");
 const cli_timing = @import("timing.zig");
 const cli_workspace = @import("workspace.zig");
+const cli_write_runner = @import("write_runner.zig");
 
 const measure = cli_query.measure;
 const decide = cli_comparison.decide;
@@ -182,15 +183,22 @@ const WriteExecution = struct {
     executions: u32 = 0,
 };
 
+fn writeExecution(execution: cli_write_runner.Execution) WriteExecution {
+    return .{
+        .rows = execution.rows,
+        .counters = execution.counters,
+        .changes = execution.changes,
+        .total_changes = execution.total_changes,
+    };
+}
+
 const WriteRuns = struct {
     first: WriteExecution,
     repeat_mismatch: ?cli_comparison.Side = null,
 };
 
 const WriteSession = struct {
-    database: db.Db = .{},
-    statement: ?*sqlite.sqlite3_stmt = null,
-    opened: bool = false,
+    runner: cli_write_runner.Runner = .{},
 
     fn open(
         self: *WriteSession,
@@ -201,21 +209,20 @@ const WriteSession = struct {
         stderr: *Io.Writer,
         failure: *ExitCode,
     ) bool {
-        self.database.openWritable(path) catch |err| {
+        self.runner.open(path) catch |err| {
             stderr.print("error: cannot open the {t} '{s}' for writing: {s}\n", .{ side, path, cli_query.openErrorMessage(err) }) catch {};
             failure.* = .rejected;
             return false;
         };
-        self.opened = true;
 
-        self.statement = self.database.prepareWrite(sql) catch |err| {
-            reportWritePrepareFailure(stderr, side, err, &self.database);
+        self.runner.prepare(sql) catch |err| {
+            reportWritePrepareFailure(stderr, side, err, &self.runner.database);
             failure.* = .rejected;
             return false;
         };
 
-        db.bindAll(self.statement.?, binds) catch |err| {
-            const parameters = sqlite.sqlite3_bind_parameter_count(self.statement.?);
+        self.runner.bind(binds) catch |err| {
+            const parameters = self.runner.bindParameterCount();
             const given: u64 = @intCast(binds.len);
             stderr.print("error: --bind on the {t}: {s} (parameters in the write: {d}; --bind given: {d})\n", .{
                 side, cli_query.bindErrorMessage(err), parameters, given,
@@ -227,9 +234,9 @@ const WriteSession = struct {
     }
 
     fn checkCreateIndex(self: *WriteSession, sql: [:0]const u8, stderr: *Io.Writer) bool {
-        self.database.checkCreateIndex(sql) catch |err| {
-            cli_query.reportCheckFailure(stderr, "--index-sql", err, &self.database);
-            self.database.checkWrite(sql) catch return false;
+        self.runner.database.checkCreateIndex(sql) catch |err| {
+            cli_query.reportCheckFailure(stderr, "--index-sql", err, &self.runner.database);
+            self.runner.database.checkWrite(sql) catch return false;
             stderr.writeAll("hint: the write and CREATE INDEX files may be swapped\n") catch {};
             return false;
         };
@@ -246,7 +253,7 @@ const WriteSession = struct {
         stderr: *Io.Writer,
         failure: *ExitCode,
     ) ?db.Plan {
-        return self.database.explainDml(arena, sql, binds, control) catch |err| {
+        return self.runner.plan(arena, sql, binds, control) catch |err| {
             switch (err) {
                 error.Timeout => {
                     stderr.print("error: --write exceeded the time limit of {d} ms while reading the plan on the {t}\n", .{ control.timeout_ms, side }) catch {};
@@ -258,8 +265,8 @@ const WriteSession = struct {
                     failure.* = .rejected;
                 },
                 else => {
-                    const detail = if (err == error.ExplainFailed and self.database.errorCode() != sqlite.SQLITE_OK)
-                        self.database.message()
+                    const detail = if (err == error.ExplainFailed and self.runner.errorCode() != sqlite.SQLITE_OK)
+                        self.runner.message()
                     else
                         @errorName(err);
                     stderr.print("error: --write: the query plan could not be read on the {t}: {s}\n", .{ side, detail }) catch {};
@@ -271,7 +278,7 @@ const WriteSession = struct {
     }
 
     fn columnCount(self: *const WriteSession) c_int {
-        return db.columnCount(self.statement.?);
+        return self.runner.columnCount();
     }
 
     fn execute(
@@ -284,50 +291,23 @@ const WriteSession = struct {
         stderr: *Io.Writer,
         failure: *ExitCode,
     ) ?WriteExecution {
-        db.resetStatement(self.statement.?) catch |err| {
+        const execution = self.runner.execute(control, rows_out) catch |err| {
             failure.* = reportWriteStepFailure(err, self, timeout_ms, side, run_number, stderr);
             return null;
         };
-        self.database.beginWrite(control) catch |err| {
-            failure.* = reportWriteStepFailure(err, self, timeout_ms, side, run_number, stderr);
-            return null;
-        };
-
-        const total_before = self.database.totalChanges();
-        const rows = self.database.stepDml(self.statement.?, control, rows_out) catch |err| {
-            self.database.rollbackWrite() catch {};
-            failure.* = reportWriteStepFailure(err, self, timeout_ms, side, run_number, stderr);
-            return null;
-        };
-        const counters = db.takeCounters(self.statement.?);
-        const changes = self.database.changes();
-        const total_after = self.database.totalChanges();
-
-        self.database.rollbackWrite() catch |err| {
-            failure.* = reportWriteStepFailure(err, self, timeout_ms, side, run_number, stderr);
-            return null;
-        };
-        return .{
-            .rows = rows,
-            .counters = counters,
-            .changes = changes,
-            .total_changes = total_after - total_before,
-            .executions = run_number,
-        };
+        var result = writeExecution(execution);
+        result.executions = run_number;
+        return result;
     }
 
     fn deinit(self: *WriteSession, side: cli_comparison.Side, stderr: *Io.Writer, cleanup_failed: *bool) void {
-        if (self.statement) |statement| {
-            _ = sqlite.sqlite3_finalize(statement);
-            self.statement = null;
-        }
-        if (!self.opened) return;
-        self.database.close() catch {
+        self.runner.finalize();
+        if (!self.runner.opened) return;
+        self.runner.close() catch {
             cleanup_failed.* = true;
-            stderr.print("error: the database connection of the {t} could not be closed: {s}\n", .{ side, self.database.message() }) catch {};
+            stderr.print("error: the database connection of the {t} could not be closed: {s}\n", .{ side, self.runner.message() }) catch {};
             return;
         };
-        self.opened = false;
     }
 };
 
@@ -356,7 +336,7 @@ fn reportWriteStepFailure(
         },
         error.Interrupted => return reportInterrupted(stderr),
         error.StepFailed => {
-            stderr.print("error: --write failed on the {t}{s}: {s}\n", .{ side, run_name, session.database.message() }) catch {};
+            stderr.print("error: --write failed on the {t}{s}: {s}\n", .{ side, run_name, session.runner.message() }) catch {};
             return .rejected;
         },
     }
@@ -439,7 +419,7 @@ fn computeWrite(
     if (!baseline.open(inputs.baseline_path, write_sql, inputs.binds, .baseline, stderr, &failure)) return .{ .failed = failure };
 
     if (!baseline.checkCreateIndex(inputs.index_sql, stderr)) return .{ .failed = .rejected };
-    const candidate_table = baseline.database.indexTarget(arena, inputs.index_sql) catch {
+    const candidate_table = baseline.runner.database.indexTarget(arena, inputs.index_sql) catch {
         stderr.writeAll("error: out of memory\n") catch {};
         return .{ .failed = .rejected };
     };
@@ -464,7 +444,7 @@ fn computeWrite(
 
     var report: report_model.Report = .{ .judgement = .{ .verdict = .not_judged }, .sizes = sizes };
     report.warnings.unapplied_migrations = inputs.unapplied_migrations;
-    const clues = db.Clues.merge(baseline.database.clues, variant.database.clues);
+    const clues = db.Clues.merge(baseline.runner.database.clues, variant.runner.database.clues);
     if (cli_comparison.writeIncomparable(arena, clues)) |outcome| {
         const before = skippedWriteMeasurement(before_plan, baseline.columnCount());
         const after = skippedWriteMeasurement(after_plan, variant.columnCount());
@@ -543,7 +523,7 @@ fn tryWriteWarnings(
     candidate_table: []const u8,
     control: *db.StepControl,
 ) !void {
-    const warnings = try baseline.database.tableWarnings(arena, candidate_table, control);
+    const warnings = try baseline.runner.database.tableWarnings(arena, candidate_table, control);
     report.warnings.no_analyze_stats = warnings.no_analyze_stats;
     report.warnings.data_too_small = warnings.data_too_small;
 }

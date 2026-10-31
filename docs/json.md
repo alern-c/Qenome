@@ -21,7 +21,7 @@ On failure, read the line that starts with `{`. `human` and `kv` do not print th
 
 ## Batch report (batch_schema_version 1)
 
-`--batch manifest.json` compares every SELECT in the manifest with every candidate CREATE INDEX. With `--suggest`, the manifest may omit `candidates`, and SQLite's proposed indexes join the comparison. With `--migration`, the manifest also omits `candidates`, and one SQL file with index or table changes is applied to the variant before the queries run. Its stdout object is a separate contract with `batch_schema_version` 1. The comparison objects under `results` keep `schema_version` 2 and the shape above. `--suggest` and `--migration` add keys to this contract without changing the version.
+`--batch manifest.json` compares every SELECT in the manifest with every candidate CREATE INDEX. With `--suggest`, the manifest may omit `candidates`, and SQLite's proposed indexes join the comparison. With `--migration`, the manifest also omits `candidates`, and one SQL file with index or table changes is applied to the variant before the queries run. A `--migration` manifest may also list `writes`, one write statement per entry, and those run on both copies after the queries. Its stdout object is a separate contract with `batch_schema_version` 1. The comparison objects under `results` and `writes` keep `schema_version` 2 and the shape above. `--suggest`, `--migration`, and `writes` add keys to this contract without changing the version.
 
 | Key | Type | Meaning |
 | --- | --- | --- |
@@ -32,6 +32,7 @@ On failure, read the line that starts with `{`. `human` and `kv` do not print th
 | `seed_data` | object | Present only with `--seed-data`: `path`, `seed`, `rows`, and `tables`. See [`--seed-data`](#--seed-data) |
 | `summary` | array | One object per candidate, ordered as described below. 1 to 100 entries |
 | `results` | array | One object per compared query and candidate, ordered by candidate (manifest entries first, then suggestions) and then by query (manifest order). An `index_rejected` or `index_timeout` candidate has no entries here |
+| `writes` | array | Present only when the manifest has `writes` (which needs `--migration`): one object per write statement, in manifest order. See [`writes` entries](#writes-entries) |
 | `warnings` | array | `{ "code", "message" }` entries. Holds what `--suggest` dropped or could not do, and, with `--d1`, `unapplied_migrations`. A comparison warning (including `bind_dependent_partial_index`) is in `results[].comparison.warnings`, not here; the `human` report lists each one under `Warnings` as `<query> -> <candidate>: <code>: <message>` |
 
 ### `summary` entries
@@ -59,6 +60,16 @@ A candidate qualifies for `recommended` when its status is `compared` and `misma
 | `status` | string | `compared` or `variant_timeout` |
 | `comparison` | object or `null` | `null` for `variant_timeout`; otherwise the schema_version 2 comparison object, with `inputs.select` and `inputs.index_sql` set to the same strings. For a one-SELECT `--suggest`, `inputs.select` is the SELECT path argument. With `--migration`, `inputs.index_sql` is the migration path, and a query whose rows match but whose read or written rows increased has `verdict` `regressed`. A query that only the variant can run has `verdict` `not-judged`, `result` `incomparable`, and `baseline` `null`. The embedded object is minified |
 
+### `writes` entries
+
+| Key | Type | Meaning |
+| `write` | string | The `write` string from the manifest |
+| `candidate` | string | The `--migration` path |
+| `status` | string | `compared`, or `variant_timeout` when the variant run reached `--timeout-ms` |
+| `comparison` | object or `null` | `null` for `variant_timeout`; otherwise the schema_version 2 comparison object with `statement` `write`, `inputs.write` set to the manifest string, and `inputs.index_sql` set to the migration path. It keeps `baseline` and `variant` row counters, `changes`, `total_changes`, and `executions` (`1`). A write the baseline cannot run before the migration has `baseline` `null`, `verdict` `not-judged`, `result` `incomparable`, and exit_code `0`. The embedded object is minified |
+
+`writes` compares one write statement of the manifest on both copies after the migration. The verdict comes from `rows_read` only: more rows read is `regressed`, the same is `no-effect`, and fewer is `improved`. `rows_written` is in the counters and does not change the verdict, because an index that the migration adds makes an `INSERT` or `UPDATE` write at least one more entry. The `RETURNING` rows, `changes`, and the difference of `total_changes` must match on both copies, or the comparison is a `mismatch`; a write that reads the schema, the current time, or a nondeterministic function is not run and is `incomparable`. A batch `exit_code` of `6` also covers a `regressed` write, and a write with `mismatch`, `incomparable`, a timeout, or `regressed` keeps the migration out of `recommended`. The bundled D1 counting patch does not count secondary-index deletes, so dropping an index does not lower `rows written`; [the batch page](batch.md#batch-comparisons) describes the run and the human output.
+
 ### `--migration`
 
 `--migration <FILE>` applies one migration file to the variant copy before the batch queries run. It needs `--batch`, and the manifest must omit `candidates` or set it to `[]`. It does not take `--select`, `--index-sql`, `--bind`, `--runs`, `--suggest`, or `--format kv`.
@@ -71,7 +82,8 @@ A candidate qualifies for `recommended` when its status is `compared` and `misma
 - Adding or dropping a column changes the column count of a `SELECT *` query, so its rows cannot be compared. Its embedded comparison has `verdict` `not-judged`, `result` `incomparable`, `exit_code` `4`, and `result_reasons` with `the column count differs between the copies`; `baseline` is present because the query runs on both copies. `summary.incomparable` counts it and the batch exits `4`. List the columns to compare it.
 - The `summary` entry for a migration has `source` `migration`, `candidate` set to the migration path, and the same `improved` / `no_effect` / `needs_check` / `mismatch` / `incomparable` / `timeout` / `not_judged` counts. A query whose rows match but whose read or written rows increased has `verdict` `regressed` in its embedded comparison and is counted under `needs_check`. `recommended` is the migration path only when it qualifies like any other candidate.
 - A migration measures `size_increase` and the `size_bytes` of each embedded comparison as the bytes in use, `(page_count - freelist_count) * page_size`, not as the file size. `DROP INDEX` moves its pages to SQLite's freelist without shrinking the file, so the file delta stays `0`; the bytes in use report the freed space as a negative number. The file shrinks only after `VACUUM`. A batch without `--migration` keeps the file size difference.
-- When the result rows match but at least one query read or wrote more rows after the migration, that query's `comparison.verdict` is `regressed`, the batch counts it under `needs_check` in `summary`, and the batch `exit_code` is `6`. A heavier result (`3` mismatch, `1` rejected change, `124` timeout, `4` incomparable) takes precedence. `no_effect` alone keeps `0`.
+- When the result rows match but at least one query read or wrote more rows after the migration, that query's `comparison.verdict` is `regressed`, the batch counts it under `needs_check` in `summary`, and the batch `exit_code` is `6`. A heavier result (`3` mismatch, `1` rejected change, `124` timeout, `4` incomparable) takes precedence. `no_effect` alone keeps `0`. A `regressed` write in `writes` also gives `6` and is not counted in `summary`, which counts queries only.
+- `writes` runs after the queries of the migration candidate. Each statement runs inside a transaction on the baseline and on the variant and is rolled back, so the next statement starts from the same rows. A write that reaches `--timeout-ms` on the variant is reported as `variant_timeout` with `comparison` `null`, and the batch exits `124`. A write the baseline cannot prepare before the migration (it uses a column or table the migration adds) is measured on the variant only, like a query, and does not change the exit code. A write the variant cannot prepare or run stops the run before the report with `batch_write_failed`; a plan read that reaches the limit stops it with `batch_write_timeout`.
 - The batch top-level `warnings` holds no `no_analyze_stats` or `data_too_small` entry with `--migration`: those checks need one candidate table, and a migration can touch several. The comparison `warnings` still carries `bind_dependent_partial_index`, which needs only the variant plan and runs for a variant-only query too. A `--d1` batch adds `unapplied_migrations` to the top-level `warnings` with or without `--migration`, because the check reads the local D1 database and no candidate.
 
 ### `--seed-data`
@@ -160,6 +172,8 @@ Batch error codes:
 | `batch_baseline_timeout` | 124 | Raise `--timeout-ms` or narrow the SELECT |
 | `batch_variant_failed` | 1 | Read the SQLite message; the run stopped before the report. With `--migration`, the query may use a column or table that the migration dropped or renamed |
 | `batch_variant_timeout` | 124 | Raise `--timeout-ms` or simplify the CREATE INDEX |
+| `batch_write_failed` | 1 | Read the SQLite message; the run stopped before the report. A write statement the variant cannot prepare or run, or one the baseline cannot run |
+| `batch_write_timeout` | 124 | Raise `--timeout-ms`, or narrow the write statement in the manifest |
 | `batch_index_failed` | 1 | Fix the candidate CREATE INDEX so it applies to this database |
 | `batch_workspace_failed` | 1 | Check the temporary directory and its permissions |
 | `no_candidates` | 1 | Check that a SELECT has a WHERE or ORDER BY clause, or write a candidate CREATE INDEX |
@@ -324,7 +338,7 @@ The object is indented with two spaces and ends with a newline. A missing key th
 | `improved` | The rows match, and the variant reads fewer rows |
 | `no-effect` | The rows match, and the variant reads the same number of rows |
 | `needs-check` | The rows match, but the variant reads or writes more rows |
-| `regressed` | The rows match, but the migration made the variant read or write more rows. Only inside a `--migration` batch; the other modes name the same condition `needs-check` |
+| `regressed` | The rows match, but the migration made the variant read or write more rows. For a write comparison in `writes` the rows must match and only `rows_read` can make it `regressed`. Only inside a `--migration` batch; the other modes name the same condition `needs-check` |
 | `not-judged` | The rows differ or cannot be compared, or a `--migration` query could only run on the variant |
 
 The verdict comes from `rows_read` and `rows_written`. It does not change the exit code. Times do not change the verdict, so `--runs 0` still has a verdict.
@@ -334,7 +348,7 @@ The verdict comes from `rows_read` and `rows_written`. It does not change the ex
 `--write` replaces `--select` and compares one `INSERT`, `UPDATE`, `DELETE`, or `REPLACE`. The comparison object keeps `schema_version` `2`; the differences are additive:
 
 - `statement` is `write`.
-- `inputs.write` holds the write-file path and `inputs.select` is absent. There is no `--batch`, `--migration`, or `--suggest` form of a write comparison.
+- `inputs.write` holds the write-file path and `inputs.select` is absent. This single-statement form does not take `--batch`, `--migration`, or `--suggest`; a manifest lists writes in its `writes` array instead, and the batch report holds their comparisons in `writes`.
 - `baseline.rows` and `variant.rows` are the number of `RETURNING` rows (0 without `RETURNING`). `row_differences` compares those rows as a multiset.
 - `baseline.changes` and `variant.changes` are `sqlite3_changes` for the statement, without trigger or foreign-key changes. `total_changes` is the difference of `sqlite3_total_changes`, which includes trigger and foreign-key changes. Both must match for `result` to be `match`; a difference is `mismatch` and exit `3`.
 - `executions` is the number of rolled-back executions per copy. `measurement.runs_per_copy` is the same number. `timing` is always `null`; the `measure-*` values describe the write runs, not a timing loop.
@@ -386,7 +400,7 @@ These are the values of `ExitCode` in `src/cli/control.zig`, `--help`, and the R
 | 3 | `mismatch` | The result rows differ |
 | 4 | `incomparable` | The results cannot be compared, or `--d1` cannot resolve exactly one local database |
 | 5 | `cleanup` | Cleanup failed after a match. This replaces `0` only. Every other code is kept |
-| 6 | `regression` | With `--migration`, the result rows matched but a query read or wrote more rows. Only returned by the `--migration` batch path |
+| 6 | `regression` | With `--migration`, the result rows matched but a query read or wrote more rows, or a write statement read more rows. Only returned by the `--migration` batch path |
 | 124 | `timeout` | `--timeout-ms` was reached |
 | 129 | `hangup` | `SIGHUP` |
 | 130 | `interrupted` | `SIGINT` |

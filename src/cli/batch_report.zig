@@ -6,6 +6,7 @@ const cli_comparison = @import("comparison.zig");
 const cli_control = @import("control.zig");
 const report_model = @import("../report/model.zig");
 const report_json = @import("../report/json.zig");
+const report_batch_writes = @import("../report/batch_writes.zig");
 const cli_suggest = @import("suggest.zig");
 
 const ExitCode = cli_control.ExitCode;
@@ -78,6 +79,7 @@ pub fn writeBatchJson(
     summaries: []const CandidateSummary,
     order: []const usize,
     results: []const ResultEntry,
+    writes: []const report_batch_writes.Result,
     warnings: []const cli_suggest.Warning,
     recommended: ?usize,
     migration: ?Migration,
@@ -186,6 +188,10 @@ pub fn writeBatchJson(
         try json.endObject();
     }
     try json.endArray();
+    if (writes.len != 0) {
+        try json.objectField("writes");
+        try report_batch_writes.writeJson(&json, allocator, writes);
+    }
     try json.objectField("warnings");
     try json.beginArray();
     for (warnings) |warning| {

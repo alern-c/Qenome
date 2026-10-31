@@ -37,6 +37,8 @@ pub const code = struct {
     pub const record_log_permissions = "record_log_permissions";
     pub const record_manifest_binds = "record_manifest_binds";
     pub const usage_scale = "usage_scale";
+    pub const batch_write_failed = "batch_write_failed";
+    pub const batch_write_timeout = "batch_write_timeout";
 };
 
 pub const warning_codes = [_][]const u8{ code.no_analyze_stats, code.data_too_small };

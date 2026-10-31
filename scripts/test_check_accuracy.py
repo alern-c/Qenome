@@ -435,6 +435,18 @@ def parser_tests(checker) -> None:
         )
         refuse_case(
             checker,
+            "an unknown write check is refused",
+            with_case(document(expect={"writes": [{"verdict": "regressed", "wobble": 1}]})),
+            "wobble",
+        )
+        refuse_case(
+            checker,
+            "an empty write check is refused",
+            with_case(document(expect={"writes": [{}]})),
+            "needs a comparison check",
+        )
+        refuse_case(
+            checker,
             "an unknown summary count is refused",
             with_case(document(expect={"batch": {"counts": {"wow": 1}}})),
             "wow",
@@ -463,6 +475,41 @@ def parser_tests(checker) -> None:
                 "case.json": document(),
             },
             "omit candidates",
+        )
+        refuse_case(
+            checker,
+            "a manifest with writes needs --migration",
+            {
+                "schema.sql": SCHEMA,
+                "select.sql": SELECT,
+                "w.sql": "DELETE FROM events;\n",
+                "batch.json": json.dumps(
+                    {
+                        "queries": [{"select": "select.sql"}],
+                        "candidates": [],
+                        "writes": [{"write": "w.sql"}],
+                    }
+                ),
+                "case.json": document(),
+            },
+            "needs --migration",
+        )
+        refuse_case(
+            checker,
+            "a manifest naming a missing write file is refused",
+            {
+                "schema.sql": SCHEMA,
+                "select.sql": SELECT,
+                "batch.json": json.dumps(
+                    {
+                        "queries": [{"select": "select.sql"}],
+                        "writes": [{"write": "gone.sql"}],
+                    }
+                ),
+                "migration.sql": INDEX,
+                "case.json": document(),
+            },
+            "gone.sql",
         )
         refuse_case(
             checker,
@@ -757,6 +804,28 @@ def expectation_tests(checker) -> None:
     )
     one = dict(two, results=[{"comparison": comparison()}])
     check_pass(checker, "a one-comparison batch report passes", {"result": "match"}, observation(checker, batch=one))
+
+    writes_report = dict(
+        batch_report(recommended=None),
+        writes=[
+            {
+                "write": "w.sql",
+                "candidate": "m.sql",
+                "status": "compared",
+                "comparison": comparison(verdict="regressed"),
+            }
+        ],
+    )
+    writes = observation(checker, batch=writes_report)
+    check_pass(checker, "a write verdict matches", {"writes": [{"verdict": "regressed"}]}, writes)
+    check_fail(checker, "a different write verdict fails", {"writes": [{"verdict": "no-effect"}]}, writes, "writes[0]")
+    check_fail(
+        checker,
+        "a missing write comparison fails",
+        {"writes": [{"verdict": "regressed"}, {"verdict": "no-effect"}]},
+        writes,
+        "1 write comparisons",
+    )
 
 
 def repeat_tests(checker) -> None:

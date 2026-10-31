@@ -1,0 +1,42 @@
+{
+  "description": "A migration that drops the index makes the manifest UPDATE read every row: the write is regressed and the batch exits 6, while the SELECT stays no-effect.",
+  "args": [],
+  "expect": {
+    "exit": 6,
+    "exit_code": 6,
+    "result": "match",
+    "verdict": "no-effect",
+    "plan_changed": false,
+    "rows_read": "same",
+    "writes": [
+      {
+        "result": "match",
+        "verdict": "regressed",
+        "plan_changed": true,
+        "baseline_plan": {
+          "contains": [
+            "SEARCH events USING INDEX idx_customer (customer_id=?)"
+          ]
+        },
+        "variant_plan": {
+          "contains": [
+            "SCAN events"
+          ],
+          "excludes": [
+            "USING INDEX"
+          ]
+        },
+        "rows_read": "increase",
+        "rows_written": "same"
+      }
+    ],
+    "batch": {
+      "recommended": null,
+      "counts": {
+        "improved": 0,
+        "no_effect": 1,
+        "needs_check": 0
+      }
+    }
+  }
+}
