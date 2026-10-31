@@ -60,10 +60,10 @@ npm publish --access public dist/npm/qenome
 ## 2回目以降
 
 1. `build.zig.zon` の `.version` を上げる。changelog、タグ、GitHub Release は、これまで通りのリリース手順で出す。`npm/*/package.json` は編集しない。
-2. `build.zig.zon` の `.version` を上げたコミットが `main` の先頭になり、タグ `v` + `.version` を push すると、`release.yml` が GitHub Release を作り終えたあと、`publish-npm` が自動で始まる。自動で始まるのは、`release.yml` がタグ push で始まって成功し、その実行のコミットが公開対象のコミットと一致するときだけ。`release.yml` が失敗したとき、`release.yml` を `workflow_dispatch` で動かしたとき、または手で公開するときは、そのコミットが `main` の先頭でタグと Release が揃ってから、`gh workflow run publish-npm.yml --ref main` を実行する。
+2. Push the tag `v` + `.version` at the commit that raises `.version` in `build.zig.zon` and is the tip of `main`. After `release.yml` creates the GitHub Release, `publish-npm` starts automatically. It starts only when the `release.yml` run was started by a tag push, succeeded, and is at the commit being published. If `release.yml` failed, if it was started by `workflow_dispatch`, or if you publish by hand, wait until that commit is the tip of `main` with the tag and Release in place, then run `gh workflow run publish-npm.yml --ref main`.
 3. ワークフローは先に `quality.yml` と同じ検査をそのコミットで実行する。失敗したらパッケージのビルドと npm への公開は始まらない。通ったあと、OIDC で公開し、provenance を付ける。`NPM_TOKEN` と `NODE_AUTH_TOKEN` は見ると中止する。プラットフォームを先に公開し、ランチャーを最後にする。同じ版が既にあるパッケージは飛ばす。途中で失敗したら、`main` がそのコミットのままなら同じワークフローを再実行できる。
 4. 公開のあと、5パッケージがその版でレジストリに見えるまで待ち、各 tarball にバイナリが入っていることを確かめ、`npx qenome@<version>` で improved の比較を1回実行する。比較が失敗したら公開ジョブは失敗する。
-5. `main` 以外、タグと Release が一致しないコミット、品質検査が失敗したコミットでは公開しない。pull request ではこのワークフローは動かない。自動の起動は既定ブランチの `publish-npm.yml` で動くので、このワークフローの変更が `main` に入る前のタグでは自動で始まらない。`release.yml` が失敗したとき、`release.yml` を `workflow_dispatch` で動かしたときは、自動では公開しない。
+5. Nothing is published for a commit that is not the tip of `main`, whose tag and Release do not match, or whose quality checks failed. This workflow does not run on pull requests. The automatic start uses the default-branch copy of `publish-npm.yml`, so a tag pushed before this workflow change is on `main` does not start it. A failed `release.yml` run, or a `release.yml` run started by `workflow_dispatch`, does not publish automatically.
 
 provenance には、リポジトリが public であることが要る。`actions/setup-node` に `registry-url` を付けない。付けると空のトークンが `.npmrc` に入り、OIDC より先に使われることがある。
 
