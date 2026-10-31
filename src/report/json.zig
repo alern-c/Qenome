@@ -92,6 +92,27 @@ pub fn writeJsonVariantOnlyTo(
     return writeJsonComparison(writer, allocator, header, null, after, null, report, style);
 }
 
+pub fn writeJsonEnvironment(json: *std.json.Stringify, allocator: std.mem.Allocator, header: Header) Error!void {
+    try json.beginObject();
+    try json.objectField("qenome_version");
+    try json.write(header.qenome_version);
+    try json.objectField("sqlite_version");
+    try writeJsonText(json, allocator, std.mem.span(header.sqlite_version));
+    try json.objectField("sqlite_source_id");
+    try writeJsonText(json, allocator, std.mem.span(header.sqlite_source_id));
+    try json.objectField("zig_version");
+    try json.write(builtin.zig_version_string);
+    try json.objectField("build_mode");
+    try json.write(@tagName(builtin.mode));
+    try json.objectField("os");
+    try json.write(@tagName(builtin.os.tag));
+    try json.objectField("arch");
+    try json.write(@tagName(builtin.cpu.arch));
+    try json.objectField("work_dir_parent");
+    try writeJsonText(json, allocator, header.work_parent);
+    try json.endObject();
+}
+
 fn writeJsonComparison(
     writer: *Io.Writer,
     allocator: std.mem.Allocator,
@@ -209,24 +230,7 @@ fn writeJsonComparison(
         try writeJsonSeed(&json, allocator, seed);
     }
     try json.objectField("environment");
-    try json.beginObject();
-    try json.objectField("qenome_version");
-    try json.write(header.qenome_version);
-    try json.objectField("sqlite_version");
-    try writeJsonText(&json, allocator, std.mem.span(header.sqlite_version));
-    try json.objectField("sqlite_source_id");
-    try writeJsonText(&json, allocator, std.mem.span(header.sqlite_source_id));
-    try json.objectField("zig_version");
-    try json.write(builtin.zig_version_string);
-    try json.objectField("build_mode");
-    try json.write(@tagName(builtin.mode));
-    try json.objectField("os");
-    try json.write(@tagName(builtin.os.tag));
-    try json.objectField("arch");
-    try json.write(@tagName(builtin.cpu.arch));
-    try json.objectField("work_dir_parent");
-    try writeJsonText(&json, allocator, header.work_parent);
-    try json.endObject();
+    try writeJsonEnvironment(&json, allocator, header);
     if (header.d1 != null) {
         try json.objectField("d1");
         try writeJsonD1(&json, allocator, header);

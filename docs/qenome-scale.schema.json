@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "qenome-scale.schema.json",
+  "title": "Qenome scale report (scale_schema_version 1)",
+  "description": "Stdout object after --scale with --seed-data. Each step embeds the schema_version 2 comparison object from qenome-report.schema.json, minified. See docs/json.md.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "scale_schema_version",
+    "exit_code",
+    "inputs",
+    "environment",
+    "steps",
+    "warnings"
+  ],
+  "properties": {
+    "scale_schema_version": { "const": 1 },
+    "exit_code": {
+      "description": "The heaviest step exit: 3, then 4, then 124, then 1, otherwise 0. The process can still exit 5 after this object when cleanup fails and the code is 0.",
+      "enum": [0, 1, 3, 4, 124]
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["database", "index_sql", "seed_data", "scale"],
+      "properties": {
+        "database": { "type": "string" },
+        "select": {
+          "description": "The SELECT path. Absent with --write.",
+          "type": "string"
+        },
+        "write": {
+          "description": "The write path. Present only with --write.",
+          "type": "string"
+        },
+        "index_sql": { "type": "string" },
+        "seed_data": {
+          "description": "The --seed-data spec path.",
+          "type": "string"
+        },
+        "scale": {
+          "description": "The step sizes as given.",
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 3,
+          "items": { "type": "integer", "minimum": 1, "maximum": 10000000 }
+        }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "qenome_version",
+        "sqlite_version",
+        "sqlite_source_id",
+        "zig_version",
+        "build_mode",
+        "os",
+        "arch",
+        "work_dir_parent"
+      ],
+      "properties": {
+        "qenome_version": { "type": "string" },
+        "sqlite_version": { "type": "string" },
+        "sqlite_source_id": { "type": "string" },
+        "zig_version": { "type": "string" },
+        "build_mode": { "type": "string" },
+        "os": { "type": "string" },
+        "arch": { "type": "string" },
+        "work_dir_parent": { "type": "string" }
+      }
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["rows", "tables", "comparison"],
+        "properties": {
+          "rows": {
+            "description": "The step size: the row count of the largest table in the spec.",
+            "type": "integer",
+            "minimum": 1
+          },
+          "tables": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["table", "rows"],
+              "properties": {
+                "table": { "type": "string" },
+                "rows": { "type": "integer", "minimum": 0 }
+              }
+            }
+          },
+          "comparison": {
+            "description": "The full schema_version 2 comparison object for this step, minified.",
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["schema_version", "exit_code", "verdict", "result"],
+            "properties": {
+              "schema_version": { "const": 2 },
+              "exit_code": { "enum": [0, 3, 4] },
+              "verdict": {
+                "enum": ["improved", "no-effect", "needs-check", "not-judged"]
+              },
+              "result": { "enum": ["match", "mismatch", "incomparable"] }
+            }
+          }
+        }
+      }
+    },
+    "warnings": {
+      "description": "Run-wide warnings. The per-step comparison warnings stay in steps[].comparison.warnings.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "message"],
+        "properties": {
+          "code": { "enum": ["unapplied_migrations"] },
+          "message": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

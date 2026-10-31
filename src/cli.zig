@@ -20,6 +20,7 @@ const cli_batch = @import("cli/batch.zig");
 const cli_audit = @import("cli/audit.zig");
 const cli_record = @import("cli/record.zig");
 const cli_seed = @import("cli/seed.zig");
+const cli_scale = @import("cli/scale.zig");
 const cli_skill = @import("cli/skill.zig");
 
 pub const max_sql_bytes = cli_args.max_sql_bytes;
@@ -186,6 +187,30 @@ fn runCaptured(
             stderr.writeAll("error: out of memory\n") catch {};
             return .rejected;
         };
+    }
+
+    if (args.scale) |scale| {
+        const spec = seed_spec orelse {
+            stderr.writeAll("error: --scale needs --seed-data (see --help)\n") catch {};
+            return .usage;
+        };
+        return cli_scale.run(io, arena, allocator, .{
+            .database_path = database_path,
+            .d1 = d1,
+            .unapplied_migrations = unapplied,
+            .select_path = args.select,
+            .write_path = args.write,
+            .index_path = args.index_sql.?,
+            .binds = args.binds,
+            .timeout_ms = args.timeout_ms,
+            .runs = args.runs,
+            .format = args.format,
+            .show_binds = args.show_binds,
+            .show_rows = args.show_rows,
+            .temp_parent = tempParentPath(temp_parent),
+            .seed = spec,
+            .scale = scale,
+        }, stdout, stderr);
     }
 
     if (args.batch) |batch_path| {
@@ -574,6 +599,7 @@ fn reportParseError(stderr: *Io.Writer, err: ParseError, offending: ?[:0]const u
         error.BatchRejectsBind => try stderr.writeAll("error: --batch does not take --bind; put the binds in the manifest (see --help)\n"),
         error.BatchRejectsRuns => try stderr.writeAll("error: --batch does not run the timing; remove --runs (see --help)\n"),
         error.BatchRejectsKv => try stderr.writeAll("error: --batch supports --format human or --format json, not kv (see --help)\n"),
+        error.ScaleConflict => try stderr.print("error: --scale does not take {s} (see --help)\n", .{arg}),
         error.AuditConflict => {
             if (std.mem.eql(u8, arg, "--batch")) {
                 try stderr.writeAll("error: --audit-indexes needs --batch and a manifest (see --help)\n");
