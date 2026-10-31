@@ -17,8 +17,35 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Read the runner CPU model for the Zig cache key
+        id: cpu_model
+        run: |
+          model=""
+          if [ -r /proc/cpuinfo ]; then
+            while IFS= read -r line; do
+              case "$line" in
+                'model name'*)
+                  IFS=: read -r _ model <<< "$line"
+                  break
+                  ;;
+              esac
+            done < /proc/cpuinfo
+          fi
+          model="$(printf '%s' "$model" | sed 's/^[[:space:]]*//')"
+          cache_key="$(printf '%s' "$model" | tr '[:upper:]' '[:lower:]')"
+          cache_key="$(printf '%s' "$cache_key" | tr -cs 'a-z0-9' '-')"
+          cache_key="$(printf '%s' "$cache_key" | sed -e 's/^-//' -e 's/-$//')"
+          if [ -z "$cache_key" ]; then
+            cache_key=unknown
+          fi
+          echo "Runner CPU model: ${model:-unknown}"
+          echo "Zig cache key component: $cache_key"
+          printf 'cache_key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
+
       - name: Set up Zig (resolved from build.zig.zon)
         uses: mlugg/setup-zig@v2
+        with:
+          cache-key: ${{ steps.cpu_model.outputs.cache_key }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
