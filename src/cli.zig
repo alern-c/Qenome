@@ -18,6 +18,7 @@ const report_json = @import("report/json.zig");
 const cli_pair = @import("cli/pair.zig");
 const cli_batch = @import("cli/batch.zig");
 const cli_audit = @import("cli/audit.zig");
+const cli_rank = @import("cli/rank.zig");
 const cli_record = @import("cli/record.zig");
 const cli_seed = @import("cli/seed.zig");
 const cli_scale = @import("cli/scale.zig");
@@ -228,6 +229,7 @@ fn runCaptured(
                 .suggest = args.suggest,
                 .migration = args.migration != null,
                 .audit = args.audit_indexes,
+                .rank = args.rank,
             }) orelse break :blk ExitCode.rejected;
             if (signalPending()) break :blk reportInterrupted(stderr);
             const parent_path = tempParentPath(temp_parent);
@@ -236,7 +238,18 @@ fn runCaptured(
                 break :blk ExitCode.rejected;
             };
             defer work.remove(io, stderr, &cleanup_failed);
-            if (prepareCopies(io, arena, database_path, &work, seed_spec, !args.audit_indexes, stderr, &cleanup_failed)) |failure| break :blk failure;
+            if (prepareCopies(io, arena, database_path, &work, seed_spec, !args.audit_indexes and !args.rank, stderr, &cleanup_failed)) |failure| break :blk failure;
+            if (args.rank) {
+                break :blk cli_rank.run(io, arena, allocator, .{
+                    .database_path = database_path,
+                    .baseline_path = work.baseline_path,
+                    .unapplied_migrations = unapplied,
+                    .timeout_ms = args.timeout_ms,
+                    .format = args.format,
+                    .work_parent = parent_path,
+                    .seed_path = if (seed_report) |seed| seed.path else null,
+                }, loaded.queries, stdout, stderr, &cleanup_failed);
+            }
             if (args.audit_indexes) {
                 break :blk cli_audit.run(io, arena, allocator, .{
                     .database_path = database_path,
@@ -615,7 +628,9 @@ fn missingArguments(stderr: *Io.Writer, args: cli_args.Args, missing: []const []
     if (args.record != null) {
         stderr.print("{s}\n", .{cli_args.record_usage_line}) catch {};
     } else if (args.batch != null) {
-        const line: []const u8 = if (args.audit_indexes)
+        const line: []const u8 = if (args.rank)
+            (if (args.d1 != null) cli_args.d1_rank_usage_line else cli_args.rank_usage_line)
+        else if (args.audit_indexes)
             (if (args.d1 != null) cli_args.d1_audit_usage_line else cli_args.audit_usage_line)
         else if (args.d1 != null)
             cli_args.d1_batch_usage_line

@@ -11,6 +11,7 @@ qenome app.db --write update.sql --index-sql index.sql
 qenome --d1 DB select.sql index.sql
 qenome app.db --batch batch.json
 qenome app.db --batch batch.json --audit-indexes
+qenome app.db --batch batch.json --rank
 qenome app.db --batch batch.json --migration 0002_replace_index.sql
 qenome app.db select.sql --suggest
 qenome app.db --batch batch.json --suggest
@@ -31,11 +32,12 @@ qenome --record qenome-record.log --out qenome-manifest
 - `--index-sql <FILE>`: 候補の CREATE INDEX を1本書いたファイル（必須、1回だけ）
 - `--batch <FILE>`: JSON のマニフェストにある全 SELECT を、全候補 CREATE INDEX と1回の実行で比べる。「まとめて比べる（--batch）」を参照。`--select` / `--index-sql` / `--bind` / 位置指定の SELECT・INDEX、`--runs`、`--format kv` とは併用できない
 - `--audit-indexes`: `--batch` と組み合わせて、マニフェストのどのクエリの実行計画にも使われなかったインデックスと、先頭の列がほかのインデックスや主キーに覆われているインデックスを報告し、UNIQUE と PRIMARY KEY のインデックスは別の一覧に分ける。マニフェストは `queries` だけでよく、`candidates` は無視する。`--batch` が必要で、`--suggest`・`--migration`・`--seed-data` とは併用できない。「インデックスの監査（--audit-indexes）」を参照
+- `--rank`: `--batch` と組み合わせて、マニフェストの全 SELECT を baseline だけで測り、読んだ行数で順位を付ける。クエリに `executions`（`--record` が書くか、手で書く）があるときは、読んだ行数とその回数の積で並べる。その積は相対的な指標であり、請求ではない。likely full scan を明示し、1件でもあれば終了コードは `7`、無ければ `0`。マニフェストは `queries` だけでよく、`candidates` と `writes` は無視する。`--batch` が必要で、`--suggest`・`--migration`・`--audit-indexes` とは併用できない。「baseline の読み取りを順位づける（--rank）」を参照
 - `--record <FILE>`: `qenome/d1` が出力した記録を読み、`--out` に `candidates` を持たないマニフェストを書く。データベースは要らない。マニフェストにはバインド値が入るので、ローカルに置いて commit しない。`--out` とセットで使い、`--db`・`--d1`・`--select`・`--write`・`--index-sql`・`--batch`・`--migration`・`--seed-data`・`--bind`・`--runs`・`--suggest`・`--format kv` とは併用できない。`--format human`（既定）または `--format json` と、`--n-plus-one-threshold N` を使える。「実際に実行されたクエリを記録する（--record）」を参照
 - `--out <DIR>`: `--record` の出力先。存在しない新しいディレクトリを指定する。ディレクトリは `0700`、ファイルは `0600` で作る
 - `--migration <FILE>`: `--batch` の全クエリを実行する前に、この SQL ファイルを variant にだけ適用する。`--batch` と、`candidates` を持たないマニフェストが必要。`--select` / `--index-sql` / `--bind` / `--runs` / `--suggest` / `--format kv` とは併用できない。`CREATE INDEX`・`CREATE UNIQUE INDEX`・`DROP INDEX`・`CREATE TABLE`（`AS SELECT` を除く）・`ALTER TABLE`（ADD / RENAME / DROP COLUMN と RENAME TO）を受け付け、データ変更・`DROP TABLE`・`ATTACH`・`PRAGMA`・その他の文は文番号付きで拒否する。マイグレーションで消した・名前を変えた列やテーブルを参照するクエリがあると実行全体が終了コード `1` で止まる。列を足す・消すと `SELECT *` は結果の列数が変わるため比較できず、終了コード `4` になる。「まとめて比べる（--batch）」を参照
 - `--seed-data <FILE>`: 比較の前に、この JSON の指定に従ってサンドボックスのコピーのテーブルを決まったダミーデータで置き換える。元のデータベースは変更しない。`--batch`・`--suggest`・`--migration` を含むすべてのモードで使える。「サンドボックス用のデータを作る」を参照
-- `--scale <ROWS,ROWS[,ROWS]>`: `--seed-data` と組み合わせて、2〜3の狭義増加する行数で同じ比較を1回の実行で行い、結果を並べて出す。各段階はそのサイズの新しいサンドボックスのコピーに seed する。spec の中で最も大きいテーブルがその段階の行数になり、ほかのテーブルも同じ倍率で増える。`--batch`・`--suggest`・`--migration`・`--audit-indexes`・`--record`・`--format kv` とは併用できない。「複数のサイズで測る（--scale）」を参照
+- `--scale <ROWS,ROWS[,ROWS]>`: `--seed-data` と組み合わせて、2〜3の狭義増加する行数で同じ比較を1回の実行で行い、結果を並べて出す。各段階はそのサイズの新しいサンドボックスのコピーに seed する。spec の中で最も大きいテーブルがその段階の行数になり、ほかのテーブルも同じ倍率で増える。`--batch`・`--suggest`・`--migration`・`--audit-indexes`・`--rank`・`--record`・`--format kv` とは併用できない。「複数のサイズで測る（--scale）」を参照
 - `--suggest`: インデックスを自分で用意する代わりに、SQLite の expert に候補のインデックスを提案させ、その提案を比べる。`--batch` のときはマニフェストの `candidates` を省略できる。`--runs`、`--format kv`、インデックスのファイル（`--index-sql` または3番目の位置指定パス）とは併用できない。「候補のインデックスを提案させる（--suggest）」を参照
 - `--bind <N>:<TYPE>[:<VALUE>]`: SELECT のパラメータ N に渡す型付きの値。繰り返し指定できる。N は SQLite のパラメータ番号で、名前付きパラメータは最初に現れたときの番号を共有し、`?NNN` は NNN を使う。TYPE は int / real / text / null（null は値を取らない）。1 からパラメータ数までの各番号をちょうど1回ずつ指定する必要があり、パラメータの無い SELECT に `--bind` は付けられない。値は引数の残り全体なので、text には `:` を含められる
 - `--runs <N>`: 結果が一致したあとの計測ラウンド数。各ラウンドは各コピーで SELECT を1回計測する。既定は 10、0 で計測しないが読んだ行数と判定は残る、最大 1000。1秒を超える計測は進捗を stderr に出す。`--write` では N は各コピーでロールバックしながら実行する回数（最低1回）で、計測は行わず、毎回同じ件数になることを確かめる
@@ -140,7 +142,7 @@ production D1 billing.
 
 各段階は、元のデータベースを新しいサンドボックスへコピーし、そのコピーに seed し、variant に候補のインデックスを作り、既存の比較を実行し、次の段階の前にコピーを削除します。表は1段階1行で、行数、両方のコピーが読んだ行数、variant / baseline の比、`--write` のときの書き込んだ行数、判定、結果、実行計画が変わったか、`--runs` が `0` でないときの中央値を出します。`--show-binds` のときは先頭の項目にバインド値も並べ、`--show-rows` のときは結果が `match` でない段階について、片方のコピーだけが返した行の例も出します。警告は段階で違うときだけ、例えば最も小さい段階の `data_too_small` だけを出します。判定が段階で変わる場合は、`The verdict changes between 1,000 and 10,000 rows.` のように1行で示します。増え方の分類はしません。最後の行に、生成したデータをこのマシンで測ったもので、本番 D1 の請求ではないと書きます。
 
-段階は2〜3個の狭義増加する整数で、各段階は 10,000,000 行以下です。スケールした spec は1テーブル 10,000,000 行、合計 20,000,000 行以内でなければなりません。それ以外は、コピーを作る前の usage エラー（`usage_scale`、終了コード `2`）です。`--scale` は `--d1`・`--write`・`--bind`・`--runs`・`--timeout-ms`・`--show-binds`・`--show-rows` と `--format human` / `json` で使えます。`--batch`・`--suggest`・`--migration`・`--audit-indexes`・`--record`・`--format kv` とは併用できません。
+段階は2〜3個の狭義増加する整数で、各段階は 10,000,000 行以下です。スケールした spec は1テーブル 10,000,000 行、合計 20,000,000 行以内でなければなりません。それ以外は、コピーを作る前の usage エラー（`usage_scale`、終了コード `2`）です。`--scale` は `--d1`・`--write`・`--bind`・`--runs`・`--timeout-ms`・`--show-binds`・`--show-rows` と `--format human` / `json` で使えます。`--batch`・`--suggest`・`--migration`・`--audit-indexes`・`--rank`・`--record`・`--format kv` とは併用できません。
 
 終了コードは、1回の比較と同じ優先順位で、段階の中で最も重いものです（`3`、次に `4`、次に `124`、次に `1`、どれもなければ `0`）。実行できない段階があると、レポートを書く前に実行全体が止まります。
 

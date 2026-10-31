@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `--batch <manifest> --rank` measures every SELECT on the baseline copy only and ranks the queries by rows read, so a missing index can be found before a candidate exists. A manifest from `--record` works as written, and `--record` now stores each statement's `executions` on its query. When that count is present, the order uses rows read times runs; the report labels that product a relative indicator, not a bill. A likely full scan (a full-scan counter above zero, or a `SCAN` step that does not use an index) is flagged. Exit `0` means none were flagged, and exit `7` (`likely_full_scan`) means at least one was. The last line names the top query for `--suggest`. `candidates` and `writes` are ignored. JSON is one object with `schema_version` 2 and `rank_schema_version` 1. `--rank` needs `--batch` and does not take `--suggest`, `--migration`, or `--audit-indexes`.
+
 ## [0.3.9] - 2026-10-31
 
 ### Added

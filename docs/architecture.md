@@ -24,6 +24,8 @@ The report layer holds `model.zig` (the data the writers take), `format.zig` (co
 
 `src/cli/scale.zig` runs `--scale`: it scales the seed spec, runs the pair comparison once per step on fresh copies, and hands the steps to `src/report/scale.zig`. The step size is checked against the seed limits before a copy is made.
 
+`src/cli/rank.zig` runs `--batch --rank`: it measures every manifest query on the baseline copy and writes the ranked report itself.
+
 The report layer still imports `src/cli/comparison.zig`, `src/cli/timing.zig` and `src/cli/warnings.zig`. They are the measure, verdict and sandbox layers in the target order and move out of `src/cli/` with that work; `PENDING_MOVE_IMPORTS` in `scripts/check_architecture.py` lists them until then. Remove that list when those files move.
 
 Planned next: split `src/db.zig` into `src/engine/*`, move measure, verdict and sandbox out of `src/cli/`, move the remaining D1 code into `src/d1/`, add `src/modes/`, replace the parsed arguments with a `Command` union, and split `src/cli/tests.zig`.
