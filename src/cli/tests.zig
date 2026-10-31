@@ -2833,6 +2833,25 @@ fn initMigrationFixture() !CliFixture {
     try fixture.writeFile("create.sql", "CREATE INDEX idx_b ON t(b);\n");
     try fixture.writeFile("drop.sql", "DROP INDEX idx_a;\n");
     try fixture.writeFile("data.sql", "DELETE FROM t;\n");
+    try fixture.writeFile("w_update.sql", "UPDATE t SET b = 'u' WHERE a = ?1;");
+    try fixture.writeFile("w_insert.sql", "INSERT INTO t(a, b) VALUES (?1, 'new');");
+    try fixture.writeFile("w_column.sql", "UPDATE t SET c = ?1 WHERE a = ?2;");
+    try fixture.writeFile("queries_writes.json",
+        \\{"queries":[{"select":"qb.sql","binds":["1:text:v1234"]}],
+        \\ "writes":[{"write":"w_update.sql","binds":["1:int:1234"]}]}
+    );
+    try fixture.writeFile("queries_writes_insert.json",
+        \\{"queries":[{"select":"qb.sql","binds":["1:text:v1234"]}],
+        \\ "writes":[{"write":"w_insert.sql","binds":["1:int:1234"]}]}
+    );
+    try fixture.writeFile("queries_writes_column.json",
+        \\{"queries":[{"select":"qb.sql","binds":["1:text:v1234"]}],
+        \\ "writes":[{"write":"w_column.sql","binds":["1:int:5","2:int:1234"]}]}
+    );
+    try fixture.writeFile("writes_only.json",
+        \\{"queries":[{"select":"qb.sql","binds":["1:text:v1234"]}],
+        \\ "writes":[{"write":"w_update.sql","binds":["1:int:1234"]}]}
+    );
     try fixture.writeFile("missing.sql", "DROP INDEX missing_idx;\n");
     try fixture.writeFile("empty.sql", "-- nothing\n");
     try fixture.writeFile("qc.sql", "SELECT a FROM t WHERE c = 0;");
@@ -3412,6 +3431,85 @@ test "a migration can drop a column and create a useful index" {
     const summary = try jsonItems(parsed.value, "summary");
     try testing.expectEqual(@as(i64, 1), try jsonInt(summary[0], "improved"));
     try testing.expectEqual(@as(i64, 0), try jsonInt(summary[0], "not_judged"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a migration compares a write on both copies and regresses the batch" {
+    var fixture = try initMigrationFixture();
+    defer fixture.deinit();
+    const before = try Io.Dir.cwd().readFileAlloc(testing.io, fixture.db_path, testing.allocator, .unlimited);
+    defer testing.allocator.free(before);
+
+    var stdout_buffer: [65536]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = try runMigration(&fixture, "queries_writes.json", "drop.sql", &.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.regression, result.code);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    try testing.expectEqual(@as(i64, 6), try jsonInt(parsed.value, "exit_code"));
+    try testing.expect((try jsonGet(parsed.value, "recommended")) == .null);
+    const summary = try jsonItems(parsed.value, "summary");
+    try testing.expectEqual(@as(i64, 0), try jsonInt(summary[0], "needs_check"));
+    const writes = try jsonItems(parsed.value, "writes");
+    try testing.expectEqualStrings("w_update.sql", try jsonText(writes[0], "write"));
+    const comparison = try jsonGet(writes[0], "comparison");
+    try testing.expectEqualStrings("regressed", try jsonText(comparison, "verdict"));
+    const variant_rows = try jsonGet(try jsonGet(comparison, "variant"), "counters");
+    const baseline_rows = try jsonGet(try jsonGet(comparison, "baseline"), "counters");
+    try testing.expect(try jsonInt(variant_rows, "rows_read") > try jsonInt(baseline_rows, "rows_read"));
+    try fixture.expectNoLeftovers();
+
+    const after = try Io.Dir.cwd().readFileAlloc(testing.io, fixture.db_path, testing.allocator, .unlimited);
+    defer testing.allocator.free(after);
+    try testing.expectEqualSlices(u8, before, after);
+}
+
+test "a migration write that only writes more rows keeps exit 0 and says no-effect" {
+    var fixture = try initMigrationFixture();
+    defer fixture.deinit();
+
+    var stdout_buffer: [65536]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = try runMigration(&fixture, "queries_writes_insert.json", "create.sql", &.{}, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+    try testing.expect(contains(result.stdout, "batch: 1 query, 1 write, 1 migration (1 statement)\n"));
+    try testing.expect(contains(result.stdout, "\nWrites: 1 write (1 no-effect)\n"));
+    try fixture.expectNoLeftovers();
+}
+
+test "a write the migration's column makes possible is measured on the variant only" {
+    var fixture = try initMigrationFixture();
+    defer fixture.deinit();
+
+    var stdout_buffer: [65536]u8 = undefined;
+    var stderr_buffer: [2048]u8 = undefined;
+    const result = try runMigration(&fixture, "queries_writes_column.json", "schema_column_only.sql", &.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expectEqualStrings("", result.stderr);
+
+    var parsed = try parseJson(result.stdout);
+    defer parsed.deinit();
+    const writes = try jsonItems(parsed.value, "writes");
+    const comparison = try jsonGet(writes[0], "comparison");
+    try testing.expectEqualStrings("not-judged", try jsonText(comparison, "verdict"));
+    try testing.expect((try jsonGet(comparison, "baseline")) == .null);
+    try fixture.expectNoLeftovers();
+}
+
+test "a writes entry without --migration is rejected with the manifest error" {
+    var fixture = try initMigrationFixture();
+    defer fixture.deinit();
+    const manifest = try fixture.dir.tmp.dir.realPathFileAlloc(testing.io, "writes_only.json", testing.allocator);
+    defer testing.allocator.free(manifest);
+
+    var stdout_buffer: [2048]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+    const result = fixture.runBatchPath(manifest, &.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.rejected, result.code);
+    try expectJsonFailure(result.stderr, "batch_manifest_invalid", 1);
+    try testing.expect(contains(result.stderr, "the writes key needs --migration"));
     try fixture.expectNoLeftovers();
 }
 

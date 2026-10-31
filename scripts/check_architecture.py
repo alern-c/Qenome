@@ -21,6 +21,7 @@ APPROVED_FILES = [
     "src/report/human.zig",
     "src/report/kv.zig",
     "src/report/json.zig",
+    "src/report/batch_writes.zig",
     "src/report/time.zig",
     "src/report/scale.zig",
     "src/report/scale_tests.zig",
@@ -28,9 +29,12 @@ APPROVED_FILES = [
     "src/report/human_tests.zig",
     "src/report/kv_tests.zig",
     "src/report/json_tests.zig",
+    "src/report/batch_writes_tests.zig",
     "src/cli/pair.zig",
     "src/cli/batch.zig",
     "src/cli/batch_report.zig",
+    "src/cli/batch_writes.zig",
+    "src/cli/batch_writes_tests.zig",
     "src/cli/audit.zig",
     "src/cli/record.zig",
     "src/cli/record_shapes.zig",
@@ -61,7 +65,9 @@ TEST_FILES = [
     "src/report/kv_tests.zig",
     "src/report/json_tests.zig",
     "src/report/scale_tests.zig",
+    "src/report/batch_writes_tests.zig",
     "src/cli/tests.zig",
+    "src/cli/batch_writes_tests.zig",
     "src/cli/skill_tests.zig",
     "src/cli/d1_tests.zig",
     "src/cli/record_tests.zig",
@@ -210,6 +216,7 @@ PRODUCTION_IMPORTS = {
         "src/cli/warnings.zig",
     ],
     "src/cli/batch.zig": [
+        "src/cli/batch_writes.zig",
         "src/db.zig",
         "src/contract/values.zig",
         "src/result.zig",
@@ -223,6 +230,7 @@ PRODUCTION_IMPORTS = {
         "src/cli/query.zig",
         "src/report/model.zig",
         "src/report/json.zig",
+        "src/report/batch_writes.zig",
         "src/cli/suggest.zig",
         "src/cli/warnings.zig",
         "src/cli/workspace.zig",
@@ -233,7 +241,30 @@ PRODUCTION_IMPORTS = {
         "src/contract/values.zig",
         "src/sql/lexer.zig",
     ],
+    "src/cli/batch_writes.zig": [
+        "src/db.zig",
+        "src/sqlite.zig",
+        "src/result.zig",
+        "src/cli/args.zig",
+        "src/cli/batch_writes_tests.zig",
+        "src/cli/comparison.zig",
+        "src/cli/control.zig",
+        "src/cli/pair.zig",
+        "src/cli/query.zig",
+        "src/cli/write_runner.zig",
+        "src/report/model.zig",
+        "src/report/json.zig",
+        "src/report/batch_writes.zig",
+    ],
+    "src/report/batch_writes.zig": [
+        "src/cli/comparison.zig",
+        "src/result.zig",
+        "src/report/json.zig",
+        "src/report/format.zig",
+        "src/report/batch_writes_tests.zig",
+    ],
     "src/cli/batch_report.zig": [
+        "src/report/batch_writes.zig",
         "src/contract/values.zig",
         "src/db.zig",
         "src/cli/comparison.zig",
@@ -366,6 +397,16 @@ TEST_IMPORTS = {
         "src/cli/skill.zig",
         "src/skill/skill.zig",
     ],
+    "src/cli/batch_writes_tests.zig": [
+        "src/db.zig",
+        "src/cli/comparison.zig",
+        "src/cli/batch_writes.zig",
+        "src/report/batch_writes.zig",
+    ],
+    "src/report/batch_writes_tests.zig": [
+        "src/cli/comparison.zig",
+        "src/report/batch_writes.zig",
+    ],
     "src/cli/record_tests.zig": [
         "src/cli.zig",
         "src/cli/record.zig",
@@ -451,6 +492,8 @@ WRITE_ALLOWED = [
     "src/report/json.zig",
     "src/report/scale.zig",
     "src/report/time.zig",
+    "src/report/batch_writes.zig",
+    "src/cli/batch_writes.zig",
 ]
 
 WRITE_DEBT = [
@@ -498,6 +541,8 @@ CONTRACT_CODES = [
     "record_log_permissions",
     "record_manifest_binds",
     "usage_scale",
+    "batch_write_failed",
+    "batch_write_timeout",
 ]
 
 IMPORT_CANDIDATE = re.compile(r"@import\b")

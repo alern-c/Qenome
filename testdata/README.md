@@ -209,6 +209,7 @@ One directory per case, `testdata/accuracy/<case>/`:
 | `index.sql` | The candidate index for one comparison or `--write` |
 | `batch.json` | A `--batch` manifest; a batch case has no `index.sql` |
 | `migration.sql` | A migration applied on the variant with `--batch`; a manifest here must omit `candidates` |
+| `w.sql` | A write statement that a `--batch` manifest lists under `writes`; the harness never treats it as the `--write` marker |
 | `case.json` | `description`, `args` and `expect`; `known_wrong` and `timing` are optional |
 
 No database file is committed. The harness infers the mode from the files: a `batch.json` means `--batch` (with `--migration` when `migration.sql` exists), a `write.sql` means `--write`, `--suggest` in `args` means one SELECT without `index.sql`, and anything else is one SELECT with `index.sql`. `args` holds only extra qenome options such as `--bind`; the harness adds `--format json` and `--runs 0` (the last one is skipped for a batch, `--suggest`, or a case with `--runs`). A case with `--runs` needs `"timing": "stable"`, and a timing case needs at least 6 rounds.
@@ -223,10 +224,11 @@ No database file is committed. The harness infers the mode from the files: a `ba
 - `warnings`: warning `code`s that must be in `contains` or `excludes`.
 - `human`: `contains` / `excludes` substrings of the `--format human` report. The harness runs that report once, after the JSON runs, so a case can require that the human report shows a warning next to the verdict.
 - `batch`: `recommended` and `counts` for `summary[0]` (`improved`, `no_effect`, `needs_check`, `mismatch`, `incomparable`, `timeout`, `not_judged`).
+- `writes`: one comparison check per entry of the report's top-level `writes` array, in order, with the same keys as the top-level comparison check (`result`, `verdict`, `plan_changed`, the two plans, the two counters, and `warnings`). It fails when the report holds a different number of write comparisons.
 - `suggest`: `recommended` (true or false) and `leads_with` (the leading columns of the recommended index).
 - `error`: the `code` of the error object on stderr, for a run that stops before the report.
 
-For one comparison the report itself is the comparison object; for `--batch`, `--migration`, and `--suggest` it is `results[0].comparison`, so a case that checks the comparison holds exactly one result. Run the corpus with `python3 scripts/check_accuracy.py [--case NAME] [--repeat N] [--binary PATH]`.
+For one comparison the report itself is the comparison object; for `--batch`, `--migration`, and `--suggest` it is `results[0].comparison`, so a case that checks the comparison holds exactly one query result. A `--migration` case that lists write statements checks them with `writes`, and its comparison check still reads `results[0].comparison`. Run the corpus with `python3 scripts/check_accuracy.py [--case NAME] [--repeat N] [--binary PATH]`.
 
 After the per-case lines the run prints one summary line: the number of cases per expected `verdict` and per expected `result` (`unstated` counts the cases that expect neither), then one line for every case that expects a verdict other than `improved` and got `improved`. Such a case fails the run, including a `known_wrong` case, whose marker records the wrong answer but must not hide it: those cases are listed on their own line with their issue link.
 

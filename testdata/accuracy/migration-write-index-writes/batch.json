@@ -1,0 +1,15 @@
+{
+  "queries": [
+    {
+      "select": "select.sql"
+    }
+  ],
+  "writes": [
+    {
+      "write": "w.sql",
+      "binds": [
+        "1:int:1235"
+      ]
+    }
+  ]
+}

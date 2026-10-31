@@ -1,0 +1,28 @@
+{
+  "description": "A migration that adds the index makes the manifest INSERT write one more index entry per row, so rows written rise while rows read stay the same: the write stays no-effect and the batch exits 0.",
+  "args": [],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "verdict": "no-effect",
+    "plan_changed": false,
+    "rows_read": "same",
+    "writes": [
+      {
+        "result": "match",
+        "verdict": "no-effect",
+        "rows_read": "same",
+        "rows_written": "increase"
+      }
+    ],
+    "batch": {
+      "recommended": null,
+      "counts": {
+        "improved": 0,
+        "no_effect": 1,
+        "needs_check": 0
+      }
+    }
+  }
+}

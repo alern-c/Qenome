@@ -32,7 +32,7 @@ The verdict is in the top-level `verdict` field:
 | `needs-check` | The rows match, but the variant reads or writes more rows; `verdict_reasons` holds the reasons |
 | `not-judged` | The rows differ or cannot be compared; `verdict_reasons` holds the reasons |
 
-A `--migration` batch names the `needs-check` case `regressed`, because the migration is a change that is already written. The standalone, `--batch`, and `--suggest` verdicts keep `needs-check`; the batch `summary` count likewise keeps the key `needs_check`. A query that only the variant can run is `not-judged` and keeps the exit code unchanged. See [Batch comparisons](batch.md#batch-comparisons).
+A `--migration` batch names the `needs-check` case `regressed`, because the migration is a change that is already written. A write statement that the manifest lists under `writes` follows the same name, and only its rows read decide it: more rows written is reported and leaves the verdict at `no-effect`. The standalone, `--batch`, and `--suggest` verdicts keep `needs-check`; the batch `summary` count likewise keeps the key `needs_check` and counts queries only. A query that only the variant can run is `not-judged` and keeps the exit code unchanged. See [Batch comparisons](batch.md#batch-comparisons).
 
 The verdict uses the rows read and the rows written, with the same counting as local D1 (workerd patch). The times are a reference only, so `--runs 0` keeps the verdict. The numbers have not yet been checked against production D1. In `--write`, `result` compares the `RETURNING` rows (empty without `RETURNING`), and the two copies must also report the same `changes` and `total_changes`; a difference is `mismatch` and exit `3`, and the row counts are not judged.
 
@@ -94,7 +94,7 @@ Main keys:
 | 3 | The result rows differ, or a `--write` made a different change (`changes` or `total_changes`) |
 | 4 | The results cannot be compared, a `--write` was not run because it reads the schema, the current time, or a nondeterministic function, or `--d1` cannot locate exactly one local database (no config, more than one config, an unreadable or invalid config, an unknown or duplicate binding, a missing database id, a local file that does not exist yet, or a local file that cannot be opened) |
 | 5 | Cleanup failed after the comparison (this replaces 0; every other code is kept) |
-| 6 | With `--migration`, the result rows matched but a query read or wrote more rows. Only the `--migration` batch path returns it |
+| 6 | With `--migration`, the result rows matched but a query read or wrote more rows, or a write statement read more rows. Only the `--migration` batch path returns it |
 | 124 | A time limit was reached (`--timeout-ms`) |
 | 129 / 130 / 143 | Interrupted by `SIGHUP` / `SIGINT` / `SIGTERM` (POSIX) |
 

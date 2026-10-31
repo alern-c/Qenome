@@ -162,6 +162,12 @@ pub fn classifyError(message: []const u8) ErrorClass {
     if (std.mem.startsWith(u8, message, "cannot read the batch SQL file")) {
         return .{ .code = "batch_sql_unreadable", .hint = "Check the SQL paths in the manifest; they are relative to the manifest file." };
     }
+    if (std.mem.indexOf(u8, message, "the batch write") != null) {
+        if (std.mem.indexOf(u8, message, "exceeded the time limit") != null) {
+            return .{ .code = contract.code.batch_write_timeout, .hint = "Raise --timeout-ms, or narrow the write statement in the manifest." };
+        }
+        return .{ .code = contract.code.batch_write_failed, .hint = "Read the SQLite message and fix the write statement in the manifest, then rerun. The original database was not changed." };
+    }
     if (std.mem.startsWith(u8, message, "--batch ")) {
         return .{ .code = "usage_batch_conflict", .hint = "With --batch, put the SELECT, CREATE INDEX and binds in the manifest. Use --format human or json, and do not pass --runs." };
     }
