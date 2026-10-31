@@ -1,0 +1,22 @@
+{
+  "description": "A large scan against an index search: the timing effect must stay faster across repeats.",
+  "args": [
+    "--bind",
+    "1:int:1235",
+    "--runs",
+    "6"
+  ],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "verdict": "improved",
+    "plan_changed": true,
+    "rows_read": {
+      "direction": "decrease",
+      "max_ratio": 0.01
+    },
+    "rows_written": "same"
+  },
+  "timing": "stable"
+}

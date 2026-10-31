@@ -1,0 +1,23 @@
+{
+  "description": "random() returns a new value on every run, so the rows differ and the result is incomparable.",
+  "args": [],
+  "expect": {
+    "exit": 4,
+    "exit_code": 4,
+    "result": "incomparable",
+    "verdict": "not-judged",
+    "plan_changed": false,
+    "baseline_plan": {
+      "contains": [
+        "SEARCH events USING INTEGER PRIMARY KEY (rowid=?)"
+      ]
+    },
+    "variant_plan": {
+      "contains": [
+        "SEARCH events USING INTEGER PRIMARY KEY (rowid=?)"
+      ]
+    },
+    "rows_read": "same",
+    "rows_written": "same"
+  }
+}

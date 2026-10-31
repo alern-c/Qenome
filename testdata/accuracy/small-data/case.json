@@ -1,0 +1,27 @@
+{
+  "description": "Fewer than 1000 rows: data_too_small is reported and the verdict is still improved.",
+  "args": [
+    "--bind",
+    "1:int:7"
+  ],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "verdict": "improved",
+    "plan_changed": true,
+    "rows_read": {
+      "direction": "decrease",
+      "max_ratio": 0.01
+    },
+    "rows_written": "same",
+    "warnings": {
+      "contains": [
+        "data_too_small"
+      ],
+      "excludes": [
+        "no_analyze_stats"
+      ]
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "queries": [
+    {
+      "select": "select.sql",
+      "binds": [
+        "1:int:1235"
+      ]
+    }
+  ],
+  "candidates": [
+    {
+      "index_sql": "idx_customer.sql"
+    },
+    {
+      "index_sql": "idx_status.sql"
+    }
+  ]
+}

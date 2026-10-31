@@ -1,0 +1,24 @@
+{
+  "description": "A composite index covers the selected status, so the variant plan says COVERING INDEX.",
+  "args": [
+    "--bind",
+    "1:int:1235"
+  ],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "verdict": "improved",
+    "plan_changed": true,
+    "variant_plan": {
+      "contains": [
+        "USING COVERING INDEX idx_customer_status"
+      ]
+    },
+    "rows_read": {
+      "direction": "decrease",
+      "max_ratio": 0.01
+    },
+    "rows_written": "same"
+  }
+}

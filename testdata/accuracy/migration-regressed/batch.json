@@ -1,0 +1,10 @@
+{
+  "queries": [
+    {
+      "select": "select.sql",
+      "binds": [
+        "1:int:1235"
+      ]
+    }
+  ]
+}

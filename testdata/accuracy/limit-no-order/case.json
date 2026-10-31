@@ -1,0 +1,21 @@
+{
+  "description": "LIMIT without ORDER BY: the plans can pick other rows, so the result is incomparable.",
+  "args": [],
+  "expect": {
+    "exit": 4,
+    "exit_code": 4,
+    "result": "incomparable",
+    "verdict": "not-judged",
+    "plan_changed": true,
+    "baseline_plan": {
+      "contains": [
+        "SCAN events"
+      ]
+    },
+    "variant_plan": {
+      "contains": [
+        "SEARCH events USING INDEX idx_customer (customer_id>?)"
+      ]
+    }
+  }
+}

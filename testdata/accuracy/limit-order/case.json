@@ -1,0 +1,29 @@
+{
+  "description": "LIMIT with a unique ORDER BY: both plans pick the same five rows and the index drops the sort.",
+  "args": [],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "verdict": "improved",
+    "plan_changed": true,
+    "baseline_plan": {
+      "contains": [
+        "USE TEMP B-TREE FOR ORDER BY"
+      ]
+    },
+    "variant_plan": {
+      "contains": [
+        "SCAN events USING INDEX idx_created"
+      ],
+      "excludes": [
+        "USE TEMP B-TREE FOR ORDER BY"
+      ]
+    },
+    "rows_read": {
+      "direction": "decrease",
+      "max_ratio": 0.01
+    },
+    "rows_written": "same"
+  }
+}

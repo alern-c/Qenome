@@ -1,0 +1,14 @@
+{
+  "description": "The column is already indexed, so the expert proposes nothing and the run stops with no_candidates.",
+  "args": [
+    "--suggest",
+    "--bind",
+    "1:int:1235"
+  ],
+  "expect": {
+    "exit": 1,
+    "error": {
+      "code": "no_candidates"
+    }
+  }
+}

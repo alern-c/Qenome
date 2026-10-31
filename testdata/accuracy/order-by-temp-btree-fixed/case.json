@@ -1,0 +1,32 @@
+{
+  "description": "An index on the filter and the sort column removes the temporary B-tree.",
+  "args": [
+    "--bind",
+    "1:int:1235"
+  ],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "verdict": "improved",
+    "plan_changed": true,
+    "baseline_plan": {
+      "contains": [
+        "USE TEMP B-TREE FOR ORDER BY"
+      ]
+    },
+    "variant_plan": {
+      "contains": [
+        "SEARCH events USING COVERING INDEX idx_customer_created (customer_id=?)"
+      ],
+      "excludes": [
+        "USE TEMP B-TREE FOR ORDER BY"
+      ]
+    },
+    "rows_read": {
+      "direction": "decrease",
+      "max_ratio": 0.01
+    },
+    "rows_written": "same"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "description": "An expression index on lower(name) serves the same query.",
+  "args": [
+    "--bind",
+    "1:text:name-19"
+  ],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "verdict": "improved",
+    "plan_changed": true,
+    "variant_plan": {
+      "contains": [
+        "SEARCH events USING COVERING INDEX idx_lower_name (<expr>=?)"
+      ]
+    },
+    "rows_read": {
+      "direction": "decrease",
+      "max_ratio": 0.01
+    },
+    "rows_written": "same"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "description": "The same query with a non-covering index: the plan searches the index and fetches the row.",
+  "args": [
+    "--bind",
+    "1:int:1235"
+  ],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "verdict": "improved",
+    "plan_changed": true,
+    "variant_plan": {
+      "contains": [
+        "USING INDEX idx_customer (customer_id=?)"
+      ],
+      "excludes": [
+        "COVERING"
+      ]
+    },
+    "rows_read": {
+      "direction": "decrease",
+      "max_ratio": 0.01
+    },
+    "rows_written": "same"
+  }
+}

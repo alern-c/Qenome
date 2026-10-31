@@ -1,0 +1,24 @@
+{
+  "description": "A two-value status column: the index halves the rows read, which the verdict calls improved.",
+  "args": [
+    "--bind",
+    "1:text:ok"
+  ],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "verdict": "improved",
+    "plan_changed": true,
+    "variant_plan": {
+      "contains": [
+        "SEARCH events USING COVERING INDEX idx_status (status=?)"
+      ]
+    },
+    "rows_read": {
+      "direction": "decrease",
+      "max_ratio": 0.75
+    },
+    "rows_written": "same"
+  }
+}

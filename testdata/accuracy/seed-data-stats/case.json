@@ -1,0 +1,25 @@
+{
+  "description": "The same lookup seeded with --seed-data, which runs ANALYZE, so no statistics warning.",
+  "args": [
+    "--bind",
+    "1:int:1234"
+  ],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "verdict": "improved",
+    "plan_changed": true,
+    "rows_read": {
+      "direction": "decrease",
+      "max_ratio": 0.01
+    },
+    "rows_written": "same",
+    "warnings": {
+      "excludes": [
+        "no_analyze_stats",
+        "data_too_small"
+      ]
+    }
+  }
+}

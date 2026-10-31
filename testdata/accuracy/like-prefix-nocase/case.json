@@ -1,0 +1,35 @@
+{
+  "description": "A NOCASE index lets LIKE 'prefix%' use the index while case_sensitive_like stays off.",
+  "args": [
+    "--bind",
+    "1:text:name-19%"
+  ],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "verdict": "improved",
+    "plan_changed": true,
+    "baseline_plan": {
+      "contains": [
+        "SCAN events"
+      ],
+      "excludes": [
+        "USING INDEX"
+      ]
+    },
+    "variant_plan": {
+      "contains": [
+        "SEARCH events USING COVERING INDEX idx_name_nocase (name>? AND name<?)"
+      ],
+      "excludes": [
+        "SCAN events"
+      ]
+    },
+    "rows_read": {
+      "direction": "decrease",
+      "max_ratio": 0.1
+    },
+    "rows_written": "same"
+  }
+}
