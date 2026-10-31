@@ -369,11 +369,21 @@ def stage_distribution(root, dest, binaries=None):
 
 
 def parse_pack_json(text):
-    start = text.find("[")
-    end = text.rfind("]")
-    if start < 0 or end < start:
+    decoder = json.JSONDecoder()
+    starts = [position for position in (text.find("{"), text.find("[")) if position >= 0]
+    if not starts:
         raise ValueError("npm pack did not return JSON: " + text.strip())
-    return json.loads(text[start : end + 1])
+    try:
+        packed, _ = decoder.raw_decode(text[min(starts) :])
+    except json.JSONDecodeError:
+        raise ValueError("npm pack did not return JSON: " + text.strip()) from None
+    if isinstance(packed, dict):
+        packed = list(packed.values())
+    if not isinstance(packed, list) or not packed:
+        raise ValueError("npm pack returned no package entry: " + text.strip())
+    if not all(isinstance(entry, dict) and "filename" in entry for entry in packed):
+        raise ValueError("npm pack returned no package filename: " + text.strip())
+    return packed
 
 
 def check_tarball(path, manifest):
