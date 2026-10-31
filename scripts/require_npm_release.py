@@ -16,6 +16,16 @@ def local_problem(ref, sha, version):
     return None
 
 
+def trigger_problem(event_name, run_sha, sha):
+    if event_name != "workflow_run":
+        return None
+    if not run_sha:
+        return "the triggering run commit is missing"
+    if run_sha.lower() != sha.lower():
+        return "the triggering run is at " + run_sha + ", not this commit"
+    return None
+
+
 def remote_problem(sha, version, tag_sha, release_tag):
     tag = "v" + version
     if tag_sha.lower() != sha.lower():
@@ -57,6 +67,14 @@ def main(argv):
     ref = os.environ.get("GITHUB_REF", "")
     sha = os.environ.get("GITHUB_SHA", "")
     found = local_problem(ref, sha, version)
+    if found is not None:
+        sys.stderr.write("require_npm_release: " + found + "\n")
+        return 1
+    found = trigger_problem(
+        os.environ.get("GITHUB_EVENT_NAME", ""),
+        os.environ.get("WORKFLOW_RUN_HEAD_SHA", ""),
+        sha,
+    )
     if found is not None:
         sys.stderr.write("require_npm_release: " + found + "\n")
         return 1
