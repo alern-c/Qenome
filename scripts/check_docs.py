@@ -28,6 +28,7 @@ PAGE_PAIRS = (
     "usage",
     "batch",
     "output",
+    "accuracy",
     "rules",
 )
 UNPAIRED_DOCS = ("docs/architecture.md", "docs/json.md", "docs/npm.md")

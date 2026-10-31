@@ -63,7 +63,7 @@ To try Qenome without installing it, run `npx qenome`. Windows is not an npm tar
 - **JSON for AI agents and CI.** `--format json` gives the report with `schema_version` 2, and the exit status separates a match, a mismatch, and an incomparable result.
 - **The evidence stays next to the verdict.** The query plan, the median times, the size increase of the whole database, and advisory warnings are in the report.
 
-> The row numbers have not yet been checked against production D1. Qenome measures the local database only.
+> The row numbers have not yet been checked against production D1. Qenome measures the local database only. See [Accuracy and production D1](docs/accuracy.md) for how the rows are counted and what can differ from production D1.
 
 ## Contents
 
@@ -76,6 +76,7 @@ To try Qenome without installing it, run `npx qenome`. Windows is not an npm tar
 - [Usage](docs/usage.md): every option, writes, seed data, and D1 local databases
 - [Batch comparisons](docs/batch.md): many queries and candidates, index audit, recording, and suggestions
 - [Output formats](docs/output.md): human, kv, json, exit status, and timing evidence
+- [Accuracy and production D1](docs/accuracy.md): how rows are counted, what the verdicts mean, and what can differ from production D1
 - [Rules](docs/rules.md): what Qenome guarantees and rejects
 - [Contributing](#contributing)
 - [License](#license)

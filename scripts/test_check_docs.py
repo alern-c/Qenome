@@ -33,6 +33,7 @@ One line.
 - [Usage](docs/usage.md)
 - [Batch comparisons](docs/batch.md)
 - [Output formats](docs/output.md)
+- [Accuracy and production D1](docs/accuracy.md)
 - [Rules](docs/rules.md)
 - [Contributing](#contributing)
 - [License](#license)
@@ -71,6 +72,7 @@ npm install -g qenome
 - [使い方](docs/ja/usage.md)
 - [まとめて比べる](docs/ja/batch.md)
 - [出力形式](docs/ja/output.md)
+- [精度と本番 D1](docs/ja/accuracy.md)
 - [守るルール](docs/ja/rules.md)
 - [コントリビュート](#コントリビュート)
 - [ライセンス](#ライセンス)
@@ -128,6 +130,11 @@ PAGE_BODIES = {
     "output": (
         "# Output formats\n\n## human\n\n## kv\n\n## json\n",
         "# 出力形式\n\n## human\n\n## kv\n\n## json\n",
+        "",
+    ),
+    "accuracy": (
+        "# Accuracy and production D1\n\n## How rows are counted\n\n## What the verdicts mean\n",
+        "# 精度と本番 D1\n\n## 行数の数え方\n\n## 判定の意味\n",
         "",
     ),
     "rules": ("# Rules\n", "# 守るルール\n", ""),
