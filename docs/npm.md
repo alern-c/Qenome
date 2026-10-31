@@ -22,6 +22,8 @@ Linux は gnu と musl に分けない。Zig の `x86_64-linux-musl` と `aarch6
 
 `.github/workflows/npm.yml` は pull request と `main` への push で動く。Ubuntu 上で4ターゲットをクロスコンパイルし、各パッケージで `npm pack` と `npm publish --dry-run` を行う。レジストリへは送らない。作った tarball を次の runner に入れ、`npm install --offline` のあと `npx qenome --version` を実行する。
 
+pull request では、変更がパッケージのバイナリ・マニフェスト・同梱ファイル・ビルド入力のどれにも触れないとき、`pack` と `smoke` のジョブは成功のまま、ビルド・pack・upload・download を飛ばして理由をログに出す。`main` への push と、変更の検出に失敗したときは常に全部動かす。
+
 - `ubuntu-latest`（Linux x64）
 - `ubuntu-24.04-arm`（Linux arm64）
 - `macos-latest`（macOS arm64）
