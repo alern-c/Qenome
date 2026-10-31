@@ -8,6 +8,8 @@ pub const audit_schema_version: u8 = 1;
 
 pub const record_schema_version: u8 = 1;
 
+pub const scale_schema_version: u8 = 1;
+
 pub const ExitCode = enum(u8) {
     ok = 0,
     rejected = 1,
@@ -34,6 +36,7 @@ pub const code = struct {
     pub const no_suggestions = "no_suggestions";
     pub const record_log_permissions = "record_log_permissions";
     pub const record_manifest_binds = "record_manifest_binds";
+    pub const usage_scale = "usage_scale";
 };
 
 pub const warning_codes = [_][]const u8{ code.no_analyze_stats, code.data_too_small };

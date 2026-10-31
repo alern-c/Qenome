@@ -11,7 +11,10 @@ import threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import publish_npm
+import require_npm_release
 import stage_npm
+import verify_published_npm
 
 ROOT = stage_npm.repo_root()
 FAILURES: list[str] = []
@@ -379,6 +382,135 @@ def test_launcher_permissions():
         shutil.rmtree(work, ignore_errors=True)
 
 
+def test_publish_order():
+    directories = publish_npm.publish_directories()
+    expect(
+        "platforms are published before the launcher",
+        directories == [platform["dir"] for platform in stage_npm.PLATFORMS] + [stage_npm.MAIN_DIR],
+        directories,
+    )
+    names = verify_published_npm.package_names()
+    expect(
+        "the post-publish check lists platforms before the launcher",
+        names == [platform["npm"] for platform in stage_npm.PLATFORMS] + ["qenome"],
+        names,
+    )
+    expect(
+        "darwin packages are published before the launcher",
+        directories.index("darwin-arm64") < directories.index(stage_npm.MAIN_DIR)
+        and directories.index("darwin-x64") < directories.index(stage_npm.MAIN_DIR),
+        directories,
+    )
+
+
+def test_release_guard():
+    sha = "a" * 40
+    other = "b" * 40
+    expect(
+        "a non-main ref is refused",
+        require_npm_release.local_problem("refs/tags/v0.3.7", sha, "0.3.7") is not None,
+        "accepted a tag ref",
+    )
+    expect(
+        "a missing commit is refused",
+        require_npm_release.local_problem("refs/heads/main", "", "0.3.7") is not None,
+        "accepted an empty sha",
+    )
+    expect(
+        "the placeholder version is refused",
+        require_npm_release.local_problem("refs/heads/main", sha, "0.0.0") is not None,
+        "accepted 0.0.0",
+    )
+    expect(
+        "main at a release version passes the local guard",
+        require_npm_release.local_problem("refs/heads/main", sha, "0.3.7") is None,
+        require_npm_release.local_problem("refs/heads/main", sha, "0.3.7"),
+    )
+    expect(
+        "a tag on another commit is refused",
+        require_npm_release.remote_problem(sha, "0.3.7", other, "v0.3.7") is not None,
+        "accepted a different commit",
+    )
+    expect(
+        "a missing GitHub release is refused",
+        require_npm_release.remote_problem(sha, "0.3.7", sha, "") is not None,
+        "accepted a missing release",
+    )
+    expect(
+        "the released tag on this commit passes",
+        require_npm_release.remote_problem(sha, "0.3.7", sha.upper(), "v0.3.7") is None,
+        require_npm_release.remote_problem(sha, "0.3.7", sha.upper(), "v0.3.7"),
+    )
+    script = os.path.join(HERE, "require_npm_release.py")
+    env = dict(os.environ)
+    env.pop("GITHUB_REF", None)
+    env.pop("GITHUB_SHA", None)
+    env.pop("GITHUB_REPOSITORY", None)
+    done = subprocess.run(
+        [sys.executable, script],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        env=env,
+    )
+    expect("the release guard refuses outside Actions", done.returncode == 1, done.stderr)
+    expect("the refusal names the ref", "refs/heads/main" in done.stderr, done.stderr)
+
+
+def test_published_verify():
+    calls = {"n": 0}
+    names = verify_published_npm.package_names()
+
+    def view(name, version):
+        calls["n"] += 1
+        if calls["n"] <= len(names):
+            return ""
+        return version
+
+    missing = verify_published_npm.wait_for_packages("0.3.7", view, 3, lambda: None)
+    expect("a package that appears on the next look is accepted", missing == [], missing)
+    absent = verify_published_npm.wait_for_packages("0.3.7", lambda name, version: "", 2, lambda: None)
+    expect("a package that never appears is reported", absent == names, absent)
+
+    def flaky(name, version):
+        calls["err"] = calls.get("err", 0) + 1
+        if calls["err"] == 1:
+            raise ValueError("registry unavailable")
+        return version
+
+    recovered = verify_published_npm.wait_for_packages("0.3.7", flaky, 2, lambda: None)
+    expect("a registry error is retried", recovered == [], recovered)
+    command = verify_published_npm.comparison_command("0.3.7", "/tmp/db", "/repo")
+    expect(
+        "the post-publish command runs the improved comparison",
+        "--version" not in command and "0" in command and any(item.endswith("improved.sql") for item in command),
+        command,
+    )
+    expect(
+        "a failing comparison is refused",
+        verify_published_npm.comparison_problem(1, "verdict improved") is not None,
+        "accepted a failure",
+    )
+    expect(
+        "a comparison without the verdict is refused",
+        verify_published_npm.comparison_problem(0, "improved.sql") is not None,
+        "accepted a path mention",
+    )
+    expect(
+        "a verdict of improved passes",
+        verify_published_npm.comparison_problem(0, "verdict       improved: the rows match") is None,
+        "rejected the verdict",
+    )
+    script = os.path.join(HERE, "verify_published_npm.py")
+    done = subprocess.run(
+        [sys.executable, script, "--nope"],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+    )
+    expect("verify refuses an unknown argument", done.returncode == 2, done.stderr)
+
+
 def test_publish_guards():
     env = dict(os.environ)
     env.pop("ACTIONS_ID_TOKEN_REQUEST_URL", None)
@@ -418,6 +550,9 @@ def main():
     test_parallel_builds()
     test_empty_binary()
     test_launcher_permissions()
+    test_publish_order()
+    test_release_guard()
+    test_published_verify()
     test_publish_guards()
     if FAILURES:
         print(str(len(FAILURES)) + " case(s) failed: " + ", ".join(FAILURES))

@@ -19,7 +19,9 @@ Folders and files that exist now (v0.3.8):
 | main | `src/main.zig`, `src/root.zig` |
 | d1 (independent) | `src/d1/` |
 
-The report layer holds `model.zig` (the data the writers take), `format.zig` (counts, durations, sizes, text wrapping and the text shared by the writers), `human.zig`, `kv.zig`, `json.zig`, `time.zig` and the four test files next to them. It takes plain data: the header carries `db.BindArg` binds, the D1 fields it prints and the tool version, so it does not import `src/cli/args.zig` or `src/cli/d1.zig`.
+The report layer holds `model.zig` (the data the writers take), `format.zig` (counts, durations, sizes, text wrapping and the text shared by the writers), `human.zig`, `kv.zig`, `json.zig`, `time.zig`, `scale.zig` and the five test files next to them. It takes plain data: the header carries `db.BindArg` binds, the D1 fields it prints and the tool version, so it does not import `src/cli/args.zig` or `src/cli/d1.zig`.
+
+`src/cli/scale.zig` runs `--scale`: it scales the seed spec, runs the pair comparison once per step on fresh copies, and hands the steps to `src/report/scale.zig`. The step size is checked against the seed limits before a copy is made.
 
 The report layer still imports `src/cli/comparison.zig`, `src/cli/timing.zig` and `src/cli/warnings.zig`. They are the measure, verdict and sandbox layers in the target order and move out of `src/cli/` with that work; `PENDING_MOVE_IMPORTS` in `scripts/check_architecture.py` lists them until then. Remove that list when those files move.
 

@@ -102,6 +102,10 @@ The quality workflow in CI runs the same script. It stops at the first stage tha
 
 `.github/workflows/release.yml` calls that quality workflow before any other job. A tag push (`v*`) or a manual run builds the assets and runs the smoke test only after the call succeeds, and a tag creates the GitHub release only after those jobs succeed too. A failing call skips the build, the smoke test, and the release. The workflow fails before any asset is uploaded and before a GitHub release is created. The call runs both quality jobs on that commit: `verify` (`python3 scripts/check_all.py`, which includes the accuracy and golden checks) and `skill-examples`. GitHub uses the workflow file in the tagged commit, so the gate applies to tags of commits that contain it.
 
+### npm
+
+`.github/workflows/publish-npm.yml` stays a manual run, and a tag push does not publish to npm. The run publishes only when its commit is the tip of `main`, the tag `v` plus `.version` points at that commit, and the GitHub release for that tag already exists. It then calls the quality workflow on that commit. The job that stages the packages and runs `npm publish` does not start until that call succeeds. After the packages are published it waits until all five are visible on the registry, checks that each tarball is installable, and runs the improved comparison through `npx qenome@<version>`. The trusted publisher on npm is configured for this workflow file, so the publish step stays here.
+
 The stages are:
 
 1. verify the effective Zig version

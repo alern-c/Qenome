@@ -6,6 +6,7 @@ qenome app.db select.sql index.sql --bind 1:int:1234
 qenome --db app.db --select select.sql --index-sql index.sql --format kv
 qenome app.db select.sql index.sql --format json
 qenome app.db select.sql index.sql --seed-data seed.json
+qenome app.db select.sql index.sql --seed-data seed.json --scale 1000,10000
 qenome app.db --write update.sql --index-sql index.sql
 qenome --d1 DB select.sql index.sql
 qenome app.db --batch batch.json
@@ -34,6 +35,7 @@ The three paths fill the roles in this order: database, SELECT (or write) file, 
 - `--out <DIR>`: the new directory for `--record`. It must not exist. The directory is created with mode `0700` and its files with `0600`
 - `--migration <FILE>`: apply this SQL file to the variant only before the `--batch` queries run. It needs `--batch` and a manifest without `candidates`; it cannot be combined with `--select`, `--index-sql`, `--bind`, `--runs`, `--suggest`, or `--format kv`. `CREATE INDEX`, `CREATE UNIQUE INDEX`, `DROP INDEX`, `CREATE TABLE` (a column list, not `AS SELECT`), and `ALTER TABLE` (ADD / RENAME / DROP COLUMN and RENAME TO) are accepted; data changes, `DROP TABLE`, `ATTACH`, `PRAGMA`, and other statements are rejected with the statement number. A query that uses a column or table the migration drops or renames cannot run on the variant, so the whole run stops with exit `1`; a `SELECT *` cannot be compared after a column is added or dropped, so list the columns you need. See [Batch comparisons](batch.md#batch-comparisons)
 - `--seed-data <FILE>`: replace the tables listed in this JSON spec with deterministic dummy rows in the sandbox copy before comparing; the original database is not changed. It works with every mode, including `--batch`, `--suggest`, and `--migration`. See [Generating sandbox data](#generating-sandbox-data)
+- `--scale <ROWS,ROWS[,ROWS]>`: with `--seed-data`, compare at 2 or 3 strictly increasing row counts in one run and show the results side by side; each step seeds a fresh sandbox copy at that size. The largest table in the spec gets the step size, and the other tables scale with it. It cannot be combined with `--batch`, `--suggest`, `--migration`, `--audit-indexes`, `--record`, or `--format kv`. See [Measuring at several sizes](#measuring-at-several-sizes---scale)
 - `--suggest`: ask SQLite's expert for candidate indexes instead of naming one, and compare the proposals. With `--batch`, the manifest may omit `candidates`. It cannot be combined with `--runs`, `--format kv`, or an index file (`--index-sql` or a third positional path). See [Suggesting candidate indexes](batch.md#suggesting-candidate-indexes)
 - `--bind <N>:<TYPE>[:<VALUE>]`: a typed value bound to parameter `N`; repeatable. `N` is SQLite's parameter number: named parameters share the number of their first appearance, and `?NNN` uses `NNN`. `TYPE` is `int`, `real`, `text`, or `null` (null takes no value). Every number in `1..parameter count` must be given exactly once, and a `SELECT` without parameters takes no `--bind`. The value is the rest of the argument, so text may contain `:`.
 - `--runs <N>`: timed rounds after the results match; each round adds two baseline A/A executions and times the `SELECT` once per copy. The default is `10`; `0` skips the timing but keeps the row counts and the verdict; the maximum is `1000`. A timing that takes longer than a second reports its progress on stderr. With `--write`, `N` is the number of rolled-back executions per copy (at least one), no timing runs, and every execution must report the same counts.
@@ -109,6 +111,40 @@ A JSON string becomes TEXT, an integer INTEGER, a number with a fraction REAL, `
 The same spec and `seed` give the same rows on every run, so a reported comparison can be repeated. Values are inserted in one transaction, and Qenome then runs `ANALYZE` on each listed table in that transaction, so the planner sees statistics for the generated rows and `no_analyze_stats` does not apply to them. A constraint violation such as a PRIMARY KEY, UNIQUE, NOT NULL, or CHECK violation stops the run with exit status `1` and the SQLite message, even when the table declares `ON CONFLICT IGNORE` or `ON CONFLICT REPLACE`. Foreign keys are not checked on the sandbox copy, which is the SQLite default, so the tables may be listed in any order. Seeding is not limited by `--timeout-ms`; Ctrl+C stops it and removes the copy. The dummy rows live only in the private copy, which is removed before exit.
 
 The human Summary adds `seed data` and `seed` lines; `kv` adds `seed-data`, `seed`, `seed-rows`, `seed-tables`, and one `seed-table` line per table; `json` adds a top-level `seed_data` object with `path`, `seed`, `rows`, and `tables`.
+
+## Measuring at several sizes (--scale)
+
+`--scale 1000,10000` runs the same comparison at 2 or 3 row counts and shows the results side by side, so you can see whether an improvement still holds when the table is larger. It needs `--seed-data`, because the seed spec is the only input that describes the distribution of the data separately from its size. Each step sets the row count of the largest table in the spec to that size and scales the other listed tables by the same factor (rounded, at least 1 row), so the ratio between the tables stays the same; a listed table with `rows: 0` gets at least 1 row. When every listed table has `rows: 0`, there is no ratio to keep, so every table takes the step size. Tables that the spec does not list keep their rows, as with `--seed-data`.
+
+```sh
+qenome app.db select.sql index.sql --seed-data seed.json --scale 1000,10000 --runs 0
+```
+
+```text
+scale: 1,000, 10,000 rows in 2 steps
+database: app.db
+select: select.sql
+index: index.sql
+seed-data: seed.json
+sqlite: 3.53.4
+work-dir-parent: <work-dir-parent>
+
+Steps
+          rows baseline read variant read   ratio  verdict     result       plan    median
+         1,000         1,000            0 0.0000x  improved    match        changed -
+        10,000        10,000            2 0.0002x  improved    match        changed -
+
+note: these rows come from generated data measured on this machine; they are not
+production D1 billing.
+```
+
+Each step copies the original database into a new sandbox, seeds that copy, builds the candidate index on the variant, runs the existing comparison, and removes the copies before the next step. The table has one row per step: the rows, the rows read on both copies, the variant / baseline ratio, the rows written with `--write`, the verdict, the result, whether the plan changed, and the median times when `--runs` is not `0`. With `--show-binds`, the header also lists the bind values; with `--show-rows`, a step whose result is not `match` lists the example rows that only one copy returned. A warning is printed only where it differs between the steps, such as `data_too_small` at the smallest one. When the verdict changes between steps, one line says so, for example `The verdict changes between 1,000 and 10,000 rows.`; it does not classify the growth. The last line says that the rows are generated data measured on this machine and not production D1 billing.
+
+The steps are 2 or 3 strictly increasing integers, each at most 10,000,000; the scaled spec must stay within 10,000,000 rows per table and 20,000,000 rows in total. Otherwise the run is a usage error (`usage_scale`, exit status `2`) before any copy is made. `--scale` works with `--d1`, `--write`, `--bind`, `--runs`, `--timeout-ms`, `--show-binds`, `--show-rows`, and `--format human` or `json`. It does not take `--batch`, `--suggest`, `--migration`, `--audit-indexes`, `--record`, or `--format kv`.
+
+The exit status is the heaviest of the steps, in the same order as a single comparison: `3`, then `4`, then `124`, then `1`, otherwise `0`. A step that cannot run stops the run before the report is written.
+
+With `--format json` the output is a separate object with `scale_schema_version` `1`: the `inputs`, the `environment`, one `steps` entry per size (its `tables` and the full `schema_version` 2 comparison), and the run-wide `warnings`. See [the JSON contract](json.md#scale-report-scale_schema_version-1).
 
 ## D1 local databases
 

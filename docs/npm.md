@@ -58,9 +58,10 @@ npm publish --access public dist/npm/qenome
 ## 2回目以降
 
 1. `build.zig.zon` の `.version` を上げる。changelog、タグ、GitHub Release は、これまで通りのリリース手順で出す。`npm/*/package.json` は編集しない。
-2. その版が `main` に入ってから、Actions の `publish-npm` を手動実行する。選ぶブランチは `main`。
-3. ワークフローは OIDC で npm に公開し、provenance を付ける。`NPM_TOKEN` と `NODE_AUTH_TOKEN` は見ると中止する。プラットフォームを先に公開し、同じ版が既にあるパッケージは飛ばす。途中で失敗したら、同じワークフローを再実行できる。
-4. `main` 以外では公開しない。pull request ではこのワークフローは動かない。
+2. そのコミットが `main` の先頭になり、タグ `v` + `.version` がそのコミットを指し、同じタグの GitHub Release ができてから、Actions の `publish-npm` を手動実行する。選ぶブランチは `main`。
+3. ワークフローは先に `quality.yml` と同じ検査をそのコミットで実行する。失敗したらパッケージのビルドと npm への公開は始まらない。通ったあと、OIDC で公開し、provenance を付ける。`NPM_TOKEN` と `NODE_AUTH_TOKEN` は見ると中止する。プラットフォームを先に公開し、ランチャーを最後にする。同じ版が既にあるパッケージは飛ばす。途中で失敗したら、`main` がそのコミットのままなら同じワークフローを再実行できる。
+4. 公開のあと、5パッケージがその版でレジストリに見えるまで待ち、各 tarball にバイナリが入っていることを確かめ、`npx qenome@<version>` で improved の比較を1回実行する。比較が失敗したら公開ジョブは失敗する。
+5. `main` 以外、タグと Release が一致しないコミット、品質検査が失敗したコミットでは公開しない。pull request ではこのワークフローは動かない。タグを打っただけでは npm には出さない。
 
 provenance には、リポジトリが public であることが要る。`actions/setup-node` に `registry-url` を付けない。付けると空のトークンが `.npmrc` に入り、OIDC より先に使われることがある。
 
