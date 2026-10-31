@@ -44,7 +44,7 @@ jobs:
             Look for correctness bugs and regressions first, then for tests the change needs and does not have, then for violations of the rules in AGENTS.md: English in commits, pull requests and docs, no comments in code, contract values only in src/contract/values.zig, the standard library only, and a new file or folder registered in the check tables.
             When an earlier review of yours is already on this pull request, cover only what changed since that review and do not repeat a finding it already made.
             Give the file and the line of each finding, order the findings by severity, and write one sentence when the change looks correct.
-            Post the review as a comment on this pull request.
+            Do not post comments yourself: your final reply is posted to this pull request automatically, so make the final reply the full review.
 
   mention:
     if: |
