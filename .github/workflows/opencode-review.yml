@@ -1,0 +1,92 @@
+name: opencode-review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    if: |
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: opencode-review-pull-request-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Run OpenCode
+        uses: anomalyco/opencode/github@github-v1.2.28
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          model: opencode-go/glm-5.3-flash
+          use_github_token: true
+          share: false
+          prompt: |
+            Review this pull request and report only. Do not edit files, commit, push, or open a pull request.
+            Look for correctness bugs and regressions first, then for tests the change needs and does not have, then for violations of the rules in AGENTS.md: English in commits, pull requests and docs, no comments in code, contract values only in src/contract/values.zig, the standard library only, and a new file or folder registered in the check tables.
+            When an earlier review of yours is already on this pull request, cover only what changed since that review and do not repeat a finding it already made.
+            Give the file and the line of each finding, order the findings by severity, and write one sentence when the change looks correct.
+            Do not post comments yourself: your final reply is posted to this pull request automatically, so make the final reply the full review.
+
+  mention:
+    if: |
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request != null &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association) &&
+      (contains(github.event.comment.body, '/oc') || contains(github.event.comment.body, '/opencode'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: opencode-review-comment-${{ github.event.issue.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Check that the pull request comes from this repository
+        id: source
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.issue.number }}
+        run: |
+          head="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq '.head.repo.full_name // ""')"
+          if [ "$head" = "$GITHUB_REPOSITORY" ]; then
+            echo "same=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "same=no" >> "$GITHUB_OUTPUT"
+            echo "Skipped: the pull request head is ${head:-unknown}."
+          fi
+
+      - uses: actions/checkout@v7
+        if: steps.source.outputs.same == 'yes'
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Run OpenCode
+        if: steps.source.outputs.same == 'yes'
+        uses: anomalyco/opencode/github@github-v1.2.28
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          model: opencode-go/glm-5.3-flash
+          use_github_token: true
+          share: false
