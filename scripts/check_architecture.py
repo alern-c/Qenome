@@ -493,7 +493,6 @@ WRITE_ALLOWED = [
     "src/report/scale.zig",
     "src/report/time.zig",
     "src/report/batch_writes.zig",
-    "src/cli/batch_writes.zig",
 ]
 
 WRITE_DEBT = [
@@ -501,6 +500,7 @@ WRITE_DEBT = [
     "src/cli/skill.zig",
     "src/cli/batch.zig",
     "src/cli/batch_report.zig",
+    "src/cli/batch_writes.zig",
     "src/cli/control.zig",
     "src/cli/pair.zig",
     "src/cli/query.zig",
