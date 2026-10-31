@@ -1069,6 +1069,21 @@ def judge_tests(checker) -> None:
         status == "FAIL" and "remove known_wrong" in message,
         message,
     )
+    notes = []
+    status, message = checker.judge(
+        "case", inside, "https://example.test/1", "stable", [untimed, quieter, quieter], notes=notes
+    )
+    expect(
+        "a known-wrong case with a missing timing label is not reported as fixed",
+        status == "FAIL" and "not stable" in message and "has no timing effect" in message,
+        message,
+    )
+    expect(
+        "a missing timing label does not hide the remove-known_wrong advice",
+        "remove known_wrong" not in message,
+        message,
+    )
+    expect("a known-wrong case with a missing timing label keeps its effect note", len(notes) == 1, notes)
 
 
 def run_output_tests(checker) -> None:

@@ -959,7 +959,7 @@ def judge(name, case_expect, known_wrong, timing, observations, extra_failures=(
         stability += timing_failures(observations, "effect" in case_expect)
     passing = [number for number, run_failures in enumerate(per_run, 1) if not run_failures]
     if known_wrong is not None:
-        if len(passing) == len(observations) and not majority_failures:
+        if len(passing) == len(observations) and not majority_failures and not stability:
             details = ["the case passes now; remove known_wrong (" + known_wrong + ")"] + list(extra_failures)
             return "FAIL", " ; ".join(details[:5])
         if 0 < len(passing) < len(observations) or stability:
