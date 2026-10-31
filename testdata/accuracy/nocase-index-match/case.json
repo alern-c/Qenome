@@ -1,0 +1,24 @@
+{
+  "description": "A NOCASE comparison uses the NOCASE index and still returns the same rows.",
+  "args": [
+    "--bind",
+    "1:text:ok"
+  ],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "verdict": "improved",
+    "plan_changed": true,
+    "variant_plan": {
+      "contains": [
+        "SEARCH events USING INDEX idx_status_nocase (status=?)"
+      ]
+    },
+    "rows_read": {
+      "direction": "decrease",
+      "max_ratio": 0.1
+    },
+    "rows_written": "same"
+  }
+}

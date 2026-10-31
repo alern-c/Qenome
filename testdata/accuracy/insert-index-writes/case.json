@@ -1,0 +1,16 @@
+{
+  "description": "An INSERT writes one candidate-index entry per row, so the rows read stay the same and the verdict is needs-check.",
+  "args": [
+    "--bind",
+    "1:int:1235"
+  ],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "verdict": "needs-check",
+    "plan_changed": false,
+    "rows_read": "same",
+    "rows_written": "increase"
+  }
+}

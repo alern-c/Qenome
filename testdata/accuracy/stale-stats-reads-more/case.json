@@ -1,0 +1,28 @@
+{
+  "description": "A hand-written sqlite_stat1 row makes the candidate index look selective, so the variant reads 10,000 rows where the baseline reads 11.",
+  "args": [
+    "--bind",
+    "1:int:1235",
+    "--bind",
+    "2:text:ok"
+  ],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "verdict": "needs-check",
+    "plan_changed": true,
+    "baseline_plan": {
+      "contains": [
+        "SEARCH events USING INDEX idx_customer (customer_id=?)"
+      ]
+    },
+    "variant_plan": {
+      "contains": [
+        "SEARCH events USING INDEX idx_status (status=?)"
+      ]
+    },
+    "rows_read": "increase",
+    "rows_written": "same"
+  }
+}

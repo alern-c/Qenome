@@ -1,0 +1,13 @@
+{
+  "description": "An UPDATE of the indexed column reads the same rows but writes one index entry per row, so the verdict is needs-check.",
+  "args": [],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "verdict": "needs-check",
+    "plan_changed": false,
+    "rows_read": "same",
+    "rows_written": "increase"
+  }
+}
