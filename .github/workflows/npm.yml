@@ -69,26 +69,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Read the runner CPU model for the Zig cache key
-        id: cpu
-        run: |
-          model="$(grep -m1 '^model name' /proc/cpuinfo 2>/dev/null \
-            | cut -d: -f2- \
-            | sed 's/^[[:space:]]*//' || true)"
-          echo "Runner CPU model: ${model:-unknown}"
-          cache_key="$(
-            printf '%s' "$model" \
-              | tr '[:upper:]' '[:lower:]' \
-              | tr -cs 'a-z0-9' '-' \
-              | sed 's/^-//;s/-$//'
-          )"
-          echo "Zig cache key component: ${cache_key:-unknown}"
-          printf 'cache_key=%s\n' "${cache_key:-unknown}" >> "$GITHUB_OUTPUT"
-
       - name: Set up Zig (resolved from build.zig.zon)
         uses: mlugg/setup-zig@v2
         with:
-          cache-key: ${{ steps.cpu.outputs.cache_key }}-${{ matrix.target }}
+          cache-key: ${{ matrix.target }}
 
       - name: Cross-compile ${{ matrix.target }}
         run: python3 scripts/stage_npm.py --target ${{ matrix.target }}
