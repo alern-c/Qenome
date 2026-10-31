@@ -99,6 +99,10 @@ def main():
         ),
         ("Check the documentation", command([sys.executable, "scripts/check_docs.py"])),
         (
+            "Test the PR format checker",
+            command([sys.executable, "scripts/test_check_pr.py"]),
+        ),
+        (
             "Test the npm package staging",
             command([sys.executable, "scripts/test_stage_npm.py"]),
         ),
