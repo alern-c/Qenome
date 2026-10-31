@@ -1,5 +1,5 @@
 {
-  "description": "The same plan and the same rows with timing on: the verdict is no-effect and the timing effect never says faster.",
+  "description": "The same plan and the same rows with timing on: the verdict is no-effect and the timing effect says faster in at most half of the runs.",
   "args": [
     "--bind",
     "1:text:ok",
