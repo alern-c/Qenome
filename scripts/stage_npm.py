@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+from typing import NamedTuple
 
 PLACEHOLDER_VERSION = "0.0.0"
 MAIN_DIR = "qenome"
@@ -279,6 +280,46 @@ def print_build_log(zig_target, log):
         sys.stdout.flush()
 
 
+def platform_for(directory):
+    for platform in PLATFORMS:
+        if platform["dir"] == directory:
+            return platform
+    raise ValueError(
+        "unknown npm target " + directory + "; expected one of " + ", ".join(item["dir"] for item in PLATFORMS)
+    )
+
+
+def build_one(root, directory, dest):
+    platform = platform_for(directory)
+    binary = os.path.join(dest, platform["dir"], "qenome")
+    log = build_binary(root, platform["zig"], binary)
+    print_build_log(platform["zig"], log)
+    assert_binary_kind(binary, platform["kind"])
+    print("stage_npm: built " + platform["dir"] + " in " + dest, flush=True)
+
+
+def binaries_from_directory(directory):
+    binaries = {}
+    for platform in PLATFORMS:
+        path = os.path.join(directory, platform["dir"], "qenome")
+        if not os.path.isfile(path):
+            raise ValueError("missing binary: " + path)
+        binaries[platform["dir"]] = path
+    return binaries
+
+
+def check_binary_sources(binaries, dest):
+    target = os.path.abspath(dest)
+    resolved_target = os.path.realpath(target)
+    for path in binaries.values():
+        source = os.path.abspath(path)
+        if source == target or source.startswith(target + os.sep):
+            raise ValueError("supplied binary " + path + " is inside the staging directory " + dest)
+        resolved = os.path.realpath(path)
+        if resolved == resolved_target or resolved.startswith(resolved_target + os.sep):
+            raise ValueError("supplied binary " + path + " is inside the staging directory " + dest)
+
+
 def build_binaries(root, targets, builder=build_binary):
     errors = {}
     zig_targets = {platform["dir"]: platform["zig"] for platform, _ in targets}
@@ -327,6 +368,7 @@ def stage_distribution(root, dest, binaries=None):
         missing = [platform["dir"] for platform in PLATFORMS if platform["dir"] not in binaries]
         if missing:
             raise ValueError("missing binaries: " + ", ".join(missing))
+        check_binary_sources(binaries, dest)
     if os.path.isdir(dest):
         shutil.rmtree(dest)
     os.makedirs(dest)
@@ -340,8 +382,6 @@ def stage_distribution(root, dest, binaries=None):
         targets.append((platform, binary))
     if binaries is None:
         build_binaries(root, targets)
-        for platform, binary in targets:
-            assert_binary_kind(binary, platform["kind"])
     else:
         for platform, binary in targets:
             shutil.copyfile(binaries[platform["dir"]], binary)
@@ -349,6 +389,7 @@ def stage_distribution(root, dest, binaries=None):
     for platform, binary in targets:
         if os.path.getsize(binary) == 0:
             raise ValueError("empty binary for " + platform["dir"])
+        assert_binary_kind(binary, platform["kind"])
     directory = os.path.join(dest, MAIN_DIR)
     manifest = render_manifest(load_json(source_manifest_path(root, MAIN_DIR)), version)
     write_tree(directory, manifest, root)
@@ -470,11 +511,22 @@ def pack_staged(dest):
     return packed
 
 
+class Options(NamedTuple):
+    root: str
+    dest: str
+    pack: bool
+    binaries: str | None
+    target: str | None
+
+
 def parse_args(argv):
     root = repo_root()
     dest = None
     pack = False
+    binaries = None
+    target = None
     rest = argv[1:]
+    usage = "usage: python3 scripts/stage_npm.py [--root DIR] [--dest DIR] [--pack] [--binaries DIR] [--target DIR]"
     while rest:
         if rest[0] == "--pack":
             pack = True
@@ -488,18 +540,39 @@ def parse_args(argv):
             dest = rest[1]
             rest = rest[2:]
             continue
-        raise ValueError("usage: python3 scripts/stage_npm.py [--root DIR] [--dest DIR] [--pack]")
-    if dest is None:
+        if rest[0] == "--binaries" and len(rest) > 1:
+            binaries = rest[1]
+            rest = rest[2:]
+            continue
+        if rest[0] == "--target" and len(rest) > 1:
+            target = rest[1]
+            rest = rest[2:]
+            continue
+        raise ValueError(usage)
+    if target is not None:
+        if pack:
+            raise ValueError("--target cannot be combined with --pack")
+        if binaries is not None:
+            raise ValueError("--target cannot be combined with --binaries")
+        if dest is None:
+            dest = os.path.join(root, "dist", "npm-binaries")
+    elif dest is None:
         dest = os.path.join(root, "dist", "npm")
-    return os.path.abspath(root), os.path.abspath(dest), pack
+    return Options(os.path.abspath(root), os.path.abspath(dest), pack, binaries, target)
 
 
 def main(argv):
     try:
-        root, dest, pack = parse_args(argv)
-        stage_distribution(root, dest)
-        if pack:
-            pack_staged(dest)
+        options = parse_args(argv)
+        if options.target is not None:
+            build_one(options.root, options.target, options.dest)
+            return 0
+        binaries = None
+        if options.binaries is not None:
+            binaries = binaries_from_directory(options.binaries)
+        stage_distribution(options.root, options.dest, binaries)
+        if options.pack:
+            pack_staged(options.dest)
     except (OSError, ValueError, subprocess.CalledProcessError, tarfile.TarError, json.JSONDecodeError) as error:
         sys.stderr.write("stage_npm: " + str(error) + "\n")
         return 1

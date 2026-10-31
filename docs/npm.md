@@ -20,9 +20,15 @@ Linux は gnu と musl に分けない。Zig の `x86_64-linux-musl` と `aarch6
 
 ## CI
 
-`.github/workflows/npm.yml` は pull request と `main` への push で動く。Ubuntu 上で4ターゲットをクロスコンパイルし、各パッケージで `npm pack` と `npm publish --dry-run` を行う。レジストリへは送らない。作った tarball を次の runner に入れ、`npm install --offline` のあと `npx qenome --version` を実行する。
+`.github/workflows/npm.yml` は pull request と `main` への push で動く。最初の `changes` ジョブが変更を見て、ビルドが要るかを決める。ビルドが要るときは `build` ジョブが4ターゲットを1台ずつ別の `ubuntu-latest` でクロスコンパイルし、できたバイナリを artifact に上げる。`pack` ジョブが4つを集めて staging し、各パッケージで `npm pack` と `npm publish --dry-run` を行う。レジストリへは送らない。作った tarball を次の runner に入れ、`npm install --offline` のあと `npx qenome --version` を実行する。
 
-pull request では、変更がパッケージのバイナリ・マニフェスト・同梱ファイル・ビルド入力のどれにも触れないとき、`pack` と `smoke` のジョブは成功のまま、ビルド・pack・upload・download を飛ばして理由をログに出す。`main` への push と、変更の検出に失敗したときは常に全部動かす。
+`pack` は、ビルドが1つでも失敗したときや、`changes` ジョブ自体が失敗したときは必ず失敗する。ビルドの失敗を成功扱いにしない。
+
+pull request では、変更がパッケージのバイナリ・マニフェスト・同梱ファイル・ビルド入力のどれにも触れないとき、`build` は動かさず、`pack` と `smoke` は成功のまま、ビルド・pack・upload・download を飛ばして理由をログに出す。`main` への push と、変更の検出に失敗したときは常に全部動かす。
+
+`scripts/stage_npm.py` を手元で実行すると、従来どおり4ターゲットを1台で並列にビルドする。`--target <dir>` で1ターゲットだけを `dist/npm-binaries/<dir>/qenome` にビルドし、`--binaries <dir>` でその形のバイナリを staging に使える。`--binaries` のバイナリも、空でないこと・形式が合うこと・実行できることを検査する。
+
+smoke は次の runner で動く。
 
 - `ubuntu-latest`（Linux x64）
 - `ubuntu-24.04-arm`（Linux arm64）

@@ -28,6 +28,13 @@ def expect(name, condition, detail):
     print("FAIL: " + name + ": " + str(detail))
 
 
+BINARY_HEADERS = {"elf": b"\x7fELF", "macho": b"\xcf\xfa\xed\xfe"}
+
+
+def fake_binary(platform):
+    return BINARY_HEADERS[platform["kind"]] + b"fake-" + platform["dir"].encode("ascii")
+
+
 def snapshot(root):
     base = os.path.join(root, "npm")
     found = {}
@@ -116,7 +123,7 @@ def test_stage(version):
             os.makedirs(path)
             binary = os.path.join(path, "qenome")
             with open(binary, "wb") as handle:
-                handle.write(b"fake-" + platform["dir"].encode("ascii"))
+                handle.write(fake_binary(platform))
             binaries[platform["dir"]] = binary
         staged_version = stage_npm.stage_distribution(ROOT, dest, binaries)
         expect("stage reports the zon version", staged_version == version, staged_version)
@@ -163,7 +170,7 @@ def test_stage(version):
             )
             expect(
                 "staged " + platform["dir"] + " binary",
-                body == b"fake-" + platform["dir"].encode("ascii"),
+                body == fake_binary(platform),
                 body,
             )
             expect(
@@ -325,6 +332,191 @@ def test_empty_binary():
         expect("an empty binary is refused", False, "stage succeeded")
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+def test_binaries():
+    work = tempfile.mkdtemp(prefix="qenome-binaries-")
+    prebuilt = os.path.join(work, "prebuilt")
+    try:
+        for platform in stage_npm.PLATFORMS:
+            directory = os.path.join(prebuilt, platform["dir"])
+            os.makedirs(directory)
+            with open(os.path.join(directory, "qenome"), "wb") as handle:
+                handle.write(fake_binary(platform))
+        binaries = stage_npm.binaries_from_directory(prebuilt)
+        expect(
+            "prebuilt binaries are found per platform directory",
+            sorted(binaries) == sorted(platform["dir"] for platform in stage_npm.PLATFORMS),
+            binaries,
+        )
+        dest = os.path.join(work, "dist")
+        code = stage_npm.main(["stage_npm.py", "--root", ROOT, "--dest", dest, "--binaries", prebuilt])
+        expect("the binaries CLI stages every package", code == 0, code)
+        binary = os.path.join(dest, "linux-x64", "bin", "qenome")
+        mode = stat.S_IMODE(os.stat(binary).st_mode)
+        expect("a supplied binary is made executable", mode == 0o755, oct(mode))
+        expect(
+            "a supplied binary is copied",
+            open(binary, "rb").read() == fake_binary(stage_npm.PLATFORMS[-1]),
+            binary,
+        )
+        shutil.rmtree(os.path.join(prebuilt, "darwin-x64"))
+        try:
+            stage_npm.binaries_from_directory(prebuilt)
+        except ValueError as error:
+            expect("a missing supplied binary is refused", "missing binary" in str(error), error)
+        else:
+            expect("a missing supplied binary is refused", False, "found every binary")
+        wrong = os.path.join(prebuilt, "darwin-x64")
+        os.makedirs(wrong)
+        with open(os.path.join(wrong, "qenome"), "wb") as handle:
+            handle.write(BINARY_HEADERS["elf"] + b"wrong")
+        try:
+            stage_npm.stage_distribution(ROOT, os.path.join(work, "wrong"), stage_npm.binaries_from_directory(prebuilt))
+        except ValueError as error:
+            expect("a supplied binary of the wrong kind is refused", "is not a macho binary" in str(error), error)
+        else:
+            expect("a supplied binary of the wrong kind is refused", False, "staged the wrong binary")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def test_binary_sources():
+    work = tempfile.mkdtemp(prefix="qenome-source-")
+    prebuilt = os.path.join(work, "binaries")
+    try:
+        for platform in stage_npm.PLATFORMS:
+            directory = os.path.join(prebuilt, platform["dir"])
+            os.makedirs(directory)
+            with open(os.path.join(directory, "qenome"), "wb") as handle:
+                handle.write(fake_binary(platform))
+        binaries = stage_npm.binaries_from_directory(prebuilt)
+        try:
+            stage_npm.stage_distribution(ROOT, prebuilt, binaries)
+        except ValueError as error:
+            expect("a binary source inside the destination is refused", "staging directory" in str(error), error)
+        else:
+            expect("a binary source inside the destination is refused", False, "staged over the sources")
+        expect(
+            "a refused stage keeps the supplied binaries",
+            all(os.path.isfile(path) for path in binaries.values()),
+            binaries,
+        )
+        outside = os.path.join(work, "outside-qenome")
+        with open(outside, "wb") as handle:
+            handle.write(fake_binary(stage_npm.PLATFORMS[0]))
+        linked = os.path.join(work, "linked")
+        for platform in stage_npm.PLATFORMS:
+            directory = os.path.join(linked, platform["dir"])
+            os.makedirs(directory)
+            if platform["dir"] == stage_npm.PLATFORMS[0]["dir"]:
+                os.symlink(outside, os.path.join(directory, "qenome"))
+            else:
+                with open(os.path.join(directory, "qenome"), "wb") as handle:
+                    handle.write(fake_binary(platform))
+        linked_binaries = stage_npm.binaries_from_directory(linked)
+        try:
+            stage_npm.stage_distribution(ROOT, linked, linked_binaries)
+        except ValueError as error:
+            expect("a symlink inside the destination is refused", "staging directory" in str(error), error)
+        else:
+            expect("a symlink inside the destination is refused", False, "staged over the link")
+        expect(
+            "a refused symlink stage keeps the link and its target",
+            os.path.islink(os.path.join(linked, stage_npm.PLATFORMS[0]["dir"], "qenome")) and os.path.isfile(outside),
+            linked_binaries,
+        )
+        destination = os.path.join(work, "destination")
+        os.makedirs(os.path.join(destination, "sub"))
+        alias = os.path.join(work, "alias")
+        os.symlink(os.path.join(destination, "sub"), alias)
+        sneaky = os.path.join(alias, "..", "qenome")
+        try:
+            stage_npm.check_binary_sources({stage_npm.PLATFORMS[0]["dir"]: sneaky}, destination)
+        except ValueError as error:
+            expect("a symlink with a parent component is refused", "staging directory" in str(error), error)
+        else:
+            expect("a symlink with a parent component is refused", False, "accepted the resolved destination")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def test_build_target():
+    work = tempfile.mkdtemp(prefix="qenome-target-")
+    calls = []
+
+    def writing_run(args, **kwargs):
+        calls.append(args)
+        prefix = args[args.index("--prefix") + 1]
+        os.makedirs(os.path.join(prefix, "bin"))
+        with open(os.path.join(prefix, "bin", "qenome"), "wb") as handle:
+            handle.write(BINARY_HEADERS["macho"] + b"built")
+        return subprocess.CompletedProcess(args, 0, stdout="build output\n")
+
+    original = stage_npm.subprocess.run
+    try:
+        stage_npm.subprocess.run = writing_run
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            stage_npm.build_one(ROOT, "darwin-arm64", work)
+        binary = os.path.join(work, "darwin-arm64", "qenome")
+        expect(
+            "build_one writes only the requested target",
+            os.path.isfile(binary) and not os.path.exists(os.path.join(work, "linux-x64")),
+            os.listdir(work),
+        )
+        expect(
+            "build_one builds the target triple",
+            any("-Dtarget=aarch64-macos" in args for args in calls),
+            calls,
+        )
+        expect("build_one prints the build log", "build output\n" in captured.getvalue(), captured.getvalue())
+        mode = stat.S_IMODE(os.stat(binary).st_mode)
+        expect("build_one leaves the binary executable", mode == 0o755, oct(mode))
+        try:
+            stage_npm.build_one(ROOT, "windows-x64", work)
+        except ValueError as error:
+            expect("build_one refuses an unknown target", "unknown npm target" in str(error), error)
+        else:
+            expect("build_one refuses an unknown target", False, "built an unknown target")
+    finally:
+        stage_npm.subprocess.run = original
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def test_args():
+    defaults = stage_npm.parse_args(["stage_npm.py"])
+    expect(
+        "the default destination stages every target",
+        defaults.dest == os.path.join(ROOT, "dist", "npm")
+        and defaults.pack is False
+        and defaults.binaries is None
+        and defaults.target is None,
+        defaults,
+    )
+    prebuilt = stage_npm.parse_args(["stage_npm.py", "--binaries", "dist/npm-binaries", "--pack"])
+    expect(
+        "--binaries and --pack are accepted together",
+        prebuilt.binaries == "dist/npm-binaries" and prebuilt.pack is True,
+        prebuilt,
+    )
+    one = stage_npm.parse_args(["stage_npm.py", "--target", "linux-x64"])
+    expect(
+        "--target defaults to the binary directory",
+        one.target == "linux-x64" and one.dest == os.path.join(ROOT, "dist", "npm-binaries"),
+        one,
+    )
+    for name, argv in (
+        ("--target with --pack", ["stage_npm.py", "--target", "linux-x64", "--pack"]),
+        ("--target with --binaries", ["stage_npm.py", "--target", "linux-x64", "--binaries", "x"]),
+        ("an unknown option", ["stage_npm.py", "--nope"]),
+    ):
+        try:
+            stage_npm.parse_args(argv)
+        except ValueError:
+            expect(name + " is refused", True, "")
+        else:
+            expect(name + " is refused", False, "accepted")
 
 
 def test_launcher_permissions():
@@ -549,6 +741,10 @@ def main():
     test_build_binary()
     test_parallel_builds()
     test_empty_binary()
+    test_binaries()
+    test_binary_sources()
+    test_build_target()
+    test_args()
     test_launcher_permissions()
     test_publish_order()
     test_release_guard()

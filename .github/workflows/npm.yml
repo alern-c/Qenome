@@ -9,9 +9,9 @@ permissions:
   contents: read
 
 jobs:
-  pack:
+  changes:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
     outputs:
       relevant: ${{ steps.detect.outputs.relevant }}
     steps:
@@ -51,35 +51,109 @@ jobs:
             echo "The npm build will run: $reason."
           fi
 
+  build:
+    needs: changes
+    if: needs.changes.outputs.relevant != 'false'
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - linux-x64
+          - linux-arm64
+          - darwin-arm64
+          - darwin-x64
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
       - name: Read the runner CPU model for the Zig cache key
-        id: cpu_model
-        if: steps.detect.outputs.relevant != 'false'
+        id: cpu
         run: |
-          model="$(grep -m1 '^model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2- | sed 's/^[[:space:]]*//' || true)"
+          model="$(grep -m1 '^model name' /proc/cpuinfo 2>/dev/null \
+            | cut -d: -f2- \
+            | sed 's/^[[:space:]]*//' || true)"
           echo "Runner CPU model: ${model:-unknown}"
-          cache_key="$(printf '%s' "$model" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//;s/-$//')"
+          cache_key="$(
+            printf '%s' "$model" \
+              | tr '[:upper:]' '[:lower:]' \
+              | tr -cs 'a-z0-9' '-' \
+              | sed 's/^-//;s/-$//'
+          )"
           echo "Zig cache key component: ${cache_key:-unknown}"
           printf 'cache_key=%s\n' "${cache_key:-unknown}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Zig (resolved from build.zig.zon)
-        if: steps.detect.outputs.relevant != 'false'
         uses: mlugg/setup-zig@v2
         with:
-          cache-key: ${{ steps.cpu_model.outputs.cache_key }}
+          cache-key: ${{ steps.cpu.outputs.cache_key }}-${{ matrix.target }}
+
+      - name: Cross-compile ${{ matrix.target }}
+        run: python3 scripts/stage_npm.py --target ${{ matrix.target }}
+
+      - name: Upload the ${{ matrix.target }} binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: qenome-${{ matrix.target }}
+          path: dist/npm-binaries
+          if-no-files-found: error
+
+  pack:
+    needs: [changes, build]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      relevant: ${{ needs.changes.outputs.relevant }}
+    steps:
+      - name: Require the change detection
+        if: needs.changes.result != 'success'
+        run: |
+          echo "::error::The change detection job did not succeed."
+          echo "::error::Refusing to report the npm packages."
+          exit 1
+
+      - name: Require every binary build
+        if: >-
+          needs.changes.outputs.relevant != 'false' &&
+          needs.build.result != 'success'
+        run: |
+          echo "::error::The binary build jobs did not succeed."
+          echo "::error::The build result was ${{ needs.build.result }}."
+          exit 1
+
+      - name: Explain the skipped npm package build
+        if: needs.changes.outputs.relevant == 'false'
+        run: echo "No build-relevant path changed; skipping the npm build."
+
+      - uses: actions/checkout@v7
+        if: needs.changes.outputs.relevant != 'false'
+        with:
+          persist-credentials: false
 
       - name: Set up Node.js
-        if: steps.detect.outputs.relevant != 'false'
+        if: needs.changes.outputs.relevant != 'false'
         uses: actions/setup-node@v6
         with:
           node-version: "22"
           package-manager-cache: false
 
-      - name: Cross-compile, pack, and dry-run every package
-        if: steps.detect.outputs.relevant != 'false'
-        run: python3 scripts/stage_npm.py --pack
+      - name: Download the prebuilt binaries
+        if: needs.changes.outputs.relevant != 'false'
+        uses: actions/download-artifact@v8
+        with:
+          pattern: qenome-*
+          path: dist/npm-binaries
+          merge-multiple: true
+
+      - name: Pack the packages and dry-run every publish
+        if: needs.changes.outputs.relevant != 'false'
+        run: python3 scripts/stage_npm.py --binaries dist/npm-binaries --pack
 
       - name: Upload the packed tarballs
-        if: steps.detect.outputs.relevant != 'false'
+        if: needs.changes.outputs.relevant != 'false'
         uses: actions/upload-artifact@v7
         with:
           name: npm-tarballs
