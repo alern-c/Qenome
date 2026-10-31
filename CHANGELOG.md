@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `--batch <manifest> --migration` also compares write statements. A manifest may list `writes`, 1 to 100 statements, and `writes` without `--migration` exits `1`. Each write runs on both copies in a rolled-back transaction, so the original database is not changed. The rows read and written for both copies go in a `Writes` section and a JSON `writes` array; `batch_schema_version` stays `1`. `rows read` decides the verdict: more is `regressed` (exit `6`), the same `no-effect`, fewer `improved`; `rows written` is reported only. A row difference is a `mismatch` (exit `3`), and a write that reads the schema, the current time, or a nondeterministic function is `incomparable` (exit `4`). The D1 counting patch does not count secondary-index deletes, so dropping an index does not lower `rows written`; the batch page (`docs/batch.md`) covers the failure, timeout and variant-only rules.
-- A pull request gets an advisory review from OpenCode, and a maintainer can ask for one with `/oc` or `/opencode`. The automatic run builds the head and the merge base and asks the agent to compare their outputs; a run can comment but cannot push or fail the pull request. `CONTRIBUTING.md` describes the review.
+- A pull request gets an advisory review from OpenCode, and an owner, member, or collaborator can ask for one with `/oc` or `/opencode`. The automatic run builds the head and the merge base and asks the agent to compare their outputs; a run can comment but cannot push or fail the pull request. `CONTRIBUTING.md` describes the review.
 
 ### Fixed
 
