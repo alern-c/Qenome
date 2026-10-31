@@ -33,12 +33,12 @@ Build Qenome:
 zig build
 ```
 
-The seven examples run `zig-out/bin/qenome`. Each command ends with the result it has to report: `result` and `verdict` from the Summary (or `recommended` for a batch), and the exit status. `python3 scripts/check_all.py` and the quality workflow run these lines as written, so this file and the program stay in step. `--runs 40` keeps the medians steady on a busy machine; the default is `10`.
+The seven examples run `zig-out/bin/qenome`. Each command ends with the result it has to report: `result` and `verdict` from the Summary (or `recommended` for a batch), and the exit status. `python3 scripts/check_all.py` and the quality workflow run these lines as written, so this file and the program stay in step. Only the first example runs the timing loop, with the default `--runs 10`, which keeps the medians steady on a busy machine. The verdict comes from the rows read and the rows written, not from the times, so the other examples pass `--runs 0`, use a mode that never times (`--batch`, `--suggest`), or return an incomparable result.
 
 An index that removes the full scan. The candidate index turns `SCAN events` into `SEARCH events USING INDEX ix_events_customer_id (customer_id=?)`, the rows read fall from 200,000 to 101, and both copies return the same 100 rows.
 
 ```sh
-./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/improved.sql testdata/cases/improved.index.sql --bind 1:int:1234 --runs 40  # expect: result=match verdict=improved exit=0
+./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/improved.sql testdata/cases/improved.index.sql --bind 1:int:1234  # expect: result=match verdict=improved exit=0
 ```
 
 An index on data you choose. `--seed-data testdata/seed.json` replaces the `events` rows in the sandbox copy, with the original database unchanged, by 50,000 deterministic rows. The same query then finds row `1234` among them, and the verdict stays `improved`. See [Generating sandbox data](docs/usage.md#generating-sandbox-data).
@@ -50,7 +50,7 @@ An index on data you choose. `--seed-data testdata/seed.json` replaces the `even
 An index that cannot help. The SELECT wraps the column in `lower()`, so SQLite cannot use the index on `status`, and the plan, the rows read, and the rows written stay the same.
 
 ```sh
-./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/no-effect.sql testdata/cases/no-effect.index.sql --bind 1:text:ok --runs 40  # expect: result=match verdict=no-effect exit=0
+./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/no-effect.sql testdata/cases/no-effect.index.sql --bind 1:text:ok --runs 0  # expect: result=match verdict=no-effect exit=0
 ```
 
 An INSERT that a new index makes more expensive. `--write` compares one `INSERT`, `UPDATE`, `DELETE`, or `REPLACE` on both sandbox copies, inside a transaction that is rolled back. The candidate index on `customer_id` is not used by this INSERT, but each inserted row also updates the index: the rows written rise from 1 to 2, while both copies change the same row. The verdict is `needs-check` because the variant writes more, and the exit status stays 0. The original database is not changed.
@@ -77,7 +77,7 @@ A proposed index, without an index file. `--suggest` asks SQLite which index wou
 ./zig-out/bin/qenome testdata/generated/qenome-fixture.db testdata/cases/improved.sql --bind 1:int:1234 --suggest  # expect: recommended=suggested:1 exit=0
 ```
 
-The first database build takes about a second, and each timed example a few seconds. `testdata/README.md` records the fixture, the queries, and their expected plan and counters.
+The first database build takes about a second, and the whole walkthrough about seven seconds, because only the first example runs the timing loop. `testdata/README.md` records the fixture, the queries, and their expected plan and counters.
 
 ## Workflow
 
