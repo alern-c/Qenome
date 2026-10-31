@@ -119,6 +119,14 @@ def main():
             command([sys.executable, "scripts/test_post_review_findings.py"]),
         ),
         (
+            "Test the review gate",
+            command([sys.executable, "scripts/test_review_gate.py"]),
+        ),
+        (
+            "Test the auto-merge guard",
+            command([sys.executable, "scripts/test_automerge_guard.py"]),
+        ),
+        (
             "Test the golden checker",
             command([sys.executable, "scripts/test_check_golden.py"]),
         ),
