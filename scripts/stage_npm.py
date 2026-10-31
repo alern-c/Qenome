@@ -1,3 +1,4 @@
+import concurrent.futures
 import copy
 import json
 import os
@@ -238,11 +239,16 @@ def write_tree(directory, manifest, root):
         handle.write(readme_text(manifest))
 
 
+class BuildError(ValueError):
+    def __init__(self, message, log):
+        super().__init__(message)
+        self.log = log
+
+
 def build_binary(root, zig_target, dest):
     prefix = tempfile.mkdtemp(prefix="qenome-npm-")
     try:
-        print("stage_npm: zig build -Dtarget=" + zig_target, flush=True)
-        subprocess.run(
+        done = subprocess.run(
             [
                 "zig",
                 "build",
@@ -255,17 +261,55 @@ def build_binary(root, zig_target, dest):
                 "all",
             ],
             cwd=root,
-            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors="replace",
             stdin=subprocess.DEVNULL,
         )
+        if done.returncode != 0:
+            raise BuildError("zig build failed for " + zig_target, done.stdout)
         source = os.path.join(prefix, "bin", "qenome")
         if not os.path.isfile(source) or os.path.getsize(source) == 0:
-            raise ValueError("zig build did not write a binary for " + zig_target)
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
-        shutil.copyfile(source, dest)
-        os.chmod(dest, 0o755)
+            raise BuildError("zig build did not write a binary for " + zig_target, done.stdout)
+        try:
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            shutil.copyfile(source, dest)
+            os.chmod(dest, 0o755)
+        except OSError as error:
+            message = "cannot install the binary for " + zig_target + ": " + str(error)
+            raise BuildError(message, done.stdout) from error
+        return done.stdout
     finally:
         shutil.rmtree(prefix, ignore_errors=True)
+
+
+def print_build_log(zig_target, log):
+    print("stage_npm: zig build -Dtarget=" + zig_target, flush=True)
+    if log:
+        sys.stdout.write(log if log.endswith("\n") else log + "\n")
+        sys.stdout.flush()
+
+
+def build_binaries(root, targets, builder=build_binary):
+    errors = {}
+    zig_targets = {platform["dir"]: platform["zig"] for platform, _ in targets}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(targets)) as pool:
+        pending = {}
+        for platform, binary in targets:
+            pending[pool.submit(builder, root, platform["zig"], binary)] = platform["dir"]
+        for done in concurrent.futures.as_completed(pending):
+            directory = pending[done]
+            try:
+                log = done.result()
+            except (OSError, ValueError) as error:
+                log = getattr(error, "log", None)
+                errors[directory] = error
+            print_build_log(zig_targets[directory], log)
+    for platform, _ in targets:
+        pending_error = errors.get(platform["dir"])
+        if pending_error is not None:
+            raise pending_error
 
 
 def assert_binary_kind(path, kind):
@@ -298,18 +342,23 @@ def stage_distribution(root, dest, binaries=None):
     if os.path.isdir(dest):
         shutil.rmtree(dest)
     os.makedirs(dest)
+    targets = []
     for platform in PLATFORMS:
         directory = os.path.join(dest, platform["dir"])
         manifest = render_manifest(load_json(source_manifest_path(root, platform["dir"])), version)
         write_tree(directory, manifest, root)
         binary = os.path.join(directory, "bin", "qenome")
         os.makedirs(os.path.dirname(binary), exist_ok=True)
-        if binaries is None:
-            build_binary(root, platform["zig"], binary)
+        targets.append((platform, binary))
+    if binaries is None:
+        build_binaries(root, targets)
+        for platform, binary in targets:
             assert_binary_kind(binary, platform["kind"])
-        else:
+    else:
+        for platform, binary in targets:
             shutil.copyfile(binaries[platform["dir"]], binary)
             os.chmod(binary, 0o755)
+    for platform, binary in targets:
         if os.path.getsize(binary) == 0:
             raise ValueError("empty binary for " + platform["dir"])
     directory = os.path.join(dest, MAIN_DIR)
