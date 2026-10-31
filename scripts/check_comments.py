@@ -15,6 +15,7 @@ EXCLUDED_FILES = [
     "NOTICE",
     "README.md",
     "README.ja.md",
+    "docs/accuracy.md",
     "docs/demo-candidates.gif",
     "docs/demo-migration.gif",
     "docs/demo-suggest.gif",

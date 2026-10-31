@@ -16,7 +16,7 @@ description: >
 
 Qenome compares one read-only `SELECT` with one candidate `CREATE INDEX` on sandbox copies. With `--write`, it compares one `INSERT`, `UPDATE`, `DELETE`, or `REPLACE` instead, inside a transaction that is rolled back. With `--batch`, it compares every SELECT in a manifest with every candidate in one run. With `--batch ... --audit-indexes`, it reports the indexes that the manifest queries did not use and the indexes whose leading columns another index or the primary key covers. With `--suggest`, SQLite's expert proposes the candidate indexes, so a SELECT file is enough. With `--migration`, it applies a SQL file of index or table changes to the variant before comparing every query in a manifest. The verdict uses the same counting as local D1 (workerd patch). The numbers have not yet been checked against production D1.
 
-The contract is [docs/json.md](../../docs/json.md). This skill expects `schema_version` 2.
+The contract is [docs/json.md](../../docs/json.md). This skill expects `schema_version` 2. Before telling a user what a result means for production, read [docs/accuracy.md](../../docs/accuracy.md): how rows are counted, what each verdict means, and what can differ from production D1.
 
 ## Install this skill
 

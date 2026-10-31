@@ -52,7 +52,7 @@ Give it one read-only `SELECT` and one `CREATE INDEX`. With `--write`, give it o
 - **JSON for AI agents and CI.** `--format json` gives the report with `schema_version` 2, and the exit status separates a match, a mismatch, and an incomparable result.
 - **The evidence stays next to the verdict.** The query plan, the median times, the size increase of the whole database, and advisory warnings are in the report.
 
-> The row numbers have not yet been checked against production D1. Qenome measures the local database only.
+> The row numbers have not yet been checked against production D1. Qenome measures the local database only. See [Accuracy and production D1](docs/accuracy.md) for how the rows are counted, what each verdict means, and what can differ from production D1.
 
 ## Contents
 
@@ -644,6 +644,8 @@ Main keys:
 | 6 | With `--migration`, the result rows matched but a query read or wrote more rows. Only the `--migration` batch path returns it |
 | 124 | A time limit was reached (`--timeout-ms`) |
 | 129 / 130 / 143 | Interrupted by `SIGHUP` / `SIGINT` / `SIGTERM` (POSIX) |
+
+[Accuracy and production D1](docs/accuracy.md) explains how the counters are built and what each verdict means for production D1.
 
 `--format json` reports the comparison result in `exit_code` as `0`, `3`, or `4`. The process can still exit with `5` after writing the JSON.
 
