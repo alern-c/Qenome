@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A pull request labeled `automerge` can squash-merge itself when the required checks pass. `review-gate` passes only when the OpenCode review records `matches` for that head, with no `blocker` or `major` finding, after the head and the merge base both built. `automerge-guard` fails for a version bump, a changelog version heading, release or npm packaging, a verdict-rule or accuracy-answer change, and any workflow or gate change. `docs/automerge.md` lists the checks and the repository settings a maintainer turns on by hand.
+
 ## [0.3.9] - 2026-10-31
 
 ### Added
