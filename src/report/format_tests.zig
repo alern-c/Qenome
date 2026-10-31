@@ -54,3 +54,11 @@ test "wrapped text breaks at spaces within the width under its own column" {
         \\
     , writer.buffered());
 }
+
+test "a token that does not fit the hanging indent starts at the left edge" {
+    var buffer: [256]u8 = undefined;
+    var writer = Io.Writer.fixed(&buffer);
+    const path = "0123456789012345678901234567890123456789012345678901234567890123456789";
+    try writeField(&writer, "next", "qenome " ++ path);
+    try testing.expectEqualStrings("  next          qenome\n" ++ path ++ "\n", writer.buffered());
+}
