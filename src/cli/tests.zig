@@ -266,7 +266,7 @@ test "a bare invocation shows the synopsis and every missing option" {
     try testing.expectEqualStrings(
         "usage: qenome <DB> <SELECT_FILE> <INDEX_FILE> [options]\n" ++
             "       qenome --d1 <BINDING> <SELECT_FILE> <INDEX_FILE> [options]\n" ++
-            "error: missing: the database (a path, --db or --d1), the SELECT or write file (a path, --select or --write), the CREATE INDEX file (a path or --index-sql) (see --help)\n",
+            "error: missing: the database (a path, --db or --d1), the SELECT or write file (a path, --select, --sql, or --write), the CREATE INDEX file (a path or --index-sql) (see --help)\n",
         result.stderr,
     );
 }
@@ -275,7 +275,7 @@ test "the remaining required options are listed together" {
     const cases = [_]struct { argv: []const [:0]const u8, stderr: []const u8 }{
         .{
             .argv = &.{ "Qenome", "--db", "x" },
-            .stderr = "error: missing: the SELECT or write file (a path, --select or --write), the CREATE INDEX file (a path or --index-sql) (see --help)\n",
+            .stderr = "error: missing: the SELECT or write file (a path, --select, --sql, or --write), the CREATE INDEX file (a path or --index-sql) (see --help)\n",
         },
         .{
             .argv = &.{ "Qenome", "--db", "x", "--select", "y" },
@@ -402,7 +402,7 @@ test "a version after the double dash is a path" {
     try testing.expectEqual(ExitCode.usage, result.code);
     try testing.expectEqualStrings("", result.stdout);
     try testing.expectEqualStrings(
-        "error: missing: the SELECT or write file (a path, --select or --write), the CREATE INDEX file (a path or --index-sql) (see --help)\n",
+        "error: missing: the SELECT or write file (a path, --select, --sql, or --write), the CREATE INDEX file (a path or --index-sql) (see --help)\n",
         result.stderr,
     );
 }
@@ -1589,7 +1589,7 @@ test "sql text in place of a file path gets a hint" {
     try testing.expectEqual(ExitCode.rejected, result.code);
     try testing.expectEqualStrings("", result.stdout);
     try testing.expectEqualStrings(
-        "error: cannot read --select file 'SELECT 1': no such file; --select takes a path to a file holding the SQL, not the SQL text\n",
+        "error: cannot read --select file 'SELECT 1': no such file; --select takes a path to a file holding the SQL, not the SQL text. Pass --sql to give the SQL directly\n",
         result.stderr,
     );
 }
@@ -2688,7 +2688,7 @@ const batch_partial_choice_schema: [:0]const u8 =
     \\ANALYZE;
 ;
 
-test "a batch human report lists the warning and does not recommend the warned candidate when the improvement is equal" {
+test "a batch human report lists the warning and recommends fewer rows read ahead of it" {
     var fixture = try CliFixture.initWithSchema("SELECT 1", "CREATE INDEX unused ON t(id)", batch_partial_choice_schema);
     defer fixture.deinit();
     try fixture.writeFile("q.sql", "SELECT id FROM t WHERE status = ?1;");
@@ -2707,17 +2707,17 @@ test "a batch human report lists the warning and does not recommend the warned c
     try testing.expect(contains(human.stdout, "q.sql -> p.sql: bind_dependent_partial_index: "));
     try testing.expect(contains(human.stdout, "ix_p"));
     try testing.expect(!contains(human.stdout, "q.sql -> s.sql:"));
-    try testing.expect(contains(human.stdout, "\nRecommendation: s.sql\n"));
+    try testing.expect(contains(human.stdout, "\nRecommendation: p.sql\n"));
 
     const json_result = try fixture.runBatch(&.{ "--format", "json" }, &stdout_buffer, &stderr_buffer);
     try testing.expectEqual(ExitCode.ok, json_result.code);
     var parsed = try parseJson(json_result.stdout);
     defer parsed.deinit();
-    try testing.expectEqualStrings("s.sql", try jsonText(parsed.value, "recommended"));
+    try testing.expectEqualStrings("p.sql", try jsonText(parsed.value, "recommended"));
     const summary = try jsonItems(parsed.value, "summary");
     try testing.expectEqual(@as(usize, 2), summary.len);
-    try testing.expectEqualStrings("s.sql", try jsonText(summary[0], "candidate"));
-    try testing.expectEqualStrings("p.sql", try jsonText(summary[1], "candidate"));
+    try testing.expectEqualStrings("p.sql", try jsonText(summary[0], "candidate"));
+    try testing.expectEqualStrings("s.sql", try jsonText(summary[1], "candidate"));
     const results = try jsonItems(parsed.value, "results");
     const warned = try jsonItems(try jsonGet(results[0], "comparison"), "warnings");
     try testing.expectEqual(@as(usize, 1), warned.len);
@@ -4228,17 +4228,16 @@ test "a one-SELECT --suggest marks the proposal in human output" {
     try fixture.expectNoLeftovers();
 }
 
-test "--suggest with nothing to compare stops with no_candidates" {
+test "--suggest with nothing to add reports that no index is needed" {
     var fixture = try CliFixture.initWithSchema("SELECT 1", "CREATE INDEX unused ON t(a)", batch_happy_schema);
     defer fixture.deinit();
 
-    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_buffer: [8192]u8 = undefined;
     var stderr_buffer: [4096]u8 = undefined;
     const result = runSuggest(&fixture, "json", &.{}, &stdout_buffer, &stderr_buffer);
-    try testing.expectEqual(ExitCode.rejected, result.code);
-    try testing.expectEqualStrings("", result.stdout);
-    try expectJsonFailure(result.stderr, "no_candidates", 1);
-    try testing.expect(contains(result.stderr, "without --suggest"));
+    try testing.expectEqual(ExitCode.ok, result.code);
+    try testing.expect(contains(result.stdout, "\"index_needed\": false"));
+    try testing.expectEqualStrings("", result.stderr);
     try fixture.expectNoLeftovers();
 }
 

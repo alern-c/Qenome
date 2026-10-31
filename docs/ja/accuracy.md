@@ -10,6 +10,8 @@ Qenome はローカルのデータベースのサンドボックスのコピー�
 
 Qenome は同梱の SQLite（このツリーでは 3.53.4）を、Cloudflare の `workerd` の行数カウントのパッチ付きでビルドします。[NOTICE](../../NOTICE) がパッチを、[vendor/sqlite3/PROVENANCE.txt](../../vendor/sqlite3/PROVENANCE.txt) がハッシュと当て直し方を記録しています。パッチはプリペアドステートメントのカウンタを2つ、`LIBSQL_STMTSTATUS_ROWS_READ`（1025）と `LIBSQL_STMTSTATUS_ROWS_WRITTEN`（1026）を追加し、Qenome はそれを `rows_read` と `rows_written` として報告します。ローカル D1 も同じパッチで動くため、レポートはローカル D1 と同じ数え方（workerd のパッチ）になります。
 
+ローカル D1 も、1回の実行について同じ2つの値をすでに返します。`wrangler dev` では `run` と `all`（エイリアスとして文書化されています）と `batch` が、結果の `meta` に `rows_read` と `rows_written` を返します。`raw`、`first`、`exec` は返しません。`wrangler d1 execute --local --json` は、そのコマンドの `meta` に同じ値を返します。これらの数値はローカル D1 のエンジンから出ます。Qenome の数値はパッチを当てた独自のビルドから出ます。[2つのビルドはコンパイルオプションが違います](#本番-d1-と異なる点)。そのため行数は一致しないことがあります。どちらも本番 D1 の請求ではありません。[なぜ他の方法ではないのか](why-not.md)に、これらの道具がすでに渡すものと、比較が足すものを書いています。
+
 パッチは読み取りカウンタを `OP_Count`、`OP_Seek*`、`OP_NotExists`、`OP_SeekRowid`、`OP_Last`、`OP_Rewind`、`OP_Next`、`OP_VNext` で増やし、書き込みカウンタを `OP_Insert`、`OP_IdxInsert`、`OP_Delete`、`OP_Clear`、`OP_VUpdate` で増やします（ephemeral カーソルは除く）。実際には次のようになります。
 
 - **読んだ行数**は、スキャンがたどる行とインデックスのエントリを数えます。位置決めの操作（`OP_Seek*`、`OP_NotExists`、`OP_SeekRowid`、`OP_Last`、`OP_Rewind`）は試行1回につき1を加え、行が見つからない場合も数えることがあります。`OP_Count` は返す行数を加えます。
@@ -26,13 +28,13 @@ Qenome は同梱の SQLite（このツリーでは 3.53.4）を、Cloudflare の
 
 | 判定 | 意味 |
 | --- | --- |
-| `improved` | 結果の行が一致し、variant の読んだ行数が減り、variant の書いた行数が増えていない。 |
-| `no-effect` | 結果の行が一致し、両方のコピーの読んだ行数が同じで、variant の書いた行数が増えていない。 |
+| `improved` | 結果の行が一致し、variant の読んだ行数が baseline より少なくとも 1% 少なく、variant の書いた行数が増えていない。 |
+| `no-effect` | 結果の行が一致し、variant の読んだ行数が 1% 以上は減っていない。同じ行数も、それより小さい減少も、ここになる。variant の書いた行数は増えていない。それより小さい減少は `verdict_reasons` に書く。 |
 | `needs-check` | 結果の行は一致するが、variant の読んだ行数か書いた行数が増えた。 |
 | `regressed` | 結果の行は一致するが、マイグレーションで variant の読んだ行数か書いた行数が増えた。`--migration` の batch だけで、不一致・変更の拒否・時間切れ・比較不能が優先されない場合に batch の終了コードが `6` になる。 |
 | `not-judged` | 結果の行が違う、比較できない、または `--migration` で variant だけでしか実行できないクエリ。実行されなかった `--write` にも使う。 |
 
-判定は `rows_read` と `rows_written` で決まります。時間は参考値で、判定も終了コードも変えません。そのため `--runs 0` でも判定は残り、計時だけを省きます。
+判定は `rows_read` と `rows_written` で決まります。時間は参考値で、判定も終了コードも変えません。そのため `--runs 0` でも判定は残り、計時だけを省きます。baseline の `rows_read` の 1% 未満の減少は `improved` になりません。[意味のある最小の改善](#意味のある最小の改善)を参照してください。
 
 `result` は結果の行を比較できたかを表します。
 
@@ -55,6 +57,20 @@ Qenome は同梱の SQLite（このツリーでは 3.53.4）を、Cloudflare の
 
 `data_too_small` のとき、human の Summary はクエリ計画の前に `data` と `next` を足します。`data` はテーブル名と行数です。baseline の計画がそのテーブルの素の `SCAN` なら、フルスキャンはすべての行を読むので、小さい `rows_read` はインデックスがなくても無害だという意味ではない、と書きます。`next` は同じファイルに `--seed-data seed.json --scale 1000,10000` を付けたコマンドです。`--d1` のときは `--d1` とバインディングを使います。`--suggest` では、提案された SQL を先に `index.sql` として保存するよう書きます。`--scale` は `--suggest` や `--batch` と併用できないためです。候補のテーブルがその大きさのとき、`Recommendation:` の下にも同じ注意を出します。JSON の警告は `code` と `message` を保ったまま `table`、`rows`、`full_scan`、`next_command` を足します。`schema_version` は `2` のままです。判定は行数の比較のままなので、読んだ行が減るインデックスは `improved` のままです。[testdata/accuracy/scale-full-scan/](../../testdata/accuracy/scale-full-scan/) が既知の答えです。100 行では baseline のスキャンが少ししか読まず `data_too_small` を出し、10,000 行では同じスキャンの `rows_read` が少なくとも 10 倍になります。
 
+## 意味のある最小の改善
+
+`improved` になるには、variant の読んだ行数が baseline より少なくとも 1% 少なくなければなりません。判定は 2 つの `rows_read` を整数で比べます。`(baseline - variant) * 100 >= baseline` です。数え始める最小の減少は、baseline の 100 行につき 1 行で、端数は切り上げます。ちょうど 1% の減少は `improved` です。それより小さい減少は `no-effect` で、`verdict_reasons` に、baseline の読んだ行数の 1% 未満だと書きます。カウンタの値はそのままレポートに残り、`schema_version` は `2` のままです。
+
+同じ判定を `--write` の比較と、`--migration` の batch の書き込み文にも使います。読んだ行数が増えた場合は、これまでどおり `needs-check`、その batch では `regressed` です。SELECT で書いた行数が増えた場合も、これまでどおり `needs-check` です。マイグレーションの書き込みでは、書いた行数は報告するだけで、判定は変えません。
+
+1% は固定の目安で、`data_too_small` の警告が 1,000 行を使うのと同じ種類です。コマンドラインのフラグではありません。`rows_read` は両方とも表示したままなので、別の基準で読み直せます。小さいテーブルの点検索は `improved` のままです。100 行が 1 行になる減少は 1% を大きく超えるためです。100 行のような絶対数の下限にすると、その点検索が `no-effect` になります。[行数の数え方](#行数の数え方)の位置決めは試行 1 回につき 1 を足すので、大きいスキャンで 1 行だけ違う差はその 1 と同じ大きさであり、インデックスを残す理由にはしません。
+
+精度コーパスには、この規則の既知の答えが 3 つあります。
+
+- [testdata/accuracy/one-row-gain-of-50000/](../../testdata/accuracy/one-row-gain-of-50000/) は baseline が 50,000 行、variant が 49,999 行を読みます。判定は `no-effect` です。
+- [testdata/accuracy/one-percent-gain-of-50000/](../../testdata/accuracy/one-percent-gain-of-50000/) は baseline が 50,000 行、variant が 49,500 行を読みます。ちょうど 1% で、判定は `improved` です。
+- [testdata/accuracy/clear-gain-equality/](../../testdata/accuracy/clear-gain-equality/) は、同じ 50,000 行のテーブルに対する等値検索です。variant は 26 行を読み、判定は `improved` です。
+
 ## 本番 D1 と異なる点
 
 結果はローカルのコピーの測定値です。本番の結果は、次のどれかの理由で変わります。
@@ -66,7 +82,7 @@ Qenome は同梱の SQLite（このツリーでは 3.53.4）を、Cloudflare の
 - **実際のトラフィック。** Qenome は渡したバインド値でクエリを実行します。本番では別の値で、それぞれの頻度で実行され、独自のキャッシュと同時書き込みがあります。`d1 insights` の `avgRowsRead` は、その期間に実行された値全体の平均で、1つの値の行数ではありません。
 - **書き込み。** 書き込みカウンタはセカンダリインデックスの削除を数えません（[行数の数え方](#行数の数え方)を参照）。そのため、古いインデックスのエントリを消す `DELETE` や `UPDATE` は、インデックス更新の全コストより少なく報告します。
 - **スキーマ。** ローカルの D1 データベースは、wrangler の設定にあるマイグレーションより古いことがあります。`unapplied_migrations` の警告は、適用されていないマイグレーションのファイルを一覧にします。そのスキーマでの結果は、インデックスの効果を隠すことがあります。
-- **請求。** D1 は独自のカウンタで請求します。Qenome はローカルのコピーで `sqlite3_stmt_status` を読み、本番のカウンタは読みません。そのため、レポートから D1 の請求額は分かりません。
+- **請求。** D1 は独自のカウンタで請求します。Qenome はローカルのコピーで `sqlite3_stmt_status` を読み、本番のカウンタは読みません。そのため、レポートから D1 の請求額は分かりません。ここでの `rows_read` が小さいことは、請求が小さいことではありません。
 
 ## 本番と自分で照合する方法
 

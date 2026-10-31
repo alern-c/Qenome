@@ -1,0 +1,107 @@
+name: automerge
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+      - edited
+      - labeled
+      - unlabeled
+      - auto_merge_enabled
+
+permissions:
+  contents: read
+
+concurrency:
+  group: automerge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  automerge-guard:
+    name: automerge-guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Decide whether this pull request is excluded
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: python3 scripts/automerge_guard.py --pull-request "$PR_NUMBER" --base "$BASE_SHA"
+
+  enable-automerge:
+    name: enable-automerge
+    needs: automerge-guard
+    if: needs.automerge-guard.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Enable auto-merge only for a labeled same-repository pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HAS_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'automerge') && !(github.event.action == 'unlabeled' && github.event.label.name == 'automerge') }}
+          IS_DRAFT: ${{ github.event.pull_request.draft }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          THIS_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          want=no
+          if [ "$HAS_LABEL" = "true" ] && [ "$IS_DRAFT" = "false" ] && [ "$HEAD_REPO" = "$THIS_REPO" ]; then
+            want=yes
+          fi
+          method="$(gh pr view "$PR_NUMBER" --json autoMergeRequest --jq '.autoMergeRequest.mergeMethod // "none"')"
+          if [ "$want" = "yes" ]; then
+            if [ "$method" = "SQUASH" ]; then
+              echo "Auto-merge is already enabled with squash."
+            else
+              if [ "$method" != "none" ]; then
+                gh pr merge "$PR_NUMBER" --disable-auto
+              fi
+              gh pr merge "$PR_NUMBER" --auto --squash
+            fi
+          else
+            if [ "$method" != "none" ]; then
+              gh pr merge "$PR_NUMBER" --disable-auto
+            else
+              echo "Auto-merge stays off."
+            fi
+          fi
+
+  disable-automerge:
+    name: disable-automerge
+    needs: automerge-guard
+    if: always() && needs.automerge-guard.result == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Turn auto-merge off for an excluded pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          method="$(gh pr view "$PR_NUMBER" --json autoMergeRequest --jq '.autoMergeRequest.mergeMethod // "none"')"
+          if [ "$method" != "none" ]; then
+            gh pr merge "$PR_NUMBER" --disable-auto
+          else
+            echo "Auto-merge was not enabled."
+          fi

@@ -1,6 +1,7 @@
 const std = @import("std");
 const db = @import("../db.zig");
 const result = @import("../result.zig");
+const contract = @import("../contract/values.zig");
 
 pub const PlanRow = db.PlanRow;
 
@@ -106,6 +107,10 @@ pub fn decide(
         switch (failure) {
             .over_budget => outcome.addReason(over_budget_reason, "narrow the rows with WHERE (not LIMIT) and run again"),
             .out_of_memory => outcome.addReason("out of memory while keeping the result rows", null),
+            .too_big => outcome.addReason(
+                "a string or blob in the result exceeds SQLite's length limit",
+                "select fewer or shorter columns, then run again",
+            ),
         }
         return outcome;
     }
@@ -188,6 +193,21 @@ pub const Judgement = struct {
     }
 };
 
+fn meaningfulReadReduction(baseline: u32, variant: u32) bool {
+    if (variant >= baseline) return false;
+    const saved: u64 = baseline - variant;
+    return saved * 100 >= @as(u64, baseline) * contract.min_read_gain_percent;
+}
+
+fn applyReadReduction(judgement: *Judgement, baseline_read: u32, variant_read: u32) void {
+    if (meaningfulReadReduction(baseline_read, variant_read)) {
+        judgement.verdict = .improved;
+        return;
+    }
+    judgement.verdict = .no_effect;
+    if (variant_read < baseline_read) judgement.add(contract.below_min_read_gain_reason);
+}
+
 pub fn judgeRows(before: Measurement, after: Measurement) Judgement {
     return judgeRowsWith(before, after, .needs_check);
 }
@@ -205,11 +225,7 @@ pub fn judgeMigrationWrite(before: Measurement, after: Measurement) Judgement {
     } else if (variant.rows_written < baseline.rows_written) {
         judgement.add("the rows match, and the variant writes fewer rows; rows written is reported and does not change the verdict");
     }
-    if (variant.rows_read == baseline.rows_read) {
-        judgement.verdict = .no_effect;
-        return judgement;
-    }
-    judgement.verdict = .improved;
+    applyReadReduction(&judgement, baseline.rows_read, variant.rows_read);
     return judgement;
 }
 
@@ -231,11 +247,7 @@ pub fn judgeRowsWith(before: Measurement, after: Measurement, worsening: Worseni
             "the rows match and the variant reads fewer rows, but the variant writes more rows");
         return judgement;
     }
-    if (variant.rows_read == baseline.rows_read) {
-        judgement.verdict = .no_effect;
-        return judgement;
-    }
-    judgement.verdict = .improved;
+    applyReadReduction(&judgement, baseline.rows_read, variant.rows_read);
     return judgement;
 }
 
@@ -304,6 +316,29 @@ test "judgeRows a variant that reads fewer rows is improved" {
     try expectJudgement(.improved, null, judgeRows(testMeasurement(201, 4), testMeasurement(1, 0)));
 }
 
+test "judgeRows a reduction below 1 percent of the baseline is no-effect" {
+    try expectJudgement(.no_effect, "below 1%", judgeRows(testMeasurement(50_000, 0), testMeasurement(49_999, 0)));
+    try expectJudgement(.no_effect, "below 1%", judgeRows(testMeasurement(50_000, 0), testMeasurement(49_501, 0)));
+    try expectJudgement(.no_effect, "below 1%", judgeRows(testMeasurement(101, 0), testMeasurement(100, 0)));
+    try expectJudgement(.no_effect, "below 1%", judgeRowsWith(testMeasurement(50_000, 0), testMeasurement(49_999, 0), .regressed));
+}
+
+test "judgeRows a reduction of at least 1 percent is improved" {
+    try expectJudgement(.improved, null, judgeRows(testMeasurement(50_000, 0), testMeasurement(49_500, 0)));
+    try expectJudgement(.improved, null, judgeRows(testMeasurement(100, 0), testMeasurement(99, 0)));
+    try expectJudgement(.improved, null, judgeRows(testMeasurement(200, 0), testMeasurement(198, 0)));
+    try expectJudgement(.improved, null, judgeRows(testMeasurement(50_000, 0), testMeasurement(201, 0)));
+}
+
+test "judgeRows a tiny read reduction that writes more stays needs-check" {
+    try expectJudgement(.needs_check, "writes more", judgeRows(testMeasurement(50_000, 0), testMeasurement(49_999, 1)));
+}
+
+test "judgeMigrationWrite applies the same read reduction minimum" {
+    try expectJudgement(.no_effect, "below 1%", judgeMigrationWrite(testMeasurement(50_000, 1), testMeasurement(49_999, 1)));
+    try expectJudgement(.improved, null, judgeMigrationWrite(testMeasurement(50_000, 1), testMeasurement(49_500, 1)));
+}
+
 test "judgeRows the same read count is no-effect whatever the times" {
     try expectJudgement(.no_effect, null, judgeRows(testMeasurement(1000, 0), testMeasurement(1000, 0)));
     try expectJudgement(.no_effect, null, judgeRows(testMeasurement(1000, 7), testMeasurement(1000, 2)));
@@ -344,6 +379,7 @@ test "a collector failure is incomparable with its reason" {
     const expected = [_]struct { failure: result.CollectFailure, reason: []const u8 }{
         .{ .failure = .over_budget, .reason = "the result rows exceed the 64 MiB" },
         .{ .failure = .out_of_memory, .reason = "out of memory while keeping the result rows" },
+        .{ .failure = .too_big, .reason = "exceeds SQLite's length limit" },
     };
     for (expected) |entry| {
         var budget: result.Budget = .{};

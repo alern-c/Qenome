@@ -16,6 +16,22 @@ const Outcome = model.Outcome;
 const Plan = model.Plan;
 const PlanRow = model.PlanRow;
 const TimeEffect = model.TimeEffect;
+const improved_select = std.fmt.comptimePrint(
+    "improved: the rows match and at least {d}% fewer rows were read",
+    .{contract.min_read_gain_percent},
+);
+const improved_write = std.fmt.comptimePrint(
+    "improved: the RETURNING rows match and at least {d}% fewer rows were read",
+    .{contract.min_read_gain_percent},
+);
+const below_min_select = std.fmt.comptimePrint(
+    "no-effect: the rows match, but the read reduction is below {d}%",
+    .{contract.min_read_gain_percent},
+);
+const below_min_write = std.fmt.comptimePrint(
+    "no-effect: the RETURNING rows match, but the read reduction is below {d}%",
+    .{contract.min_read_gain_percent},
+);
 const line_width = format.line_width;
 const value_column = format.value_column;
 const d1_caution = format.d1_caution;
@@ -144,15 +160,17 @@ fn writeOverview(
         try writeField(stdout, "write runs", rows_text.buffered());
     }
     const writing = header.write_path != null;
+    const same_reads = before.counters.rows_read == after.counters.rows_read;
     try writeField(stdout, "verdict", switch (report.judgement.verdict) {
-        .improved => if (writing)
-            "improved: the RETURNING rows match, and the variant reads fewer rows without writing more"
-        else
-            "improved: the rows match, and the variant reads fewer rows",
-        .no_effect => if (writing)
+        .improved => if (writing) improved_write else improved_select,
+        .no_effect => if (writing and same_reads)
             "no-effect: the RETURNING rows match, and both copies read and write the same rows"
+        else if (writing)
+            below_min_write
+        else if (same_reads)
+            "no-effect: the rows match, and the variant reads the same rows"
         else
-            "no-effect: the rows match, and the variant reads the same rows",
+            below_min_select,
         .needs_check => "needs-check:",
         .regressed => "regressed:",
         .not_judged => "not-judged:",
