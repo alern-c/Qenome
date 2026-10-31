@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- When a candidate table has fewer than 1,000 rows, the human Summary names the table and a `--seed-data` plus `--scale` command, and the JSON warning adds `table`, `rows`, `full_scan`, and `next_command`. `schema_version` stays 2. `--batch` and `--suggest` print the same note under `Recommendation:`. The verdict does not change. A full scan that reads little at 100 rows and much more at 10,000 is covered by `testdata/accuracy/scale-full-scan/`.
+
 ## [0.3.9] - 2026-10-31
 
 ### Added

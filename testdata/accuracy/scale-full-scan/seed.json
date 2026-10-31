@@ -1,0 +1,13 @@
+{
+  "seed": 1,
+  "tables": {
+    "events": {
+      "rows": 100,
+      "columns": {
+        "id": { "kind": "sequence" },
+        "customer_id": { "kind": "sequence" },
+        "note": { "kind": "fixed", "value": "n" }
+      }
+    }
+  }
+}

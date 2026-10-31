@@ -51,6 +51,10 @@ pub const CandidateSummary = struct {
     partial_index_warnings: u64 = 0,
     no_analyze_stats: bool = false,
     data_too_small: bool = false,
+    small_table: []const u8 = "",
+    small_rows: u64 = 0,
+    small_full_scan: bool = false,
+    small_select: []const u8 = "",
     size_increase: i128 = 0,
 };
 

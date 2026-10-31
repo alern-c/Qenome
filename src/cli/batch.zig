@@ -538,6 +538,8 @@ pub fn run(
 
         summary.no_analyze_stats = warnings.no_analyze_stats;
         summary.data_too_small = warnings.data_too_small;
+        summary.small_table = if (warnings.data_too_small) tables[index] else "";
+        summary.small_rows = warnings.rows;
 
         var variant: QuerySession = .{};
         var variant_done = false;
@@ -680,6 +682,17 @@ pub fn run(
                 },
             }
             report.warnings = .{ .no_analyze_stats = warnings.no_analyze_stats, .data_too_small = warnings.data_too_small };
+            var scan = false;
+            for (before.plan.rows) |row| scan = scan or cli_warnings.bareScan(row.detail, tables[index]);
+            if (scan) summary.small_full_scan = true;
+            if (summary.small_select.len == 0) summary.small_select = query.label;
+            cli_warnings.attachSmallData(child, &report.warnings, tables[index], warnings.rows, scan, .{
+                .database = inputs.database_path,
+                .binding = if (inputs.d1) |d1| d1.binding else null,
+                .select_path = query.label,
+                .index_path = candidate.label,
+                .suggested = candidate.source == .suggested,
+            }) catch return outOfMemoryCode(stderr);
             const partial_index = variant.database.findBindDependentPartialIndex(child, after.plan, query.sql, query.binds, &control) catch null;
             report.warnings.bind_dependent_partial_index = partial_index;
             report.sizes = .{ .baseline = baseline_size, .variant = variant_size };
@@ -1419,6 +1432,17 @@ fn writeBatchHuman(
         try stdout.writeAll("none");
     }
     try stdout.writeByte('\n');
+    if (smallRankingIndex(summaries, recommended)) |index| {
+        const summary = summaries[index];
+        const select_path = if (summary.small_select.len != 0) summary.small_select else "select.sql";
+        try cli_warnings.writeSmallDataRanking(stdout, allocator, summary.small_table, summary.small_rows, summary.small_full_scan, .{
+            .database = std.fs.path.basename(inputs.database_path),
+            .binding = if (inputs.d1) |d1| d1.binding else null,
+            .select_path = std.fs.path.basename(select_path),
+            .index_path = candidate_names[index],
+            .suggested = summary.source == .suggested,
+        });
+    }
 
     try stdout.writeAll("\nResults\n  ");
     try writeCell(stdout, "query", query_width);
@@ -1468,8 +1492,12 @@ fn writeBatchHuman(
     if (writes.len != 0) try report_batch_writes.writeHuman(stdout, allocator, writes);
 
     var candidate_warnings: std.ArrayList(cli_warnings.CandidateWarning) = .empty;
-    defer candidate_warnings.deinit(allocator);
-    try appendCandidateWarnings(allocator, &candidate_warnings, summaries, candidate_names, order);
+    defer {
+        for (candidate_warnings.items) |entry| if (entry.owned) allocator.free(entry.message);
+        candidate_warnings.deinit(allocator);
+    }
+    const binding = if (inputs.d1) |d1| d1.binding else null;
+    try appendCandidateWarnings(allocator, &candidate_warnings, summaries, candidate_names, order, inputs.database_path, binding);
 
     var comparisons: std.ArrayList(cli_warnings.Comparison) = .empty;
     defer comparisons.deinit(allocator);
@@ -1521,25 +1549,45 @@ fn writeBatchHuman(
     try cli_warnings.writeRunWarnings(stdout, warnings);
 }
 
+fn smallRankingIndex(summaries: []const CandidateSummary, recommended: ?usize) ?usize {
+    if (recommended) |index| if (summaries[index].small_table.len != 0) return index;
+    for (summaries, 0..) |summary, index| if (summary.small_table.len != 0) return index;
+    return null;
+}
+
 fn appendCandidateWarnings(
     allocator: std.mem.Allocator,
     list: *std.ArrayList(cli_warnings.CandidateWarning),
     summaries: []const CandidateSummary,
     candidate_names: []const []const u8,
     order: []const usize,
+    database: []const u8,
+    binding: ?[]const u8,
 ) !void {
     for (order) |index| {
         const summary = summaries[index];
         if (summary.status != .compared) continue;
-        const active = [_]bool{ summary.no_analyze_stats, summary.data_too_small };
-        for (active, contract.warning_codes, contract.warning_messages) |on, code, message| {
-            if (!on) continue;
-            try list.append(allocator, .{
-                .candidate = candidate_names[index],
-                .code = code,
-                .message = message,
-            });
-        }
+        if (summary.no_analyze_stats) try list.append(allocator, .{
+            .candidate = candidate_names[index],
+            .code = contract.code.no_analyze_stats,
+            .message = contract.warning_messages[0],
+        });
+        if (!summary.data_too_small) continue;
+        const owned = summary.small_table.len != 0;
+        const select_path = if (summary.small_select.len != 0) summary.small_select else "select.sql";
+        const message = if (!owned) contract.warning_messages[1] else try cli_warnings.smallDataMessage(allocator, summary.small_table, summary.small_rows, summary.small_full_scan, .{
+            .database = std.fs.path.basename(database),
+            .binding = binding,
+            .select_path = std.fs.path.basename(select_path),
+            .index_path = candidate_names[index],
+            .suggested = summary.source == .suggested,
+        });
+        try list.append(allocator, .{
+            .candidate = candidate_names[index],
+            .code = contract.code.data_too_small,
+            .message = message,
+            .owned = owned,
+        });
     }
 }
 
@@ -1795,7 +1843,7 @@ test "a compared candidate keeps its warnings even when every query timed out" {
     const order = [_]usize{ 0, 1, 2 };
     var list: std.ArrayList(cli_warnings.CandidateWarning) = .empty;
     defer list.deinit(arena_state.allocator());
-    try appendCandidateWarnings(arena_state.allocator(), &list, &summaries, &names, &order);
+    try appendCandidateWarnings(arena_state.allocator(), &list, &summaries, &names, &order, "db.sqlite", null);
     try testing.expectEqual(@as(usize, 3), list.items.len);
     try testing.expectEqualStrings("a.sql", list.items[0].candidate);
     try testing.expectEqualStrings(contract.code.no_analyze_stats, list.items[0].code);

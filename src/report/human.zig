@@ -39,7 +39,12 @@ fn writeHumanWarnings(stdout: *Io.Writer, allocator: std.mem.Allocator, warnings
     try stdout.writeAll("\nWarnings\n");
     const enabled = [_]bool{ warnings.no_analyze_stats, warnings.data_too_small };
     for (enabled, contract.warning_codes, contract.warning_messages) |active, code, message| {
-        if (active) try writeHumanWarning(stdout, allocator, code, message);
+        if (!active) continue;
+        const text = if (std.mem.eql(u8, code, contract.code.data_too_small))
+            if (warnings.small_data) |detail| detail.message else message
+        else
+            message;
+        try writeHumanWarning(stdout, allocator, code, text);
     }
     if (warnings.bind_dependent_partial_index) |name| {
         const message = try cli_warnings.bindDependentPartialIndexMessage(allocator, name);
@@ -157,6 +162,17 @@ fn writeOverview(
         try stdout.writeAll("- ");
         try writeWrapped(stdout, reason, value_column + 2, value_column + 2);
         try stdout.writeByte('\n');
+    }
+    if (report.warnings.small_data) |detail| {
+        var buffer: [768]u8 = undefined;
+        var text = Io.Writer.fixed(&buffer);
+        const scan = if (detail.full_scan) " A full scan reads every row, so this count does not mean a missing index is harmless." else "";
+        if (text.print("{s} has {d} rows, fewer than 1000 rows.{s}", .{ detail.table, detail.rows, scan })) {
+            try writeField(stdout, "data", text.buffered());
+        } else |_| {
+            try writeField(stdout, "data", "TOO SMALL: fewer than 1000 rows");
+        }
+        try writeField(stdout, "next", detail.next_command);
     }
     try writeField(stdout, "query plan", if (cli_comparison.samePlan(before.plan, after.plan))
         "the same on both copies"
