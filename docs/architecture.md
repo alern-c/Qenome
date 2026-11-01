@@ -6,7 +6,7 @@ The target dependency order is:
 
 A lower layer never imports a higher one. `d1/` and `skill/` are independent components outside the chain: each sits at the rank of the layer it may import, and the layers above that rank may import it. Modes only return report data; only `report/` and `cli/` write to stdout or stderr.
 
-Folders and files that exist now (v0.3.9):
+Folders and files that exist now (v0.4.0):
 
 | Layer | Path |
 | --- | --- |
