@@ -1,6 +1,15 @@
 # Contributing to Qenome
 
-`README.md` and the pages under `docs/` are the user guide. This file holds the build-from-source Quick start, the checks that CI runs, and how to update the golden test output. `AGENTS.md` records the repository rules and the workflow from branch to PR (language, dependencies, architecture, comments, and the PR body in `.github/pull_request_template.md`).
+`README.md` and the pages under `docs/` are the user guide. This file holds how to report an issue, the build-from-source Quick start, the checks that CI runs, and how to update the golden test output. `AGENTS.md` records the repository rules and the workflow from branch to PR (language, dependencies, architecture, comments, and the PR body in `.github/pull_request_template.md`).
+
+## Issues and pull requests
+
+A pull request is accepted only from an approved maintainer or collaborator, and one from an outside contributor is not. If you come from outside the project, report what you found in an issue instead.
+
+Open a bug or a suggestion in [Issues](https://github.com/alern-c/Qenome/issues) with the smallest material that shows the point: a schema and a query are enough, and nothing secret, personal or from production goes in the report.
+
+- Bug: the output of `qenome --version`, the command you ran, the result you expected and the result you got, and the smallest schema and query that reproduce it.
+- Suggestion: what is awkward today, in which query or situation, and what the tool does not give you.
 
 ## Build from source
 
@@ -81,7 +90,7 @@ The first database build takes about a second, and the whole walkthrough about s
 
 ## Workflow
 
-The steps follow the work, and each one produces the material for one section of the pull request. The body comes from `.github/pull_request_template.md`.
+The steps follow the work, and each one produces the material for one section of the pull request. The body comes from `.github/pull_request_template.md`. They are for the people allowed to open a pull request (see [Issues and pull requests](#issues-and-pull-requests)).
 
 1. Problem (PR section 1): before changing anything, write down who is affected, what goes wrong and what happens if it is left alone. Create one branch per issue from an up-to-date `origin/main`, named `<type>/<short-name>` with `<type>` one of `feat`, `fix`, `docs`, `test`, `refactor`, `perf`, `build`, `ci` or `chore`; leave the issue number out of the name.
 2. Approaches (PR section 3): before implementing, list the approaches really considered and compare them on the same points, starting with whether each solves the problem. A purely mechanical change says why there is no comparison.
