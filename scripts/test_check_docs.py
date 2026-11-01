@@ -28,6 +28,7 @@ One line.
 - [Features](#features)
 - [Installation](docs/installation.md)
 - [Check a local D1](docs/local-d1.md)
+- [My D1 bill spiked](docs/bill-spiked.md)
 - [Use with AI agents](docs/agents.md)
 - [Why not ...](docs/why-not.md)
 - [Usage](docs/usage.md)
@@ -67,6 +68,7 @@ npm install -g qenome
 - [特徴](#特徴)
 - [インストール](docs/ja/installation.md)
 - [ローカル D1 を調べる](docs/ja/local-d1.md)
+- [D1 の請求が跳ねたとき](docs/bill-spiked.md)
 - [AI エージェントと使う](docs/ja/agents.md)
 - [なぜ他の方法ではないのか](docs/ja/why-not.md)
 - [使い方](docs/ja/usage.md)
@@ -143,6 +145,7 @@ PAGE_BODIES = {
 UNPAIRED = {
     "docs/architecture.md": "# Architecture\n\nText.\n",
     "docs/automerge.md": "# Auto-merge\n\nText.\n",
+    "docs/bill-spiked.md": "# My D1 bill spiked\n",
     "docs/json.md": "# JSON\n\nText.\n",
     "docs/npm.md": "# npm\n\nText.\n",
 }
@@ -335,6 +338,11 @@ def main():
     case(
         "the contents must stay in one language tree",
         lambda root: replace(root, "README.md", "docs/installation.md", "docs/ja/installation.md"),
+        "the contents link to the other language",
+    )
+    case(
+        "the Japanese contents do not link to a paired English page",
+        lambda root: replace(root, "README.ja.md", "docs/ja/usage.md", "docs/usage.md"),
         "the contents link to the other language",
     )
 

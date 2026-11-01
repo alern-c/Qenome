@@ -73,6 +73,7 @@ To try Qenome without installing it, run `npx qenome`. Windows is not an npm tar
 - [Features](#features)
 - [Installation details](docs/installation.md): npm, prebuilt binaries, checksums, and a build from source
 - [Check a local D1](docs/local-d1.md): the first comparison, from a wrangler project
+- [My D1 bill spiked](docs/bill-spiked.md): find the missing index from a rows-read jump
 - [Use with AI agents](docs/agents.md): the skill, the JSON report, and the install commands
 - [Why not ...](docs/why-not.md): what EXPLAIN QUERY PLAN, `wrangler dev`, and `d1 insights` already give you
 - [Usage](docs/usage.md): every option, writes, seed data, and D1 local databases

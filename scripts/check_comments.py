@@ -22,6 +22,7 @@ EXCLUDED_FILES = [
     "docs/architecture.md",
     "docs/automerge.md",
     "docs/batch.md",
+    "docs/bill-spiked.md",
     "docs/demo-candidates.gif",
     "docs/demo-migration.gif",
     "docs/demo-suggest.gif",

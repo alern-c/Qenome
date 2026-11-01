@@ -73,6 +73,7 @@ qenome --version
 - [特徴](#特徴)
 - [インストールの詳細](docs/ja/installation.md): npm、ビルド済みバイナリ、チェックサム、ソースからのビルド
 - [ローカル D1 を調べる](docs/ja/local-d1.md): wrangler プロジェクトでの最初の比較
+- [D1 の請求が跳ねたとき](docs/bill-spiked.md): 読んだ行数の跳ねから足りないインデックスを探す。本文は英語です
 - [AI エージェントと使う](docs/ja/agents.md): スキル、JSON レポート、インストールのコマンド
 - [なぜ他の方法ではないのか](docs/ja/why-not.md): EXPLAIN QUERY PLAN、`wrangler dev`、`d1 insights` がすでに渡すもの
 - [使い方](docs/ja/usage.md): すべてのオプション、書き込み、シードデータ、D1 のローカルデータベース
