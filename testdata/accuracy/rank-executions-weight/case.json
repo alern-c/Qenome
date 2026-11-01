@@ -1,0 +1,17 @@
+{
+  "description": "When the manifest records how many times each query ran, rows read times that count outranks a query that ran once.",
+  "args": ["--rank"],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "rank": {
+      "likely_full_scans": 0,
+      "first": "a.sql",
+      "note": "not a bill"
+    },
+    "human": {
+      "contains": ["#1  a.sql", "runs: 40", "rows read x runs (not a bill)"],
+      "excludes": ["flag: likely full scan"]
+    }
+  }
+}

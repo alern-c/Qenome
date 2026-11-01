@@ -21,7 +21,7 @@ kv は全項目を1行1項目の `key: value` で出し、スクリプトとロ�
 
 ## json
 
-json は、比較が終わったときに stdout へ JSON オブジェクトを1個だけ（末尾改行付きで）出します。`--batch` のときは、上記で説明した別の `batch_schema_version` 1 のオブジェクトを出します（「まとめて比べる（--batch）」と [docs/json.md](../json.md) を参照）。`--scale` のときは、サイズごとの比較を並べた別の `scale_schema_version` 1 のオブジェクトを出します（[複数のサイズで測る](usage.md#複数のサイズで測る--scale)を参照）。`--seed-data` のときは、どちらのオブジェクトにもトップレベルの `seed_data` が加わります。フィールド（次のコア変更で予約している名前を含む）は [docs/json.md](../json.md) が仕様です。入力拒否・時間上限・中断のときは stdout を空のままにします。`--format json` のとき、stderr は JSON オブジェクト1個です（`schema_version`、`exit_code`、`error` の `code` / `message` / `hint`）。`human` と `kv` はテキストの `error:` 行のままです。
+json は、比較が終わったときに stdout へ JSON オブジェクトを1個だけ（末尾改行付きで）出します。`--batch` のときは、上記で説明した別の `batch_schema_version` 1 のオブジェクトを出します（「まとめて比べる（--batch）」と [docs/json.md](../json.md) を参照）。`--batch --rank` のときは、`schema_version` 2 と `rank_schema_version` 1 を持つオブジェクトを出します。読んだ行数、返した行数、その比、フルスキャンのステップ数、そして請求ではない相対指標としての `rows read x runs` です（「baseline の読み取りを順位づける（--rank）」を参照）。`--scale` のときは、サイズごとの比較を並べた別の `scale_schema_version` 1 のオブジェクトを出します（[複数のサイズで測る](usage.md#複数のサイズで測る--scale)を参照）。`--seed-data` のときは、どちらのオブジェクトにもトップレベルの `seed_data` が加わります。フィールド（次のコア変更で予約している名前を含む）は [docs/json.md](../json.md) が仕様です。入力拒否・時間上限・中断のときは stdout を空のままにします。`--format json` のとき、stderr は JSON オブジェクト1個です（`schema_version`、`exit_code`、`error` の `code` / `message` / `hint`）。`human` と `kv` はテキストの `error:` 行のままです。
 
 判定はトップレベルの `verdict` で読めます。
 
@@ -95,6 +95,7 @@ fi
 | 4 | 結果を比較できない、`--write` がスキーマ・現在時刻・非決定的な関数を読むため実行されなかった、または `--d1` がローカルデータベースをちょうど1つに決められない（設定が無い、設定が複数、設定が読めない・不正、バインディングが不明か重複、database id が無い、ローカルファイルが未作成、ローカルファイルを開けない） |
 | 5 | 比較のあとの後片付けに失敗した（0 のときだけ置き換え、それ以外のコードはそのまま） |
 | 6 | `--migration` で結果の行は一致したが、クエリの読んだ行数か書いた行数が増えた、または書き込み文の読んだ行数が増えた。`--migration` の batch だけが返す |
+| 7 | `--rank` で報告を書けて、likely full scan のクエリが1件以上あった。1件も無ければ `0`。後片付けの失敗が置き換えるのは `0` だけなので、`7` はそのまま |
 | 124 | 時間上限に達した（`--timeout-ms`） |
 | 129 / 130 / 143 | `SIGHUP` / `SIGINT` / `SIGTERM` による中断（POSIX） |
 

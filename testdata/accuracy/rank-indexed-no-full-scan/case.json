@@ -1,0 +1,16 @@
+{
+  "description": "A manifest whose queries all use an index reports no likely full scan.",
+  "args": ["--rank"],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "rank": {
+      "likely_full_scans": 0,
+      "note": "not a bill"
+    },
+    "human": {
+      "contains": ["likely full scans: 0", "not a bill"],
+      "excludes": ["flag: likely full scan"]
+    }
+  }
+}

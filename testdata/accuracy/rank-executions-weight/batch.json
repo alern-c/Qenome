@@ -1,0 +1,6 @@
+{
+  "queries": [
+    { "select": "b.sql", "executions": 1 },
+    { "select": "a.sql", "executions": 40 }
+  ]
+}

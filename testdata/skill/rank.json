@@ -1,0 +1,6 @@
+{
+  "queries": [
+    { "select": "by_id.sql" },
+    { "select": "scan.sql" }
+  ]
+}

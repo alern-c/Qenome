@@ -24,6 +24,14 @@ pub const body =
     \\                       UNIQUE and PRIMARY KEY indexes that are kept for
     \\                       their constraint; it needs --batch and does not
     \\                       take --suggest, --migration, or --seed-data
+    \\  --rank               with --batch, measure every SELECT on the baseline
+    \\                       and rank it by rows read. executions, written by
+    \\                       --record or by hand, multiplies rows read; that
+    \\                       product is a relative indicator, not a bill. A
+    \\                       likely full scan is flagged and the run exits 7
+    \\                       when any query is flagged. candidates and writes
+    \\                       are ignored. It needs --batch and does not take
+    \\                       --suggest, --migration, or --audit-indexes
     \\  --record <FILE>      read the records that qenome/d1 wrote to the output
     \\                       of wrangler dev or a test run, and write a batch
     \\                       manifest without candidates to --out; no database
@@ -56,8 +64,8 @@ pub const body =
     \\                       table in the spec gets the step size and the
     \\                       other tables scale with it; each step seeds a
     \\                       fresh copy; not with --batch, --suggest,
-    \\                       --migration, --audit-indexes, --record, or
-    \\                       --format kv
+    \\                       --migration, --audit-indexes, --rank, --record,
+    \\                       or --format kv
     \\  --suggest            ask SQLite for candidate indexes instead of
     \\                       naming them, and compare the suggestions; with
     \\                       --batch the manifest may omit candidates
@@ -123,6 +131,7 @@ pub const body =
     \\  qenome app.db --batch batch.json
     \\  qenome --db app.db --batch batch.json --format json
     \\  qenome app.db --batch batch.json --audit-indexes
+    \\  qenome app.db --batch batch.json --rank
     \\  qenome app.db --batch batch.json --migration 0002.sql
     \\  qenome app.db select.sql index.sql --seed-data seed.json
     \\  qenome app.db select.sql index.sql --seed-data seed.json --scale 1000,10000
@@ -169,6 +178,18 @@ pub const body =
     \\124 can still have a report on stdout; stdout is empty when the run
     \\stopped before the report.
     \\
+    \\--rank measures every manifest SELECT once on the baseline copy and
+    \\orders the queries by rows read, highest first. When a query has
+    \\executions, the order uses rows read x runs instead. That figure is
+    \\a relative indicator, not a bill. A query is a likely full scan when
+    \\its full-scan counter is above zero or its plan has a table SCAN step
+    \\that does not use an index. The report flags those queries and exits 7
+    \\when at least one is flagged; otherwise it exits 0. The manifest
+    \\needs only queries, so a manifest from --record works, and candidates
+    \\and writes are ignored. The last line names the top query for
+    \\--suggest. It needs --batch and takes --format human or json, --d1,
+    \\--seed-data, and --timeout-ms.
+    \\
     \\--audit-indexes reads the plans of the manifest queries on one
     \\read-only copy and reports three lists: the indexes that no plan
     \\named (Unused in this manifest), plain indexes whose key columns are
@@ -212,7 +233,7 @@ pub const body =
     \\the number in the spec. Each column takes kind fixed, uniform, ratio,
     \\or sequence. The same spec and seed give the same rows, and the
     \\original database is never changed. --seed-data works with every
-    \\mode, including --batch, --suggest, and --migration.
+    \\mode, including --batch, --suggest, --migration, and --rank.
     \\
     \\--suggest asks SQLite's expert for candidate indexes for the SELECT
     \\files and compares them with the manifest candidates (with --batch) or
@@ -233,7 +254,8 @@ pub const body =
     \\exit status: 0 result rows match, 1 rejected, 2 usage error,
     \\3 result rows differ, 4 results cannot be compared or --d1 cannot
     \\locate the local database, 5 cleanup failure, 6 a --migration query
-    \\read or wrote more rows, 124 time limit reached,
+    \\read or wrote more rows, 7 a --rank report found a likely full scan,
+    \\124 time limit reached,
     \\129 / 130 / 143 interrupted by SIGHUP / SIGINT / SIGTERM
     \\
     \\The database is opened read-only and copied as one snapshot into a

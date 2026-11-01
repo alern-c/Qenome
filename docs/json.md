@@ -1,6 +1,6 @@
 # JSON contract (schema_version 2)
 
-`--format json` is the machine-readable interface. This file is the contract for `schema_version` 2. The JSON Schema files next to it check the same shape: [qenome-report.schema.json](qenome-report.schema.json) for a finished comparison, [qenome-error.schema.json](qenome-error.schema.json) for a failure, [qenome-batch.schema.json](qenome-batch.schema.json) for a `--batch` report (`batch_schema_version` 1), [qenome-index-audit.schema.json](qenome-index-audit.schema.json) for an `--audit-indexes` report (`audit_schema_version` 1), [qenome-record.schema.json](qenome-record.schema.json) for a `--record` report (`record_schema_version` 1), and [qenome-scale.schema.json](qenome-scale.schema.json) for a `--scale` report (`scale_schema_version` 1).
+`--format json` is the machine-readable interface. This file is the contract for `schema_version` 2. The JSON Schema files next to it check the same shape: [qenome-report.schema.json](qenome-report.schema.json) for a finished comparison, [qenome-error.schema.json](qenome-error.schema.json) for a failure, [qenome-batch.schema.json](qenome-batch.schema.json) for a `--batch` report (`batch_schema_version` 1), [qenome-index-audit.schema.json](qenome-index-audit.schema.json) for an `--audit-indexes` report (`audit_schema_version` 1), [qenome-record.schema.json](qenome-record.schema.json) for a `--record` report (`record_schema_version` 1), [qenome-scale.schema.json](qenome-scale.schema.json) for a `--scale` report (`scale_schema_version` 1), and [qenome-rank.schema.json](qenome-rank.schema.json) for a `--rank` report (`schema_version` 2 and `rank_schema_version` 1).
 
 `schema_version` is already `2` in this tree. `1` was the time verdict. Do not treat a missing pending field as a version bump. The pending names below are part of version 2 and are reserved until the core change emits them.
 
@@ -153,6 +153,9 @@ Batch error codes:
 | --- | --- | --- |
 | `usage_batch_conflict` | 2 | Put the SELECT, CREATE INDEX, and binds in the manifest; use `--format human` or `json`; do not pass `--runs` |
 | `usage_audit_conflict` | 2 | Use `--audit-indexes` with `--batch` and a manifest that has queries; remove `--suggest`, `--migration`, and `--seed-data` |
+| `usage_rank_conflict` | 2 | Use `--rank` with `--batch` and a manifest of queries; remove `--suggest`, `--migration`, and `--audit-indexes` |
+| `rank_query_failed` | 1 | Fix the SELECT in the manifest, or read the SQLite message |
+| `rank_query_timeout` | 124 | Raise `--timeout-ms`, or narrow the SELECT |
 | `audit_query_failed` | 1 | Fix the SELECT in the manifest, or read the SQLite message |
 | `audit_query_timeout` | 124 | Raise `--timeout-ms`, or narrow the SELECT |
 | `audit_catalog_unreadable` | 1 | Read the SQLite message and check that the schema can be read |
@@ -220,6 +223,44 @@ Semantics and limits:
 - `INDEXED BY` in any manifest SELECT suppresses the redundancy list. The query forces an index, and the audit does not try to see which other indexes could replace it.
 - `warnings` carries `unapplied_migrations` with `--d1` when the local D1 database has not applied every migration of the wrangler config; the files and the read-only check are the same as in the comparison. The `human` report lists the entry in a `Warnings` section. It does not change the findings or the exit status.
 
+## Baseline rank (rank_schema_version 1)
+
+`--batch FILE --rank` writes one object and a trailing newline. It carries `schema_version` 2, the same number as a comparison, and `rank_schema_version` 1 so a reader can tell the objects apart. The comparison object, `batch_schema_version` 1, and `audit_schema_version` 1 do not change. [qenome-rank.schema.json](qenome-rank.schema.json) checks the same shape. [The batch page](batch.md#ranking-queries-on-the-baseline---rank) describes the command.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `schema_version` | number | `2` |
+| `rank_schema_version` | number | `1` |
+| `exit_code` | number | `0` when no query is a likely full scan, `7` when at least one is. The process can still exit `5` after a `0` object when cleanup fails. A `7` is kept |
+| `database` | string | The `--db` path, or the local D1 path that `--d1` resolved |
+| `sqlite_version` | string | The bundled SQLite version |
+| `work_dir_parent` | string | The parent of the temporary directory |
+| `seed_data` | string | Present only with `--seed-data`: the spec path. Omitted otherwise |
+| `likely_full_scans` | number | How many queries are likely full scans |
+| `note` | string | `rows read x runs is a relative indicator, not a bill` |
+| `next` | object | `select` (the top query's manifest path), `command` (`--suggest`), and `hint` |
+| `queries` | array | The queries in rank order |
+| `warnings` | array | Emitted. `{ "code", "message" }` entries, empty without a `--d1` `unapplied_migrations` entry |
+
+`queries` entries:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `rank` | number | 1-based position after sorting |
+| `select` | string | The manifest path, as written |
+| `rows_read` | number | Rows read on one baseline run, the same counting as local D1 |
+| `rows_returned` | number | Result rows of that run |
+| `read_ratio` | number or `null` | `rows_read / rows_returned` when that division is exact, a JSON number otherwise, `null` when `rows_returned` is 0 |
+| `fullscan_steps` | number | SQLite's full-scan step counter |
+| `scan_steps` | array of strings | Plan details that are a table `SCAN` (`SCAN` without `USING`, and not a name that a `CO-ROUTINE` line of the same plan declares, a constant row set, or a `VALUES` clause) |
+| `likely_full_scan` | boolean | True when `fullscan_steps` is above zero or `scan_steps` is not empty |
+| `executions` | number or `null` | The manifest's `executions`, or `null` when the manifest has none |
+| `relative_rows` | number or `null` | `rows_read * executions` when `executions` is set and the product fits in 64 bits, otherwise `null`. A relative indicator, not a bill |
+
+Order, highest weight first: `relative_rows` when `executions` is set, otherwise `rows_read`. Ties prefer a likely full scan, then a higher `read_ratio` (`null` sorts last), then manifest order. The `note` is always present. Do not treat any number in this object as a charge.
+
+Exit `7` means the report was written and `likely_full_scans` is at least 1. Exit `0` means it was written and the count is 0. Exit `1` is a rejected query or manifest, `2` is `usage_rank_conflict`, and `124` is `rank_query_timeout`. stdout is empty on those failures.
+
 ## Record report (record_schema_version 1)
 
 `--record FILE --out DIR --format json` writes one object with `record_schema_version` 1 and a trailing newline. It is a separate contract from the batch report: `schema_version` 2, `batch_schema_version` 1 and `audit_schema_version` 1 do not change. [qenome-record.schema.json](qenome-record.schema.json) checks the same shape. Without `--format json` the same facts are text lines, and the `repeated shapes:` block follows the per-query lines on stdout. [the batch page](batch.md#recording-the-queries-your-app-runs---record) describes the command.
@@ -229,7 +270,7 @@ Semantics and limits:
 | `exit_code` | number | `0` when the report is written. A finding never changes the exit code |
 | `manifest` | string | The `manifest.json` path under `--out` |
 | `records` | number | Record lines read, including the skipped ones |
-| `queries` | array | One `{ "select", "executions" }` object per manifest entry, in `queries/qNNN.sql` order |
+| `queries` | array | One `{ "select", "executions" }` object per manifest entry, in `queries/qNNN.sql` order. The same `executions` count is written into `manifest.json` on that query |
 | `skipped` | object | The counters `writes`, `exec`, `other`, `blob`, `unsupported`, `nul`, `large`, `malformed` and `version`; the same numbers as the human `skipped:` line |
 | `warnings` | array | Emitted. `{ "code", "message" }` entries: `record_log_permissions` first when the log is readable by other users, then `record_manifest_binds`, which is always present. The messages are the body of the human `warning:` lines |
 | `repeated_shapes` | array | At most 20 shape objects, ordered by `distinct_values`, then `executions`, then first appearance in the log |
@@ -284,7 +325,7 @@ Semantics and limits:
 - The largest table in the spec takes the step size. Every other listed table is scaled by the same factor, rounded, at least 1 row, so the ratio between the tables stays the same. A listed table with 0 rows gets at least 1 row; when every listed table has 0 rows, every table takes the step size. Tables that the spec does not list keep their rows.
 - Each step copies the original database into a new sandbox, seeds it, builds the candidate index on the variant, and runs the existing comparison. The copies are removed before the next step.
 - The step's `comparison.exit_code` is that step's result: `0`, `3`, or `4`. The top-level `exit_code` is the heaviest of the steps, in the order above. A step that cannot run stops the run before the report: stdout is empty and stderr holds the error object. Its code is the heavier of the finished steps and that failure, in the same order.
-- `--scale` is rejected with `usage_scale` together with `--batch`, `--suggest`, `--migration`, `--audit-indexes`, `--record`, and `--format kv`.
+- `--scale` is rejected with `usage_scale` together with `--batch`, `--suggest`, `--migration`, `--audit-indexes`, `--rank`, `--record`, and `--format kv`.
 - Every step runs the same comparison, so the keys inside `comparison` follow the comparison object above. Its `timing` is `null` with `--runs 0` and in `--write` mode.
 - A growth classification (a growth class, an exponent, or a finding such as "only faster at small sizes") is not part of `scale_schema_version` 1. Extra keys are allowed by the contract rules above, so it can be added without a version bump.
 
@@ -403,6 +444,7 @@ These are the values of `ExitCode` in `src/cli/control.zig`, `--help`, and the R
 | 4 | `incomparable` | The results cannot be compared, or `--d1` cannot resolve exactly one local database |
 | 5 | `cleanup` | Cleanup failed after a match. This replaces `0` only. Every other code is kept |
 | 6 | `regression` | With `--migration`, the result rows matched but a query read or wrote more rows, or a write statement read more rows. Only returned by the `--migration` batch path |
+| 7 | `likely_full_scan` | With `--rank`, the report was written and at least one query is a likely full scan. A report with none is `0`. Cleanup replaces `0` only |
 | 124 | `timeout` | `--timeout-ms` was reached |
 | 129 | `hangup` | `SIGHUP` |
 | 130 | `interrupted` | `SIGINT` |
@@ -429,7 +471,10 @@ The comparison object's `exit_code` is `0`, `3`, or `4`. The process can still e
 | `usage_runs` | 2 | Use an integer from 0 to 1000 |
 | `usage_timeout` | 2 | Use a non-negative millisecond count |
 | `usage_bind` | 2 | Use `--bind N:TYPE:VALUE` |
-| `usage_scale` | 2 | Use `--scale` with `--seed-data` and 2 or 3 strictly increasing row counts; remove `--batch`, `--suggest`, `--migration`, `--audit-indexes`, `--record`, or `--format kv` |
+| `usage_scale` | 2 | Use `--scale` with `--seed-data` and 2 or 3 strictly increasing row counts; remove `--batch`, `--suggest`, `--migration`, `--audit-indexes`, `--rank`, `--record`, or `--format kv` |
+| `usage_rank_conflict` | 2 | Use `--rank` with `--batch` and a manifest of queries; remove `--suggest`, `--migration`, and `--audit-indexes` |
+| `rank_query_failed` | 1 | Fix the SELECT in the manifest, or read the SQLite message |
+| `rank_query_timeout` | 124 | Raise `--timeout-ms`, or narrow the SELECT |
 | `usage_conflicting_database` | 2 | Pass `--db` or `--d1`, not both |
 | `usage_config_requires_d1` | 2 | Add `--d1`, or drop `--config` |
 | `usage_suggest_conflict` | 2 | With `--suggest`, give one SELECT file or a manifest; do not pass `--runs`, `--format kv`, or an index file |

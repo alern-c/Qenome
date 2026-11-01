@@ -83,6 +83,7 @@ pub const Args = struct {
     n_plus_one_threshold_given: bool = false,
     suggest: bool = false,
     audit_indexes: bool = false,
+    rank: bool = false,
     help: bool = false,
     version: bool = false,
 };
@@ -110,6 +111,7 @@ pub const ParseError = error{
     BatchRejectsRuns,
     BatchRejectsKv,
     AuditConflict,
+    RankConflict,
     MigrationRequiresBatch,
     MigrationRejectsSuggest,
     MigrationRejectsIndex,
@@ -148,7 +150,7 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
     var record_requested = false;
     var scale_requested = false;
     var scale_conflict: ?[:0]const u8 = null;
-    const scale_conflicting_options = [_][:0]const u8{ "--batch", "--suggest", "--migration", "--audit-indexes", "--record" };
+    const scale_conflicting_options = [_][:0]const u8{ "--batch", "--suggest", "--migration", "--audit-indexes", "--rank", "--record" };
     for (rest) |arg| {
         if (std.mem.eql(u8, arg, "--record") or std.mem.startsWith(u8, arg, "--record=")) record_requested = true;
         if (std.mem.eql(u8, arg, "--")) break;
@@ -270,6 +272,9 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
         } else if (std.mem.eql(u8, name, "--audit-indexes")) {
             if (inline_value != null) return error.UnexpectedValue;
             args.audit_indexes = true;
+        } else if (std.mem.eql(u8, name, "--rank")) {
+            if (inline_value != null) return error.UnexpectedValue;
+            args.rank = true;
         } else if (std.mem.eql(u8, name, "--runs")) {
             const raw = try optionValue(argv, &index, inline_value);
             args.runs = std.fmt.parseUnsigned(u32, raw, 10) catch return error.InvalidRuns;
@@ -298,6 +303,7 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
             .{ .name = "--suggest", .present = args.suggest },
             .{ .name = "--migration", .present = args.migration != null },
             .{ .name = "--audit-indexes", .present = args.audit_indexes },
+            .{ .name = "--rank", .present = args.rank },
             .{ .name = "--record", .present = args.record != null },
             .{ .name = "--format", .present = args.format == .kv },
         };
@@ -329,6 +335,7 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
             .{ .name = "--show-rows", .present = args.show_rows },
             .{ .name = "--suggest", .present = args.suggest },
             .{ .name = "--audit-indexes", .present = args.audit_indexes },
+            .{ .name = "--rank", .present = args.rank },
         };
         for (conflicts) |conflict| {
             if (!conflict.present) continue;
@@ -368,6 +375,24 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
         if (args.seed_data != null) {
             offending.* = "--seed-data";
             return error.AuditConflict;
+        }
+    }
+    if (args.rank) {
+        if (args.batch == null) {
+            offending.* = "--batch";
+            return error.RankConflict;
+        }
+        if (args.suggest) {
+            offending.* = "--suggest";
+            return error.RankConflict;
+        }
+        if (args.migration != null) {
+            offending.* = "--migration";
+            return error.RankConflict;
+        }
+        if (args.audit_indexes) {
+            offending.* = "--audit-indexes";
+            return error.RankConflict;
         }
     }
     if (args.migration != null) {
@@ -578,6 +603,7 @@ const long_options = [_][]const u8{
     "--show-rows",
     "--suggest",
     "--audit-indexes",
+    "--rank",
     "--runs",
     "--format",
     "--n-plus-one-threshold",
@@ -729,6 +755,10 @@ pub const audit_usage_line = "       qenome <DB> --batch <FILE> --audit-indexes 
 
 pub const d1_audit_usage_line = "       qenome --d1 <BINDING> --batch <FILE> --audit-indexes [options]";
 
+pub const rank_usage_line = "       qenome <DB> --batch <FILE> --rank [options]";
+
+pub const d1_rank_usage_line = "       qenome --d1 <BINDING> --batch <FILE> --rank [options]";
+
 pub const d1_batch_usage_line = "       qenome --d1 <BINDING> --batch <FILE> [options]";
 
 pub const migration_usage_line = "       qenome <DB> --batch <FILE> --migration <FILE> [options]";
@@ -756,7 +786,7 @@ pub fn printVersion(writer: *Io.Writer) Io.Writer.Error!void {
 }
 
 pub fn usage(writer: *Io.Writer) Io.Writer.Error!void {
-    try writer.writeAll(usage_line ++ "\n" ++ d1_usage_line ++ "\n" ++ sql_usage_line ++ "\n" ++ batch_usage_line ++ "\n" ++ d1_batch_usage_line ++ "\n" ++ audit_usage_line ++ "\n" ++ d1_audit_usage_line ++ "\n" ++ migration_usage_line ++ "\n" ++ d1_migration_usage_line ++ "\n" ++ suggest_usage_line ++ "\n" ++ sql_suggest_usage_line ++ "\n" ++ d1_suggest_usage_line ++ "\n" ++ write_usage_line ++ "\n" ++ d1_write_usage_line ++ "\n" ++ record_usage_line ++ "\n" ++ usage_text.synopsis ++ "\n\n" ++ usage_text.body);
+    try writer.writeAll(usage_line ++ "\n" ++ d1_usage_line ++ "\n" ++ sql_usage_line ++ "\n" ++ batch_usage_line ++ "\n" ++ d1_batch_usage_line ++ "\n" ++ audit_usage_line ++ "\n" ++ d1_audit_usage_line ++ "\n" ++ rank_usage_line ++ "\n" ++ d1_rank_usage_line ++ "\n" ++ migration_usage_line ++ "\n" ++ d1_migration_usage_line ++ "\n" ++ suggest_usage_line ++ "\n" ++ sql_suggest_usage_line ++ "\n" ++ d1_suggest_usage_line ++ "\n" ++ write_usage_line ++ "\n" ++ d1_write_usage_line ++ "\n" ++ record_usage_line ++ "\n" ++ usage_text.synopsis ++ "\n\n" ++ usage_text.body);
 }
 
 pub fn parseErrorMessage(err: ParseError) []const u8 {
@@ -785,7 +815,7 @@ fn parseErrorMessageForMode(err: ParseError) []const u8 {
         error.InvalidRuns => std.fmt.comptimePrint("--runs expects an integer from 0 to {d}", .{max_runs}),
         error.InvalidFormat => "--format expects human, kv or json",
         error.InvalidScale => "--scale expects 2 or 3 strictly increasing row counts, for example --scale 1000,10000 (see --help)",
-        error.ScaleConflict => "--scale takes only its row counts; remove --batch, --suggest, --migration, --audit-indexes, --record, or --format kv (see --help)",
+        error.ScaleConflict => "--scale takes only its row counts; remove --batch, --suggest, --migration, --audit-indexes, --rank, --record, or --format kv (see --help)",
         error.ScaleRequiresSeedData => "--scale needs --seed-data (see --help)",
         error.ConflictingDatabase => "use either --db <PATH> or --d1 <BINDING>, not both (see --help)",
         error.ConfigRequiresD1 => "--config is only used with --d1 (see --help)",
@@ -794,6 +824,7 @@ fn parseErrorMessageForMode(err: ParseError) []const u8 {
         error.BatchRejectsRuns => "--batch does not run the timing; remove --runs (see --help)",
         error.BatchRejectsKv => "--batch supports --format human or --format json, not kv (see --help)",
         error.AuditConflict => "--audit-indexes needs --batch and does not take --suggest, --migration, or --seed-data (see --help)",
+        error.RankConflict => "--rank needs --batch and does not take --suggest, --migration, or --audit-indexes (see --help)",
         error.MigrationRequiresBatch => "--migration needs --batch; put the queries in a manifest (see --help)",
         error.MigrationRejectsSuggest => "--migration applies one SQL file; remove --suggest (see --help)",
         error.MigrationRejectsIndex => "--migration replaces the index file; remove --index-sql (see --help)",
@@ -1257,6 +1288,7 @@ test "every known long option is accepted by the parser" {
         &.{ "Qenome", "--d1", "DB", "--config", "wrangler.toml" },
         &.{ "Qenome", "--batch", "batch.json" },
         &.{ "Qenome", "--batch", "batch.json", "--audit-indexes" },
+        &.{ "Qenome", "--batch", "batch.json", "--rank" },
         &.{ "Qenome", "--record", "record.log", "--out", "manifest-dir" },
         &.{ "Qenome", "--record", "record.log", "--out", "manifest-dir", "--n-plus-one-threshold", "20" },
         &.{ "Qenome", "--batch", "batch.json", "--migration", "m.sql" },
@@ -1663,4 +1695,27 @@ test "the usage shows the --audit-indexes synopsis and option" {
     try usage(&writer);
     try testing.expect(std.mem.indexOf(u8, writer.buffered(), "qenome <DB> --batch <FILE> --audit-indexes") != null);
     try testing.expect(std.mem.indexOf(u8, writer.buffered(), "--audit-indexes      with --batch") != null);
+}
+
+test "--rank needs a batch manifest and rejects the other batch modes" {
+    const cases = [_]struct { argv: []const [:0]const u8, offending: [:0]const u8 }{
+        .{ .argv = &.{ "Qenome", "--db", "d", "--rank" }, .offending = "--batch" },
+        .{ .argv = &.{ "Qenome", "--db", "d", "--batch", "b.json", "--rank", "--suggest" }, .offending = "--suggest" },
+        .{ .argv = &.{ "Qenome", "--db", "d", "--batch", "b.json", "--rank", "--migration", "m.sql" }, .offending = "--migration" },
+        .{ .argv = &.{ "Qenome", "--db", "d", "--batch", "b.json", "--rank", "--audit-indexes" }, .offending = "--audit-indexes" },
+    };
+    for (cases) |case| {
+        var offending: ?[:0]const u8 = null;
+        try testing.expectError(error.RankConflict, parseArgsReporting(testing.allocator, case.argv, &offending));
+        try testing.expectEqualStrings(case.offending, offending.?);
+    }
+    const args = try parseArgs(testing.allocator, &.{ "Qenome", "--db", "d", "--batch", "b.json", "--rank", "--format", "json" });
+    defer testing.allocator.free(args.binds);
+    try testing.expect(args.rank);
+    try testing.expectEqual(Format.json, args.format);
+    var buffer: [32768]u8 = undefined;
+    var writer = Io.Writer.fixed(&buffer);
+    try usage(&writer);
+    try testing.expect(std.mem.indexOf(u8, writer.buffered(), "qenome <DB> --batch <FILE> --rank") != null);
+    try testing.expect(std.mem.indexOf(u8, writer.buffered(), "--rank               with --batch") != null);
 }

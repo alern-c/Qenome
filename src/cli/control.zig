@@ -109,7 +109,7 @@ const ErrorClass = struct {
 
 pub fn classifyError(message: []const u8) ErrorClass {
     if (std.mem.startsWith(u8, message, "--scale")) {
-        return .{ .code = contract.code.usage_scale, .hint = "Use --scale with --seed-data and 2 or 3 strictly increasing row counts, for example --scale 1000,10000. Remove --batch, --suggest, --migration, --audit-indexes, --record, or --format kv." };
+        return .{ .code = contract.code.usage_scale, .hint = "Use --scale with --seed-data and 2 or 3 strictly increasing row counts, for example --scale 1000,10000. Remove --batch, --suggest, --migration, --audit-indexes, --rank, --record, or --format kv." };
     }
     if (std.mem.startsWith(u8, message, "--n-plus-one-threshold expects")) {
         return .{ .code = "usage_n_plus_one_threshold", .hint = "Use 0 to turn the report off, or an integer from 2 to 1000000." };
@@ -128,6 +128,15 @@ pub fn classifyError(message: []const u8) ErrorClass {
     }
     if (std.mem.startsWith(u8, message, "--suggest: the schema entry is not allowed")) {
         return .{ .code = "suggest_schema_rejected", .hint = "Use a database whose sqlite_schema holds only plain CREATE statements, or compare a named index without --suggest." };
+    }
+    if (std.mem.startsWith(u8, message, "--rank")) {
+        return .{ .code = "usage_rank_conflict", .hint = "Use --rank with --batch and a manifest of queries. Remove --suggest, --migration, and --audit-indexes." };
+    }
+    if (std.mem.startsWith(u8, message, "the rank query")) {
+        if (std.mem.indexOf(u8, message, "exceeded the time limit") != null) {
+            return .{ .code = "rank_query_timeout", .hint = "Raise --timeout-ms, or narrow the SELECT in the manifest." };
+        }
+        return .{ .code = "rank_query_failed", .hint = "Fix the SELECT in the manifest or read the SQLite message, then rerun." };
     }
     if (std.mem.startsWith(u8, message, "--audit-indexes")) {
         return .{ .code = "usage_audit_conflict", .hint = "Use --audit-indexes with --batch and a manifest that has queries; remove --suggest, --migration, and --seed-data." };
@@ -611,6 +620,7 @@ test "cleanup failure maps to exit 5 and keeps every other code" {
     try testing.expectEqual(ExitCode.mismatch, finalExitCode(.mismatch, true));
     try testing.expectEqual(ExitCode.incomparable, finalExitCode(.incomparable, true));
     try testing.expectEqual(ExitCode.regression, finalExitCode(.regression, true));
+    try testing.expectEqual(ExitCode.likely_full_scan, finalExitCode(.likely_full_scan, true));
 }
 
 test "the step control borrows the cancel flag the signal handler writes" {
@@ -646,6 +656,9 @@ test "error text maps to a stable code and a next step" {
         .{ .message = "the batch write 'w/a.sql' failed on the variant: disk I/O", .code = contract.code.batch_write_failed },
         .{ .message = "the batch write 'w/a.sql' exceeded the time limit of 1 ms on the baseline", .code = contract.code.batch_write_timeout },
         .{ .message = "the batch write: cannot open the baseline '/tmp/x/baseline.db' for writing: the file is missing, is not a database, or is locked", .code = contract.code.batch_write_failed },
+        .{ .message = "--rank needs --batch and a manifest (see --help)", .code = "usage_rank_conflict" },
+        .{ .message = "the rank query 'q.sql' exceeded the time limit of 1 ms", .code = "rank_query_timeout" },
+        .{ .message = "the rank query 'q.sql': no such column: missing", .code = "rank_query_failed" },
         .{ .message = "--audit-indexes needs --batch and a manifest (see --help)", .code = "usage_audit_conflict" },
         .{ .message = "--audit-indexes does not take --suggest (see --help)", .code = "usage_audit_conflict" },
         .{ .message = "the index audit query 'q/a.sql': --select: the statement is not valid for this database: no such column: missing", .code = "audit_query_failed" },

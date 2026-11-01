@@ -96,10 +96,10 @@ pub fn bareScan(detail: []const u8, table: []const u8) bool {
 
 fn needsQuote(token: []const u8) bool {
     if (token.len == 0) return true;
-    return std.mem.indexOfAny(u8, token, " \t'\"\\$") != null;
+    return std.mem.indexOfAny(u8, token, " \t\n'\"\\$;&|<>()*?[]#!~`{}") != null;
 }
 
-fn appendToken(out: *std.ArrayList(u8), allocator: std.mem.Allocator, token: []const u8) !void {
+pub fn appendToken(out: *std.ArrayList(u8), allocator: std.mem.Allocator, token: []const u8) !void {
     if (out.items.len != 0) try out.append(allocator, ' ');
     if (!needsQuote(token)) return out.appendSlice(allocator, token);
     try out.append(allocator, '\'');
@@ -325,6 +325,17 @@ test "a path with a space is quoted in the scale command" {
     defer testing.allocator.free(command);
     try testing.expect(std.mem.indexOf(u8, command, "'my db.sqlite'") != null);
     try testing.expect(std.mem.indexOf(u8, command, "--seed-data seed.json --scale 1000,10000") != null);
+}
+
+test "a shell metacharacter in a path is quoted in the scale command" {
+    const command = try scaleCommand(testing.allocator, .{
+        .database = "db;rm -fr x.sqlite",
+        .select_path = "select;.sql",
+        .index_path = "index.sql",
+    });
+    defer testing.allocator.free(command);
+    try testing.expect(std.mem.indexOf(u8, command, "'db;rm -fr x.sqlite'") != null);
+    try testing.expect(std.mem.indexOf(u8, command, "'select;.sql'") != null);
 }
 
 test "a bare scan is SCAN and the table name, with nothing after it" {

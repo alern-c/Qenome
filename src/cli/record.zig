@@ -463,6 +463,8 @@ fn buildManifest(arena: std.mem.Allocator, queries: []const Query) ![]u8 {
         try json.beginObject();
         try json.objectField("select");
         try json.write(name);
+        try json.objectField("executions");
+        try json.write(query.executions);
         if (query.binds.len != 0) {
             try json.objectField("binds");
             try json.beginArray();
@@ -789,7 +791,7 @@ test "the manifest is a queries-only batch manifest" {
         .object => |object| object,
         else => return error.NotObject,
     };
-    try testing.expect(second.get("binds") == null);
+    try testing.expect(second.get("binds") == null and first.get("executions").?.integer == 3 and second.get("executions").?.integer == 1);
 }
 
 test "the output directory is private and the manifest is written once" {

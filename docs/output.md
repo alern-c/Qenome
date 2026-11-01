@@ -21,7 +21,7 @@ Input paths other than `--seed-data`, the SQLite and Zig versions, the build mod
 
 ## json
 
-`--format json` prints one JSON object with a trailing newline after a comparison finishes. With `--batch` it prints the separate `batch_schema_version` 1 object described above (see [Batch comparisons](batch.md#batch-comparisons) and [docs/json.md](json.md)). With `--scale` it prints the separate `scale_schema_version` 1 object with one comparison per size (see [Measuring at several sizes](usage.md#measuring-at-several-sizes---scale)). With `--seed-data`, both objects add a top-level `seed_data` object. The fields, including names reserved for the next core change, are specified in [docs/json.md](json.md). When an input is rejected, the time limit is reached, or the run is interrupted, stdout stays empty. With `--format json`, stderr is then one JSON object (`schema_version`, `exit_code`, and `error` with `code`, `message`, and `hint`). `human` and `kv` keep the text `error:` line.
+`--format json` prints one JSON object with a trailing newline after a comparison finishes. With `--batch` it prints the separate `batch_schema_version` 1 object described above (see [Batch comparisons](batch.md#batch-comparisons) and [docs/json.md](json.md)). With `--batch --rank` it prints one object that carries `schema_version` 2 and `rank_schema_version` 1: rows read, rows returned, the ratio, full-scan steps, and `rows read x runs` labelled as a relative indicator, not a bill (see [Ranking queries on the baseline (--rank)](batch.md#ranking-queries-on-the-baseline---rank)). With `--scale` it prints the separate `scale_schema_version` 1 object with one comparison per size (see [Measuring at several sizes](usage.md#measuring-at-several-sizes---scale)). With `--seed-data`, both objects add a top-level `seed_data` object. The fields, including names reserved for the next core change, are specified in [docs/json.md](json.md). When an input is rejected, the time limit is reached, or the run is interrupted, stdout stays empty. With `--format json`, stderr is then one JSON object (`schema_version`, `exit_code`, and `error` with `code`, `message`, and `hint`). `human` and `kv` keep the text `error:` line.
 
 The verdict is in the top-level `verdict` field:
 
@@ -95,6 +95,7 @@ Main keys:
 | 4 | The results cannot be compared, a `--write` was not run because it reads the schema, the current time, or a nondeterministic function, or `--d1` cannot locate exactly one local database (no config, more than one config, an unreadable or invalid config, an unknown or duplicate binding, a missing database id, a local file that does not exist yet, or a local file that cannot be opened) |
 | 5 | Cleanup failed after the comparison (this replaces 0; every other code is kept) |
 | 6 | With `--migration`, the result rows matched but a query read or wrote more rows, or a write statement read more rows. Only the `--migration` batch path returns it |
+| 7 | With `--rank`, the report was written and at least one query is a likely full scan. A report with none exits `0`. Cleanup failure replaces `0` only, so `7` is kept |
 | 124 | A time limit was reached (`--timeout-ms`) |
 | 129 / 130 / 143 | Interrupted by `SIGHUP` / `SIGINT` / `SIGTERM` (POSIX) |
 

@@ -1,0 +1,17 @@
+{
+  "description": "A full table scan ranks above an indexed lookup and is flagged as a likely full scan.",
+  "args": ["--rank"],
+  "expect": {
+    "exit": 7,
+    "exit_code": 7,
+    "rank": {
+      "likely_full_scans": 1,
+      "first": "scan.sql",
+      "note": "not a bill"
+    },
+    "human": {
+      "contains": ["#1  scan.sql", "flag: likely full scan", "not a bill", "next: qenome <DB> scan.sql --suggest"],
+      "excludes": ["#1  indexed.sql"]
+    }
+  }
+}
