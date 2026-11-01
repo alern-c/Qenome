@@ -49,6 +49,8 @@ qenome --version
 
 インストールせずに試すときは `npx qenome` で実行できます。Windows は npm の対象外なので、[Releases](https://github.com/alern-c/Qenome/releases) のビルド済みバイナリを `SHA256SUMS` で確認してから使ってください。全プラットフォームの手順とソースからのビルドは[インストール](docs/ja/installation.md)にあります。
 
+AI エージェントには `qenome skill install` で同梱スキルを導入し、`qenome skill status` で確認します。対象の選択やプロジェクト側への導入は [AI エージェントと使う](docs/ja/agents.md)を参照してください。
+
 ## 特徴
 
 - **元のデータベースは変更しません。** 読み取り専用で開き、サンドボックスのコピーで比較するので、ローカルの行数が減らない候補はマージの前に捨てられます。

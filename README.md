@@ -49,6 +49,8 @@ qenome --version
 
 To try Qenome without installing it, run `npx qenome`. Windows is not an npm target: use a prebuilt binary from [Releases](https://github.com/alern-c/Qenome/releases), after checking it against `SHA256SUMS`. The install steps for every platform and a build from source are in [Installation](docs/installation.md).
 
+For an AI agent, run `qenome skill install`, then `qenome skill status`. See [Use with AI agents](docs/agents.md) for targets and project installs.
+
 ## Features
 
 - **Your database stays untouched.** Qenome opens the original read-only and compares sandbox copies, so a candidate that does not lower the local row counts can be dropped before the merge.

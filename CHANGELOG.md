@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Re-record the README suggest demo with larger text, shorter input pauses and a longer final result hold; the displayed command filters setup metadata without rewriting output. Add the skill install and status commands to both README Install sections.
+
 ## [0.4.0] - 2026-11-01
 
 ### Added
