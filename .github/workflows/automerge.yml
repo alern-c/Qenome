@@ -54,6 +54,7 @@ jobs:
       - name: Enable auto-merge only for a labeled same-repository pull request
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HAS_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'automerge') && !(github.event.action == 'unlabeled' && github.event.label.name == 'automerge') }}
           IS_DRAFT: ${{ github.event.pull_request.draft }}
@@ -96,6 +97,7 @@ jobs:
       - name: Turn auto-merge off for an excluded pull request
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
