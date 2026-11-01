@@ -47,7 +47,7 @@ pub const Format = enum {
     json,
 };
 
-pub const max_scale_steps = 3;
+pub const max_scale_steps = 6;
 
 pub const Scale = struct {
     values: [max_scale_steps]u64 = undefined,
@@ -814,7 +814,7 @@ fn parseErrorMessageForMode(err: ParseError) []const u8 {
         error.InvalidTimeout => "--timeout-ms expects a non-negative integer",
         error.InvalidRuns => std.fmt.comptimePrint("--runs expects an integer from 0 to {d}", .{max_runs}),
         error.InvalidFormat => "--format expects human, kv or json",
-        error.InvalidScale => "--scale expects 2 or 3 strictly increasing row counts, for example --scale 1000,10000 (see --help)",
+        error.InvalidScale => "--scale expects 2 to 6 strictly increasing row counts, for example --scale 1000,10000 (see --help)",
         error.ScaleConflict => "--scale takes only its row counts; remove --batch, --suggest, --migration, --audit-indexes, --rank, --record, or --format kv (see --help)",
         error.ScaleRequiresSeedData => "--scale needs --seed-data (see --help)",
         error.ConflictingDatabase => "use either --db <PATH> or --d1 <BINDING>, not both (see --help)",

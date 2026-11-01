@@ -42,7 +42,7 @@
           "description": "The step sizes as given.",
           "type": "array",
           "minItems": 2,
-          "maxItems": 3,
+          "maxItems": 6,
           "items": { "type": "integer", "minimum": 1, "maximum": 10000000 }
         }
       }
@@ -74,7 +74,7 @@
     "steps": {
       "type": "array",
       "minItems": 2,
-      "maxItems": 3,
+      "maxItems": 6,
       "items": {
         "type": "object",
         "additionalProperties": false,

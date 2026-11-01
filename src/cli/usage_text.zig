@@ -57,9 +57,9 @@ pub const body =
     \\                       with deterministic dummy rows before comparing;
     \\                       the original database is not changed; see the
     \\                       README for the JSON spec
-    \\  --scale <ROWS,ROWS[,ROWS]>
+    \\  --scale <ROWS,ROWS[,ROWS...]>
     \\                       with --seed-data, measure the same comparison
-    \\                       at 2 or 3 strictly increasing row counts and
+    \\                       at 2 to 6 strictly increasing row counts and
     \\                       show the results side by side; the largest
     \\                       table in the spec gets the step size and the
     \\                       other tables scale with it; each step seeds a

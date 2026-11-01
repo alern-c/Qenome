@@ -27,6 +27,16 @@ fn contains(haystack: []const u8, needle: []const u8) bool {
     return std.mem.indexOf(u8, haystack, needle) != null;
 }
 
+fn count(haystack: []const u8, needle: []const u8) usize {
+    var total: usize = 0;
+    var start: usize = 0;
+    while (std.mem.indexOfPos(u8, haystack, start, needle)) |at| {
+        total += 1;
+        start = at + needle.len;
+    }
+    return total;
+}
+
 fn parseJson(text: []const u8) !std.json.Parsed(std.json.Value) {
     try testing.expect(text.len != 0);
     try testing.expectEqual(@as(u8, '\n'), text[text.len - 1]);
@@ -242,6 +252,54 @@ test "the scale run compares an equality lookup at two sizes and leaves the data
     try testing.expectEqual(@as(i64, 0), try scalarOn(fixture.db_path, "SELECT count(*) FROM t"));
 }
 
+test "the scale run measures three to six sizes and rejects seven" {
+    var fixture = try Fixture.init(lookup_select, lookup_index, seed_two_columns);
+    defer fixture.deinit();
+    var stdout_buffer: [32768]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+
+    const cases = [_]struct { scale: [:0]const u8, count: usize, text: []const u8 }{
+        .{ .scale = "1000,2000,3000", .count = 3, .text = "rows in 3 steps" },
+        .{ .scale = "1000,2000,3000,4000", .count = 4, .text = "rows in 4 steps" },
+        .{ .scale = "1000,2000,3000,4000,5000", .count = 5, .text = "rows in 5 steps" },
+        .{ .scale = "1000,2000,3000,4000,5000,6000", .count = 6, .text = "rows in 6 steps" },
+    };
+    for (cases) |case| {
+        const result = fixture.run(&.{ "--seed-data", fixture.seed_path, "--scale", case.scale, "--runs", "0", "--format", "json" }, "json", &stdout_buffer, &stderr_buffer);
+        try testing.expectEqual(ExitCode.ok, result.code);
+        try testing.expectEqualStrings("", result.stderr);
+        var parsed = try parseJson(result.stdout);
+        defer parsed.deinit();
+        const sizes = try jsonItems(try jsonGet(parsed.value, "inputs"), "scale");
+        try testing.expectEqual(case.count, sizes.len);
+        const steps = try jsonItems(parsed.value, "steps");
+        try testing.expectEqual(case.count, steps.len);
+        for (steps, 1..) |step, expected| {
+            try testing.expectEqual(@as(i64, @intCast(expected * 1000)), try jsonInt(step, "rows"));
+            try testing.expectEqualStrings("improved", try jsonText(try jsonGet(step, "comparison"), "verdict"));
+        }
+
+        const human = fixture.run(&.{ "--seed-data", fixture.seed_path, "--scale", case.scale, "--runs", "0" }, "human", &stdout_buffer, &stderr_buffer);
+        try testing.expectEqual(ExitCode.ok, human.code);
+        try testing.expect(contains(human.stdout, case.text));
+        try testing.expectEqual(case.count, count(human.stdout, "changed"));
+    }
+
+    const seven = fixture.run(&.{ "--seed-data", fixture.seed_path, "--scale", "1000,2000,3000,4000,5000,6000,7000", "--runs", "0" }, "human", &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.usage, seven.code);
+    try testing.expectEqualStrings("", seven.stdout);
+    try testing.expect(contains(seven.stderr, "expects 2 to 6"));
+
+    const seven_json = fixture.run(&.{ "--seed-data", fixture.seed_path, "--scale", "1000,2000,3000,4000,5000,6000,7000", "--runs", "0", "--format", "json" }, "json", &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.usage, seven_json.code);
+    try testing.expectEqualStrings("", seven_json.stdout);
+    var parsed = try parseJson(seven_json.stderr);
+    defer parsed.deinit();
+    const failure = try jsonGet(parsed.value, "error");
+    try testing.expectEqualStrings(contract.code.usage_scale, try jsonText(failure, "code"));
+    try testing.expect(contains(try jsonText(failure, "message"), "expects 2 to 6"));
+}
+
 test "the scale run names the size where the verdict changes" {
     var fixture = try Fixture.init(conditional_insert, lookup_index, seed_two_columns);
     defer fixture.deinit();
@@ -294,10 +352,10 @@ test "scale usage errors exit 2 with the scale code" {
 
     const cases = [_]struct { extra: []const [:0]const u8, message: []const u8 }{
         .{ .extra = &.{ "--scale", "1000,5000" }, .message = "--scale needs --seed-data" },
-        .{ .extra = &.{ "--seed-data", "seed.json", "--scale", "1000" }, .message = "--scale expects 2 or 3" },
-        .{ .extra = &.{ "--seed-data", "seed.json", "--scale", "1000,2000,3000,4000" }, .message = "--scale expects 2 or 3" },
-        .{ .extra = &.{ "--seed-data", "seed.json", "--scale", "5000,1000" }, .message = "--scale expects 2 or 3" },
-        .{ .extra = &.{ "--seed-data", "seed.json", "--scale", "1000,1000" }, .message = "--scale expects 2 or 3" },
+        .{ .extra = &.{ "--seed-data", "seed.json", "--scale", "1000" }, .message = "--scale expects 2 to 6" },
+        .{ .extra = &.{ "--seed-data", "seed.json", "--scale", "1000,2000,3000,4000,5000,6000,7000" }, .message = "--scale expects 2 to 6" },
+        .{ .extra = &.{ "--seed-data", "seed.json", "--scale", "5000,1000" }, .message = "--scale expects 2 to 6" },
+        .{ .extra = &.{ "--seed-data", "seed.json", "--scale", "1000,1000" }, .message = "--scale expects 2 to 6" },
         .{ .extra = &.{ "--seed-data", "seed.json", "--scale", "1000,10000001" }, .message = "must not exceed the seed limit" },
         .{ .extra = &.{ "--seed-data", "seed.json", "--scale", "1000,5000", "--format", "kv" }, .message = "--scale does not take --format" },
         .{ .extra = &.{ "--seed-data", "seed.json", "--scale", "1000,5000", "--suggest" }, .message = "--scale does not take --suggest" },
