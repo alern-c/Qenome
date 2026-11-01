@@ -4,7 +4,7 @@ Qenome is a Zig CLI that compares the change one candidate `CREATE INDEX` makes 
 
 ## Language
 
-Commit messages, PR titles and bodies, issues, CHANGELOG and code comments are written in English, and so are the docs. The maintained translations are `README.ja.md` and the pages under `docs/ja/`, one for every page cut from the README; update the translation in the same change as the English page. Past history is not rewritten: text that predates the rule keeps its language until that file is next edited (for example the release notes already in `CHANGELOG.md`).
+Commit messages, PR titles and bodies, issues, CHANGELOG and code comments are written in English, and so are the docs. The maintained translations are `README.ja.md` and the pages under `docs/ja/`, one for every page cut from the README except a page in `ENGLISH_ONLY_DOCS` in `scripts/check_docs.py` (today `docs/bill-spiked.md`), which stays English and has a `README.ja.md` contents line that links to it; update the translation in the same change as the English page. Past history is not rewritten: text that predates the rule keeps its language until that file is next edited (for example the release notes already in `CHANGELOG.md`).
 
 ## Build and test
 
@@ -45,9 +45,9 @@ The details, including every evidence rule, are in [the workflow](CONTRIBUTING.m
 
 ## Documentation
 
-- The README is an index: an introduction, the first example, and links to `docs/`. Put details on a `docs/` page, with its `docs/ja/` pair.
+- The README is an index: an introduction, the first example, and links to `docs/`. Put details on a `docs/` page, with its `docs/ja/` pair unless the page is in `ENGLISH_ONLY_DOCS`.
 - Do not add comments to code. The source of truth is `scripts/check_comments.py`; when you add a new kind of file, check it or list it in `EXCLUDED_FILES`.
-- When you add a page, register its English and Japanese pair in `scripts/check_docs.py`. That check owns the page list, the README line caps, the link, anchor and image checks, and the heading-pair check.
+- When you add a page, register its English and Japanese pair in `scripts/check_docs.py`, or list an English-only page in `ENGLISH_ONLY_DOCS` and `UNPAIRED_DOCS`. That check owns the page list, the README line caps, the link, anchor and image checks, and the heading-pair check.
 
 ## npm
 
