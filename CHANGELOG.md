@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-01
+
+`0.4.0` is on GitHub but not on npm: a pull request merged after the `v0.4.0` tag, and npm publishes only when the tag is the tip of `main`, so npm still serves `0.3.9`. An npm user goes from `0.3.9` to `0.4.1`, which holds the `0.4.0` code, so read the `0.4.0` notes in `CHANGELOG.md` as well: they list the behaviour changes, including `--suggest` exiting `0` where it exited `1`.
+
 ### Changed
 
 - Re-record the README suggest demo with larger text, shorter input pauses and a longer final result hold; the displayed command filters setup metadata without rewriting output. Add the skill install and status commands to both README Install sections.
