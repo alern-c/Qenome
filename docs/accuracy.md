@@ -8,28 +8,53 @@ The numbers use the same counting as local D1 (workerd patch), but they come fro
 
 Qenome builds the bundled SQLite (3.53.4 in this tree) with Cloudflare's row-count patch from `workerd`; [NOTICE](../NOTICE) names the patch and [vendor/sqlite3/PROVENANCE.txt](../vendor/sqlite3/PROVENANCE.txt) records its hashes and how to apply it again. The patch adds two prepared-statement counters, `LIBSQL_STMTSTATUS_ROWS_READ` (1025) and `LIBSQL_STMTSTATUS_ROWS_WRITTEN` (1026), and Qenome reports them as `rows_read` and `rows_written`. Local D1 runs the same patch, so the report uses the same counting as local D1 (workerd patch).
 
-Local D1 already reports those two fields for one statement. Under `wrangler dev`, `run` and `all` (documented as aliases) and `batch` return `rows_read` and `rows_written` on the result `meta`. `raw`, `first`, and `exec` do not.
+Local D1 already reports those two fields for one statement. Under `wrangler dev`, `run` and `all` (documented as aliases) and `batch` return `rows_read` and `rows_written` on the result `meta`. `raw`, `first`, and `exec` do not. To read the counters yourself, run one request through a Worker bound to the local D1 database:
 
-Read the counts from a Worker instead, with a minimal `wrangler dev` example:
+1. Create the local D1 database and load it:
 
-```js
-// src/index.js
-export default {
-  async fetch(request, env) {
-    const r = await env.DB.prepare("SELECT SUM(customer_id) AS total FROM events").all();
-    return Response.json(r.meta, { headers: { "cache-control": "no-store" } });
-  },
-};
-```
+   ```sh
+   npx wrangler d1 execute DB --local --file schema.sql
+   ```
 
-```sh
-npx wrangler dev --local
-# then request the route once
-```
+   [Check a local D1](local-d1.md) shows how to create the local database when it does not exist yet.
 
-```json
-{"served_by":"miniflare.db","served_by_primary":true,"total_attempts":1,"timings":{"sql_duration_ms":2},"duration":2,"changes":0,"last_row_id":0,"changed_db":false,"size_after":151552,"rows_read":5000,"rows_written":0}
-```
+2. Bind the database in the wrangler config (`wrangler.toml` or `wrangler.jsonc`), with `DB` as the binding:
+
+   ```toml
+   [[d1_databases]]
+   binding = "DB"
+   database_name = "repro"
+   database_id = "00000000-0000-0000-0000-000000000000"
+   ```
+
+3. Run this minimal Worker (`src/index.js`, named by `main` in the same config):
+
+   ```js
+   export default {
+     async fetch(request, env) {
+       const r = await env.DB.prepare("SELECT SUM(customer_id) AS total FROM events").all();
+       return Response.json(r.meta, { headers: { "cache-control": "no-store" } });
+     },
+   };
+   ```
+
+4. Start the dev server (the default address is `http://localhost:8787`):
+
+   ```sh
+   npx wrangler dev --local
+   ```
+
+5. Request the route once and read the `meta` from the response:
+
+   ```sh
+   curl -s http://localhost:8787/
+   ```
+
+   ```json
+   {"served_by":"miniflare.db","served_by_primary":true,"total_attempts":1,"timings":{"sql_duration_ms":1},"duration":1,"changes":0,"last_row_id":0,"changed_db":false,"size_after":147456,"rows_read":5000,"rows_written":0}
+   ```
+
+   That `meta` is the response this procedure returned on 2026-11-02 with wrangler 4.156.1, against a 5,000-row local D1 database: the full scan read 5,000 rows and wrote none.
 
 `wrangler d1 execute --local --json` returns only `{ "duration": N }` on its `meta` (same wrangler version, same run): it redacts the row counters from the local result, so the CLI cannot be used to read them. Those numbers come from the local D1 engine. Qenome's numbers come from its own build of the patch, and [the builds use different compile options](#what-can-differ-from-production-d1), so the counts can differ. Neither number is a production D1 bill. [Why not ...](why-not.md) says what those tools already give you and what the comparison adds.
 
@@ -51,7 +76,7 @@ Not guaranteed: agreement with the reader's own databases, billing, response tim
 
 ## What the verdicts mean
 
-The result rows are compared as a multiset: each distinct row must appear the same number of times on both copies. Row order is a reference and is not part of the match. With `--write`, the `RETURNING` rows (empty without `RETURNING`), `sqlite3_changes`, and `sqlite3_total_changes` must also match.
+The result rows are compared as a multiset: each distinct row must appear the same number of times on both copies. Row order is a reference and is not part of the match. With `--write`, the `RETURNING` rows (empty without `RETURNING`), `sqlite3_changes`, and `sqlite3_total_changes` must also match. `baseline` is the copy without the candidate index, and `variant` is the copy with it.
 
 | Verdict | Meaning |
 | --- | --- |
