@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `--scale` takes 2 to 6 strictly increasing row counts instead of 2 or 3: four to six sizes now run, seven or more (and fewer than two) stay `usage_scale` with exit status `2` before a copy is made, and the help, the JSON Schema `maxItems`, the README and the pages under `docs/` name the same limit; `scale_schema_version` stays `1`.
+
 ## [0.4.1] - 2026-11-01
 
 `0.4.0` is on GitHub but not on npm: a pull request merged after the `v0.4.0` tag, and npm publishes only when the tag is the tip of `main`, so npm still serves `0.3.9`. An npm user goes from `0.3.9` to `0.4.1`, which holds the `0.4.0` code, so read the `0.4.0` notes in `CHANGELOG.md` as well: they list the behaviour changes, including `--suggest` exiting `0` where it exited `1`.

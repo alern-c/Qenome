@@ -302,7 +302,7 @@ Semantics and limits:
 
 ## Scale report (scale_schema_version 1)
 
-`--scale ROWS[,ROWS[,ROWS]]` with `--seed-data` compares at every given size and writes one object with `scale_schema_version` 1 and a trailing newline. It is a separate contract from the batch report: `schema_version` 2, `batch_schema_version` 1, `audit_schema_version` 1 and `record_schema_version` 1 do not change. [qenome-scale.schema.json](qenome-scale.schema.json) checks the same shape. [The usage page](usage.md#measuring-at-several-sizes---scale) describes the command and the human output.
+`--scale ROWS,ROWS[,ROWS...]` with `--seed-data` compares at every given size and writes one object with `scale_schema_version` 1 and a trailing newline. It is a separate contract from the batch report: `schema_version` 2, `batch_schema_version` 1, `audit_schema_version` 1 and `record_schema_version` 1 do not change. [qenome-scale.schema.json](qenome-scale.schema.json) checks the same shape. [The usage page](usage.md#measuring-at-several-sizes---scale) describes the command and the human output.
 
 | Key | Type | Meaning |
 | `scale_schema_version` | number | `1` |
@@ -321,7 +321,7 @@ Semantics and limits:
 
 Semantics and limits:
 
-- 2 or 3 steps, strictly increasing, each at most 10,000,000. The scaled spec must stay within 10,000,000 rows per table and 20,000,000 in total. Any other shape is a usage error with `usage_scale` (exit `2`) before a copy is made.
+- 2 to 6 steps, strictly increasing, each at most 10,000,000. The scaled spec must stay within 10,000,000 rows per table and 20,000,000 in total. Any other shape is a usage error with `usage_scale` (exit `2`) before a copy is made.
 - The largest table in the spec takes the step size. Every other listed table is scaled by the same factor, rounded, at least 1 row, so the ratio between the tables stays the same. A listed table with 0 rows gets at least 1 row; when every listed table has 0 rows, every table takes the step size. Tables that the spec does not list keep their rows.
 - Each step copies the original database into a new sandbox, seeds it, builds the candidate index on the variant, and runs the existing comparison. The copies are removed before the next step.
 - The step's `comparison.exit_code` is that step's result: `0`, `3`, or `4`. The top-level `exit_code` is the heaviest of the steps, in the order above. A step that cannot run stops the run before the report: stdout is empty and stderr holds the error object. Its code is the heavier of the finished steps and that failure, in the same order.
@@ -471,7 +471,7 @@ The comparison object's `exit_code` is `0`, `3`, or `4`. The process can still e
 | `usage_runs` | 2 | Use an integer from 0 to 1000 |
 | `usage_timeout` | 2 | Use a non-negative millisecond count |
 | `usage_bind` | 2 | Use `--bind N:TYPE:VALUE` |
-| `usage_scale` | 2 | Use `--scale` with `--seed-data` and 2 or 3 strictly increasing row counts; remove `--batch`, `--suggest`, `--migration`, `--audit-indexes`, `--rank`, `--record`, or `--format kv` |
+| `usage_scale` | 2 | Use `--scale` with `--seed-data` and 2 to 6 strictly increasing row counts; remove `--batch`, `--suggest`, `--migration`, `--audit-indexes`, `--rank`, `--record`, or `--format kv` |
 | `usage_rank_conflict` | 2 | Use `--rank` with `--batch` and a manifest of queries; remove `--suggest`, `--migration`, and `--audit-indexes` |
 | `rank_query_failed` | 1 | Fix the SELECT in the manifest, or read the SQLite message |
 | `rank_query_timeout` | 124 | Raise `--timeout-ms`, or narrow the SELECT |
