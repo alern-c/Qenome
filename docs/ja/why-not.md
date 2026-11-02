@@ -6,7 +6,7 @@
 
 **`wrangler dev`。** `wrangler dev` で動く Worker は、D1 の結果 `meta` に `rows_read` と `rows_written` をすでに返します。対象は [`run` と `all`](https://developers.cloudflare.com/d1/worker-api/prepared-statements/)（エイリアスとして文書化されています）と [`batch`](https://developers.cloudflare.com/d1/worker-api/return-object/) です。`raw`、`first`、`exec` にはこの `meta` がありません。これはローカル D1 エンジンでの1回の実行です。候補のインデックスをコピー上に作って、今のスキーマと比べることはしません。
 
-**`wrangler d1 execute --local`。** `--json` を付けると、そのコマンドの結果 `meta` に `rows_read` と `rows_written` が入り、所要時間も出せます。時間は実行のたびに動きます。渡した SQL を実行するだけで、候補をサンドボックスのコピーに適用して組で判定することはしません。Qenome は元のデータベースを変えません。
+**`wrangler d1 execute --local`。** `--json` を付けると、ローカルの各結果の `meta` が返すのは `duration` だけです。行数のカウンタは入らないため、このコマンドでは文が読み書きした行数を知ることはできません（wrangler 4.156.1 で測定）。代わりに Worker から読み取ってください。`wrangler dev` の下では、`env.DB.prepare(...).all()` と `batch` が結果の `meta` に `rows_read` と `rows_written` を返し、手順は[行数の数え方](accuracy.md#行数の数え方)にあります。所要時間は実行のたびに動きます。渡した SQL を実行するだけで、候補をサンドボックスのコピーに適用して組で判定することはしません。Qenome は元のデータベースを変えません。
 
 **`wrangler d1 insights`。** 本番では、この experimental なコマンドが、クエリごとの `avgRowsRead`、`avgRowsWritten`、実行回数をすでに一覧にします。聞く期間のリモート分析を読みます。候補のインデックスは試さず、バインド値も記録しません。本番で実際に起きたことを見るために使ってください。Qenome はその数値を読まず、D1 がいくら請求するかは分かりません。手順の詳細は[本番と自分で照合する方法](accuracy.md#本番と自分で照合する方法)です。
 
