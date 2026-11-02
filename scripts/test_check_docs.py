@@ -144,7 +144,6 @@ PAGE_BODIES = {
 
 UNPAIRED = {
     "docs/architecture.md": "# Architecture\n\nText.\n",
-    "docs/automerge.md": "# Auto-merge\n\nText.\n",
     "docs/bill-spiked.md": "# My D1 bill spiked\n",
     "docs/json.md": "# JSON\n\nText.\n",
     "docs/npm.md": "# npm\n\nText.\n",
