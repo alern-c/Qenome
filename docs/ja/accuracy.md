@@ -10,7 +10,27 @@ Qenome はローカルのデータベースのサンドボックスのコピー�
 
 Qenome は同梱の SQLite（このツリーでは 3.53.4）を、Cloudflare の `workerd` の行数カウントのパッチ付きでビルドします。[NOTICE](../../NOTICE) がパッチを、[vendor/sqlite3/PROVENANCE.txt](../../vendor/sqlite3/PROVENANCE.txt) がハッシュと当て直し方を記録しています。パッチはプリペアドステートメントのカウンタを2つ、`LIBSQL_STMTSTATUS_ROWS_READ`（1025）と `LIBSQL_STMTSTATUS_ROWS_WRITTEN`（1026）を追加し、Qenome はそれを `rows_read` と `rows_written` として報告します。ローカル D1 も同じパッチで動くため、レポートはローカル D1 と同じ数え方（workerd のパッチ）になります。
 
-ローカル D1 も、1回の実行について同じ2つの値をすでに返します。`wrangler dev` では `run` と `all`（エイリアスとして文書化されています）と `batch` が、結果の `meta` に `rows_read` と `rows_written` を返します。`raw`、`first`、`exec` は返しません。`wrangler d1 execute --local --json` は、そのコマンドの `meta` に同じ値を返します。これらの数値はローカル D1 のエンジンから出ます。Qenome の数値はパッチを当てた独自のビルドから出ます。[2つのビルドはコンパイルオプションが違います](#本番-d1-と異なる点)。そのため行数は一致しないことがあります。どちらも本番 D1 の請求ではありません。[なぜ他の方法ではないのか](why-not.md)に、これらの道具がすでに渡すものと、比較が足すものを書いています。
+ローカル D1 も、1つのステートメントについて同じ2つの値をすでに返します。`wrangler dev` では `run` と `all`（エイリアスとして文書化されています）と `batch` が、結果の `meta` に `rows_read` と `rows_written` を返します。`raw`、`first`、`exec` は返しません。
+
+代わりに Worker から読み取ってください。最小の `wrangler dev` の例：
+
+```js
+// src/index.js
+export default {
+  async fetch(request, env) {
+    const r = await env.DB.prepare("SELECT SUM(customer_id) AS total FROM events").all();
+    return Response.json(r.meta, { headers: { "cache-control": "no-store" } });
+  },
+};
+```
+
+```sh
+npx wrangler dev --local
+# そのあと、ルートへ1回リクエストします。返ってきた `meta` は次のとおりでした：
+{"served_by":"miniflare.db","served_by_primary":true,"total_attempts":1,"timings":{"sql_duration_ms":2},"duration":2,"changes":0,"last_row_id":0,"changed_db":false,"size_after":151552,"rows_read":5000,"rows_written":0}
+```
+
+`wrangler d1 execute --local --json` が `meta` で返すのは `{ "duration": N }` だけです（同じ wrangler の版、同じ実行での確認）。ローカルの結果から行数のカウンタが除かれるため、CLI では読み取れません。これらの数値はローカル D1 のエンジンから出ます。Qenome の数値はパッチを当てた独自のビルドから出ます。[2つのビルドはコンパイルオプションが違います](#本番-d1-と異なる点)。そのため行数は一致しないことがあります。どちらも本番 D1 の請求ではありません。[なぜ他の方法ではないのか](why-not.md)に、これらの道具がすでに渡すものと、比較が足すものを書いています。
 
 パッチは読み取りカウンタを `OP_Count`、`OP_Seek*`、`OP_NotExists`、`OP_SeekRowid`、`OP_Last`、`OP_Rewind`、`OP_Next`、`OP_VNext` で増やし、書き込みカウンタを `OP_Insert`、`OP_IdxInsert`、`OP_Delete`、`OP_Clear`、`OP_VUpdate` で増やします（ephemeral カーソルは除く）。実際には次のようになります。
 

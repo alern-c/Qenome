@@ -8,7 +8,27 @@ The numbers use the same counting as local D1 (workerd patch), but they come fro
 
 Qenome builds the bundled SQLite (3.53.4 in this tree) with Cloudflare's row-count patch from `workerd`; [NOTICE](../NOTICE) names the patch and [vendor/sqlite3/PROVENANCE.txt](../vendor/sqlite3/PROVENANCE.txt) records its hashes and how to apply it again. The patch adds two prepared-statement counters, `LIBSQL_STMTSTATUS_ROWS_READ` (1025) and `LIBSQL_STMTSTATUS_ROWS_WRITTEN` (1026), and Qenome reports them as `rows_read` and `rows_written`. Local D1 runs the same patch, so the report uses the same counting as local D1 (workerd patch).
 
-Local D1 already reports those two fields for one execution. Under `wrangler dev`, `run` and `all` (documented as aliases) and `batch` return `rows_read` and `rows_written` on the result `meta`. `raw`, `first`, and `exec` do not. `wrangler d1 execute --local --json` returns that `meta` for the command. Those numbers come from the local D1 engine. Qenome's numbers come from its own build of the patch, and [the builds use different compile options](#what-can-differ-from-production-d1), so the counts can differ. Neither number is a production D1 bill. [Why not ...](why-not.md) says what those tools already give you and what the comparison adds.
+Local D1 already reports those two fields for one statement. Under `wrangler dev`, `run` and `all` (documented as aliases) and `batch` return `rows_read` and `rows_written` on the result `meta`. `raw`, `first`, and `exec` do not.
+
+Read the counts from a Worker instead, with a minimal `wrangler dev` example:
+
+```js
+// src/index.js
+export default {
+  async fetch(request, env) {
+    const r = await env.DB.prepare("SELECT SUM(customer_id) AS total FROM events").all();
+    return Response.json(r.meta, { headers: { "cache-control": "no-store" } });
+  },
+};
+```
+
+```sh
+npx wrangler dev --local
+# then request the route once; the response `meta` was:
+{"served_by":"miniflare.db","served_by_primary":true,"total_attempts":1,"timings":{"sql_duration_ms":2},"duration":2,"changes":0,"last_row_id":0,"changed_db":false,"size_after":151552,"rows_read":5000,"rows_written":0}
+```
+
+`wrangler d1 execute --local --json` returns only `{ "duration": N }` on its `meta` (same wrangler version, same run): it redacts the row counters from the local result, so the CLI cannot be used to read them. Those numbers come from the local D1 engine. Qenome's numbers come from its own build of the patch, and [the builds use different compile options](#what-can-differ-from-production-d1), so the counts can differ. Neither number is a production D1 bill. [Why not ...](why-not.md) says what those tools already give you and what the comparison adds.
 
 The patch increments the read counter in `OP_Count`, `OP_Seek*`, `OP_NotExists`, `OP_SeekRowid`, `OP_Last`, `OP_Rewind`, `OP_Next`, and `OP_VNext`. It increments the write counter in `OP_Insert`, `OP_IdxInsert`, `OP_Delete`, `OP_Clear`, and `OP_VUpdate`, skipping ephemeral cursors. In practice:
 
