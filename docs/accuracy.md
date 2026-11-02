@@ -1,6 +1,6 @@
 # Accuracy and production D1
 
-Qenome compares a sandbox copy of a local database. It never changes the original database, and it does not read production D1 metrics. This page says how far to trust a result: how the row counters are built, what each verdict means, what can differ from production D1, and how to check a result against production yourself.
+Qenome compares a sandbox copy of a local database. It never changes the original database, and it does not read production D1 metrics. This page says how far to trust a result: how the row counters are built, what each verdict means, what is guaranteed and what is not, what can differ from production D1, and how to check a result against production yourself.
 
 The numbers use the same counting as local D1 (workerd patch), but they come from your local data and statistics. They have not yet been checked against production D1. Use them to compare a query before and after an index on the same copy, not as a production measurement. The full JSON contract is in [docs/json.md](json.md).
 
@@ -8,7 +8,30 @@ The numbers use the same counting as local D1 (workerd patch), but they come fro
 
 Qenome builds the bundled SQLite (3.53.4 in this tree) with Cloudflare's row-count patch from `workerd`; [NOTICE](../NOTICE) names the patch and [vendor/sqlite3/PROVENANCE.txt](../vendor/sqlite3/PROVENANCE.txt) records its hashes and how to apply it again. The patch adds two prepared-statement counters, `LIBSQL_STMTSTATUS_ROWS_READ` (1025) and `LIBSQL_STMTSTATUS_ROWS_WRITTEN` (1026), and Qenome reports them as `rows_read` and `rows_written`. Local D1 runs the same patch, so the report uses the same counting as local D1 (workerd patch).
 
-Local D1 already reports those two fields for one execution. Under `wrangler dev`, `run` and `all` (documented as aliases) and `batch` return `rows_read` and `rows_written` on the result `meta`. `raw`, `first`, and `exec` do not. `wrangler d1 execute --local --json` returns that `meta` for the command. Those numbers come from the local D1 engine. Qenome's numbers come from its own build of the patch, and [the builds use different compile options](#what-can-differ-from-production-d1), so the counts can differ. Neither number is a production D1 bill. [Why not ...](why-not.md) says what those tools already give you and what the comparison adds.
+Local D1 already reports those two fields for one statement. Under `wrangler dev`, `run` and `all` (documented as aliases) and `batch` return `rows_read` and `rows_written` on the result `meta`. `raw`, `first`, and `exec` do not.
+
+Read the counts from a Worker instead, with a minimal `wrangler dev` example:
+
+```js
+// src/index.js
+export default {
+  async fetch(request, env) {
+    const r = await env.DB.prepare("SELECT SUM(customer_id) AS total FROM events").all();
+    return Response.json(r.meta, { headers: { "cache-control": "no-store" } });
+  },
+};
+```
+
+```sh
+npx wrangler dev --local
+# then request the route once
+```
+
+```json
+{"served_by":"miniflare.db","served_by_primary":true,"total_attempts":1,"timings":{"sql_duration_ms":2},"duration":2,"changes":0,"last_row_id":0,"changed_db":false,"size_after":151552,"rows_read":5000,"rows_written":0}
+```
+
+`wrangler d1 execute --local --json` returns only `{ "duration": N }` on its `meta` (same wrangler version, same run): it redacts the row counters from the local result, so the CLI cannot be used to read them. Those numbers come from the local D1 engine. Qenome's numbers come from its own build of the patch, and [the builds use different compile options](#what-can-differ-from-production-d1), so the counts can differ. Neither number is a production D1 bill. [Why not ...](why-not.md) says what those tools already give you and what the comparison adds.
 
 The patch increments the read counter in `OP_Count`, `OP_Seek*`, `OP_NotExists`, `OP_SeekRowid`, `OP_Last`, `OP_Rewind`, `OP_Next`, and `OP_VNext`. It increments the write counter in `OP_Insert`, `OP_IdxInsert`, `OP_Delete`, `OP_Clear`, and `OP_VUpdate`, skipping ephemeral cursors. In practice:
 
@@ -19,6 +42,12 @@ The patch increments the read counter in `OP_Count`, `OP_Seek*`, `OP_NotExists`,
 For a simple `INSERT` into a table with one secondary index and no triggers or foreign-key actions, one table row and one index entry are written, so the copy with the index reports 2 rows written. A `DELETE` of one such row reports 1 row written: the table row is counted and the index entry is not. A `DELETE ... WHERE` can therefore read fewer rows with the same rows written. An `UPDATE` that removes an old index entry reports less than the full index-maintenance cost.
 
 Both counters are 32-bit. Each wraps past 4,294,967,295 of its own count, so a statement that goes past that in one run reports a wrapped number. The verdict compares the numbers as they were read.
+
+## What is guaranteed and what is not
+
+Guaranteed: the counts use the same counting as local D1, statement by statement. Qenome and local D1 both run SQLite with Cloudflare's row-count patch ([How rows are counted](#how-rows-are-counted)), so a statement increment and a positioning attempt are counted the same way on both sides. The verdict compares the two local counts produced by that one counting.
+
+Not guaranteed: agreement with the reader's own databases, billing, response times, and SQLite's choice of an execution plan. A count against a Qenome copy can differ from the count on the reader's local D1 database or on production D1, because the data, the statistics, and the build can differ; the reasons are listed in [What can differ from production D1](#what-can-differ-from-production-d1). Neither number is a D1 bill ([Billing](#what-can-differ-from-production-d1)) and neither number comes with a response-time promise. The plan SQLite picks on the copy is not the plan it picks elsewhere.
 
 ## What the verdicts mean
 
