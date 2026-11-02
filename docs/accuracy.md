@@ -10,24 +10,22 @@ Qenome builds the bundled SQLite (3.53.4 in this tree) with Cloudflare's row-cou
 
 Local D1 already reports those two fields for one statement. Under `wrangler dev`, `run` and `all` (documented as aliases) and `batch` return `rows_read` and `rows_written` on the result `meta`. `raw`, `first`, and `exec` do not. To read the counters yourself, run one request through a Worker bound to the local D1 database:
 
-1. Create the local D1 database and load it:
-
-   ```sh
-   npx wrangler d1 execute DB --local --file schema.sql
-   ```
-
-   [Check a local D1](local-d1.md) shows how to create the local database when it does not exist yet.
-
-2. Bind the database in the wrangler config (`wrangler.toml` or `wrangler.jsonc`), with `DB` as the binding:
+1. Name the database in the wrangler config, with `DB` as the binding. `main` points at the Worker the next step writes:
 
    ```toml
+   name = "acc-steps-repro"
+   main = "src/index.js"
+   compatibility_date = "2024-09-01"
+
    [[d1_databases]]
    binding = "DB"
    database_name = "repro"
    database_id = "00000000-0000-0000-0000-000000000000"
    ```
 
-3. Run this minimal Worker (`src/index.js`, named by `main` in the same config):
+   The `database_id` identifies the D1 database to create; the local commands below work with any id in that position.
+
+2. Run this minimal Worker (`src/index.js`):
 
    ```js
    export default {
@@ -37,6 +35,22 @@ Local D1 already reports those two fields for one statement. Under `wrangler dev
      },
    };
    ```
+
+3. Load the local database. `schema.sql` must create the tables the query touches — here the `events` table, its secondary index, and 5,000 rows with a `customer_id` column:
+
+   ```sql
+   -- schema.sql
+   CREATE TABLE events (id INTEGER PRIMARY KEY, customer_id INTEGER, note TEXT);
+   CREATE INDEX idx_customer ON events (customer_id);
+   INSERT INTO events VALUES (1, 1, 'n1');
+   -- … rows 2 to 5,000, the same shape …
+   ```
+
+   ```sh
+   npx wrangler d1 execute DB --local --file schema.sql
+   ```
+
+   [Check a local D1](local-d1.md) covers the local database without seeding data: it creates an empty database with `SELECT 1` and runs Qenome on it.
 
 4. Start the dev server (the default address is `http://localhost:8787`):
 
@@ -54,7 +68,7 @@ Local D1 already reports those two fields for one statement. Under `wrangler dev
    {"served_by":"miniflare.db","served_by_primary":true,"total_attempts":1,"timings":{"sql_duration_ms":1},"duration":1,"changes":0,"last_row_id":0,"changed_db":false,"size_after":147456,"rows_read":5000,"rows_written":0}
    ```
 
-   That `meta` is the response this procedure returned on 2026-11-02 with wrangler 4.156.1, against a 5,000-row local D1 database: the full scan read 5,000 rows and wrote none.
+   That `meta` is the response this procedure returned on 2026-11-02 with wrangler 4.156.1, against a local D1 database holding the 5,000-row `events` table: the full scan read 5,000 rows and wrote none.
 
 `wrangler d1 execute --local --json` returns only `{ "duration": N }` on its `meta` (same wrangler version, same run): it redacts the row counters from the local result, so the CLI cannot be used to read them. Those numbers come from the local D1 engine. Qenome's numbers come from its own build of the patch, and [the builds use different compile options](#what-can-differ-from-production-d1), so the counts can differ. Neither number is a production D1 bill. [Why not ...](why-not.md) says what those tools already give you and what the comparison adds.
 

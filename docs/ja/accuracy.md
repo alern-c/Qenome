@@ -12,24 +12,22 @@ Qenome は同梱の SQLite（このツリーでは 3.53.4）を、Cloudflare の
 
 ローカル D1 も、1つのステートメントについて同じ2つの値をすでに返します。`wrangler dev` では `run` と `all`（エイリアスとして文書化されています）と `batch` が、結果の `meta` に `rows_read` と `rows_written` を返します。`raw`、`first`、`exec` は返しません。自分でカウンタを読むには、ローカルの D1 データベースにバインディングした Worker を1回リクエストします：
 
-1. ローカルの D1 データベースを作ってデータを読み込みます:
-
-   ```sh
-   npx wrangler d1 execute DB --local --file schema.sql
-   ```
-
-   ローカルのデータベースをまだ作っていないときの作り方は、[ローカル D1 を調べる](local-d1.md)にあります。
-
-2. wrangler の設定（`wrangler.toml` か `wrangler.jsonc`）にバインディングを置きます。バインディング名は `DB` とします:
+1. wrangler の設定でデータベースに `DB` というバインディング名を付けます。`main` は次のステップで書く Worker を指します:
 
    ```toml
+   name = "acc-steps-repro"
+   main = "src/index.js"
+   compatibility_date = "2024-09-01"
+
    [[d1_databases]]
    binding = "DB"
    database_name = "repro"
    database_id = "00000000-0000-0000-0000-000000000000"
    ```
 
-3. 次の最小の Worker を動かします（`src/index.js`。同じ設定の `main` に書きます）:
+   `database_id` は作る D1 データベースを識別するものです。下のローカルのコマンドには、この位置ならどの id でも動きます。
+
+2. 次の最小の Worker を動かします（`src/index.js`）:
 
    ```js
    export default {
@@ -39,6 +37,22 @@ Qenome は同梱の SQLite（このツリーでは 3.53.4）を、Cloudflare の
      },
    };
    ```
+
+3. ローカルのデータベースへデータを読み込みます。`schema.sql` には、クエリが触るテーブルが必要です。ここでは `events` テーブル、そのセカンダリインデックス、`customer_id` 列を持つ 5,000 行を入れます:
+
+   ```sql
+   -- schema.sql
+   CREATE TABLE events (id INTEGER PRIMARY KEY, customer_id INTEGER, note TEXT);
+   CREATE INDEX idx_customer ON events (customer_id);
+   INSERT INTO events VALUES (1, 1, 'n1');
+   -- … 2行目から5,000行目まで、同じ形を続けます …
+   ```
+
+   ```sh
+   npx wrangler d1 execute DB --local --file schema.sql
+   ```
+
+   [ローカル D1 を調べる](local-d1.md)は、データを入れないローカルのデータベースを扱います。`SELECT 1` で空のデータベースを作り、そこへ Qenome を実行します。
 
 4. dev サーバを起動します（既定のアドレスは `http://localhost:8787` です）:
 
@@ -56,7 +70,7 @@ Qenome は同梱の SQLite（このツリーでは 3.53.4）を、Cloudflare の
    {"served_by":"miniflare.db","served_by_primary":true,"total_attempts":1,"timings":{"sql_duration_ms":1},"duration":1,"changes":0,"last_row_id":0,"changed_db":false,"size_after":147456,"rows_read":5000,"rows_written":0}
    ```
 
-   この `meta` は、2026年11月2日にこの手順を wrangler 4.156.1 で実行して返った応答です。5,000 行のローカル D1 データベースで、フルスキャンが 5,000 行を読み、書いた行はありませんでした。
+   この `meta` は、2026年11月2日にこの手順を wrangler 4.156.1 で実行して返った応答です。5,000 行の `events` テーブルを持つローカル D1 データベースで、フルスキャンが 5,000 行を読み、書いた行はありませんでした。
 
 `wrangler d1 execute --local --json` が `meta` で返すのは `{ "duration": N }` だけです（同じ wrangler の版、同じ実行での確認）。ローカルの結果から行数のカウンタが除かれるため、CLI では読み取れません。これらの数値はローカル D1 のエンジンから出ます。Qenome の数値はパッチを当てた独自のビルドから出ます。[2つのビルドはコンパイルオプションが違います](#本番-d1-と異なる点)。そのため行数は一致しないことがあります。どちらも本番 D1 の請求ではありません。[なぜ他の方法ではないのか](why-not.md)に、これらの道具がすでに渡すものと、比較が足すものを書いています。
 
