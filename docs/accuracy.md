@@ -8,28 +8,67 @@ The numbers use the same counting as local D1 (workerd patch), but they come fro
 
 Qenome builds the bundled SQLite (3.53.4 in this tree) with Cloudflare's row-count patch from `workerd`; [NOTICE](../NOTICE) names the patch and [vendor/sqlite3/PROVENANCE.txt](../vendor/sqlite3/PROVENANCE.txt) records its hashes and how to apply it again. The patch adds two prepared-statement counters, `LIBSQL_STMTSTATUS_ROWS_READ` (1025) and `LIBSQL_STMTSTATUS_ROWS_WRITTEN` (1026), and Qenome reports them as `rows_read` and `rows_written`. Local D1 runs the same patch, so the report uses the same counting as local D1 (workerd patch).
 
-Local D1 already reports those two fields for one statement. Under `wrangler dev`, `run` and `all` (documented as aliases) and `batch` return `rows_read` and `rows_written` on the result `meta`. `raw`, `first`, and `exec` do not.
+Local D1 already reports those two fields for one statement. Under `wrangler dev`, `run` and `all` (documented as aliases) and `batch` return `rows_read` and `rows_written` on the result `meta`. `raw`, `first`, and `exec` do not. To read the counters yourself, run one request through a Worker bound to the local D1 database:
 
-Read the counts from a Worker instead, with a minimal `wrangler dev` example:
+1. Name the database in the wrangler config, with `DB` as the binding. `main` points at the Worker the next step writes:
 
-```js
-// src/index.js
-export default {
-  async fetch(request, env) {
-    const r = await env.DB.prepare("SELECT SUM(customer_id) AS total FROM events").all();
-    return Response.json(r.meta, { headers: { "cache-control": "no-store" } });
-  },
-};
-```
+   ```toml
+   name = "acc-steps-repro"
+   main = "src/index.js"
+   compatibility_date = "2024-09-01"
 
-```sh
-npx wrangler dev --local
-# then request the route once
-```
+   [[d1_databases]]
+   binding = "DB"
+   database_name = "repro"
+   database_id = "00000000-0000-0000-0000-000000000000"
+   ```
 
-```json
-{"served_by":"miniflare.db","served_by_primary":true,"total_attempts":1,"timings":{"sql_duration_ms":2},"duration":2,"changes":0,"last_row_id":0,"changed_db":false,"size_after":151552,"rows_read":5000,"rows_written":0}
-```
+   The `database_id` identifies the D1 database to create; the local commands below work with any id in that position.
+
+2. Run this minimal Worker (`src/index.js`):
+
+   ```js
+   export default {
+     async fetch(request, env) {
+       const r = await env.DB.prepare("SELECT SUM(customer_id) AS total FROM events").all();
+       return Response.json(r.meta, { headers: { "cache-control": "no-store" } });
+     },
+   };
+   ```
+
+3. Load the local database. `schema.sql` must create the tables the query touches — here the `events` table, its secondary index, and 5,000 rows with a `customer_id` column. This exact file reproduces the row counts shown at step 5:
+
+   ```sql
+   -- schema.sql
+   CREATE TABLE events (id INTEGER PRIMARY KEY, customer_id INTEGER, note TEXT);
+   CREATE INDEX idx_customer ON events (customer_id);
+   WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 5000)
+   INSERT INTO events SELECT n, n % 97, 'n' || n FROM seq;
+   ```
+
+   ```sh
+   npx wrangler d1 execute DB --local --file schema.sql
+   ```
+
+   [Check a local D1](local-d1.md) covers the local database without seeding data: it creates an empty database with `SELECT 1` and runs Qenome on it.
+
+4. Start the dev server (the default address is `http://localhost:8787`):
+
+   ```sh
+   npx wrangler dev --local
+   ```
+
+5. Request the route once and read the `meta` from the response:
+
+   ```sh
+   curl -s http://localhost:8787/
+   ```
+
+   ```json
+   {"served_by":"miniflare.db","served_by_primary":true,"total_attempts":1,"timings":{"sql_duration_ms":1},"duration":1,"changes":0,"last_row_id":0,"changed_db":false,"size_after":143360,"rows_read":5000,"rows_written":0}
+   ```
+
+   That `meta` is the response this procedure returned on 2026-11-02 with wrangler 4.156.1, against a local D1 database holding the 5,000-row `events` table from `schema.sql`: the full scan read 5,000 rows and wrote none.
 
 `wrangler d1 execute --local --json` returns only `{ "duration": N }` on its `meta` (same wrangler version, same run): it redacts the row counters from the local result, so the CLI cannot be used to read them. Those numbers come from the local D1 engine. Qenome's numbers come from its own build of the patch, and [the builds use different compile options](#what-can-differ-from-production-d1), so the counts can differ. Neither number is a production D1 bill. [Why not ...](why-not.md) says what those tools already give you and what the comparison adds.
 
@@ -51,7 +90,7 @@ Not guaranteed: agreement with the reader's own databases, billing, response tim
 
 ## What the verdicts mean
 
-The result rows are compared as a multiset: each distinct row must appear the same number of times on both copies. Row order is a reference and is not part of the match. With `--write`, the `RETURNING` rows (empty without `RETURNING`), `sqlite3_changes`, and `sqlite3_total_changes` must also match.
+The result rows are compared as a multiset: each distinct row must appear the same number of times on both copies. Row order is a reference and is not part of the match. With `--write`, the `RETURNING` rows (empty without `RETURNING`), `sqlite3_changes`, and `sqlite3_total_changes` must also match. `baseline` is the copy without the candidate index, and `variant` is the copy with it.
 
 | Verdict | Meaning |
 | --- | --- |
