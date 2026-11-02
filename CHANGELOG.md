@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-11-02
+
 ### Changed
 
 - `--scale` takes 2 to 6 strictly increasing row counts instead of 2 or 3: four to six sizes now run, seven or more (and fewer than two) stay `usage_scale` with exit status `2` before a copy is made, and the help, the JSON Schema `maxItems`, the README and the pages under `docs/` name the same limit; `scale_schema_version` stays `1`.
