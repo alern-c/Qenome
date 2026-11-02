@@ -1,6 +1,6 @@
 # Accuracy and production D1
 
-Qenome compares a sandbox copy of a local database. It never changes the original database, and it does not read production D1 metrics. This page says how far to trust a result: how the row counters are built, what each verdict means, what can differ from production D1, and how to check a result against production yourself.
+Qenome compares a sandbox copy of a local database. It never changes the original database, and it does not read production D1 metrics. This page says how far to trust a result: how the row counters are built, what each verdict means, what is guaranteed and what is not, what can differ from production D1, and how to check a result against production yourself.
 
 The numbers use the same counting as local D1 (workerd patch), but they come from your local data and statistics. They have not yet been checked against production D1. Use them to compare a query before and after an index on the same copy, not as a production measurement. The full JSON contract is in [docs/json.md](json.md).
 
@@ -24,7 +24,10 @@ export default {
 
 ```sh
 npx wrangler dev --local
-# then request the route once; the response `meta` was:
+# then request the route once
+```
+
+```json
 {"served_by":"miniflare.db","served_by_primary":true,"total_attempts":1,"timings":{"sql_duration_ms":2},"duration":2,"changes":0,"last_row_id":0,"changed_db":false,"size_after":151552,"rows_read":5000,"rows_written":0}
 ```
 
@@ -39,6 +42,12 @@ The patch increments the read counter in `OP_Count`, `OP_Seek*`, `OP_NotExists`,
 For a simple `INSERT` into a table with one secondary index and no triggers or foreign-key actions, one table row and one index entry are written, so the copy with the index reports 2 rows written. A `DELETE` of one such row reports 1 row written: the table row is counted and the index entry is not. A `DELETE ... WHERE` can therefore read fewer rows with the same rows written. An `UPDATE` that removes an old index entry reports less than the full index-maintenance cost.
 
 Both counters are 32-bit. Each wraps past 4,294,967,295 of its own count, so a statement that goes past that in one run reports a wrapped number. The verdict compares the numbers as they were read.
+
+## What is guaranteed and what is not
+
+Guaranteed: the counts use the same counting as local D1, statement by statement. Qenome and local D1 both run SQLite with Cloudflare's row-count patch ([How rows are counted](#how-rows-are-counted)), so a statement increment and a positioning attempt are counted the same way on both sides. The verdict compares the two local counts produced by that one counting.
+
+Not guaranteed: agreement with the reader's own databases, billing, response times, and SQLite's choice of an execution plan. A count against a Qenome copy can differ from the count on the reader's local D1 database or on production D1, because the data, the statistics, and the build can differ; the reasons are listed in [What can differ from production D1](#what-can-differ-from-production-d1). Neither number is a D1 bill ([Billing](#what-can-differ-from-production-d1)) and neither number comes with a response-time promise. The plan SQLite picks on the copy is not the plan it picks elsewhere.
 
 ## What the verdicts mean
 
