@@ -38,14 +38,14 @@ Qenome は同梱の SQLite（このツリーでは 3.53.4）を、Cloudflare の
    };
    ```
 
-3. ローカルのデータベースへデータを読み込みます。`schema.sql` には、クエリが触るテーブルが必要です。ここでは `events` テーブル、そのセカンダリインデックス、`customer_id` 列を持つ 5,000 行を入れます:
+3. ローカルのデータベースへデータを読み込みます。`schema.sql` には、クエリが触るテーブルが必要です。ここでは `events` テーブル、そのセカンダリインデックス、`customer_id` 列を持つ 5,000 行を入れます。次のうち、ステップ5で示した行数をそのまま再現できるコードです:
 
    ```sql
    -- schema.sql
    CREATE TABLE events (id INTEGER PRIMARY KEY, customer_id INTEGER, note TEXT);
    CREATE INDEX idx_customer ON events (customer_id);
-   INSERT INTO events VALUES (1, 1, 'n1');
-   -- … 2行目から5,000行目まで、同じ形を続けます …
+   WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 5000)
+   INSERT INTO events SELECT n, n % 97, 'n' || n FROM seq;
    ```
 
    ```sh
@@ -67,10 +67,10 @@ Qenome は同梱の SQLite（このツリーでは 3.53.4）を、Cloudflare の
    ```
 
    ```json
-   {"served_by":"miniflare.db","served_by_primary":true,"total_attempts":1,"timings":{"sql_duration_ms":1},"duration":1,"changes":0,"last_row_id":0,"changed_db":false,"size_after":147456,"rows_read":5000,"rows_written":0}
+   {"served_by":"miniflare.db","served_by_primary":true,"total_attempts":1,"timings":{"sql_duration_ms":1},"duration":1,"changes":0,"last_row_id":0,"changed_db":false,"size_after":143360,"rows_read":5000,"rows_written":0}
    ```
 
-   この `meta` は、2026年11月2日にこの手順を wrangler 4.156.1 で実行して返った応答です。5,000 行の `events` テーブルを持つローカル D1 データベースで、フルスキャンが 5,000 行を読み、書いた行はありませんでした。
+   この `meta` は、2026年11月2日にこの手順を wrangler 4.156.1 で実行して返った応答です。`schema.sql` で作った 5,000 行の `events` テーブルを持つローカル D1 データベースで、フルスキャンが 5,000 行を読み、書いた行はありませんでした。
 
 `wrangler d1 execute --local --json` が `meta` で返すのは `{ "duration": N }` だけです（同じ wrangler の版、同じ実行での確認）。ローカルの結果から行数のカウンタが除かれるため、CLI では読み取れません。これらの数値はローカル D1 のエンジンから出ます。Qenome の数値はパッチを当てた独自のビルドから出ます。[2つのビルドはコンパイルオプションが違います](#本番-d1-と異なる点)。そのため行数は一致しないことがあります。どちらも本番 D1 の請求ではありません。[なぜ他の方法ではないのか](why-not.md)に、これらの道具がすでに渡すものと、比較が足すものを書いています。
 

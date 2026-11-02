@@ -36,14 +36,14 @@ Local D1 already reports those two fields for one statement. Under `wrangler dev
    };
    ```
 
-3. Load the local database. `schema.sql` must create the tables the query touches — here the `events` table, its secondary index, and 5,000 rows with a `customer_id` column:
+3. Load the local database. `schema.sql` must create the tables the query touches — here the `events` table, its secondary index, and 5,000 rows with a `customer_id` column. This exact file reproduces the row counts shown at step 5:
 
    ```sql
    -- schema.sql
    CREATE TABLE events (id INTEGER PRIMARY KEY, customer_id INTEGER, note TEXT);
    CREATE INDEX idx_customer ON events (customer_id);
-   INSERT INTO events VALUES (1, 1, 'n1');
-   -- … rows 2 to 5,000, the same shape …
+   WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 5000)
+   INSERT INTO events SELECT n, n % 97, 'n' || n FROM seq;
    ```
 
    ```sh
@@ -65,10 +65,10 @@ Local D1 already reports those two fields for one statement. Under `wrangler dev
    ```
 
    ```json
-   {"served_by":"miniflare.db","served_by_primary":true,"total_attempts":1,"timings":{"sql_duration_ms":1},"duration":1,"changes":0,"last_row_id":0,"changed_db":false,"size_after":147456,"rows_read":5000,"rows_written":0}
+   {"served_by":"miniflare.db","served_by_primary":true,"total_attempts":1,"timings":{"sql_duration_ms":1},"duration":1,"changes":0,"last_row_id":0,"changed_db":false,"size_after":143360,"rows_read":5000,"rows_written":0}
    ```
 
-   That `meta` is the response this procedure returned on 2026-11-02 with wrangler 4.156.1, against a local D1 database holding the 5,000-row `events` table: the full scan read 5,000 rows and wrote none.
+   That `meta` is the response this procedure returned on 2026-11-02 with wrangler 4.156.1, against a local D1 database holding the 5,000-row `events` table from `schema.sql`: the full scan read 5,000 rows and wrote none.
 
 `wrangler d1 execute --local --json` returns only `{ "duration": N }` on its `meta` (same wrangler version, same run): it redacts the row counters from the local result, so the CLI cannot be used to read them. Those numbers come from the local D1 engine. Qenome's numbers come from its own build of the patch, and [the builds use different compile options](#what-can-differ-from-production-d1), so the counts can differ. Neither number is a production D1 bill. [Why not ...](why-not.md) says what those tools already give you and what the comparison adds.
 
