@@ -166,7 +166,7 @@ fn writeJsonComparison(
     }
     try json.endArray();
     try json.objectField("result");
-    try json.write(if (outcome) |value| resultText(value.verdict) else "incomparable");
+    try json.write(if (outcome) |value| value.verdict.text() else "incomparable");
     try json.objectField("row_order");
     try json.write(if (outcome) |value| rowOrderText(value) else "not-applicable");
     try json.objectField("result_reasons");
@@ -282,14 +282,6 @@ fn writeJsonComparison(
     try json.objectField("binds");
     try writeJsonBinds(&json, allocator, header);
     try json.endObject();
-}
-
-fn resultText(verdict: Verdict) []const u8 {
-    return switch (verdict) {
-        .match => "match",
-        .mismatch => "mismatch",
-        .incomparable => "incomparable",
-    };
 }
 
 fn rowOrderText(outcome: Outcome) []const u8 {

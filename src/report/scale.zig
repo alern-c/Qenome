@@ -62,14 +62,6 @@ fn writeInputs(stdout: *Io.Writer, report: Report) Io.Writer.Error!void {
     }
 }
 
-fn resultText(verdict: Verdict) []const u8 {
-    return switch (verdict) {
-        .match => "match",
-        .mismatch => "mismatch",
-        .incomparable => "incomparable",
-    };
-}
-
 fn cell(writer: *Io.Writer, baseline: u64, variant: u64, separator: []const u8) Io.Writer.Error!void {
     try writeCount(writer, baseline);
     try writer.writeAll(separator);
@@ -123,7 +115,7 @@ fn writeTable(stdout: *Io.Writer, report: Report) Io.Writer.Error!void {
         }
         try stdout.print("  {s:<12}{s:<13}{s:<8}{s}\n", .{
             step.judgement.verdict.text(),
-            resultText(step.result),
+            step.result.text(),
             if (step.plan_changed) "changed" else "same",
             median_text.buffered(),
         });

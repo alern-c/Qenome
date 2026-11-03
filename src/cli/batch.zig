@@ -1491,7 +1491,7 @@ fn writeBatchHuman(
             const text = std.fmt.bufPrint(&buffer, "- -> {d}", .{result.variant_rows orelse 0}) catch "?";
             try writeCell(stdout, text, 12);
         } else {
-            try writeCell(stdout, resultText(result.outcome orelse .match), 12);
+            try writeCell(stdout, (result.outcome orelse cli_comparison.Verdict.match).text(), 12);
             try stdout.writeAll("  ");
             try writeCell(stdout, result.judgement.text(), 12);
             try stdout.writeAll("  ");
@@ -1679,14 +1679,6 @@ fn sizeText(buffer: []u8, increase: i128) []const u8 {
     }
     const mib = @as(f64, @floatFromInt(increase)) / (1024.0 * 1024.0);
     return std.fmt.bufPrint(buffer, "{d:.2} MiB", .{mib}) catch "";
-}
-
-fn resultText(verdict: cli_comparison.Verdict) []const u8 {
-    return switch (verdict) {
-        .match => "match",
-        .mismatch => "mismatch",
-        .incomparable => "incomparable",
-    };
 }
 
 fn outOfMemoryCode(stderr: *Io.Writer) ExitCode {

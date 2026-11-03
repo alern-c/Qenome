@@ -17,7 +17,19 @@ pub const Measurement = struct {
     executions: u32 = 0,
 };
 
-pub const Verdict = enum { match, mismatch, incomparable };
+pub const Verdict = enum {
+    match,
+    mismatch,
+    incomparable,
+
+    pub fn text(self: Verdict) []const u8 {
+        return switch (self) {
+            .match => "match",
+            .mismatch => "mismatch",
+            .incomparable => "incomparable",
+        };
+    }
+};
 
 pub const Outcome = struct {
     verdict: Verdict,
