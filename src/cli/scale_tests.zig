@@ -557,3 +557,53 @@ test "the scale run classifies the medians only when it is timed" {
     try testing.expect(!contains(human.stdout, "baseline time:      not timed"));
     try testing.expect(!contains(human.stdout, "variant time:       not timed"));
 }
+
+test "the scale run reports the SQL warnings of the SELECT in human and json" {
+    var fixture = try Fixture.init("SELECT * FROM t WHERE a = 1500;", lookup_index, seed_two_columns);
+    defer fixture.deinit();
+    var stdout_buffer: [65536]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+
+    const human = fixture.run(&.{ "--seed-data", fixture.seed_path, "--scale", "1000,5000", "--runs", "0" }, "human", &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, human.code);
+    try testing.expectEqualStrings("", human.stderr);
+    try testing.expect(contains(human.stdout, "\nSQL warnings\n"));
+    try testing.expect(contains(human.stdout, "info: select_star:"));
+    try testing.expectEqual(@as(usize, 1), count(human.stdout, "select_star:"));
+
+    const json = fixture.run(&.{ "--seed-data", fixture.seed_path, "--scale", "1000,5000", "--runs", "0", "--format", "json" }, "json", &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, json.code);
+    try testing.expectEqualStrings("", json.stderr);
+    var parsed = try parseJson(json.stdout);
+    defer parsed.deinit();
+    try testing.expectError(error.TestUnexpectedResult, jsonGet(parsed.value, "sql_warnings"));
+    const steps = try jsonItems(parsed.value, "steps");
+    try testing.expectEqual(@as(usize, 2), steps.len);
+    for (steps) |entry| {
+        const comparison = try jsonGet(entry, "comparison");
+        const warnings = try jsonItems(comparison, "sql_warnings");
+        try testing.expectEqual(@as(usize, 1), warnings.len);
+        try testing.expectEqualStrings(contract.code.select_star, try jsonText(warnings[0], "code"));
+        try testing.expectEqualStrings(contract.sql_warning_severity.info, try jsonText(warnings[0], "severity"));
+        try testing.expectEqual(@as(i64, 1), try jsonInt(warnings[0], "line"));
+        try testing.expectEqual(@as(i64, 8), try jsonInt(warnings[0], "column"));
+    }
+
+    const off = fixture.run(&.{ "--seed-data", fixture.seed_path, "--scale", "1000,5000", "--runs", "0", "--no-sql-warnings" }, "human", &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, off.code);
+    try testing.expect(!contains(off.stdout, "SQL warnings"));
+
+    const ignored = fixture.run(&.{ "--seed-data", fixture.seed_path, "--scale", "1000,5000", "--runs", "0", "--ignore-sql-warning", contract.code.select_star }, "human", &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, ignored.code);
+    try testing.expect(!contains(ignored.stdout, "SQL warnings"));
+
+    const off_json = fixture.run(&.{ "--seed-data", fixture.seed_path, "--scale", "1000,5000", "--runs", "0", "--no-sql-warnings", "--format", "json" }, "json", &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, off_json.code);
+    var off_parsed = try parseJson(off_json.stdout);
+    defer off_parsed.deinit();
+    const off_steps = try jsonItems(off_parsed.value, "steps");
+    for (off_steps) |entry| {
+        try testing.expectEqual(@as(usize, 0), (try jsonItems(try jsonGet(entry, "comparison"), "sql_warnings")).len);
+    }
+    try testing.expectEqual(try jsonGet(parsed.value, "exit_code"), try jsonGet(off_parsed.value, "exit_code"));
+}

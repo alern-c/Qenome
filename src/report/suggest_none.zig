@@ -2,6 +2,8 @@ const std = @import("std");
 const Io = std.Io;
 const contract = @import("../contract/values.zig");
 const db = @import("../db.zig");
+const model = @import("model.zig");
+const report_json = @import("json.zig");
 const result_rows = @import("../result.zig");
 
 pub const Warning = struct {
@@ -20,6 +22,7 @@ pub const Report = struct {
     database_path: []const u8,
     queries: []const Query,
     warnings: []const Warning = &.{},
+    sql_warnings: []const model.QuerySqlWarning = &.{},
 };
 
 pub fn writeHuman(stdout: *Io.Writer, report: Report) Io.Writer.Error!void {
@@ -45,9 +48,21 @@ pub fn writeHuman(stdout: *Io.Writer, report: Report) Io.Writer.Error!void {
             try stdout.writeByte('\n');
         }
     }
+    if (report.sql_warnings.len != 0) {
+        try stdout.writeAll("\nsql warnings:\n");
+        for (report.sql_warnings) |entry| {
+            try stdout.writeAll("  ");
+            try result_rows.writeText(stdout, entry.query);
+            try stdout.print(":{d}:{d}: {s}: {s}: ", .{
+                entry.warning.line, entry.warning.column, entry.warning.severity, entry.warning.code,
+            });
+            try result_rows.writeEscapedText(stdout, entry.warning.message);
+            try stdout.writeByte('\n');
+        }
+    }
 }
 
-pub fn writeJson(stdout: *Io.Writer, report: Report) !void {
+pub fn writeJson(stdout: *Io.Writer, allocator: std.mem.Allocator, report: Report) !void {
     var json: std.json.Stringify = .{
         .writer = stdout,
         .options = .{ .whitespace = .indent_2, .escape_unicode = true },
@@ -80,6 +95,10 @@ pub fn writeJson(stdout: *Io.Writer, report: Report) !void {
     try json.write(null);
     try json.objectField("warnings");
     try writeWarnings(&json, report.warnings);
+    try json.objectField("sql_warnings");
+    try json.beginArray();
+    for (report.sql_warnings) |entry| try report_json.writeJsonSqlWarning(&json, allocator, entry.warning, entry.query);
+    try json.endArray();
     try json.objectField("queries");
     try json.beginArray();
     for (report.queries) |query| {

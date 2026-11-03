@@ -11,7 +11,8 @@
     "recommended",
     "summary",
     "results",
-    "warnings"
+    "warnings",
+    "sql_warnings"
   ],
   "properties": {
     "batch_schema_version": { "const": 1 },
@@ -104,9 +105,34 @@
           "message": { "type": "string", "minLength": 1 }
         }
       }
+    },
+    "sql_warnings": {
+      "description": "Always emitted, and can be empty. One entry per SQL finding, in query order and then in finding order. Each SELECT is linted once, before any candidate. The embedded comparison objects under results and writes omit the key (the same rule as seed_data). Advisory: it never changes the verdict, recommended, a count, or the exit code.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/query_sql_warning" }
     }
   },
   "$defs": {
+    "query_sql_warning": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["query", "code", "severity", "message", "line", "column", "plan_checked"],
+      "properties": {
+        "query": {
+          "description": "The manifest select string, or the SELECT path argument for a one-SELECT --suggest.",
+          "type": "string"
+        },
+        "code": {
+          "description": "function_on_column, leading_wildcard_like, or_across_columns, large_offset, order_by_random, or select_star.",
+          "type": "string"
+        },
+        "severity": { "enum": ["warning", "info"] },
+        "message": { "type": "string" },
+        "line": { "type": "integer", "minimum": 1 },
+        "column": { "type": "integer", "minimum": 1 },
+        "plan_checked": { "type": "boolean" }
+      }
+    },
     "summary": {
       "type": "object",
       "additionalProperties": true,

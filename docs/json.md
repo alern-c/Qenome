@@ -34,8 +34,9 @@ On failure, read the line that starts with `{`. `human` and `kv` do not print th
 | `results` | array | One object per compared query and candidate, ordered by candidate (manifest entries first, then suggestions) and then by query (manifest order). An `index_rejected` or `index_timeout` candidate has no entries here |
 | `writes` | array | Present only when the manifest has `writes` (which needs `--migration`): one object per write statement, in manifest order. See [`writes` entries](#writes-entries) |
 | `warnings` | array | `{ "code", "message" }` entries. Holds what `--suggest` dropped or could not do, and, with `--d1`, `unapplied_migrations`. A comparison warning (including `bind_dependent_partial_index`) is in `results[].comparison.warnings`, not here; the `human` report lists each one under `Warnings` as `<query> -> <candidate>: <code>: <message>` |
+| `sql_warnings` | array | Always emitted, and can be empty. One `{ "query", "code", "severity", "message", "line", "column", "plan_checked" }` object per SQL finding, in query order and then in finding order. `query` is the manifest `select` string, or the SELECT path argument for a one-SELECT `--suggest`. Each SELECT is linted once, before any candidate, so a finding does not repeat per candidate. The comparison objects under `results` and `writes` omit the key (the same rule as `seed_data`). Advisory: it never changes the verdict, `recommended`, a count, or the exit code |
 
-A batch object does not carry a top-level `sql_warnings` yet, and the comparison objects under `results` and `writes` omit the key. [#174](https://github.com/alern-c/Qenome/issues/174) adds the batch list, with `query` on each entry, and the same list for `--suggest`.
+The `batch_schema_version` stays `1`: `sql_warnings` is an additive key. `--suggest` writes the same array for its one SELECT.
 
 ### `summary` entries
 
@@ -136,7 +137,7 @@ A candidate qualifies for `recommended` when its status is `compared` and `misma
 | `no_suggestions` | SQLite proposed nothing; the manifest candidates were still compared |
 | `suggest_failed` | The expert could not start or analyze; the manifest candidates were still compared |
 
-- When the expert proposes nothing because the current plan needs no index, the run exits `0` and writes a `schema_version` 2 object (not a batch object) with `index_needed` false, `result` `no_index_needed`, `verdict` `no-effect`, `verdict_reasons` containing `no index needed`, `baseline` set to the current measurement, `variant` null, and a `queries` array of `{query, rows_read, plan}`. `schema_version` stays 2; the new fields are additions.
+- When the expert proposes nothing because the current plan needs no index, the run exits `0` and writes a `schema_version` 2 object (not a batch object) with `index_needed` false, `result` `no_index_needed`, `verdict` `no-effect`, `verdict_reasons` containing `no index needed`, `baseline` set to the current measurement, `variant` null, a `queries` array of `{query, rows_read, plan}`, and a `sql_warnings` array of the same entries as the batch object, with `query` on each one. `schema_version` stays 2; the new fields are additions.
 - When a suggestion cannot be produced, or every suggestion is rejected, the run stops with exit `1`, empty stdout, and `suggest_failed` or `no_candidates`. A query that cannot be prepared is `batch_baseline_failed`. `no_suggestions` remains a warning on the batch report when manifest candidates are still compared.
 - With one SELECT file (no `--batch`), the SELECT is one batch query, `--bind` applies to it, and the report is the same batch object. `--suggest` does not take `--runs`, `--format kv`, or an index file.
 - Use `--suggest` to find candidates. For a CI gate that must not change when SQLite changes its advice, compare a named index without `--suggest`.
@@ -324,7 +325,7 @@ Semantics and limits:
 | --- | --- | --- |
 | `rows` | number | The step size: the row count of the largest table in the spec |
 | `tables` | array | One `{ "table", "rows" }` object per table in the spec, with the row count at this step |
-| `comparison` | object | The full `schema_version` 2 comparison object for this step, minified. Its `inputs` name the same database, SELECT or write, and index file, and its `seed_data` holds the tables at this step's sizes |
+| `comparison` | object | The full `schema_version` 2 comparison object for this step, minified. Its `inputs` name the same database, SELECT or write, and index file, its `seed_data` holds the tables at this step's sizes, and its `sql_warnings` lists the findings for that step |
 
 A step below 1,000 rows writes a `data_too_small` warning in `steps[].comparison.warnings`. Its message says that the step is below the size where the result is meaningful and to read the comparison at a larger step, because the run already uses `--seed-data` and `--scale`. The object keeps `code`, `message`, `table`, `rows`, and `full_scan` and has no `next_command`; the plain comparison and the `--batch`, `--suggest`, and `--rank` notes keep `next_command` as described above. `schema_version` stays `2`.
 
@@ -361,7 +362,7 @@ Semantics and limits:
 - Each step copies the original database into a new sandbox, seeds it, builds the candidate index on the variant, and runs the existing comparison. The copies are removed before the next step.
 - The step's `comparison.exit_code` is that step's result: `0`, `3`, or `4`. The top-level `exit_code` is the heaviest of the steps, in the order above. A step that cannot run stops the run before the report: stdout is empty and stderr holds the error object. Its code is the heavier of the finished steps and that failure, in the same order.
 - `--scale` is rejected with `usage_scale` together with `--batch`, `--suggest`, `--migration`, `--audit-indexes`, `--rank`, `--record`, and `--format kv`.
-- Every step runs the same comparison, so the keys inside `comparison` follow the comparison object above. Its `timing` is `null` with `--runs 0` and in `--write` mode.
+- Every step runs the same comparison, so the keys inside `comparison` follow the comparison object above. Its `timing` is `null` with `--runs 0` and in `--write` mode. Its `sql_warnings` is checked against that step's baseline plan, so a finding may appear in some steps and not others; the human output then names the step with `warning at <rows> rows:`.
 - `trend` and `findings` are additive keys inside `scale_schema_version` 1: every other key keeps its meaning and the version stays `1`. A finding never changes a step's `comparison.result`, `comparison.verdict`, `comparison.exit_code`, or the top-level `exit_code`. A run with no finding writes `"findings": []`.
 - The trend and the findings describe this generated data on this machine; they are not production D1 billing or latency. [The usage page](usage.md#measuring-at-several-sizes---scale) describes the human `Trend` and `Findings` blocks.
 
@@ -408,7 +409,7 @@ The object is indented with two spaces and ends with a newline. A missing key th
 | `measurement` | object | `runs_per_copy`, `warmup`, `order`, `scope`, `cache`. With `--write`, `runs_per_copy` is the rolled-back executions per copy and the other values describe the write runs |
 | `binds` | array | `number`, `type`. Text also has `text_bytes`. `value` only with `--show-binds` |
 | `warnings` | array | Emitted. `{ "code": string, "message": string }`. Expected codes: `no_analyze_stats` (no ANALYZE statistics), `data_too_small` (too little data to trust the counts; that object also has `table`, `rows`, `full_scan`, and `next_command`), `bind_dependent_partial_index` (the variant plan uses a partial index only because the bound values satisfy its WHERE clause), `unapplied_migrations` (the local D1 database has not applied every migration in the wrangler config) |
-| `sql_warnings` | array | Emitted in the standalone comparison. `{ "code": string, "severity": string, "message": string, "line": number, "column": number, "plan_checked": boolean }` entries for the SQL text; `severity` is `warning` or `info`; `line` and `column` are 1-based bytes in the SQL file. A comparison embedded in a `--batch`, `--suggest`, or `--scale` report omits this key (see [`sql_warnings`](#sql_warnings)) |
+| `sql_warnings` | array | Emitted in the standalone comparison and in a `--scale` step comparison. `{ "code": string, "severity": string, "message": string, "line": number, "column": number, "plan_checked": boolean }` entries for the SQL text; `severity` is `warning` or `info`; `line` and `column` are 1-based bytes in the SQL file. A comparison embedded under `results` or `writes` in a `--batch` or `--suggest` report omits this key; the batch object holds one list with `query` on each entry (see [`sql_warnings`](#sql_warnings)) |
 | `sqlite` | object | Reserved. `bundled_version` (string), `db_header_version` (string) |
 
 `verdict` values:
@@ -582,7 +583,7 @@ The interval is `null` with `unavailable_reason` `too-few-rounds` below six roun
 
 ### `sql_warnings`
 
-The single comparison, including `--write`, reads the SQL text and writes one entry per SQL pattern that usually stops SQLite from using an index. The array is always present in this object, including with `--runs 0` and an incomparable result, and it can be empty. It is separate from `warnings`: `warnings` says that the measurement may not be representative, while `sql_warnings` describes the SQL text itself. Neither changes the verdict, the rows, `recommended`, a batch count, or the exit status.
+Every mode reads the SQL text and writes one entry per SQL pattern that usually stops SQLite from using an index: the single comparison (including `--write`), `--batch`, `--suggest`, and each `--scale` step. The array is always present in this object, including with `--runs 0` and an incomparable result, and it can be empty. It is separate from `warnings`: `warnings` says that the measurement may not be representative, while `sql_warnings` describes the SQL text itself. Neither changes the verdict, the rows, `recommended`, a batch count, or the exit status.
 
 `severity` is `warning` or `info`. The codes are stable:
 
@@ -595,7 +596,7 @@ The single comparison, including `--write`, reads the SQL text and writes one en
 | `order_by_random` | `warning` | `ORDER BY random()` |
 | `select_star` | `info` | `SELECT *` or `t.*` in the outermost select list |
 
-`plan_checked` is `true` when the plan check ran and kept the finding. It is `false` when no plan check applies and when the baseline plan was unavailable for a `function_on_column` finding. Strings, comments, and quoted identifiers are not matched; a pattern inside a subquery or a CTE is analysed as its own `SELECT`; and a check stays quiet when the text is ambiguous (a column-to-column comparison, a function on the parameter side, `INDEXED BY`, a window function, `CAST`, `COLLATE`, or a table that cannot be resolved to one source). `implicit_conversion` is not reported. The batch, `--suggest`, and `--scale` objects do not carry `sql_warnings` yet; [#174](https://github.com/alern-c/Qenome/issues/174) adds them, with `query` on each batch entry. The two flags are `--no-sql-warnings` and `--ignore-sql-warning CODE`.
+`plan_checked` is `true` when the plan check ran and kept the finding. It is `false` when no plan check applies and when the baseline plan was unavailable for a `function_on_column` finding. Strings, comments, and quoted identifiers are not matched; a pattern inside a subquery or a CTE is analysed as its own `SELECT`; and a check stays quiet when the text is ambiguous (a column-to-column comparison, a function on the parameter side, `INDEXED BY`, a window function, `CAST`, `COLLATE`, or a table that cannot be resolved to one source). `implicit_conversion` is not reported. A `--batch` or `--suggest` report puts one list at the top level, outside the embedded comparisons, and each entry adds `query` (see the [batch report](#batch-report-batch_schema_version-1)); a `--scale` step keeps the array inside `steps[].comparison`, and a step's `plan_checked` reflects that step's baseline plan. The two flags are `--no-sql-warnings` and `--ignore-sql-warning CODE`; they apply to every mode that reports the warnings.
 
 
 ## Remaining reserved fields

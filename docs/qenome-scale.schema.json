@@ -111,7 +111,11 @@
               "verdict": {
                 "enum": ["improved", "no-effect", "needs-check", "not-judged"]
               },
-              "result": { "enum": ["match", "mismatch", "incomparable"] }
+              "result": { "enum": ["match", "mismatch", "incomparable"] },
+              "sql_warnings": {
+                "description": "Advisory findings about the SQL text for this step. The entries are the sql_warning objects of qenome-report.schema.json, checked against this step's baseline plan, so a finding may appear in some steps and not others. Never changes the verdict or the exit code.",
+                "type": "array"
+              }
             }
           }
         }

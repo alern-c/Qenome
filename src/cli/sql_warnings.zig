@@ -58,6 +58,22 @@ pub fn collect(allocator: std.mem.Allocator, inputs: Inputs) std.mem.Allocator.E
     return warnings.toOwnedSlice(allocator);
 }
 
+pub fn collectForQuery(
+    allocator: std.mem.Allocator,
+    database: *db.Db,
+    sql: [:0]const u8,
+    binds: []const db.BindArg,
+    enabled: bool,
+    ignored: []const []const u8,
+) std.mem.Allocator.Error![]const model.SqlWarning {
+    if (!enabled) return &.{};
+    const plan = database.explainPlan(allocator, sql, binds) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => null,
+    };
+    return collect(allocator, .{ .sql = sql, .plan = plan, .binds = binds, .ignored = ignored });
+}
+
 fn boundValues(allocator: std.mem.Allocator, binds: []const db.BindArg) std.mem.Allocator.Error![]const sql_lint.Bound {
     const bounds = try allocator.alloc(sql_lint.Bound, binds.len);
     for (binds, 0..) |bind, index| {

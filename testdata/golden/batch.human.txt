@@ -20,3 +20,9 @@ Results
 Warnings
   cases/improved.index.sql: no_analyze_stats: The candidate index table has no non-empty sqlite_stat1 entry. Test an ANALYZE'd copy with representative data; this check does not run ANALYZE.
   cases/no-effect.index.sql: no_analyze_stats: The candidate index table has no non-empty sqlite_stat1 entry. Test an ANALYZE'd copy with representative data; this check does not run ANALYZE.
+
+SQL warnings
+  cases/no-effect.sql:1:31: warning: function_on_column: A function or
+    arithmetic on a column in a comparison stops SQLite from using an index on
+    that column. Compare the plain column, or add an expression index for this
+    expression.

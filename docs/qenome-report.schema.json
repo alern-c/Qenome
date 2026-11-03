@@ -263,7 +263,7 @@
       "items": { "$ref": "#/$defs/warning" }
     },
     "sql_warnings": {
-      "description": "Emitted in the standalone comparison. Advisory findings about the SQL text; they never change the verdict or the exit code. A comparison embedded in a batch, --suggest, or --scale report omits this key.",
+      "description": "Emitted in the standalone comparison and in a --scale step comparison. Advisory findings about the SQL text; they never change the verdict or the exit code. A comparison embedded under results or writes in a batch or --suggest report omits this key; the batch object holds one list with query on each entry.",
       "type": "array",
       "items": { "$ref": "#/$defs/sql_warning" }
     },

@@ -32,6 +32,8 @@ pub const Inputs = struct {
     format: cli_args.Format = .human,
     show_binds: bool = false,
     show_rows: bool = false,
+    sql_warnings: bool = true,
+    ignore_sql_warnings: []const []const u8 = &.{},
     temp_parent: []const u8,
     seed: cli_seed.Spec,
     scale: cli_args.Scale,
@@ -219,7 +221,7 @@ fn comparisonJson(session: *const Session, plan: Plan, computed: cli_pair.Comput
         computed.after,
         computed.outcome,
         computed.report,
-        .{ .style = .minified, .sql_warnings = false },
+        .{ .style = .minified },
     ) catch |err| {
         _ = reportFailure(session.stderr, err);
         return null;
@@ -272,6 +274,8 @@ fn runStep(session: *const Session, plan: Plan) StepResult {
         .show_binds = session.inputs.show_binds,
         .show_rows = session.inputs.show_rows,
         .scale_step = true,
+        .sql_warnings = session.inputs.sql_warnings,
+        .ignore_sql_warnings = session.inputs.ignore_sql_warnings,
     }, &rows, session.stderr, session.cleanup_failed, &work)) {
         .computed => |value| value,
         .failed => |failure| return .{ .failed = failure },
@@ -307,6 +311,7 @@ fn runStep(session: *const Session, plan: Plan) StepResult {
         .plan_changed = !cli_comparison.samePlan(computed.before.plan, computed.after.plan),
         .timing = computed.report.timing,
         .warnings = computed.report.warnings,
+        .sql_warnings = computed.report.sql_warnings,
         .baseline_only = baseline_only,
         .variant_only = variant_only,
         .baseline_examples = baseline_examples,
