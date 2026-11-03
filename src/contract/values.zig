@@ -62,6 +62,8 @@ pub const warning_messages = [_][]const u8{
 
 pub const data_too_small_message = "The table \"{s}\" has {d} rows, fewer than 1000 rows, so this result is not meaningful yet. {s}Write a seed spec that lists {s} and rerun: {s}";
 
+pub const data_too_small_scale_message = "The table \"{s}\" has {d} rows, fewer than 1000 rows, so this step is below the size where the result is meaningful. {s}Read the comparison at a larger step.";
+
 pub const data_too_small_full_scan = "A full scan reads every row, so a small count does not mean a missing index is harmless. ";
 
 pub const data_too_small_suggested = "Save the suggested index as index.sql first; --scale does not run with --suggest. ";

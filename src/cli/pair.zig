@@ -40,6 +40,7 @@ pub const Inputs = struct {
     work_parent: []const u8,
     show_binds: bool = false,
     show_rows: bool = false,
+    scale_step: bool = false,
     progress_interval_ns: u64 = std.time.ns_per_s,
 };
 
@@ -531,6 +532,10 @@ fn noteSmallData(
 ) !void {
     var scan = false;
     for (plan.rows) |row| scan = scan or cli_warnings.bareScan(row.detail, table);
+    if (inputs.scale_step) {
+        try cli_warnings.attachScaleSmallData(arena, &report.warnings, table, rows, scan);
+        return;
+    }
     try cli_warnings.attachSmallData(arena, &report.warnings, table, rows, scan, .{
         .database = inputs.database_path,
         .binding = if (inputs.d1) |d1| d1.binding else null,

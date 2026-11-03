@@ -190,7 +190,7 @@ fn writeOverview(
         } else |_| {
             try writeField(stdout, "data", "TOO SMALL: fewer than 1000 rows");
         }
-        try writeField(stdout, "next", detail.next_command);
+        if (detail.next_command) |next_command| try writeField(stdout, "next", next_command);
     }
     try writeField(stdout, "query plan", if (cli_comparison.samePlan(before.plan, after.plan))
         "the same on both copies"
