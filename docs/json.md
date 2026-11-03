@@ -305,19 +305,49 @@ Semantics and limits:
 `--scale ROWS,ROWS[,ROWS...]` with `--seed-data` compares at every given size and writes one object with `scale_schema_version` 1 and a trailing newline. It is a separate contract from the batch report: `schema_version` 2, `batch_schema_version` 1, `audit_schema_version` 1 and `record_schema_version` 1 do not change. [qenome-scale.schema.json](qenome-scale.schema.json) checks the same shape. [The usage page](usage.md#measuring-at-several-sizes---scale) describes the command and the human output.
 
 | Key | Type | Meaning |
+| --- | --- | --- |
 | `scale_schema_version` | number | `1` |
 | `exit_code` | number | The heaviest step exit in the comparison order: `3`, then `4`, then `124`, then `1`, otherwise `0`. The process can still exit `5` after this object when cleanup fails and the code is `0` |
 | `inputs` | object | `database`, `select` (or `write`), `index_sql`, `seed_data` (the spec path), and `scale` (the step sizes as given) |
 | `environment` | object | The same keys as the comparison object: `qenome_version`, `sqlite_version`, `sqlite_source_id`, `zig_version`, `build_mode`, `os`, `arch`, `work_dir_parent` |
 | `steps` | array | One object per step, in the order given: `rows`, `tables`, and `comparison` |
+| `trend` | object | The growth of the rows read on each side, and of the median times when timed: `baseline_rows_read`, `variant_rows_read`, `baseline_time`, and `variant_time` |
+| `findings` | array | Zero or more `{ "code", "message", "steps" }` entries: things about this run that the per-step results do not say on their own |
 | `warnings` | array | Run-wide `{ "code", "message" }` entries: with `--d1`, `unapplied_migrations`. The per-step comparison warnings stay in `steps[].comparison.warnings` |
 
 `steps` entries:
 
 | Key | Type | Meaning |
+| --- | --- | --- |
 | `rows` | number | The step size: the row count of the largest table in the spec |
 | `tables` | array | One `{ "table", "rows" }` object per table in the spec, with the row count at this step |
 | `comparison` | object | The full `schema_version` 2 comparison object for this step, minified. Its `inputs` name the same database, SELECT or write, and index file, and its `seed_data` holds the tables at this step's sizes |
+
+`trend` holds four series: `baseline_rows_read` (the growth of `steps[].comparison.baseline.counters.rows_read`), `variant_rows_read` (the same for the variant), and `baseline_time` / `variant_time` (the growth of each side's `timing.median_ns`). Each series is one object:
+
+```json
+"baseline_rows_read": { "class": "linear", "exponents": [1, 1] }
+```
+
+`class` is `constant`, `sublinear`, `linear`, `superlinear`, `mixed`, or `unknown`. `exponents` holds one number per pair of consecutive steps, in order, rounded to three decimals, and is empty for `unknown`; an exact integer value is written as an integer, as `1` and `0` above. The JSON Schema accepts any number. For each pair the exponent is `log(later value / earlier value) / log(later rows / earlier rows)`. Every exponent at most `0.2` makes the series `constant`, at most `0.8` `sublinear`, at most `1.2` `linear`, and above `1.2` `superlinear`; a series takes one band's name only when every exponent lies in it (the `constant` and `sublinear` bands include the smaller one), and `mixed` means the exponents span bands. `unknown` means the series cannot be classified: a step whose `comparison.result` is not `match`, a value of `0`, a value of at least 2147483648 followed by a smaller one (a possible 32-bit counter wrap), or fewer than two steps. `baseline_time` and `variant_time` are `null` with `--runs 0`; when timed they use the same classes and thresholds, but the medians come from this machine and move with noise. The thresholds are constants in `src/report/scale_trend.zig`.
+
+`findings` entries:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `code` | string | A stable code from the table below |
+| `message` | string | One sentence in words; the sizes are in `steps`, not in the sentence |
+| `steps` | array | The two step sizes involved, smaller first |
+
+| Code | Meaning |
+| --- | --- |
+| `improvement_vanishes_at_scale` | `improved` at a smaller step and `no-effect` or `needs-check` at a larger one |
+| `regresses_at_scale` | the variant reads or writes more rows than the baseline from a larger step on, after an `improved` or `no-effect` smaller step |
+| `improves_only_at_scale` | a `no-effect` step comes before the first `improved` step, so the index only helps larger sizes |
+| `only_faster_at_small_sizes` | `timing.effect` is `faster` at a smaller step and `no-difference` or `slower` at a larger one, when timed |
+| `plan_changes_with_scale` | the baseline or the variant plan differs between two steps; `steps` names the first change |
+| `gain_grows_with_scale` | the variant / baseline rows-read ratio at least halves between the first and last `improved` step |
+| `gain_shrinks_with_scale` | the variant / baseline rows-read ratio at least doubles between the first and last `improved` step |
 
 Semantics and limits:
 
@@ -327,7 +357,8 @@ Semantics and limits:
 - The step's `comparison.exit_code` is that step's result: `0`, `3`, or `4`. The top-level `exit_code` is the heaviest of the steps, in the order above. A step that cannot run stops the run before the report: stdout is empty and stderr holds the error object. Its code is the heavier of the finished steps and that failure, in the same order.
 - `--scale` is rejected with `usage_scale` together with `--batch`, `--suggest`, `--migration`, `--audit-indexes`, `--rank`, `--record`, and `--format kv`.
 - Every step runs the same comparison, so the keys inside `comparison` follow the comparison object above. Its `timing` is `null` with `--runs 0` and in `--write` mode.
-- A growth classification (a growth class, an exponent, or a finding such as "only faster at small sizes") is not part of `scale_schema_version` 1. Extra keys are allowed by the contract rules above, so it can be added without a version bump.
+- `trend` and `findings` are additive keys inside `scale_schema_version` 1: every other key keeps its meaning and the version stays `1`. A finding never changes a step's `comparison.result`, `comparison.verdict`, `comparison.exit_code`, or the top-level `exit_code`. A run with no finding writes `"findings": []`.
+- The trend and the findings describe this generated data on this machine; they are not production D1 billing or latency. [The usage page](usage.md#measuring-at-several-sizes---scale) describes the human `Trend` and `Findings` blocks.
 
 ## Status in this tree
 

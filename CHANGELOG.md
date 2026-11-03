@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `--scale` writes a `trend` object and a `findings` array in the `scale_schema_version` 1 report (`scale_schema_version` stays `1`), and a `Trend` block and a `Findings` block in the human output. Each series of rows read, and of the median times when timed, is `constant`, `sublinear`, `linear`, `superlinear`, `mixed`, or `unknown`, with the exponent between consecutive steps rounded to three decimals; `unknown` covers a step that did not match, a zero value, a possible 32-bit wrap, and fewer than two steps. The stable finding codes are `improvement_vanishes_at_scale`, `regresses_at_scale`, `improves_only_at_scale`, `only_faster_at_small_sizes`, `plan_changes_with_scale`, `gain_grows_with_scale`, and `gain_shrinks_with_scale`; they never change a per-step verdict or the exit code. `docs/usage.md` and `docs/json.md` describe the classes, the thresholds, and each code.
+
 ## [0.4.2] - 2026-11-02
 
 ### Changed

@@ -2,19 +2,16 @@ const std = @import("std");
 const Io = std.Io;
 const contract = @import("../contract/values.zig");
 const result = @import("../result.zig");
-const cli_d1_migrations = @import("../d1/migrations.zig");
 const cli_warnings = @import("../cli/warnings.zig");
 const model = @import("model.zig");
 const format = @import("format.zig");
 const report_json = @import("json.zig");
+const scale_trend = @import("scale_trend.zig");
 
-const Header = model.Header;
-const Measurement = model.Measurement;
-const Judgement = model.Judgement;
 const Verdict = model.Verdict;
 const Warnings = model.Warnings;
-const TimeSummary = model.TimeSummary;
-const SeedTable = model.SeedTable;
+const Step = model.ScaleStep;
+const Report = model.ScaleReport;
 const Error = model.Error;
 const writeField = format.writeField;
 const writeCount = format.writeCount;
@@ -22,34 +19,11 @@ const writeDuration = format.writeDuration;
 const writeIndent = format.writeIndent;
 const writeWrapped = format.writeWrapped;
 
-const note = "note: these rows come from generated data measured on this machine; they are not production D1 billing.";
+const note = "note: the rows and the trend come from generated data measured on this machine; they are not production D1 billing.";
 
-pub const Step = struct {
-    rows: u64,
-    tables: []const SeedTable,
-    before: Measurement,
-    after: Measurement,
-    result: Verdict,
-    judgement: Judgement,
-    plan_changed: bool,
-    timing: ?TimeSummary = null,
-    warnings: Warnings = .{},
-    baseline_only: usize = 0,
-    variant_only: usize = 0,
-    baseline_examples: []const []const u8 = &.{},
-    variant_examples: []const []const u8 = &.{},
-    comparison_json: []const u8,
-    exit_code: u8 = 0,
-};
+const value_column = 22;
 
-pub const Report = struct {
-    header: Header,
-    seed_path: []const u8,
-    scale: []const u64,
-    steps: []const Step,
-    unapplied_migrations: ?cli_d1_migrations.Pending = null,
-    exit_code: u8 = 0,
-};
+const value_indent = 22;
 
 const Found = struct {
     code: []const u8,
@@ -259,6 +233,64 @@ fn writeRowDifferences(stdout: *Io.Writer, report: Report) Io.Writer.Error!void 
     }
 }
 
+fn writeSeriesValue(stdout: *Io.Writer, label: []const u8, value: []const u8) Io.Writer.Error!void {
+    try stdout.print("  {s:<20}", .{label});
+    try writeWrapped(stdout, value, value_column, value_indent);
+    try stdout.writeByte('\n');
+}
+
+fn writeSeriesLine(stdout: *Io.Writer, label: []const u8, series: scale_trend.Series) Io.Writer.Error!void {
+    var value_buffer: [256]u8 = undefined;
+    var value = Io.Writer.fixed(&value_buffer);
+    try value.writeAll(series.class.text());
+    if (series.exponents.len != 0) {
+        try value.writeAll(" (exponents ");
+        for (series.exponents, 0..) |exponent, index| {
+            if (index != 0) try value.writeAll(", ");
+            try value.print("{d:.3}", .{exponent});
+        }
+        try value.writeByte(')');
+    }
+    try writeSeriesValue(stdout, label, value.buffered());
+}
+
+fn writeFindings(stdout: *Io.Writer, findings: []const scale_trend.Finding) Error!void {
+    if (findings.len == 0) return;
+    try stdout.writeAll("\nFindings\n");
+    for (findings) |entry| {
+        var line_buffer: [512]u8 = undefined;
+        var line = Io.Writer.fixed(&line_buffer);
+        try line.print("{s}: {s} (steps ", .{ entry.code, entry.message });
+        try writeCount(&line, entry.steps[0]);
+        try line.writeAll(" and ");
+        try writeCount(&line, entry.steps[1]);
+        try line.writeByte(')');
+        try writeIndent(stdout, 2);
+        try writeWrapped(stdout, line.buffered(), 2, 4);
+        try stdout.writeByte('\n');
+    }
+}
+
+fn writeAnalysis(stdout: *Io.Writer, allocator: std.mem.Allocator, report: Report) Error!void {
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const analysis = try scale_trend.analyze(arena_state.allocator(), report.steps);
+    try stdout.writeAll("\nTrend\n");
+    try writeSeriesLine(stdout, "baseline rows read:", analysis.trend.baseline_rows_read);
+    try writeSeriesLine(stdout, "variant rows read:", analysis.trend.variant_rows_read);
+    if (analysis.trend.baseline_time) |series| {
+        try writeSeriesLine(stdout, "baseline time:", series);
+    } else {
+        try writeSeriesValue(stdout, "baseline time:", "not timed");
+    }
+    if (analysis.trend.variant_time) |series| {
+        try writeSeriesLine(stdout, "variant time:", series);
+    } else {
+        try writeSeriesValue(stdout, "variant time:", "not timed");
+    }
+    try writeFindings(stdout, analysis.findings);
+}
+
 fn verdictChanges(report: Report) bool {
     if (report.steps.len == 0) return false;
     const first = report.steps[0].judgement.verdict;
@@ -282,6 +314,7 @@ pub fn writeHumanScale(stdout: *Io.Writer, allocator: std.mem.Allocator, report:
     try writeInputs(stdout, report);
     try writeTable(stdout, report);
     try writeRowDifferences(stdout, report);
+    try writeAnalysis(stdout, allocator, report);
     try writeWarnings(stdout, allocator, report);
     try writeVerdictChange(stdout, report);
     try stdout.writeByte('\n');
@@ -340,6 +373,49 @@ fn writeJsonStep(json: *std.json.Stringify, allocator: std.mem.Allocator, step: 
     try json.endObject();
 }
 
+fn writeJsonSeries(json: *std.json.Stringify, series: scale_trend.Series) Error!void {
+    try json.beginObject();
+    try json.objectField("class");
+    try json.write(series.class.text());
+    try json.objectField("exponents");
+    try json.beginArray();
+    for (series.exponents) |value| try json.write(value);
+    try json.endArray();
+    try json.endObject();
+}
+
+fn writeAnalysisJson(json: *std.json.Stringify, allocator: std.mem.Allocator, steps: []const Step) Error!void {
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const analysis = try scale_trend.analyze(arena_state.allocator(), steps);
+    try json.objectField("trend");
+    try json.beginObject();
+    try json.objectField("baseline_rows_read");
+    try writeJsonSeries(json, analysis.trend.baseline_rows_read);
+    try json.objectField("variant_rows_read");
+    try writeJsonSeries(json, analysis.trend.variant_rows_read);
+    try json.objectField("baseline_time");
+    if (analysis.trend.baseline_time) |series| try writeJsonSeries(json, series) else try json.write(null);
+    try json.objectField("variant_time");
+    if (analysis.trend.variant_time) |series| try writeJsonSeries(json, series) else try json.write(null);
+    try json.endObject();
+    try json.objectField("findings");
+    try json.beginArray();
+    for (analysis.findings) |entry| {
+        try json.beginObject();
+        try json.objectField("code");
+        try report_json.writeJsonText(json, allocator, entry.code);
+        try json.objectField("message");
+        try report_json.writeJsonText(json, allocator, entry.message);
+        try json.objectField("steps");
+        try json.beginArray();
+        for (entry.steps) |value| try json.write(value);
+        try json.endArray();
+        try json.endObject();
+    }
+    try json.endArray();
+}
+
 pub fn writeJsonScale(stdout: *Io.Writer, allocator: std.mem.Allocator, report: Report) Error!void {
     var out: Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
@@ -360,6 +436,7 @@ pub fn writeJsonScale(stdout: *Io.Writer, allocator: std.mem.Allocator, report: 
     try json.beginArray();
     for (report.steps) |step| try writeJsonStep(&json, allocator, step);
     try json.endArray();
+    try writeAnalysisJson(&json, allocator, report.steps);
     try json.objectField("warnings");
     try json.beginArray();
     if (report.unapplied_migrations) |pending| {

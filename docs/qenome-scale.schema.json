@@ -11,6 +11,8 @@
     "inputs",
     "environment",
     "steps",
+    "trend",
+    "findings",
     "warnings"
   ],
   "properties": {
@@ -115,6 +117,54 @@
         }
       }
     },
+    "trend": {
+      "description": "The growth of the rows read on each side, and of the median times when timed. Each series has a class and one exponent per pair of consecutive steps.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["baseline_rows_read", "variant_rows_read", "baseline_time", "variant_time"],
+      "properties": {
+        "baseline_rows_read": { "$ref": "#/$defs/series" },
+        "variant_rows_read": { "$ref": "#/$defs/series" },
+        "baseline_time": {
+          "description": "null with --runs 0. When timed, the median times use the same classes and thresholds.",
+          "oneOf": [{ "$ref": "#/$defs/series" }, { "type": "null" }]
+        },
+        "variant_time": {
+          "description": "null with --runs 0. When timed, the median times use the same classes and thresholds.",
+          "oneOf": [{ "$ref": "#/$defs/series" }, { "type": "null" }]
+        }
+      }
+    },
+    "findings": {
+      "description": "Advisory findings about the whole run. They never change a step's verdict or the exit code.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "message", "steps"],
+        "properties": {
+          "code": {
+            "enum": [
+              "improvement_vanishes_at_scale",
+              "regresses_at_scale",
+              "improves_only_at_scale",
+              "only_faster_at_small_sizes",
+              "plan_changes_with_scale",
+              "gain_grows_with_scale",
+              "gain_shrinks_with_scale"
+            ]
+          },
+          "message": { "type": "string", "minLength": 1 },
+          "steps": {
+            "description": "The two step sizes involved, smaller first.",
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": { "type": "integer", "minimum": 1 }
+          }
+        }
+      }
+    },
     "warnings": {
       "description": "Run-wide warnings. The per-step comparison warnings stay in steps[].comparison.warnings.",
       "type": "array",
@@ -125,6 +175,22 @@
         "properties": {
           "code": { "enum": ["unapplied_migrations"] },
           "message": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "series": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["class", "exponents"],
+      "properties": {
+        "class": { "enum": ["constant", "sublinear", "linear", "superlinear", "mixed", "unknown"] },
+        "exponents": {
+          "description": "One rounded exponent per pair of consecutive steps, or empty when the class is unknown.",
+          "type": "array",
+          "maxItems": 5,
+          "items": { "type": "number" }
         }
       }
     }

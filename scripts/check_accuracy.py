@@ -65,6 +65,9 @@ RESULT_VALUES = ("match", "mismatch", "incomparable")
 VERDICT_VALUES = ("improved", "no-effect", "needs-check", "regressed", "not-judged")
 DIRECTIONS = ("decrease", "same", "increase")
 EFFECTS = ("faster", "slower", "no-difference", "insufficient-samples")
+GROWTH_CLASSES = ("constant", "sublinear", "linear", "superlinear", "mixed", "unknown")
+TREND_KEYS = ("baseline_rows_read", "variant_rows_read", "baseline_time", "variant_time")
+SCALE_KEYS = ("grows", "steps", "trend", "findings", "findings_exclude")
 HARNESS_OPTIONS = (
     "--format",
     "--db",
@@ -370,16 +373,41 @@ def check_scale_step(name, value):
     return result
 
 
+def check_growth_class(name, value):
+    require(isinstance(value, str), name + " must be a growth class")
+    require(value in GROWTH_CLASSES, name + " must be one of " + ", ".join(GROWTH_CLASSES))
+    return value
+
+
+def check_trend(name, value):
+    require(isinstance(value, dict) and bool(value), name + " must be a non-empty object")
+    unknown_keys(name, value, TREND_KEYS)
+    return {key: check_growth_class(name + "." + key, item) for key, item in value.items()}
+
+
+def check_codes(name, value):
+    require(isinstance(value, list) and bool(value), name + " must be a non-empty array")
+    for index, item in enumerate(value):
+        require(isinstance(item, str), name + "[" + str(index) + "] must be a string")
+    return list(value)
+
+
 def check_scale(name, value):
     require(isinstance(value, dict), name + " must be an object")
-    unknown_keys(name, value, ("steps", "grows"))
+    unknown_keys(name, value, SCALE_KEYS)
     steps = value.get("steps")
     require(isinstance(steps, list) and bool(steps), name + ".steps must be a non-empty array")
     checked = [check_scale_step(name + ".steps[" + str(index) + "]", step) for index, step in enumerate(steps)]
-    result = {"steps": checked}
+    result: dict[str, object] = {"steps": checked}
     if "grows" in value:
         require(value["grows"] is True, name + ".grows must be true")
         result["grows"] = True
+    if "trend" in value:
+        result["trend"] = check_trend(name + ".trend", value["trend"])
+    if "findings" in value:
+        result["findings"] = check_codes(name + ".findings", value["findings"])
+    if "findings_exclude" in value:
+        result["findings_exclude"] = check_codes(name + ".findings_exclude", value["findings_exclude"])
     return result
 
 
@@ -766,6 +794,30 @@ def scale_failures(spec, report):
             failures.append(
                 "baseline rows_read grows from " + str(first) + " to " + str(last) + ", expected at least 10x"
             )
+    failures += trend_failures(spec, report)
+    return failures
+
+
+def trend_failures(spec, report):
+    failures = []
+    trend = report.get("trend")
+    for key, wanted in spec.get("trend", {}).items():
+        series = trend.get(key) if isinstance(trend, dict) else None
+        found = series.get("class") if isinstance(series, dict) else None
+        if found != wanted:
+            failures.append("trend." + key + " is " + json.dumps(found) + ", expected " + json.dumps(wanted))
+    codes = []
+    findings = report.get("findings")
+    if isinstance(findings, list):
+        for entry in findings:
+            if isinstance(entry, dict) and isinstance(entry.get("code"), str):
+                codes.append(entry["code"])
+    for wanted in spec.get("findings", []):
+        if wanted not in codes:
+            failures.append("the report has no finding " + json.dumps(wanted))
+    for unwanted in spec.get("findings_exclude", []):
+        if unwanted in codes:
+            failures.append("the report has the finding " + json.dumps(unwanted))
     return failures
 
 
