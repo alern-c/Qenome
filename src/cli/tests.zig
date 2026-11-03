@@ -25,6 +25,10 @@ const Side = cli_comparison.Side;
 
 const testing = std.testing;
 
+fn relativePath(allocator: std.mem.Allocator, tmp: *const testing.TmpDir, sub_path: []const u8) ![:0]u8 {
+    return std.fmt.allocPrintSentinel(allocator, "{s}/{s}/{s}", .{ testing.TmpDir.parent_dir_path, &tmp.sub_path, sub_path }, 0);
+}
+
 const Fixture = struct {
     tmp: testing.TmpDir,
 
@@ -38,7 +42,7 @@ const Fixture = struct {
 
     fn file(self: *Fixture, sub_path: []const u8, data: []const u8) ![:0]u8 {
         try self.tmp.dir.writeFile(testing.io, .{ .sub_path = sub_path, .data = data });
-        return self.tmp.dir.realPathFileAlloc(testing.io, sub_path, testing.allocator);
+        return relativePath(testing.allocator, &self.tmp, sub_path);
     }
 };
 
@@ -64,7 +68,7 @@ const CliFixture = struct {
         const index_path = try dir.file("index.sql", index_sql);
         errdefer testing.allocator.free(index_path);
         try dir.tmp.dir.createDir(testing.io, "work", .default_dir);
-        const work_parent = try dir.tmp.dir.realPathFileAlloc(testing.io, "work", testing.allocator);
+        const work_parent = try relativePath(testing.allocator, &dir.tmp, "work");
         return .{
             .dir = dir,
             .db_path = db_path,
@@ -111,7 +115,7 @@ const CliFixture = struct {
     }
 
     fn runBatch(self: *CliFixture, extra: []const [:0]const u8, stdout_buffer: []u8, stderr_buffer: []u8) !RunResult {
-        const manifest = try self.dir.tmp.dir.realPathFileAlloc(testing.io, "batch.json", testing.allocator);
+        const manifest = try relativePath(testing.allocator, &self.dir.tmp, "batch.json");
         defer testing.allocator.free(manifest);
         return self.runBatchPath(manifest, extra, stdout_buffer, stderr_buffer);
     }
@@ -1216,13 +1220,9 @@ test "binds show only their shape unless --show-binds is given" {
     try testing.expect(contains(shown.stdout, "bind: 1:int:1\nbind: 2:text:'secret'\nbind: 3:null\nbind: 4:real:1.5e0\n"));
 }
 
-fn expectNarrow(text: []const u8, allowed: []const []const u8) !void {
+fn expectNarrow(text: []const u8) !void {
     var lines = std.mem.splitScalar(u8, text, '\n');
-    next: while (lines.next()) |line| {
-        if (line.len <= 80) continue;
-        for (allowed) |allowed_text| if (contains(line, allowed_text)) continue :next;
-        return error.TestUnexpectedResult;
-    }
+    while (lines.next()) |line| if (line.len > 80) return error.TestUnexpectedResult;
 }
 
 test "the default summary puts the conclusion first and the copies side by side" {
@@ -1281,7 +1281,7 @@ test "the default summary puts the conclusion first and the copies side by side"
     for ([_][]const u8{ "Timing", "Run\n", "Result rows", "time median", "binds", "work dir", "source id" }) |gone| {
         try testing.expect(!contains(result.stdout, gone));
     }
-    try expectNarrow(result.stdout, &.{ fixture.db_path, fixture.select_path, fixture.index_path });
+    try expectNarrow(result.stdout);
     try fixture.expectNoLeftovers();
 }
 
@@ -1318,7 +1318,7 @@ test "the default summary of a mismatch hides the one-sided rows unless --show-r
     try testing.expect(!contains(result.stdout, "[1, 'y']"));
     try testing.expect(!contains(result.stdout, "time median"));
     try testing.expect(!contains(result.stdout, "row order"));
-    try expectNarrow(result.stdout, &.{ fixture.db_path, fixture.select_path, fixture.index_path });
+    try expectNarrow(result.stdout);
 
     var shown_stdout: [8192]u8 = undefined;
     var shown_stderr: [1024]u8 = undefined;
@@ -1333,7 +1333,7 @@ test "the default summary of a mismatch hides the one-sided rows unless --show-r
         \\
     ));
     try testing.expect(!contains(shown.stdout, "rerun with --show-rows"));
-    try expectNarrow(shown.stdout, &.{ fixture.db_path, fixture.select_path, fixture.index_path });
+    try expectNarrow(shown.stdout);
     try fixture.expectNoLeftovers();
 }
 
@@ -1360,7 +1360,7 @@ test "the default summary of an incomparable select pairs each reason with its h
     ));
     try testing.expect(!contains(result.stdout, "the first "));
     try testing.expect(!contains(result.stdout, "row order"));
-    try expectNarrow(result.stdout, &.{ fixture.db_path, fixture.select_path, fixture.index_path });
+    try expectNarrow(result.stdout);
 }
 
 test "the default summary hides the bind values unless --show-binds is given" {
@@ -1396,7 +1396,7 @@ test "the default summary notes rows in a different order" {
     try testing.expectEqual(ExitCode.ok, result.code);
     try testing.expect(contains(result.stdout, "\nResult rows\n  row order     differs (reference only;"));
     try testing.expect(!contains(result.stdout, "same (reference only"));
-    try expectNarrow(result.stdout, &.{ fixture.db_path, fixture.select_path, fixture.index_path });
+    try expectNarrow(result.stdout);
     try fixture.expectNoLeftovers();
 }
 
@@ -1848,7 +1848,7 @@ test "a bind error says how many parameters the SELECT has" {
     try fixture.expectNoLeftovers();
 }
 
-test "help fits in 80 columns, names the formats and the check fails a wide line" {
+test "help fits in 80 columns and names the formats" {
     var stdout_buffer: [32768]u8 = undefined;
     var stderr_buffer: [512]u8 = undefined;
     const result = callRun(testing.allocator, &.{ "Qenome", "--help" }, null, &stdout_buffer, &stderr_buffer);
@@ -1856,9 +1856,8 @@ test "help fits in 80 columns, names the formats and the check fails a wide line
     try testing.expect(contains(result.stdout, "  --format <FORMAT>    human (default), kv or json\n"));
     try testing.expect(contains(result.stdout, "  --show-rows          print the example rows that only one copy"));
     try testing.expect(contains(result.stdout, "exit status:"));
-    try expectNarrow(result.stdout, &.{});
-    try expectNarrow(&@as([81]u8, @splat('x')), &.{"x"});
-    try testing.expectError(error.TestUnexpectedResult, expectNarrow(&@as([81]u8, @splat('x')), &.{"y"}));
+    try expectNarrow(result.stdout);
+    try testing.expectError(error.TestUnexpectedResult, expectNarrow(&@as([81]u8, @splat('x'))));
 }
 
 test "help puts the usage, options, examples and exit status before the details" {
@@ -1884,7 +1883,7 @@ test "help puts the usage, options, examples and exit status before the details"
     try testing.expect(contains(result.stdout, "--runs 0 is still judged"));
     try testing.expect(!contains(result.stdout, "or --runs 0"));
     try testing.expect(!contains(result.stdout, "Time verdict"));
-    try expectNarrow(result.stdout, &.{});
+    try expectNarrow(result.stdout);
 }
 
 test "json format parses and carries the decision keys" {
@@ -2169,9 +2168,11 @@ const D1Fixture = struct {
         const local_path = try joinSentinel(allocator, root, d1_state_dir ++ "/" ++ d1_file_name);
         errdefer allocator.free(local_path);
         if (create_local) try db.createTestDatabase(local_path, fixture_schema);
-        const select_path = try dir.file("select.sql", "SELECT b FROM t WHERE b = 'x'");
+        try dir.tmp.dir.writeFile(testing.io, .{ .sub_path = "select.sql", .data = "SELECT b FROM t WHERE b = 'x'" });
+        const select_path = try joinSentinel(allocator, root, "select.sql");
         errdefer allocator.free(select_path);
-        const index_path = try dir.file("index.sql", "CREATE INDEX idx_b2 ON t(b)");
+        try dir.tmp.dir.writeFile(testing.io, .{ .sub_path = "index.sql", .data = "CREATE INDEX idx_b2 ON t(b)" });
+        const index_path = try joinSentinel(allocator, root, "index.sql");
         errdefer allocator.free(index_path);
         try dir.tmp.dir.createDir(testing.io, "work", .default_dir);
         const work_parent = try dir.tmp.dir.realPathFileAlloc(testing.io, "work", allocator);
@@ -2370,10 +2371,8 @@ test "d1 accepts the positional paths before --d1" {
 test "d1 stops with status 4 when no wrangler config is present" {
     var dir = try Fixture.init();
     defer dir.deinit();
-    const select_path = try dir.file("select.sql", "SELECT 1");
-    defer testing.allocator.free(select_path);
-    const index_path = try dir.file("index.sql", "CREATE INDEX idx_a ON t(a)");
-    defer testing.allocator.free(index_path);
+    try dir.tmp.dir.writeFile(testing.io, .{ .sub_path = "select.sql", .data = "SELECT 1" });
+    try dir.tmp.dir.writeFile(testing.io, .{ .sub_path = "index.sql", .data = "CREATE INDEX idx_a ON t(a)" });
 
     const root = try dir.tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
     defer testing.allocator.free(root);
@@ -2383,7 +2382,7 @@ test "d1 stops with status 4 when no wrangler config is present" {
     var stdout_buffer: [1024]u8 = undefined;
     var stderr_buffer: [2048]u8 = undefined;
     const result = callRun(testing.allocator, &.{
-        "Qenome", "--d1", "DB", "--select", select_path, "--index-sql", index_path, "--format", "json",
+        "Qenome", "--d1", "DB", "--select", "select.sql", "--index-sql", "index.sql", "--format", "json",
     }, null, &stdout_buffer, &stderr_buffer);
 
     try testing.expectEqual(ExitCode.incomparable, result.code);
@@ -2911,9 +2910,9 @@ fn runMigration(
     stdout_buffer: []u8,
     stderr_buffer: []u8,
 ) !RunResult {
-    const manifest = try fixture.dir.tmp.dir.realPathFileAlloc(testing.io, manifest_name, testing.allocator);
+    const manifest = try relativePath(testing.allocator, &fixture.dir.tmp, manifest_name);
     defer testing.allocator.free(manifest);
-    const migration = try fixture.dir.tmp.dir.realPathFileAlloc(testing.io, migration_name, testing.allocator);
+    const migration = try relativePath(testing.allocator, &fixture.dir.tmp, migration_name);
     defer testing.allocator.free(migration);
     var argv: [32][:0]const u8 = undefined;
     const required = [_][:0]const u8{ "Qenome", "--db", fixture.db_path, "--batch", manifest, "--migration", migration };
@@ -3502,7 +3501,7 @@ test "a write the migration's column makes possible is measured on the variant o
 test "a writes entry without --migration is rejected with the manifest error" {
     var fixture = try initMigrationFixture();
     defer fixture.deinit();
-    const manifest = try fixture.dir.tmp.dir.realPathFileAlloc(testing.io, "writes_only.json", testing.allocator);
+    const manifest = try relativePath(testing.allocator, &fixture.dir.tmp, "writes_only.json");
     defer testing.allocator.free(manifest);
 
     var stdout_buffer: [2048]u8 = undefined;
@@ -3517,7 +3516,7 @@ test "a writes entry without --migration is rejected with the manifest error" {
 test "--migration without --batch is a usage error" {
     var fixture = try initMigrationFixture();
     defer fixture.deinit();
-    const migration = try fixture.dir.tmp.dir.realPathFileAlloc(testing.io, "replace.sql", testing.allocator);
+    const migration = try relativePath(testing.allocator, &fixture.dir.tmp, "replace.sql");
     defer testing.allocator.free(migration);
 
     var stdout_buffer: [1024]u8 = undefined;
@@ -3583,7 +3582,7 @@ test "a batch human report shortens absolute paths without merging names" {
     , .{ root, root, root });
     defer testing.allocator.free(manifest);
     try fixture.writeFile("absolute.json", manifest);
-    const manifest_path = try fixture.dir.tmp.dir.realPathFileAlloc(testing.io, "absolute.json", testing.allocator);
+    const manifest_path = try relativePath(testing.allocator, &fixture.dir.tmp, "absolute.json");
     defer testing.allocator.free(manifest_path);
 
     var stdout_buffer: [65536]u8 = undefined;
@@ -4164,7 +4163,7 @@ test "a cached baseline keeps the shared row budget boundary" {
 }
 
 fn runBatchNamed(fixture: *CliFixture, name: []const u8, extra: []const [:0]const u8, stdout_buffer: []u8, stderr_buffer: []u8) !RunResult {
-    const manifest = try fixture.dir.tmp.dir.realPathFileAlloc(testing.io, name, testing.allocator);
+    const manifest = try relativePath(testing.allocator, &fixture.dir.tmp, name);
     defer testing.allocator.free(manifest);
     return fixture.runBatchPath(manifest, extra, stdout_buffer, stderr_buffer);
 }
@@ -4337,7 +4336,7 @@ test "--suggest rejects a manifest candidate named suggested and only then" {
 
 fn victimPath(fixture: *CliFixture, name: []const u8) ![:0]const u8 {
     try fixture.writeFile("anchor", "");
-    const anchor = try fixture.dir.tmp.dir.realPathFileAlloc(testing.io, "anchor", testing.allocator);
+    const anchor = try relativePath(testing.allocator, &fixture.dir.tmp, "anchor");
     defer testing.allocator.free(anchor);
     const directory = std.fs.path.dirname(anchor) orelse ".";
     return std.fmt.allocPrintSentinel(testing.allocator, "{s}/{s}", .{ directory, name }, 0);
@@ -4547,7 +4546,7 @@ test "--suggest stops when the expert fails and no candidate remains" {
 
 fn writeSeedSpec(fixture: *CliFixture, name: []const u8, text: []const u8) ![:0]u8 {
     try fixture.writeFile(name, text);
-    return fixture.dir.tmp.dir.realPathFileAlloc(testing.io, name, testing.allocator);
+    return relativePath(testing.allocator, &fixture.dir.tmp, name);
 }
 
 fn scalarOn(path: [:0]const u8, sql: [:0]const u8) !i64 {
@@ -4778,9 +4777,9 @@ test "the same spec and seed give the same rows, and another seed changes them" 
     defer tmp.cleanup();
     try tmp.dir.writeFile(testing.io, .{ .sub_path = "a.db", .data = "" });
     try tmp.dir.writeFile(testing.io, .{ .sub_path = "b.db", .data = "" });
-    const a_path = try tmp.dir.realPathFileAlloc(testing.io, "a.db", testing.allocator);
+    const a_path = try relativePath(testing.allocator, &tmp, "a.db");
     defer testing.allocator.free(a_path);
-    const b_path = try tmp.dir.realPathFileAlloc(testing.io, "b.db", testing.allocator);
+    const b_path = try relativePath(testing.allocator, &tmp, "b.db");
     defer testing.allocator.free(b_path);
 
     const schema: [:0]const u8 =
@@ -4829,14 +4828,14 @@ test "the same spec and seed give the same rows, and another seed changes them" 
 
 fn writeSeedSpecFile(tmp: *testing.TmpDir, arena: std.mem.Allocator, text: []const u8) ![:0]const u8 {
     try tmp.dir.writeFile(testing.io, .{ .sub_path = "spec.json", .data = text });
-    return tmp.dir.realPathFileAlloc(testing.io, "spec.json", arena);
+    return relativePath(arena, tmp, "spec.json");
 }
 
 test "ratio 1 and 0 fill every row with the value or the other value" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.writeFile(testing.io, .{ .sub_path = "ratio.db", .data = "" });
-    const path = try tmp.dir.realPathFileAlloc(testing.io, "ratio.db", testing.allocator);
+    const path = try relativePath(testing.allocator, &tmp, "ratio.db");
     defer testing.allocator.free(path);
     try db.createTestDatabase(path, "CREATE TABLE r(v INTEGER);");
 
@@ -4962,7 +4961,7 @@ test "a seed spec rejects a non-deterministic default for an omitted column" {
         \\{"tables": {"d": {"rows": 2, "columns": {"a": {"kind": "sequence"}}}}}
     );
     defer testing.allocator.free(rejected_path);
-    var stdout_buffer: [8192]u8 = undefined;
+    var stdout_buffer: [4096]u8 = undefined;
     var stderr_buffer: [4096]u8 = undefined;
     const rejected = fixture.runFormat("json", &.{ "--seed-data", rejected_path }, &stdout_buffer, &stderr_buffer);
     try testing.expectEqual(ExitCode.rejected, rejected.code);
@@ -5018,7 +5017,7 @@ test "a sequence keeps the values that fit even when the intermediate product do
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.writeFile(testing.io, .{ .sub_path = "sequence.db", .data = "" });
-    const path = try tmp.dir.realPathFileAlloc(testing.io, "sequence.db", testing.allocator);
+    const path = try relativePath(testing.allocator, &tmp, "sequence.db");
     defer testing.allocator.free(path);
     try db.createTestDatabase(path, "CREATE TABLE r(v INTEGER);");
 
@@ -5287,9 +5286,7 @@ const record_happy_log =
     "QENOME_D1_RECORD {\"v\":1,\"op\":\"all\",\"sql\":\"WITH ok AS (SELECT 1 AS n) SELECT n FROM ok\",\"types\":[],\"binds\":[]}\n";
 
 fn recordOutputPath(fixture: *CliFixture, name: []const u8) ![:0]u8 {
-    const base = try fixture.dir.tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
-    defer testing.allocator.free(base);
-    return std.fmt.allocPrintSentinel(testing.allocator, "{s}/{s}", .{ base, name }, 0);
+    return relativePath(testing.allocator, &fixture.dir.tmp, name);
 }
 
 fn writeRecordLog(fixture: *CliFixture, name: []const u8, data: []const u8, mode: std.posix.mode_t) ![:0]u8 {
@@ -5299,7 +5296,7 @@ fn writeRecordLog(fixture: *CliFixture, name: []const u8, data: []const u8, mode
         .data = data,
         .flags = .{ .permissions = permissions },
     });
-    return fixture.dir.tmp.dir.realPathFileAlloc(testing.io, name, testing.allocator);
+    return relativePath(testing.allocator, &fixture.dir.tmp, name);
 }
 
 test "record turns a log into a private manifest that a batch accepts" {
@@ -5489,7 +5486,7 @@ fn runAudit(
     stdout_buffer: []u8,
     stderr_buffer: []u8,
 ) !RunResult {
-    const manifest = try fixture.dir.tmp.dir.realPathFileAlloc(testing.io, manifest_name, testing.allocator);
+    const manifest = try relativePath(testing.allocator, &fixture.dir.tmp, manifest_name);
     defer testing.allocator.free(manifest);
     var argv: [32][:0]const u8 = undefined;
     const required = [_][:0]const u8{ "Qenome", "--db", fixture.db_path, "--batch", manifest, "--audit-indexes" };
