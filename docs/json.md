@@ -323,6 +323,8 @@ Semantics and limits:
 | `tables` | array | One `{ "table", "rows" }` object per table in the spec, with the row count at this step |
 | `comparison` | object | The full `schema_version` 2 comparison object for this step, minified. Its `inputs` name the same database, SELECT or write, and index file, and its `seed_data` holds the tables at this step's sizes |
 
+A step below 1,000 rows writes a `data_too_small` warning in `steps[].comparison.warnings`. Its message says that the step is below the size where the result is meaningful and to read the comparison at a larger step, because the run already uses `--seed-data` and `--scale`. The object keeps `code`, `message`, `table`, `rows`, and `full_scan` and has no `next_command`; the plain comparison and the `--batch`, `--suggest`, and `--rank` notes keep `next_command` as described above. `schema_version` stays `2`.
+
 `trend` holds four series: `baseline_rows_read` (the growth of `steps[].comparison.baseline.counters.rows_read`), `variant_rows_read` (the same for the variant), and `baseline_time` / `variant_time` (the growth of each side's `timing.median_ns`). Each series is one object:
 
 ```json

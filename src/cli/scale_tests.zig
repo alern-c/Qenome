@@ -254,6 +254,42 @@ test "the scale run compares an equality lookup at two sizes and leaves the data
     try testing.expectEqual(@as(i64, 0), try scalarOn(fixture.db_path, "SELECT count(*) FROM t"));
 }
 
+test "a scale step below 1000 rows does not ask for another --scale run" {
+    var fixture = try Fixture.init(lookup_select, lookup_index, seed_two_columns);
+    defer fixture.deinit();
+    var stdout_buffer: [32768]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+
+    const human = fixture.run(&.{ "--seed-data", fixture.seed_path, "--scale", "100,5000", "--runs", "0" }, "human", &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, human.code);
+    try testing.expectEqualStrings("", human.stderr);
+    try testing.expect(contains(human.stdout, "warning at 100 rows: data_too_small:"));
+    try testing.expect(contains(human.stdout, "1000 rows"));
+    try testing.expect(contains(human.stdout, "larger step"));
+    try testing.expect(!contains(human.stdout, "Write a seed spec"));
+    try testing.expect(!contains(human.stdout, "--seed-data"));
+    try testing.expect(!contains(human.stdout, "warning at 5,000 rows:"));
+
+    const json = fixture.run(&.{ "--seed-data", fixture.seed_path, "--scale", "100,5000", "--runs", "0", "--format", "json" }, "json", &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, json.code);
+    try testing.expectEqualStrings("", json.stderr);
+    var parsed = try parseJson(json.stdout);
+    defer parsed.deinit();
+    const steps = try jsonItems(parsed.value, "steps");
+    try testing.expectEqual(@as(usize, 2), steps.len);
+    const first = try jsonItems(try jsonGet(steps[0], "comparison"), "warnings");
+    try testing.expectEqual(@as(usize, 1), first.len);
+    try testing.expectEqualStrings(contract.code.data_too_small, try jsonText(first[0], "code"));
+    try testing.expectEqualStrings("t", try jsonText(first[0], "table"));
+    try testing.expectEqual(@as(i64, 100), try jsonInt(first[0], "rows"));
+    try testing.expect((try jsonGet(first[0], "full_scan")) == .bool);
+    try testing.expect(contains(try jsonText(first[0], "message"), "fewer than 1000 rows"));
+    try testing.expect(contains(try jsonText(first[0], "message"), "larger step"));
+    try testing.expect(!contains(try jsonText(first[0], "message"), "--seed-data"));
+    try testing.expectError(error.TestUnexpectedResult, jsonGet(first[0], "next_command"));
+    try testing.expectEqual(@as(usize, 0), (try jsonItems(try jsonGet(steps[1], "comparison"), "warnings")).len);
+}
+
 test "the scale run measures three to six sizes and rejects seven" {
     var fixture = try Fixture.init(lookup_select, lookup_index, seed_two_columns);
     defer fixture.deinit();

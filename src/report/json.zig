@@ -126,8 +126,10 @@ fn writeSmallDataWarning(json: *std.json.Stringify, allocator: std.mem.Allocator
     try json.write(detail.rows);
     try json.objectField("full_scan");
     try json.write(detail.full_scan);
-    try json.objectField("next_command");
-    try writeJsonText(json, allocator, detail.next_command);
+    if (detail.next_command) |command| {
+        try json.objectField("next_command");
+        try writeJsonText(json, allocator, command);
+    }
     try json.endObject();
 }
 

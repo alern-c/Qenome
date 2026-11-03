@@ -123,6 +123,8 @@ Qenome は同梱の SQLite（このツリーでは 3.53.4）を、Cloudflare の
 
 `--migration` の batch は、マイグレーションが複数のテーブルを触り得るため、`no_analyze_stats` と `data_too_small` を出しません。
 
+`--scale` の実行で 1,000 行未満の段階があると、その段階の警告は別の文になります。その段階が結果を判断できるサイズより小さいことと、大きい段階の比較を読むことを示します。実行はすでに `--seed-data` と `--scale` を使っているため、seed と `--scale` のコマンドは繰り返しません。JSON の警告は `table`、`rows`、`full_scan` を持ち、`next_command` を持ちません。1回の比較と `--batch`・`--suggest`・`--rank` の注意は、下に書く `next` のコマンドのままです。
+
 `data_too_small` のとき、human の Summary はクエリ計画の前に `data` と `next` を足します。`data` はテーブル名と行数です。baseline の計画がそのテーブルの素の `SCAN` なら、フルスキャンはすべての行を読むので、小さい `rows_read` はインデックスがなくても無害だという意味ではない、と書きます。`next` は同じファイルに `--seed-data seed.json --scale 1000,10000` を付けたコマンドです。`--d1` のときは `--d1` とバインディングを使います。`--suggest` では、提案された SQL を先に `index.sql` として保存するよう書きます。`--scale` は `--suggest` や `--batch` と併用できないためです。候補のテーブルがその大きさのとき、`Recommendation:` の下にも同じ注意を出します。JSON の警告は `code` と `message` を保ったまま `table`、`rows`、`full_scan`、`next_command` を足します。`schema_version` は `2` のままです。判定は行数の比較のままなので、読んだ行が減るインデックスは `improved` のままです。[testdata/accuracy/scale-full-scan/](../../testdata/accuracy/scale-full-scan/) が既知の答えです。100 行では baseline のスキャンが少ししか読まず `data_too_small` を出し、10,000 行では同じスキャンの `rows_read` が少なくとも 10 倍になります。
 
 ## 意味のある最小の改善

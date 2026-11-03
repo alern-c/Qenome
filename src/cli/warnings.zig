@@ -14,7 +14,7 @@ pub const SmallData = struct {
     rows: u64,
     full_scan: bool,
     suggested: bool,
-    next_command: []const u8,
+    next_command: ?[]const u8,
     message: []const u8,
 };
 
@@ -152,7 +152,18 @@ pub fn smallDataMessage(
 ) ![]const u8 {
     const command = try scaleCommand(allocator, target);
     defer allocator.free(command);
-    const lead = try leadText(allocator, full_scan, target.suggested);
+    return messageWithCommand(allocator, table, rows, full_scan, target.suggested, command);
+}
+
+fn messageWithCommand(
+    allocator: std.mem.Allocator,
+    table: []const u8,
+    rows: u64,
+    full_scan: bool,
+    suggested: bool,
+    command: []const u8,
+) ![]const u8 {
+    const lead = try leadText(allocator, full_scan, suggested);
     defer allocator.free(lead);
     return std.fmt.allocPrint(allocator, contract.data_too_small_message, .{ table, rows, lead, table, command });
 }
@@ -168,15 +179,34 @@ pub fn attachSmallData(
     if (!warnings.data_too_small) return;
     const next_command = try scaleCommand(allocator, target);
     errdefer allocator.free(next_command);
-    const lead = try leadText(allocator, full_scan, target.suggested);
-    defer allocator.free(lead);
-    const message = try std.fmt.allocPrint(allocator, contract.data_too_small_message, .{ table, rows, lead, table, next_command });
+    const message = try messageWithCommand(allocator, table, rows, full_scan, target.suggested, next_command);
     warnings.small_data = .{
         .table = table,
         .rows = rows,
         .full_scan = full_scan,
         .suggested = target.suggested,
         .next_command = next_command,
+        .message = message,
+    };
+}
+
+pub fn attachScaleSmallData(
+    allocator: std.mem.Allocator,
+    warnings: *Warnings,
+    table: []const u8,
+    rows: u64,
+    full_scan: bool,
+) !void {
+    if (!warnings.data_too_small) return;
+    const lead = try leadText(allocator, full_scan, false);
+    defer allocator.free(lead);
+    const message = try std.fmt.allocPrint(allocator, contract.data_too_small_scale_message, .{ table, rows, lead });
+    warnings.small_data = .{
+        .table = table,
+        .rows = rows,
+        .full_scan = full_scan,
+        .suggested = false,
+        .next_command = null,
         .message = message,
     };
 }
@@ -359,6 +389,37 @@ test "the small-data message names the table, the scan, and a scale command" {
     try testing.expect(std.mem.indexOf(u8, message, "fewer than 1000 rows") != null);
     try testing.expect(std.mem.indexOf(u8, message, contract.data_too_small_full_scan) != null);
     try testing.expect(std.mem.indexOf(u8, message, "qenome app.db select.sql index.sql --seed-data seed.json --scale 1000,10000") != null);
+}
+
+test "a scale step message reads the larger step instead of a rerun command" {
+    var warnings: Warnings = .{ .data_too_small = true };
+    try attachScaleSmallData(testing.allocator, &warnings, "events", 100, true);
+    const detail = warnings.small_data orelse return error.TestUnexpectedResult;
+    defer testing.allocator.free(detail.message);
+    try testing.expect(detail.next_command == null);
+    try testing.expect(std.mem.indexOf(u8, detail.message, "events") != null);
+    try testing.expect(std.mem.indexOf(u8, detail.message, "100") != null);
+    try testing.expect(std.mem.indexOf(u8, detail.message, "fewer than 1000 rows") != null);
+    try testing.expect(std.mem.indexOf(u8, detail.message, contract.data_too_small_full_scan) != null);
+    try testing.expect(std.mem.indexOf(u8, detail.message, "Read the comparison at a larger step.") != null);
+    try testing.expect(std.mem.indexOf(u8, detail.message, "seed") == null);
+    try testing.expect(std.mem.indexOf(u8, detail.message, "--scale") == null);
+}
+
+test "a plain comparison keeps the seed rerun and its command" {
+    var warnings: Warnings = .{ .data_too_small = true };
+    try attachSmallData(testing.allocator, &warnings, "events", 12, false, .{
+        .database = "app.db",
+        .select_path = "select.sql",
+        .index_path = "index.sql",
+    });
+    const detail = warnings.small_data orelse return error.TestUnexpectedResult;
+    defer testing.allocator.free(detail.message);
+    defer if (detail.next_command) |command| testing.allocator.free(command);
+    const command = detail.next_command orelse return error.TestUnexpectedResult;
+    try testing.expectEqualStrings("qenome app.db select.sql index.sql --seed-data seed.json --scale 1000,10000", command);
+    try testing.expect(std.mem.indexOf(u8, detail.message, "Write a seed spec that lists events and rerun: ") != null);
+    try testing.expect(std.mem.indexOf(u8, detail.message, command) != null);
 }
 
 test "a suggested index tells the user to save index.sql before --scale" {
