@@ -14,6 +14,7 @@ const cli_control = @import("control.zig");
 const cli_pair = @import("pair.zig");
 const cli_query = @import("query.zig");
 const report_model = @import("../report/model.zig");
+const report_format = @import("../report/format.zig");
 const report_json = @import("../report/json.zig");
 const report_batch_writes = @import("../report/batch_writes.zig");
 const cli_recommend = @import("recommend.zig");
@@ -26,6 +27,10 @@ const ExitCode = cli_control.ExitCode;
 const WorkDir = cli_workspace.WorkDir;
 const QuerySession = cli_query.QuerySession;
 const Measurement = cli_comparison.Measurement;
+const outOfMemoryCode = cli_control.outOfMemoryCode;
+const reportCaptured = cli_query.reportCaptured;
+const word = report_format.word;
+const writeCell = report_format.writeCell;
 
 const max_entries = 100;
 const baseline_cache_bytes: usize = result_rows.max_result_bytes;
@@ -1052,13 +1057,6 @@ fn checkCandidate(session: *QuerySession, candidate: *const Candidate, stderr: *
     return false;
 }
 
-fn reportCaptured(stderr: *Io.Writer, prefix: []const u8, captured: []const u8) void {
-    var text = std.mem.trimEnd(u8, captured, "\n");
-    if (std.mem.startsWith(u8, text, "error: ")) text = text["error: ".len..];
-    if (text.len == 0) text = "the input was rejected";
-    stderr.print("{s}{s}\n", .{ prefix, text }) catch {};
-}
-
 fn reportMigrationParseFailure(stderr: *Io.Writer, path: []const u8, detail: *const db.SnapshotDetail, err: anyerror) void {
     switch (err) {
         error.MigrationEmpty => stderr.print("error: --migration: the migration holds no statement in '{s}'\n", .{path}) catch {},
@@ -1660,15 +1658,6 @@ fn displayNameOf(names: []const []const u8, labels: []const []const u8, label: [
     return label;
 }
 
-fn word(count: usize, singular: []const u8, plural: []const u8) []const u8 {
-    return if (count == 1) singular else plural;
-}
-
-fn writeCell(writer: *Io.Writer, text: []const u8, width: usize) !void {
-    try writer.writeAll(text);
-    if (text.len < width) try writer.splatByteAll(' ', width - text.len);
-}
-
 fn sizeText(buffer: []u8, increase: i128) []const u8 {
     if (increase > -1024 and increase < 1024) {
         return std.fmt.bufPrint(buffer, "{d} B", .{increase}) catch "";
@@ -1679,11 +1668,6 @@ fn sizeText(buffer: []u8, increase: i128) []const u8 {
     }
     const mib = @as(f64, @floatFromInt(increase)) / (1024.0 * 1024.0);
     return std.fmt.bufPrint(buffer, "{d:.2} MiB", .{mib}) catch "";
-}
-
-fn outOfMemoryCode(stderr: *Io.Writer) ExitCode {
-    stderr.writeAll("error: out of memory\n") catch {};
-    return .rejected;
 }
 
 fn reportFailure(stderr: *Io.Writer) ExitCode {

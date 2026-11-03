@@ -242,6 +242,31 @@ pub fn reportStepFailure(
     }
 }
 
+pub fn reportCaptured(stderr: *Io.Writer, prefix: []const u8, captured: []const u8) void {
+    var text = std.mem.trimEnd(u8, captured, "\n");
+    if (std.mem.startsWith(u8, text, "error: ")) text = text["error: ".len..];
+    if (text.len == 0) text = "the input was rejected";
+    stderr.print("{s}{s}\n", .{ prefix, text }) catch {};
+}
+
+pub fn prepareQuery(
+    session: *QuerySession,
+    label: []const u8,
+    sql: [:0]const u8,
+    binds: []const db.BindArg,
+    prefix: []const u8,
+    stderr: *Io.Writer,
+) bool {
+    var capture: [4096]u8 = undefined;
+    var sink = Io.Writer.fixed(&capture);
+    var failure: cli_control.ExitCode = .rejected;
+    if (session.prepare(sql, binds, .baseline, "", &sink, &failure)) return true;
+    stderr.writeAll(prefix) catch {};
+    result.writeEscapedText(stderr, label) catch {};
+    reportCaptured(stderr, "': ", sink.buffered());
+    return false;
+}
+
 const BindCounts = struct {
     parameters: c_int,
     given: usize,

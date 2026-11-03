@@ -14,7 +14,6 @@ const Seed = model.Seed;
 const Error = model.Error;
 const Measurement = model.Measurement;
 const Outcome = model.Outcome;
-const Verdict = model.Verdict;
 const d1_caution = format.d1_caution;
 const measure_warmup = format.measure_warmup;
 const measure_order = format.measure_order;
@@ -220,12 +219,7 @@ fn writeJsonComparison(
     if (report.warnings.unapplied_migrations) |pending| {
         const message = try cli_warnings.unappliedMigrationsMessage(allocator, pending);
         defer allocator.free(message);
-        try json.beginObject();
-        try json.objectField("code");
-        try json.write(contract.code.unapplied_migrations);
-        try json.objectField("message");
-        try writeJsonText(&json, allocator, message);
-        try json.endObject();
+        try writeJsonWarningObject(&json, allocator, contract.code.unapplied_migrations, message);
     }
     try json.endArray();
     try json.objectField("size_bytes");
@@ -515,6 +509,20 @@ fn writeJsonBinds(json: *std.json.Stringify, allocator: std.mem.Allocator, heade
 fn nonFiniteRealText(value: f64) []const u8 {
     if (std.math.isNan(value)) return "nan";
     return if (value > 0) "inf" else "-inf";
+}
+
+pub fn writeJsonWarningObject(
+    json: *std.json.Stringify,
+    allocator: std.mem.Allocator,
+    code: []const u8,
+    message: []const u8,
+) Error!void {
+    try json.beginObject();
+    try json.objectField("code");
+    try writeJsonText(json, allocator, code);
+    try json.objectField("message");
+    try writeJsonText(json, allocator, message);
+    try json.endObject();
 }
 
 pub fn writeJsonText(json: *std.json.Stringify, allocator: std.mem.Allocator, value: []const u8) Error!void {

@@ -92,6 +92,11 @@ pub fn reportInterrupted(stderr: *Io.Writer) ExitCode {
     return code;
 }
 
+pub fn outOfMemoryCode(stderr: *Io.Writer) ExitCode {
+    stderr.writeAll("error: out of memory\n") catch {};
+    return .rejected;
+}
+
 pub fn cancelFlag() *std.atomic.Value(bool) {
     return &signal_flag;
 }

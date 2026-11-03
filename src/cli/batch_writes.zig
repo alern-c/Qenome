@@ -14,6 +14,7 @@ const report_json = @import("../report/json.zig");
 const report_batch_writes = @import("../report/batch_writes.zig");
 
 const ExitCode = cli_control.ExitCode;
+const outOfMemoryCode = cli_control.outOfMemoryCode;
 
 pub const max_writes = 100;
 
@@ -544,11 +545,6 @@ fn makeHeader(write: *const Write, candidate: []const u8, context: Context, exit
         .exit_code = exit_code,
         .d1 = context.d1,
     };
-}
-
-fn outOfMemoryCode(stderr: *Io.Writer) ExitCode {
-    stderr.writeAll("error: out of memory\n") catch {};
-    return .rejected;
 }
 
 test {
