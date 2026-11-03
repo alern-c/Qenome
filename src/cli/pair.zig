@@ -105,7 +105,7 @@ pub fn compute(
     var detail: db.SnapshotDetail = .{};
     work.applyCandidate(inputs.index_sql, &control, &detail) catch |err| switch (err) {
         error.Timeout => {
-            stderr.print("error: --index-sql exceeded the time limit of {d} ms\n", .{inputs.timeout_ms}) catch {};
+            reportIndexTimeout(stderr, inputs.timeout_ms);
             return .{ .failed = .timeout };
         },
         error.Interrupted => return .{ .failed = reportInterrupted(stderr) },
@@ -509,7 +509,7 @@ fn applyWriteCandidate(work: *const WorkDir, index_sql: [:0]const u8, control: *
     var detail: db.SnapshotDetail = .{};
     work.applyCandidate(index_sql, control, &detail) catch |err| switch (err) {
         error.Timeout => {
-            stderr.print("error: --index-sql exceeded the time limit of {d} ms\n", .{timeout_ms}) catch {};
+            reportIndexTimeout(stderr, timeout_ms);
             return .timeout;
         },
         error.Interrupted => return reportInterrupted(stderr),
@@ -520,6 +520,10 @@ fn applyWriteCandidate(work: *const WorkDir, index_sql: [:0]const u8, control: *
         },
     };
     return null;
+}
+
+fn reportIndexTimeout(stderr: *Io.Writer, timeout_ms: u64) void {
+    stderr.print("error: --index-sql exceeded the time limit of {d} ms; raise --timeout-ms, or use --timeout-ms 0 to wait for the index build\n", .{timeout_ms}) catch {};
 }
 
 fn noteSmallData(

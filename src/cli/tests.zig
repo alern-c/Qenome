@@ -720,7 +720,7 @@ test "an index build over the time limit exits 124 and leaves no temporary direc
     const run_result = fixture.run(&.{ "--timeout-ms", "1" }, &stdout_buffer, &stderr_buffer);
     try testing.expectEqual(ExitCode.timeout, run_result.code);
     try testing.expectEqualStrings("", run_result.stdout);
-    try testing.expectEqualStrings("error: --index-sql exceeded the time limit of 1 ms\n", run_result.stderr);
+    try testing.expectEqualStrings("error: --index-sql exceeded the time limit of 1 ms; raise --timeout-ms, or use --timeout-ms 0 to wait for the index build\n", run_result.stderr);
     try fixture.expectNoLeftovers();
 }
 
@@ -3912,7 +3912,8 @@ test "a batch index timeout is recorded without results and keeps stderr empty" 
     try testing.expectEqualStrings("index_timeout", try jsonText(summary[0], "status"));
     const failure = try jsonGet(summary[0], "failure");
     try testing.expectEqualStrings("index_timeout", try jsonText(failure, "code"));
-    try testing.expect((try jsonText(failure, "message")).len != 0);
+    const message = try jsonText(failure, "message");
+    try testing.expect(contains(message, "did not finish within 1 ms; raise --timeout-ms, or use --timeout-ms 0 to wait for the index build"));
     try testing.expect((try jsonGet(summary[0], "improved")) == .null);
     try testing.expect((try jsonGet(summary[0], "size_increase")) == .null);
     try testing.expectEqual(@as(usize, 0), (try jsonItems(root, "results")).len);
