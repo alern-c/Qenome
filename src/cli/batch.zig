@@ -1187,7 +1187,7 @@ fn resetVariant(
     stderr: *Io.Writer,
 ) bool {
     if (!cleanupVariant(io, arena, variant_path, label, stderr)) return false;
-    Io.Dir.cwd().copyFile(baseline_path, Io.Dir.cwd(), variant_path, io, .{}) catch |err| {
+    cli_workspace.copyBaselineToVariant(io, baseline_path, variant_path) catch |err| {
         stderr.print("error: the batch candidate '{s}': cannot copy the baseline to the variant: {s}\n", .{ label, @errorName(err) }) catch {};
         return false;
     };
