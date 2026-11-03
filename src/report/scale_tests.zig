@@ -185,6 +185,94 @@ test "the human scale output has one row per step and the generated-data note" {
     try testing.expect(std.mem.indexOf(u8, output, "\nWarnings\n") == null);
 }
 
+test "a ratio below the shown precision is written as a bound instead of zero" {
+    var steps = [_]model.ScaleStep{
+        step(1000, .{ .verdict = .improved }, .match, .{}),
+        step(100000, .{ .verdict = .improved }, .match, .{}),
+    };
+    steps[1].after = measurement(100000, 2, 0, &search_line);
+    const report: model.ScaleReport = .{
+        .header = header(null),
+        .seed_path = "seed.json",
+        .scale = &.{ 1000, 100000 },
+        .steps = &steps,
+    };
+    var buffer: [8192]u8 = undefined;
+    const output = try render(report, &buffer);
+
+    try testing.expect(std.mem.indexOf(u8, output, "0.0000x") == null);
+    try testing.expect(std.mem.indexOf(u8, output, "0.0100x  improved") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "<0.0001x  improved") != null);
+    try testing.expect(std.mem.indexOf(u8, output, " <0.0001x") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "2<0.0001x") == null);
+}
+
+test "a variant that reads no rows is written as zero" {
+    var steps = [_]model.ScaleStep{
+        step(1000, .{ .verdict = .improved }, .match, .{}),
+        step(10000, .{ .verdict = .improved }, .match, .{}),
+    };
+    steps[1].after = measurement(10000, 0, 0, &search_line);
+    const report: model.ScaleReport = .{
+        .header = header(null),
+        .seed_path = "seed.json",
+        .scale = &.{ 1000, 10000 },
+        .steps = &steps,
+    };
+    var buffer: [8192]u8 = undefined;
+    const output = try render(report, &buffer);
+
+    try testing.expect(std.mem.indexOf(u8, output, "0x  improved") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "0.0000x") == null);
+    try testing.expect(std.mem.indexOf(u8, output, "<0.0001x") == null);
+    try expectStepsAligned(output);
+}
+
+fn expectStepsAligned(output: []const u8) !void {
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    var in_steps = false;
+    var column: ?usize = null;
+    while (lines.next()) |line| {
+        if (!in_steps) {
+            in_steps = std.mem.eql(u8, line, "Steps");
+            continue;
+        }
+        if (line.len == 0) break;
+        if (std.mem.indexOf(u8, line, "verdict")) |at| {
+            column = at;
+            continue;
+        }
+        const at = std.mem.indexOf(u8, line, "improved") orelse return error.TestUnexpectedResult;
+        try testing.expectEqual(column orelse return error.TestUnexpectedResult, at);
+    }
+    try testing.expect(column != null);
+}
+
+test "the ratio column stays aligned and clear of the variant count for 2 to 6 steps" {
+    const sizes = [_]u64{ 100000, 200000, 300000, 400000, 500000, 600000 };
+    const reads = [_]u64{ 20, 2, 2, 2, 2, 2 };
+    var steps: [6]model.ScaleStep = undefined;
+    var buffer: [8192]u8 = undefined;
+    for (2..7) |count| {
+        for (sizes[0..count], reads[0..count], 0..) |rows, read, index| {
+            steps[index] = step(rows, .{ .verdict = .improved }, .match, .{});
+            steps[index].after = measurement(rows, read, 0, &search_line);
+        }
+        const report: model.ScaleReport = .{
+            .header = header(null),
+            .seed_path = "seed.json",
+            .scale = sizes[0..count],
+            .steps = steps[0..count],
+        };
+        const output = try render(report, &buffer);
+        try testing.expect(std.mem.indexOf(u8, output, "0.0002x  improved") != null);
+        try testing.expect(std.mem.indexOf(u8, output, "0.0000x") == null);
+        try testing.expect(std.mem.indexOf(u8, output, " <0.0001x") != null);
+        try testing.expect(std.mem.indexOf(u8, output, "2<0.0001x") == null);
+        try expectStepsAligned(output);
+    }
+}
+
 test "the human scale output names a warning only where it differs between steps" {
     var steps = [_]model.ScaleStep{
         step(1000, .{ .verdict = .improved }, .match, .{ .data_too_small = true }),

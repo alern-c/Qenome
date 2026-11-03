@@ -145,9 +145,9 @@ sqlite: 3.53.4
 work-dir-parent: <work-dir-parent>
 
 Steps
-          rows baseline read variant read   ratio  verdict     result       plan    median
-         1,000         1,000            2 0.0020x  improved    match        changed -
-        10,000        10,000            2 0.0002x  improved    match        changed -
+          rows baseline read variant read    ratio  verdict     result       plan    median
+         1,000         1,000            2  0.0020x  improved    match        changed -
+        10,000        10,000            2  0.0002x  improved    match        changed -
 
 Trend
   baseline rows read: linear (exponents 1.000)
@@ -163,7 +163,7 @@ note: the rows and the trend come from generated data measured on this machine; 
 are not production D1 billing.
 ```
 
-各段階は、元のデータベースを新しいサンドボックスへコピーし、そのコピーに seed し、variant に候補のインデックスを作り、既存の比較を実行し、次の段階の前にコピーを削除します。表は1段階1行で、行数、両方のコピーが読んだ行数、variant / baseline の比、`--write` のときの書き込んだ行数、判定、結果、実行計画が変わったか、`--runs` が `0` でないときの中央値を出します。`--show-binds` のときは先頭の項目にバインド値も並べ、`--show-rows` のときは結果が `match` でない段階について、片方のコピーだけが返した行の例も出します。警告は段階で違うときだけ、例えば最も小さい段階の `data_too_small` だけを出します。1,000 行未満の段階では、その段階が結果を判断できるサイズより小さいことと、大きい段階の比較を読むことを示し、`--seed-data` と `--scale` の再実行は促しません。JSON の段階の警告は `next_command` を持ちません。判定が段階で変わる場合は、`The verdict changes between 1,000 and 10,000 rows.` のように1行で示します。
+各段階は、元のデータベースを新しいサンドボックスへコピーし、そのコピーに seed し、variant に候補のインデックスを作り、既存の比較を実行し、次の段階の前にコピーを削除します。表は1段階1行で、行数、両方のコピーが読んだ行数、variant / baseline の比、`--write` のときの書き込んだ行数、判定、結果、実行計画が変わったか、`--runs` が `0` でないときの中央値を出します。比は最大で小数第4位までです。`0.0001` 未満の比は `0.0000x` ではなく `<0.0001x` と書くので、小さい割合が「variant は何も読んでいない」と見えることはありません。variant が1行も読まない段階は `0x` です。`--show-binds` のときは先頭の項目にバインド値も並べ、`--show-rows` のときは結果が `match` でない段階について、片方のコピーだけが返した行の例も出します。警告は段階で違うときだけ、例えば最も小さい段階の `data_too_small` だけを出します。1,000 行未満の段階では、その段階が結果を判断できるサイズより小さいことと、大きい段階の比較を読むことを示し、`--seed-data` と `--scale` の再実行は促しません。JSON の段階の警告は `next_command` を持ちません。判定が段階で変わるときは、`The verdict changes between 1,000 and 10,000 rows.` のように1行で示します。
 
 `Trend` のブロックは、読んだ行数（計測しているときは中央値も）がデータのサイズとともにどう増えるかを示します。連続する段階の組ごとに、指数 `log(後の値 / 前の値) / log(後の行数 / 前の行数)` を計算し、小数第3位に丸めます。系列の各指数がどの帯に入るかで、`0.2` 以下は `constant`、`0.8` 以下は `sublinear`、`1.2` 以下は `linear`、`1.2` を超えるものは `superlinear` です。すべての指数が1つの帯に入るときはその帯の名前になり（より小さい帯を含むので、各段階 `0.5` なら `sublinear`）、帯が分かれるとき（実行計画が途中で変わった場合など）は `mixed` です。分類できない系列は `unknown` です。結果が `match` でない段階がある、値が `0` である、`2,147,483,648` 以上の値の次が小さい（32ビットのカウンタが一周した可能性がある）、段階が2つ未満、のいずれかが該当します。`unknown` のとき `exponents` は空です。中央値の時間も同じクラスで分類しますが、このマシンの計測でノイズにより動きます。`--runs 0` では `not timed` と表示し、JSON の時間の系列は `null` です。
 
