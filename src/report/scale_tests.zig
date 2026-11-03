@@ -44,7 +44,7 @@ fn header(write_path: ?[]const u8) Header {
     };
 }
 
-fn step(rows: u64, judgement: model.Judgement, result: model.Verdict, warnings: model.Warnings) scale.Step {
+fn step(rows: u64, judgement: model.Judgement, result: model.Verdict, warnings: model.Warnings) model.ScaleStep {
     return .{
         .rows = rows,
         .tables = &.{},
@@ -59,18 +59,18 @@ fn step(rows: u64, judgement: model.Judgement, result: model.Verdict, warnings: 
     };
 }
 
-fn render(report: scale.Report, buffer: []u8) ![]const u8 {
+fn render(report: model.ScaleReport, buffer: []u8) ![]const u8 {
     var writer = Io.Writer.fixed(buffer);
     try scale.writeHumanScale(&writer, testing.allocator, report);
     return writer.buffered();
 }
 
 test "the human scale output has one row per step and the generated-data note" {
-    var steps = [_]scale.Step{
+    var steps = [_]model.ScaleStep{
         step(1000, .{ .verdict = .improved }, .match, .{}),
         step(5000, .{ .verdict = .improved }, .match, .{}),
     };
-    const report: scale.Report = .{
+    const report: model.ScaleReport = .{
         .header = header(null),
         .seed_path = "seed.json",
         .scale = &.{ 1000, 5000 },
@@ -93,11 +93,11 @@ test "the human scale output has one row per step and the generated-data note" {
 }
 
 test "the human scale output names a warning only where it differs between steps" {
-    var steps = [_]scale.Step{
+    var steps = [_]model.ScaleStep{
         step(1000, .{ .verdict = .improved }, .match, .{ .data_too_small = true }),
         step(5000, .{ .verdict = .improved }, .match, .{}),
     };
-    const report: scale.Report = .{
+    const report: model.ScaleReport = .{
         .header = header(null),
         .seed_path = "seed.json",
         .scale = &.{ 1000, 5000 },
@@ -112,11 +112,11 @@ test "the human scale output names a warning only where it differs between steps
 }
 
 test "a warning at every step is written once without a step size" {
-    var steps = [_]scale.Step{
+    var steps = [_]model.ScaleStep{
         step(1000, .{ .verdict = .improved }, .match, .{ .no_analyze_stats = true }),
         step(5000, .{ .verdict = .improved }, .match, .{ .no_analyze_stats = true }),
     };
-    const report: scale.Report = .{
+    const report: model.ScaleReport = .{
         .header = header(null),
         .seed_path = "seed.json",
         .scale = &.{ 1000, 5000 },
@@ -131,11 +131,11 @@ test "a warning at every step is written once without a step size" {
 }
 
 test "the human scale output says when the verdict changes between steps" {
-    var steps = [_]scale.Step{
+    var steps = [_]model.ScaleStep{
         step(1000, .{ .verdict = .improved }, .match, .{}),
         step(5000, .{ .verdict = .needs_check }, .match, .{}),
     };
-    const report: scale.Report = .{
+    const report: model.ScaleReport = .{
         .header = header(null),
         .seed_path = "seed.json",
         .scale = &.{ 1000, 5000 },
@@ -149,14 +149,14 @@ test "the human scale output says when the verdict changes between steps" {
 }
 
 test "the human scale output adds the rows written only with --write and the run-wide warning" {
-    var steps = [_]scale.Step{
+    var steps = [_]model.ScaleStep{
         step(1000, .{ .verdict = .improved }, .match, .{}),
         step(5000, .{ .verdict = .improved }, .match, .{}),
     };
     steps[1].before = measurement(5000, 1500, 1, &scan_line);
     steps[1].after = measurement(5000, 2, 2, &search_line);
     const names = [_][]const u8{"0001_init.sql"};
-    const report: scale.Report = .{
+    const report: model.ScaleReport = .{
         .header = header("write.sql"),
         .seed_path = "seed.json",
         .scale = &.{ 1000, 5000 },
@@ -174,7 +174,7 @@ test "the human scale output adds the rows written only with --write and the run
 }
 
 test "the human scale output prints the binds and the differing rows only when asked" {
-    var steps = [_]scale.Step{
+    var steps = [_]model.ScaleStep{
         step(1000, .{ .verdict = .not_judged }, .mismatch, .{}),
         step(5000, .{ .verdict = .improved }, .match, .{}),
     };
@@ -189,7 +189,7 @@ test "the human scale output prints the binds and the differing rows only when a
     scale_header.binds = &binds;
     scale_header.show_binds = true;
     scale_header.show_rows = true;
-    const report: scale.Report = .{
+    const report: model.ScaleReport = .{
         .header = scale_header,
         .seed_path = "seed.json",
         .scale = &.{ 1000, 5000 },
@@ -206,7 +206,7 @@ test "the human scale output prints the binds and the differing rows only when a
 
     scale_header.show_binds = false;
     scale_header.show_rows = false;
-    const plain: scale.Report = .{
+    const plain: model.ScaleReport = .{
         .header = scale_header,
         .seed_path = "seed.json",
         .scale = &.{ 1000, 5000 },
@@ -232,13 +232,13 @@ fn field(value: std.json.Value, key: []const u8) !std.json.Value {
 }
 
 test "the JSON scale report has the version, inputs, environment, steps and warnings" {
-    var steps = [_]scale.Step{
+    var steps = [_]model.ScaleStep{
         step(1000, .{ .verdict = .improved }, .match, .{ .data_too_small = true }),
         step(5000, .{ .verdict = .needs_check }, .match, .{}),
     };
     var tables = [_]model.SeedTable{.{ .table = "t", .rows = 1000 }};
     steps[0].tables = &tables;
-    const report: scale.Report = .{
+    const report: model.ScaleReport = .{
         .header = header(null),
         .seed_path = "seed.json",
         .scale = &.{ 1000, 5000 },
@@ -280,12 +280,12 @@ test "the JSON scale report has the version, inputs, environment, steps and warn
 }
 
 test "the JSON scale report writes the unapplied migrations warning" {
-    var steps = [_]scale.Step{
+    var steps = [_]model.ScaleStep{
         step(1000, .{ .verdict = .improved }, .match, .{}),
         step(5000, .{ .verdict = .improved }, .match, .{}),
     };
     const names = [_][]const u8{"0001_init.sql"};
-    const report: scale.Report = .{
+    const report: model.ScaleReport = .{
         .header = header(null),
         .seed_path = "seed.json",
         .scale = &.{ 1000, 5000 },

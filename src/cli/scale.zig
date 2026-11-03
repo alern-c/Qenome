@@ -43,7 +43,7 @@ const Plan = struct {
 };
 
 const StepResult = union(enum) {
-    measured: report_scale.Step,
+    measured: report_model.ScaleStep,
     failed: ExitCode,
 };
 
@@ -319,7 +319,7 @@ fn runStep(session: *const Session, plan: Plan) StepResult {
     } };
 }
 
-fn writeScale(stdout: *Io.Writer, allocator: std.mem.Allocator, format: cli_args.Format, report: report_scale.Report, stderr: *Io.Writer) ExitCode {
+fn writeScale(stdout: *Io.Writer, allocator: std.mem.Allocator, format: cli_args.Format, report: report_model.ScaleReport, stderr: *Io.Writer) ExitCode {
     const written = switch (format) {
         .human => report_scale.writeHumanScale(stdout, allocator, report),
         .json => report_scale.writeJsonScale(stdout, allocator, report),
@@ -361,7 +361,7 @@ pub fn run(
         .cleanup_failed = &cleanup_failed,
     };
 
-    const measured = arena.alloc(report_scale.Step, plans.len) catch return outOfMemory(stderr);
+    const measured = arena.alloc(report_model.ScaleStep, plans.len) catch return outOfMemory(stderr);
     var code: ExitCode = .ok;
     for (plans, 0..) |plan, index| {
         switch (runStep(&session, plan)) {
@@ -376,7 +376,7 @@ pub fn run(
         }
     }
 
-    const report = report_scale.Report{
+    const report = report_model.ScaleReport{
         .header = baseHeader(&session),
         .seed_path = inputs.seed.path,
         .scale = steps,
@@ -389,7 +389,7 @@ pub fn run(
     return cli_control.finalExitCode(code, cleanup_failed);
 }
 
-fn stepExitCodeOf(step: report_scale.Step) ExitCode {
+fn stepExitCodeOf(step: report_model.ScaleStep) ExitCode {
     return switch (step.result) {
         .match => .ok,
         .mismatch => .mismatch,

@@ -152,6 +152,7 @@ PRODUCTION_IMPORTS = {
         "src/cli/comparison.zig",
         "src/cli/timing.zig",
         "src/cli/warnings.zig",
+        "src/d1/migrations.zig",
     ],
     "src/report/format.zig": [
         "src/db.zig",
@@ -192,7 +193,6 @@ PRODUCTION_IMPORTS = {
     "src/report/scale.zig": [
         "src/contract/values.zig",
         "src/result.zig",
-        "src/d1/migrations.zig",
         "src/cli/warnings.zig",
         "src/report/model.zig",
         "src/report/format.zig",

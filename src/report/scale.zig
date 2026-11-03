@@ -2,19 +2,15 @@ const std = @import("std");
 const Io = std.Io;
 const contract = @import("../contract/values.zig");
 const result = @import("../result.zig");
-const cli_d1_migrations = @import("../d1/migrations.zig");
 const cli_warnings = @import("../cli/warnings.zig");
 const model = @import("model.zig");
 const format = @import("format.zig");
 const report_json = @import("json.zig");
 
-const Header = model.Header;
-const Measurement = model.Measurement;
-const Judgement = model.Judgement;
 const Verdict = model.Verdict;
 const Warnings = model.Warnings;
-const TimeSummary = model.TimeSummary;
-const SeedTable = model.SeedTable;
+const Step = model.ScaleStep;
+const Report = model.ScaleReport;
 const Error = model.Error;
 const writeField = format.writeField;
 const writeCount = format.writeCount;
@@ -23,33 +19,6 @@ const writeIndent = format.writeIndent;
 const writeWrapped = format.writeWrapped;
 
 const note = "note: these rows come from generated data measured on this machine; they are not production D1 billing.";
-
-pub const Step = struct {
-    rows: u64,
-    tables: []const SeedTable,
-    before: Measurement,
-    after: Measurement,
-    result: Verdict,
-    judgement: Judgement,
-    plan_changed: bool,
-    timing: ?TimeSummary = null,
-    warnings: Warnings = .{},
-    baseline_only: usize = 0,
-    variant_only: usize = 0,
-    baseline_examples: []const []const u8 = &.{},
-    variant_examples: []const []const u8 = &.{},
-    comparison_json: []const u8,
-    exit_code: u8 = 0,
-};
-
-pub const Report = struct {
-    header: Header,
-    seed_path: []const u8,
-    scale: []const u64,
-    steps: []const Step,
-    unapplied_migrations: ?cli_d1_migrations.Pending = null,
-    exit_code: u8 = 0,
-};
 
 const Found = struct {
     code: []const u8,
