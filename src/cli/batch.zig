@@ -505,9 +505,9 @@ pub fn run(
                 summary.status = .index_timeout;
                 summary.failure_code = "index_timeout";
                 summary.failure_message = if (candidate.kind == .migration)
-                    failureMessage(arena, "statement {d} did not finish within {d} ms", .{ detail.statement_index, inputs.timeout_ms })
+                    failureMessage(arena, "statement {d} did not finish within {d} ms; raise --timeout-ms, or use --timeout-ms 0 to wait for it", .{ detail.statement_index, inputs.timeout_ms })
                 else
-                    failureMessage(arena, "the CREATE INDEX did not finish within {d} ms", .{inputs.timeout_ms});
+                    failureMessage(arena, "the CREATE INDEX did not finish within {d} ms; raise --timeout-ms, or use --timeout-ms 0 to wait for the index build", .{inputs.timeout_ms});
                 candidate_failed = true;
             },
             error.Interrupted => return cli_control.reportInterrupted(stderr),
