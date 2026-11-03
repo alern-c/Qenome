@@ -219,6 +219,14 @@ pub fn measure(
     };
 }
 
+pub fn writeSelectTimeoutAdvice(stderr: *Io.Writer, timed_run: bool) void {
+    if (timed_run) {
+        stderr.writeAll("; raise --timeout-ms, or use --timeout-ms 0 to wait for the SELECT, or use --runs 0 to skip the timing\n") catch {};
+    } else {
+        stderr.writeAll("; raise --timeout-ms, or use --timeout-ms 0 to wait for the SELECT\n") catch {};
+    }
+}
+
 pub fn reportStepFailure(
     err: db.StepError,
     session: *QuerySession,
@@ -231,7 +239,8 @@ pub fn reportStepFailure(
     const run_name = if (timed_run) |number| std.fmt.bufPrint(&buffer, " (timed run {d})", .{number}) catch "" else "";
     switch (err) {
         error.Timeout => {
-            stderr.print("error: --select exceeded the time limit of {d} ms on the {t}{s}\n", .{ timeout_ms, side, run_name }) catch {};
+            stderr.print("error: --select exceeded the time limit of {d} ms on the {t}{s}", .{ timeout_ms, side, run_name }) catch {};
+            writeSelectTimeoutAdvice(stderr, timed_run != null);
             return .timeout;
         },
         error.Interrupted => return cli_control.reportInterrupted(stderr),
@@ -510,7 +519,7 @@ test "a timeout on the variant names the variant and is not a comparison" {
     defer rows.deinit();
     try testing.expectEqual(@as(?cli_comparison.Measurement, null), measure(arena_state.allocator(), &session, sql, &.{}, &control, &rows, .variant, &stderr, &failure));
     try testing.expectEqual(cli_control.ExitCode.timeout, failure);
-    try testing.expectEqualStrings("error: --select exceeded the time limit of 1 ms on the variant\n", stderr.buffered());
+    try testing.expectEqualStrings("error: --select exceeded the time limit of 1 ms on the variant; raise --timeout-ms, or use --timeout-ms 0 to wait for the SELECT\n", stderr.buffered());
 }
 
 test "a session that could not open still cleans up through deinit" {

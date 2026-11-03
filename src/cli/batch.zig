@@ -1167,7 +1167,8 @@ fn measureVariant(
 fn baselineStepFailure(err: db.StepError, session: *QuerySession, control: *db.StepControl, label: []const u8, stderr: *Io.Writer) ExitCode {
     return switch (err) {
         error.Timeout => blk: {
-            stderr.print("error: the batch baseline SELECT for query '{s}' exceeded the time limit of {d} ms\n", .{ label, control.timeout_ms }) catch {};
+            stderr.print("error: the batch baseline SELECT for query '{s}' exceeded the time limit of {d} ms", .{ label, control.timeout_ms }) catch {};
+            cli_query.writeSelectTimeoutAdvice(stderr, false);
             break :blk .timeout;
         },
         error.Interrupted => cli_control.reportInterrupted(stderr),
