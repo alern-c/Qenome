@@ -146,20 +146,46 @@ work-dir-parent: <work-dir-parent>
 
 Steps
           rows baseline read variant read   ratio  verdict     result       plan    median
-         1,000         1,000            0 0.0000x  improved    match        changed -
+         1,000         1,000            2 0.0020x  improved    match        changed -
         10,000        10,000            2 0.0002x  improved    match        changed -
 
-note: these rows come from generated data measured on this machine; they are not
-production D1 billing.
+Trend
+  baseline rows read: linear (exponents 1.000)
+  variant rows read:  constant (exponents 0.000)
+  baseline time:      not timed
+  variant time:       not timed
+
+Findings
+  gain_grows_with_scale: the variant reads a smaller share of the baseline rows
+    at the larger improved step (steps 1,000 and 10,000)
+
+note: the rows and the trend come from generated data measured on this machine; they
+are not production D1 billing.
 ```
 
-各段階は、元のデータベースを新しいサンドボックスへコピーし、そのコピーに seed し、variant に候補のインデックスを作り、既存の比較を実行し、次の段階の前にコピーを削除します。表は1段階1行で、行数、両方のコピーが読んだ行数、variant / baseline の比、`--write` のときの書き込んだ行数、判定、結果、実行計画が変わったか、`--runs` が `0` でないときの中央値を出します。`--show-binds` のときは先頭の項目にバインド値も並べ、`--show-rows` のときは結果が `match` でない段階について、片方のコピーだけが返した行の例も出します。警告は段階で違うときだけ、例えば最も小さい段階の `data_too_small` だけを出します。判定が段階で変わる場合は、`The verdict changes between 1,000 and 10,000 rows.` のように1行で示します。増え方の分類はしません。最後の行に、生成したデータをこのマシンで測ったもので、本番 D1 の請求ではないと書きます。
+各段階は、元のデータベースを新しいサンドボックスへコピーし、そのコピーに seed し、variant に候補のインデックスを作り、既存の比較を実行し、次の段階の前にコピーを削除します。表は1段階1行で、行数、両方のコピーが読んだ行数、variant / baseline の比、`--write` のときの書き込んだ行数、判定、結果、実行計画が変わったか、`--runs` が `0` でないときの中央値を出します。`--show-binds` のときは先頭の項目にバインド値も並べ、`--show-rows` のときは結果が `match` でない段階について、片方のコピーだけが返した行の例も出します。警告は段階で違うときだけ、例えば最も小さい段階の `data_too_small` だけを出します。判定が段階で変わる場合は、`The verdict changes between 1,000 and 10,000 rows.` のように1行で示します。
+
+`Trend` のブロックは、読んだ行数（計測しているときは中央値も）がデータのサイズとともにどう増えるかを示します。連続する段階の組ごとに、指数 `log(後の値 / 前の値) / log(後の行数 / 前の行数)` を計算し、小数第3位に丸めます。系列の各指数がどの帯に入るかで、`0.2` 以下は `constant`、`0.8` 以下は `sublinear`、`1.2` 以下は `linear`、`1.2` を超えるものは `superlinear` です。すべての指数が1つの帯に入るときはその帯の名前になり（より小さい帯を含むので、各段階 `0.5` なら `sublinear`）、帯が分かれるとき（実行計画が途中で変わった場合など）は `mixed` です。分類できない系列は `unknown` です。結果が `match` でない段階がある、値が `0` である、`2,147,483,648` 以上の値の次が小さい（32ビットのカウンタが一周した可能性がある）、段階が2つ未満、のいずれかが該当します。`unknown` のとき `exponents` は空です。中央値の時間も同じクラスで分類しますが、このマシンの計測でノイズにより動きます。`--runs 0` では `not timed` と表示し、JSON の時間の系列は `null` です。
+
+`Findings` のブロックは、安定したコードと短い説明、関係する2つの段階のサイズを出します。内容はこの実行だけのもので、各段階の判定、終了コード、比較オブジェクトは変えません。
+
+| コード | 意味 |
+| --- | --- |
+| `improvement_vanishes_at_scale` | 小さい段階では `improved` だが、大きい段階では `no-effect` または `needs-check` |
+| `regresses_at_scale` | より大きい段階から variant が baseline より多くの行を読む、または書く。その前の小さい段階は `improved` または `no-effect` |
+| `improves_only_at_scale` | 最初の `improved` より前に `no-effect` の段階がある。大きいサイズでだけ効く。小さいテーブルでは計画がスキャンを選ぶことがある |
+| `only_faster_at_small_sizes` | 計測時に、小さい段階の `timing.effect` が `faster` で、大きい段階が `no-difference` または `slower` |
+| `plan_changes_with_scale` | baseline または variant の実行計画が2つの段階で違う。最初に変わった段階を示す |
+| `gain_grows_with_scale` | 最初と最後の `improved` の段階の間で、variant / baseline の行数の比が半分以下になる |
+| `gain_shrinks_with_scale` | 最初と最後の `improved` の段階の間で、variant / baseline の行数の比が2倍以上になる |
+
+所見が無い実行では `Findings` のブロックを出しません。傾向と所見は、このマシンで生成したデータについてのもので、本番 D1 の請求やレイテンシを見積もるものではありません。
 
 段階は2〜6個の狭義増加する整数で、各段階は 10,000,000 行以下です。スケールした spec は1テーブル 10,000,000 行、合計 20,000,000 行以内でなければなりません。それ以外は、コピーを作る前の usage エラー（`usage_scale`、終了コード `2`）です。`--scale` は `--d1`・`--write`・`--bind`・`--runs`・`--timeout-ms`・`--show-binds`・`--show-rows` と `--format human` / `json` で使えます。`--batch`・`--suggest`・`--migration`・`--audit-indexes`・`--rank`・`--record`・`--format kv` とは併用できません。
 
 終了コードは、1回の比較と同じ優先順位で、段階の中で最も重いものです（`3`、次に `4`、次に `124`、次に `1`、どれもなければ `0`）。実行できない段階があると、レポートを書く前に実行全体が止まります。
 
-`--format json` では、`scale_schema_version` `1` を持つ別のオブジェクトを出します。`inputs`、`environment`、サイズごとの `steps`（`tables` と `schema_version` 2 の比較全体）、実行全体の `warnings` が入ります。詳細は [docs/json.md](../json.md#scale-report-scale_schema_version-1) にあります。
+`--format json` では、`scale_schema_version` `1` を持つ別のオブジェクトを出します。`inputs`、`environment`、サイズごとの `steps`（`tables` と `schema_version` 2 の比較全体）、上に説明した `trend` と `findings`、実行全体の `warnings` が入ります。詳細は [docs/json.md](../json.md#scale-report-scale_schema_version-1) にあります。
 
 ## D1 のローカルデータベース
 

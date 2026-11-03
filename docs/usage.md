@@ -146,20 +146,46 @@ work-dir-parent: <work-dir-parent>
 
 Steps
           rows baseline read variant read   ratio  verdict     result       plan    median
-         1,000         1,000            0 0.0000x  improved    match        changed -
+         1,000         1,000            2 0.0020x  improved    match        changed -
         10,000        10,000            2 0.0002x  improved    match        changed -
 
-note: these rows come from generated data measured on this machine; they are not
-production D1 billing.
+Trend
+  baseline rows read: linear (exponents 1.000)
+  variant rows read:  constant (exponents 0.000)
+  baseline time:      not timed
+  variant time:       not timed
+
+Findings
+  gain_grows_with_scale: the variant reads a smaller share of the baseline rows
+    at the larger improved step (steps 1,000 and 10,000)
+
+note: the rows and the trend come from generated data measured on this machine; they
+are not production D1 billing.
 ```
 
-Each step copies the original database into a new sandbox, seeds that copy, builds the candidate index on the variant, runs the existing comparison, and removes the copies before the next step. The table has one row per step: the rows, the rows read on both copies, the variant / baseline ratio, the rows written with `--write`, the verdict, the result, whether the plan changed, and the median times when `--runs` is not `0`. With `--show-binds`, the header also lists the bind values; with `--show-rows`, a step whose result is not `match` lists the example rows that only one copy returned. A warning is printed only where it differs between the steps, such as `data_too_small` at the smallest one. When the verdict changes between steps, one line says so, for example `The verdict changes between 1,000 and 10,000 rows.`; it does not classify the growth. The last line says that the rows are generated data measured on this machine and not production D1 billing.
+Each step copies the original database into a new sandbox, seeds that copy, builds the candidate index on the variant, runs the existing comparison, and removes the copies before the next step. The table has one row per step: the rows, the rows read on both copies, the variant / baseline ratio, the rows written with `--write`, the verdict, the result, whether the plan changed, and the median times when `--runs` is not `0`. With `--show-binds`, the header also lists the bind values; with `--show-rows`, a step whose result is not `match` lists the example rows that only one copy returned. A warning is printed only where it differs between the steps, such as `data_too_small` at the smallest one. When the verdict changes between steps, one line says so, for example `The verdict changes between 1,000 and 10,000 rows.`
+
+The `Trend` block says how the rows read, and the median time when timed, grow with the data size. For each pair of consecutive steps it computes the exponent `log(later value / earlier value) / log(later rows / earlier rows)` and rounds it to three decimals. Every exponent of a series falls in one band: at most `0.2` is `constant`, at most `0.8` is `sublinear`, at most `1.2` is `linear`, and above `1.2` is `superlinear`. A series is named after a band when every exponent lies in it, so an exponent of `0.5` in every step is `sublinear`; when the exponents span bands, for example because the planner picked another plan, the series is `mixed`. `unknown` means the series cannot be classified: a step whose result is not `match`, a value of `0`, a value at least `2,147,483,648` followed by a smaller one (the 32-bit counter may have wrapped), or fewer than two steps. The `exponents` list is empty for `unknown`. The median times use the same classes, but they come from this machine and move with noise; `--runs 0` prints `not timed` and the JSON time series is `null`.
+
+The `Findings` block adds stable codes with a short explanation and the two step sizes involved. They describe this run only, and they never change a step's verdict, the exit status, or the comparison objects:
+
+| Code | Meaning |
+| --- | --- |
+| `improvement_vanishes_at_scale` | `improved` at a smaller step and `no-effect` or `needs-check` at a larger one |
+| `regresses_at_scale` | the variant reads or writes more rows than the baseline from a larger step on, after an `improved` or `no-effect` smaller step |
+| `improves_only_at_scale` | a `no-effect` step comes before the first `improved` step, so the index only helps larger sizes; the planner may prefer a scan on the small table |
+| `only_faster_at_small_sizes` | `timing.effect` is `faster` at a smaller step and `no-difference` or `slower` at a larger one, when timed |
+| `plan_changes_with_scale` | the baseline or the variant plan differs between two steps; the first change is named |
+| `gain_grows_with_scale` | the variant / baseline rows-read ratio at least halves between the first and last `improved` step |
+| `gain_shrinks_with_scale` | the variant / baseline rows-read ratio at least doubles between the first and last `improved` step |
+
+A run with no finding prints no `Findings` block. The trend and the findings describe this generated data on this machine; they do not estimate production D1 billing or latency.
 
 The steps are 2 to 6 strictly increasing integers, each at most 10,000,000; the scaled spec must stay within 10,000,000 rows per table and 20,000,000 rows in total. Otherwise the run is a usage error (`usage_scale`, exit status `2`) before any copy is made. `--scale` works with `--d1`, `--write`, `--bind`, `--runs`, `--timeout-ms`, `--show-binds`, `--show-rows`, and `--format human` or `json`. It does not take `--batch`, `--suggest`, `--migration`, `--audit-indexes`, `--rank`, `--record`, or `--format kv`.
 
 The exit status is the heaviest of the steps, in the same order as a single comparison: `3`, then `4`, then `124`, then `1`, otherwise `0`. A step that cannot run stops the run before the report is written.
 
-With `--format json` the output is a separate object with `scale_schema_version` `1`: the `inputs`, the `environment`, one `steps` entry per size (its `tables` and the full `schema_version` 2 comparison), and the run-wide `warnings`. See [the JSON contract](json.md#scale-report-scale_schema_version-1).
+With `--format json` the output is a separate object with `scale_schema_version` `1`: the `inputs`, the `environment`, one `steps` entry per size (its `tables` and the full `schema_version` 2 comparison), the `trend` and `findings` described above, and the run-wide `warnings`. See [the JSON contract](json.md#scale-report-scale_schema_version-1).
 
 ## D1 local databases
 
