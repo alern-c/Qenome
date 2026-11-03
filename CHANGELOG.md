@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `--scale` writes a `trend` object and a `findings` array in the `scale_schema_version` 1 report (`scale_schema_version` stays `1`), and a `Trend` block and a `Findings` block in the human output. Each series of rows read, and of the median times when timed, is `constant`, `sublinear`, `linear`, `superlinear`, `mixed`, or `unknown`, with the exponent between consecutive steps rounded to three decimals; `unknown` covers a step that did not match, a zero value, a possible 32-bit wrap, and fewer than two steps. The stable finding codes are `improvement_vanishes_at_scale`, `regresses_at_scale`, `improves_only_at_scale`, `only_faster_at_small_sizes`, `plan_changes_with_scale`, `gain_grows_with_scale`, and `gain_shrinks_with_scale`; they never change a per-step verdict or the exit code. `docs/usage.md` and `docs/json.md` describe the classes, the thresholds, and each code.
 
+### Changed
+
+- A candidate `CREATE INDEX` that reaches `--timeout-ms` now names the way past the limit: a comparison and `--write` print `raise --timeout-ms, or use --timeout-ms 0 to wait for the index build` after the existing time-limit sentence, and a `--batch` candidate or migration failure records the same advice in its `failure.message`. The default of `30000`, the exit status `124`, and every JSON `code` and `schema_version` stay the same.
+
 ### Fixed
 
 - A `--scale` step below 1,000 rows no longer tells the user to rerun with `--seed-data` and `--scale`. The per-step `data_too_small` warning says that the step is below the size where the result is meaningful and to read the comparison at a larger step, and its JSON object keeps `table`, `rows`, and `full_scan` without `next_command`. The plain comparison and the `--batch`, `--suggest`, and `--rank` notes keep their `next` command, and `schema_version` and `scale_schema_version` stay the same.
