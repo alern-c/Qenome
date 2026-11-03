@@ -63,9 +63,15 @@ pub const body =
     \\                       show the results side by side; the largest
     \\                       table in the spec gets the step size and the
     \\                       other tables scale with it; each step seeds a
-    \\                       fresh copy; not with --batch, --suggest,
-    \\                       --migration, --audit-indexes, --rank, --record,
-    \\                       or --format kv
+    \\                       fresh copy; the report classifies the growth
+    \\                       of the rows read (constant, sublinear, linear,
+    \\                       superlinear, mixed, or unknown) and lists
+    \\                       findings such as an improvement that vanishes
+    \\                       at a larger size; a finding never changes a
+    \\                       step's verdict or the exit status; not with
+    \\                       --batch, --suggest, --migration,
+    \\                       --audit-indexes, --rank, --record, or
+    \\                       --format kv
     \\  --suggest            ask SQLite for candidate indexes instead of
     \\                       naming them, and compare the suggestions; with
     \\                       --batch the manifest may omit candidates
@@ -234,6 +240,13 @@ pub const body =
     \\or sequence. The same spec and seed give the same rows, and the
     \\original database is never changed. --seed-data works with every
     \\mode, including --batch, --suggest, --migration, and --rank.
+    \\
+    \\--scale reruns the comparison at 2 to 6 sizes and needs --seed-data.
+    \\It adds a Trend block with the growth class of the rows read on each
+    \\side and, when timed, of the median times, and a Findings block with
+    \\a stable code and the two sizes involved. A finding never changes a
+    \\step's verdict or the exit status. The times come from this machine
+    \\and the rows from generated data, not from production D1.
     \\
     \\--suggest asks SQLite's expert for candidate indexes for the SELECT
     \\files and compares them with the manifest candidates (with --batch) or

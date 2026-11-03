@@ -1443,6 +1443,53 @@ def scale_expect_tests(checker) -> None:
     failures = checker.scale_failures(normalized["scale"], grown)
     expect("a full scan that grows tenfold passes", failures == [], failures)
 
+    classified = checker.load_expect(
+        "x",
+        {
+            "scale": {
+                "grows": True,
+                "trend": {"baseline_rows_read": "linear", "variant_rows_read": "constant"},
+                "findings": ["gain_grows_with_scale"],
+                "findings_exclude": ["regresses_at_scale"],
+                "steps": [{"rows": 100}, {"rows": 10000}],
+            }
+        },
+    )
+    expect(
+        "a scale expect keeps the trend and the findings",
+        classified["scale"]["trend"]["baseline_rows_read"] == "linear"
+        and classified["scale"]["findings"] == ["gain_grows_with_scale"],
+        classified,
+    )
+    matched = {
+        "steps": grown["steps"],
+        "trend": {"baseline_rows_read": {"class": "linear"}, "variant_rows_read": {"class": "constant"}},
+        "findings": [{"code": "gain_grows_with_scale"}],
+    }
+    failures = checker.scale_failures(classified["scale"], matched)
+    expect("a matching trend and finding pass", failures == [], failures)
+    wrong = {
+        "steps": grown["steps"],
+        "trend": {"baseline_rows_read": {"class": "sublinear"}, "variant_rows_read": {"class": "constant"}},
+        "findings": [{"code": "regresses_at_scale"}],
+    }
+    failures = checker.scale_failures(classified["scale"], wrong)
+    expect("a wrong trend class fails", any("trend.baseline_rows_read" in item for item in failures), failures)
+    expect("a missing finding fails", any("no finding" in item for item in failures), failures)
+    expect("an unexpected finding fails", any("has the finding" in item for item in failures), failures)
+    for bad in (
+        {"steps": [{"rows": 100}], "trend": {"baseline_rows_read": "huge"}},
+        {"steps": [{"rows": 100}], "findings": []},
+        {"steps": [{"rows": 100}], "unknown": True},
+    ):
+        try:
+            checker.load_expect("x", {"scale": bad})
+        except checker.Unusable:
+            refused = True
+        else:
+            refused = False
+        expect("a bad scale expect is refused: " + json.dumps(bad), refused, bad)
+
 
 def main() -> int:
     checker = load_checker()

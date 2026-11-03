@@ -65,6 +65,99 @@ fn render(report: model.ScaleReport, buffer: []u8) ![]const u8 {
     return writer.buffered();
 }
 
+fn flatten(allocator: std.mem.Allocator, text: []const u8) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    var last_space = false;
+    for (text) |char| {
+        const space = char == ' ' or char == '\n';
+        if (space and last_space) continue;
+        try out.append(allocator, if (space) ' ' else char);
+        last_space = space;
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+test "the human scale output writes the trend per series and the findings" {
+    var steps = [_]model.ScaleStep{
+        step(1000, .{ .verdict = .improved }, .match, .{}),
+        step(5000, .{ .verdict = .improved }, .match, .{}),
+    };
+    const report: model.ScaleReport = .{
+        .header = header(null),
+        .seed_path = "seed.json",
+        .scale = &.{ 1000, 5000 },
+        .steps = &steps,
+    };
+    var buffer: [16384]u8 = undefined;
+    const output = try render(report, &buffer);
+    try testing.expect(std.mem.indexOf(u8, output, "\nTrend\n") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "baseline rows read: linear (exponents 1.000)") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "variant rows read:  constant (exponents 0.000)") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "baseline time:      not timed") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "variant time:       not timed") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "\nFindings\n") != null);
+    const flat = try flatten(testing.allocator, output);
+    defer testing.allocator.free(flat);
+    try testing.expect(std.mem.indexOf(u8, flat, "gain_grows_with_scale: the variant reads a smaller share of the baseline rows at the larger improved step (steps 1,000 and 5,000)") != null);
+
+    var steady = [_]model.ScaleStep{
+        step(1000, .{ .verdict = .no_effect }, .match, .{}),
+        step(5000, .{ .verdict = .no_effect }, .match, .{}),
+    };
+    steady[0].after = measurement(1000, 1000, 0, &search_line);
+    steady[1].after = measurement(5000, 5000, 0, &search_line);
+    const quiet: model.ScaleReport = .{
+        .header = header(null),
+        .seed_path = "seed.json",
+        .scale = &.{ 1000, 5000 },
+        .steps = &steady,
+    };
+    const quiet_output = try render(quiet, &buffer);
+    try testing.expect(std.mem.indexOf(u8, quiet_output, "\nFindings\n") == null);
+    try testing.expect(std.mem.indexOf(u8, quiet_output, "\nTrend\n") != null);
+}
+
+test "the human scale output lists the timing trend and an unknown series" {
+    const timing: model.TimeSummary = .{
+        .baseline = .{ .median = 1_000_000, .p25 = 900_000, .p75 = 1_100_000, .min = 800_000, .max = 1_200_000 },
+        .variant = .{ .median = 500_000, .p25 = 400_000, .p75 = 600_000, .min = 300_000, .max = 700_000 },
+        .rounds = 3,
+        .variant_faster_rounds = 3,
+        .evidence = .{ .effect = .faster },
+    };
+    var steps = [_]model.ScaleStep{
+        step(1000, .{ .verdict = .improved }, .match, .{}),
+        step(5000, .{ .verdict = .improved }, .match, .{}),
+    };
+    steps[0].timing = timing;
+    var later_timing = timing;
+    later_timing.baseline.median = 5_000_000;
+    later_timing.variant.median = 1_000_000;
+    steps[1].timing = later_timing;
+    const report: model.ScaleReport = .{
+        .header = header(null),
+        .seed_path = "seed.json",
+        .scale = &.{ 1000, 5000 },
+        .steps = &steps,
+    };
+    var buffer: [16384]u8 = undefined;
+    const output = try render(report, &buffer);
+    try testing.expect(std.mem.indexOf(u8, output, "baseline time:      linear (exponents 1.000)") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "variant time:       sublinear (exponents 0.431)") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "not timed") == null);
+
+    steps[1].result = .mismatch;
+    const mismatched: model.ScaleReport = .{
+        .header = header(null),
+        .seed_path = "seed.json",
+        .scale = &.{ 1000, 5000 },
+        .steps = &steps,
+    };
+    const unknown_output = try render(mismatched, &buffer);
+    try testing.expect(std.mem.indexOf(u8, unknown_output, "baseline rows read: unknown") != null);
+    try testing.expect(std.mem.indexOf(u8, unknown_output, "baseline time:      unknown") != null);
+}
+
 test "the human scale output has one row per step and the generated-data note" {
     var steps = [_]model.ScaleStep{
         step(1000, .{ .verdict = .improved }, .match, .{}),
@@ -86,7 +179,7 @@ test "the human scale output has one row per step and the generated-data note" {
     try testing.expect(std.mem.indexOf(u8, output, "\n         5,000") != null);
     try testing.expect(std.mem.indexOf(u8, output, "0.0100x") != null);
     try testing.expect(std.mem.indexOf(u8, output, "improved    match") != null);
-    try testing.expect(std.mem.indexOf(u8, output, "note: these rows come from generated data") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "note: the rows and the trend come from generated data") != null);
     try testing.expect(std.mem.indexOf(u8, output, "production D1 billing.") != null);
     try testing.expect(std.mem.indexOf(u8, output, "The verdict changes") == null);
     try testing.expect(std.mem.indexOf(u8, output, "\nWarnings\n") == null);
@@ -302,4 +395,80 @@ test "the JSON scale report writes the unapplied migrations warning" {
     try testing.expectEqual(@as(usize, 1), warnings.items.len);
     try testing.expectEqualStrings(contract.code.unapplied_migrations, (try field(warnings.items[0], "code")).string);
     try testing.expect(std.mem.indexOf(u8, (try field(warnings.items[0], "message")).string, "0001_init.sql") != null);
+}
+
+fn number(value: std.json.Value) !f64 {
+    return switch (value) {
+        .integer => |integer| @floatFromInt(integer),
+        .float => |float| float,
+        else => error.TestUnexpectedResult,
+    };
+}
+
+test "the JSON scale report writes the trend and the findings" {
+    var steps = [_]model.ScaleStep{
+        step(1000, .{ .verdict = .improved }, .match, .{}),
+        step(5000, .{ .verdict = .improved }, .match, .{}),
+    };
+    const report: model.ScaleReport = .{
+        .header = header(null),
+        .seed_path = "seed.json",
+        .scale = &.{ 1000, 5000 },
+        .steps = &steps,
+    };
+    var buffer: [16384]u8 = undefined;
+    var writer = Io.Writer.fixed(&buffer);
+    try scale.writeJsonScale(&writer, testing.allocator, report);
+    var parsed = try parse(writer.buffered());
+    defer parsed.deinit();
+    const root = parsed.value;
+
+    const trend_value = try field(root, "trend");
+    const baseline = try field(trend_value, "baseline_rows_read");
+    try testing.expectEqualStrings("linear", (try field(baseline, "class")).string);
+    const exponents = (try field(baseline, "exponents")).array;
+    try testing.expectEqual(@as(usize, 1), exponents.items.len);
+    try testing.expectApproxEqAbs(1.0, try number(exponents.items[0]), 1e-9);
+    const variant = try field(trend_value, "variant_rows_read");
+    try testing.expectEqualStrings("constant", (try field(variant, "class")).string);
+    try testing.expectEqual(@as(i64, 0), @as(i64, @intFromFloat(try number((try field(variant, "exponents")).array.items[0]))));
+    try testing.expect((try field(trend_value, "baseline_time")) == .null);
+    try testing.expect((try field(trend_value, "variant_time")) == .null);
+
+    const findings = (try field(root, "findings")).array;
+    try testing.expectEqual(@as(usize, 1), findings.items.len);
+    try testing.expectEqualStrings(contract.code.gain_grows_with_scale, (try field(findings.items[0], "code")).string);
+    try testing.expect((try field(findings.items[0], "message")).string.len != 0);
+    const finding_steps = (try field(findings.items[0], "steps")).array;
+    try testing.expectEqual(@as(usize, 2), finding_steps.items.len);
+    try testing.expectEqual(@as(i64, 1000), finding_steps.items[0].integer);
+    try testing.expectEqual(@as(i64, 5000), finding_steps.items[1].integer);
+}
+
+fn expectNarrowBetween(text: []const u8, start: []const u8, end: []const u8) !void {
+    const from = std.mem.indexOf(u8, text, start) orelse return error.TestUnexpectedResult;
+    const to = std.mem.indexOfPos(u8, text, from, end) orelse return error.TestUnexpectedResult;
+    var lines = std.mem.splitScalar(u8, text[from..to], '\n');
+    while (lines.next()) |line| try testing.expect(line.len <= 80);
+}
+
+test "the human scale output keeps a long trend line within 80 columns" {
+    var steps: [6]model.ScaleStep = undefined;
+    const sizes = [_]u64{ 1000, 1001, 1002, 1003, 1004, 1005 };
+    const reads = [_]u64{ 1, 10, 20, 200, 400, 1200 };
+    for (sizes, reads, 0..) |rows, read, index| {
+        steps[index] = step(rows, .{ .verdict = .improved }, .match, .{});
+        steps[index].before = measurement(rows, read, 0, &scan_line);
+        steps[index].after = measurement(rows, @max(read / 2, 1), 0, &search_line);
+    }
+    const report: model.ScaleReport = .{
+        .header = header(null),
+        .seed_path = "seed.json",
+        .scale = &sizes,
+        .steps = &steps,
+    };
+    var buffer: [16384]u8 = undefined;
+    const output = try render(report, &buffer);
+    try expectNarrowBetween(output, "\nTrend\n", "\nnote:");
+    try testing.expect(std.mem.indexOf(u8, output, "baseline rows read: superlinear") != null);
 }

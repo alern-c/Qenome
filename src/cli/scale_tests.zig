@@ -81,6 +81,8 @@ const seed_two_columns =
 
 const lookup_select = "SELECT id, b FROM t WHERE a = 1500;";
 
+const lookup_at_500 = "SELECT id, b FROM t WHERE a = 500;";
+
 const lookup_index = "CREATE INDEX ix_t_a ON t(a);";
 
 const conditional_insert = "INSERT INTO t(a, b) SELECT 1500, 'z' WHERE EXISTS (SELECT 1 FROM t WHERE a = 1500)";
@@ -445,4 +447,77 @@ test "scale with --batch or --record is a usage error" {
     }, fixture.work_parent, &stdout_buffer, &stderr_buffer);
     try testing.expectEqual(ExitCode.usage, with_record.code);
     try testing.expect(contains(with_record.stderr, "--scale does not take --record"));
+}
+
+test "the scale run reports the rows-read trend and the findings" {
+    var fixture = try Fixture.init(lookup_at_500, lookup_index, seed_two_columns);
+    defer fixture.deinit();
+    var stdout_buffer: [32768]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+
+    const json = fixture.run(&.{ "--seed-data", fixture.seed_path, "--scale", "1000,5000", "--runs", "0", "--format", "json" }, "json", &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, json.code);
+    try testing.expectEqualStrings("", json.stderr);
+    var parsed = try parseJson(json.stdout);
+    defer parsed.deinit();
+    const root = parsed.value;
+
+    const trend = try jsonGet(root, "trend");
+    const baseline = try jsonGet(trend, "baseline_rows_read");
+    try testing.expectEqualStrings("linear", try jsonText(baseline, "class"));
+    try testing.expectEqual(@as(usize, 1), (try jsonItems(baseline, "exponents")).len);
+    const variant = try jsonGet(trend, "variant_rows_read");
+    try testing.expectEqualStrings("constant", try jsonText(variant, "class"));
+    try testing.expect((try jsonGet(trend, "baseline_time")) == .null);
+    try testing.expect((try jsonGet(trend, "variant_time")) == .null);
+
+    const findings = try jsonItems(root, "findings");
+    try testing.expect(findings.len != 0);
+    var gain_found = false;
+    for (findings) |entry| {
+        const code = try jsonText(entry, "code");
+        if (std.mem.eql(u8, contract.code.gain_grows_with_scale, code)) gain_found = true;
+        const steps = try jsonItems(entry, "steps");
+        try testing.expectEqual(@as(usize, 2), steps.len);
+        try testing.expectEqual(@as(i64, 1000), steps[0].integer);
+        try testing.expectEqual(@as(i64, 5000), steps[1].integer);
+        try testing.expect((try jsonText(entry, "message")).len != 0);
+    }
+    try testing.expect(gain_found);
+
+    const human = fixture.run(&.{ "--seed-data", fixture.seed_path, "--scale", "1000,5000", "--runs", "0" }, "human", &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, human.code);
+    try testing.expect(contains(human.stdout, "\nTrend\n"));
+    try testing.expect(contains(human.stdout, "baseline rows read: linear (exponents 1.000)"));
+    try testing.expect(contains(human.stdout, "variant rows read:  constant (exponents 0.000)"));
+    try testing.expect(contains(human.stdout, "baseline time:      not timed"));
+    try testing.expect(contains(human.stdout, "\nFindings\n"));
+    try testing.expect(contains(human.stdout, contract.code.gain_grows_with_scale));
+}
+
+test "the scale run classifies the medians only when it is timed" {
+    var fixture = try Fixture.init(lookup_at_500, lookup_index, seed_two_columns);
+    defer fixture.deinit();
+    var stdout_buffer: [32768]u8 = undefined;
+    var stderr_buffer: [4096]u8 = undefined;
+
+    const json = fixture.run(&.{ "--seed-data", fixture.seed_path, "--scale", "1000,5000", "--runs", "2", "--format", "json" }, "json", &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, json.code);
+    var parsed = try parseJson(json.stdout);
+    defer parsed.deinit();
+    const trend = try jsonGet(parsed.value, "trend");
+    const baseline_time = try jsonGet(trend, "baseline_time");
+    try testing.expect(baseline_time != .null);
+    const classes = [_][]const u8{ "constant", "sublinear", "linear", "superlinear", "mixed", "unknown" };
+    var known = false;
+    for (classes) |name| {
+        if (std.mem.eql(u8, name, try jsonText(baseline_time, "class"))) known = true;
+    }
+    try testing.expect(known);
+    try testing.expect((try jsonGet(trend, "variant_time")) != .null);
+
+    const human = fixture.run(&.{ "--seed-data", fixture.seed_path, "--scale", "1000,5000", "--runs", "2" }, "human", &stdout_buffer, &stderr_buffer);
+    try testing.expectEqual(ExitCode.ok, human.code);
+    try testing.expect(!contains(human.stdout, "baseline time:      not timed"));
+    try testing.expect(!contains(human.stdout, "variant time:       not timed"));
 }
