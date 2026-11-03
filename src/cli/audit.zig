@@ -255,7 +255,8 @@ fn reportPlanFailure(err: anyerror, session: *QuerySession, query: cli_batch.Que
         error.Timeout => {
             stderr.writeAll("error: the index audit query '") catch {};
             result_rows.writeEscapedText(stderr, query.label) catch {};
-            stderr.print("' exceeded the time limit of {d} ms\n", .{timeout_ms}) catch {};
+            stderr.print("' exceeded the time limit of {d} ms", .{timeout_ms}) catch {};
+            cli_query.writeSelectTimeoutAdvice(stderr, false);
             return .timeout;
         },
         else => {
@@ -670,4 +671,13 @@ test "the INDEXED BY detector accepts spaces and stays conservative" {
     try testing.expect(mentionsIndexedBy("SELECT * FROM t WHERE b = 'indexed by'"));
     try testing.expect(!mentionsIndexedBy("SELECT * FROM t -- unindexed by the planner"));
     try testing.expect(!mentionsIndexedBy("SELECT * FROM indexed_by"));
+}
+
+test "the audit query timeout names the way past the limit" {
+    var buffer: [256]u8 = undefined;
+    var stderr = Io.Writer.fixed(&buffer);
+    var session: QuerySession = .{};
+    const query: cli_batch.Query = .{ .label = "q/a.sql", .path = "q", .sql = "SELECT 1", .binds = &.{} };
+    try testing.expectEqual(ExitCode.timeout, reportPlanFailure(error.Timeout, &session, query, 1, &stderr));
+    try testing.expectEqualStrings("error: the index audit query 'q/a.sql' exceeded the time limit of 1 ms; raise --timeout-ms, or use --timeout-ms 0 to wait for the SELECT\n", stderr.buffered());
 }

@@ -320,7 +320,7 @@ test "a timed run over the time limit names the copy and the run" {
     const sql = "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 20000000) SELECT count(*) FROM c";
     try testing.expect(!try timeFixture(&fixture, sql, 1, &.{}, null, &stderr, &failure));
     try testing.expectEqual(cli_control.ExitCode.timeout, failure);
-    try testing.expectEqualStrings("error: --select exceeded the time limit of 1 ms on the baseline (timed run 1)\n", stderr.buffered());
+    try testing.expectEqualStrings("error: --select exceeded the time limit of 1 ms on the baseline (timed run 1); raise --timeout-ms, or use --timeout-ms 0 to wait for the SELECT, or use --runs 0 to skip the timing\n", stderr.buffered());
 }
 
 test "median interval needs six observations and reports conservative coverage" {

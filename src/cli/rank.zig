@@ -231,7 +231,8 @@ fn reportCaptured(stderr: *Io.Writer, prefix: []const u8, captured: []const u8) 
 fn rankTimeout(stderr: *Io.Writer, label: []const u8, timeout_ms: u64) ExitCode {
     stderr.writeAll("error: the rank query '") catch {};
     result_rows.writeEscapedText(stderr, label) catch {};
-    stderr.print("' exceeded the time limit of {d} ms\n", .{timeout_ms}) catch {};
+    stderr.print("' exceeded the time limit of {d} ms", .{timeout_ms}) catch {};
+    cli_query.writeSelectTimeoutAdvice(stderr, false);
     return .timeout;
 }
 
@@ -439,6 +440,13 @@ fn reportWriteFailure(err: anyerror, stderr: *Io.Writer) ExitCode {
             return .rejected;
         },
     };
+}
+
+test "the rank timeout names the way past the limit" {
+    var buffer: [256]u8 = undefined;
+    var stderr = Io.Writer.fixed(&buffer);
+    try std.testing.expectEqual(ExitCode.timeout, rankTimeout(&stderr, "q.sql", 1));
+    try std.testing.expectEqualStrings("error: the rank query 'q.sql' exceeded the time limit of 1 ms; raise --timeout-ms, or use --timeout-ms 0 to wait for the SELECT\n", stderr.buffered());
 }
 
 test {

@@ -3878,6 +3878,7 @@ test "a batch baseline timeout stops before the candidate loop" {
     try testing.expectEqual(ExitCode.timeout, result.code);
     try testing.expectEqualStrings("", result.stdout);
     try expectJsonFailure(result.stderr, "batch_baseline_timeout", 124);
+    try testing.expect(contains(result.stderr, "exceeded the time limit of 1 ms; raise --timeout-ms, or use --timeout-ms 0 to wait for the SELECT"));
     try fixture.expectNoLeftovers();
 }
 
