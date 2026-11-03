@@ -48,6 +48,8 @@ APPROVED_FILES = [
     "src/cli/recommend.zig",
     "src/cli/sql_input.zig",
     "src/cli/sql_input_tests.zig",
+    "src/cli/sql_warnings.zig",
+    "src/cli/sql_warnings_tests.zig",
     "src/cli/seed.zig",
     "src/cli/scale.zig",
     "src/cli/scale_tests.zig",
@@ -61,6 +63,10 @@ APPROVED_FILES = [
     "src/cli/record_tests.zig",
     "src/contract/values.zig",
     "src/sql/lexer.zig",
+    "src/sql/lint.zig",
+    "src/sql/lint_expr.zig",
+    "src/sql/lint_model.zig",
+    "src/sql/lint_tests.zig",
     "src/sql/shape.zig",
     "src/skill/diff.zig",
     "src/skill/skill.zig",
@@ -84,6 +90,8 @@ TEST_FILES = [
     "src/cli/rank_tests.zig",
     "src/cli/scale_tests.zig",
     "src/cli/sql_input_tests.zig",
+    "src/cli/sql_warnings_tests.zig",
+    "src/sql/lint_tests.zig",
 ]
 
 PRODUCTION_FILES = [path for path in APPROVED_FILES if path not in TEST_FILES]
@@ -99,6 +107,7 @@ PRODUCTION_IMPORTS = {
         "src/cli.zig",
         "src/contract/values.zig",
         "src/sql/lexer.zig",
+        "src/sql/lint.zig",
     ],
     "src/main.zig": [],
     "src/cli.zig": [
@@ -126,7 +135,7 @@ PRODUCTION_IMPORTS = {
         "src/cli/sql_input.zig",
         "src/d1/migrations.zig",
     ],
-    "src/cli/args.zig": ["src/db.zig", "src/sql/lexer.zig", "src/cli/usage_text.zig"],
+    "src/cli/args.zig": ["src/db.zig", "src/sql/lexer.zig", "src/sql/lint.zig", "src/cli/usage_text.zig"],
     "src/cli/control.zig": ["src/contract/values.zig"],
     "src/cli/d1.zig": ["src/d1/config.zig", "src/cli/d1_tests.zig"],
     "src/cli/comparison.zig": ["src/db.zig", "src/result.zig", "src/contract/values.zig"],
@@ -222,6 +231,7 @@ PRODUCTION_IMPORTS = {
         "src/cli/workspace.zig",
         "src/cli/write_runner.zig",
         "src/cli/warnings.zig",
+        "src/cli/sql_warnings.zig",
     ],
     "src/cli/audit.zig": [
         "src/db.zig",
@@ -332,6 +342,13 @@ PRODUCTION_IMPORTS = {
         "src/cli/args.zig",
         "src/cli/sql_input_tests.zig",
     ],
+    "src/cli/sql_warnings.zig": [
+        "src/db.zig",
+        "src/sql/lint.zig",
+        "src/cli/warnings.zig",
+        "src/cli/sql_warnings_tests.zig",
+        "src/report/model.zig",
+    ],
     "src/cli/recommend.zig": [
         "src/db.zig",
         "src/cli/batch_report.zig",
@@ -390,6 +407,20 @@ PRODUCTION_IMPORTS = {
     "src/d1/config.zig": [],
     "src/d1/migrations.zig": ["src/sqlite.zig"],
     "src/sql/lexer.zig": [],
+    "src/sql/lint.zig": [
+        "src/sql/lexer.zig",
+        "src/contract/values.zig",
+        "src/sql/lint_model.zig",
+        "src/sql/lint_expr.zig",
+        "src/sql/lint_tests.zig",
+    ],
+    "src/sql/lint_expr.zig": [
+        "src/contract/values.zig",
+        "src/sql/lint_model.zig",
+    ],
+    "src/sql/lint_model.zig": [
+        "src/sql/lexer.zig",
+    ],
     "src/sql/shape.zig": ["src/sql/lexer.zig"],
 }
 
@@ -486,6 +517,18 @@ TEST_IMPORTS = {
     "src/cli/sql_input_tests.zig": [
         "src/db.zig",
         "src/cli.zig",
+    ],
+    "src/cli/sql_warnings_tests.zig": [
+        "src/cli.zig",
+        "src/contract/values.zig",
+        "src/db.zig",
+        "src/report/model.zig",
+        "src/sql/lint.zig",
+        "src/cli/sql_warnings.zig",
+    ],
+    "src/sql/lint_tests.zig": [
+        "src/contract/values.zig",
+        "src/sql/lint.zig",
     ],
     "src/cli/scale_tests.zig": [
         "src/db.zig",
@@ -607,6 +650,9 @@ CONTRACT_VALUES = [
     "data_too_small_scale_message",
     "data_too_small_full_scan",
     "data_too_small_suggested",
+    "sql_warning_codes",
+    "sql_warning_messages",
+    "sql_warning_severity",
 ]
 
 CONTRACT_ALIASES = ["ExitCode"]
@@ -635,6 +681,13 @@ CONTRACT_CODES = [
     "batch_write_timeout",
     "no_index_needed",
     "sqlite_toobig",
+    "function_on_column",
+    "leading_wildcard_like",
+    "or_across_columns",
+    "large_offset",
+    "order_by_random",
+    "select_star",
+    "usage_sql_warning",
 ]
 
 IMPORT_CANDIDATE = re.compile(r"@import\b")

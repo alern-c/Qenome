@@ -8,6 +8,7 @@ pub const cli = @import("cli.zig");
 test {
     _ = @import("contract/values.zig");
     _ = @import("sql/lexer.zig");
+    _ = @import("sql/lint.zig");
     _ = @import("sqlite.zig");
     _ = @import("db.zig");
     _ = @import("result.zig");

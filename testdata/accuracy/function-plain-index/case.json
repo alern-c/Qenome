@@ -19,6 +19,12 @@
       ]
     },
     "rows_read": "same",
-    "rows_written": "same"
+    "rows_written": "same",
+    "human": {
+      "contains": [
+        "SQL warnings",
+        "function_on_column"
+      ]
+    }
   }
 }

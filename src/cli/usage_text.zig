@@ -119,6 +119,15 @@ pub const body =
     \\                       returned, in human, kv and json. Without it,
     \\                       only the counts are printed, so row values stay
     \\                       out of logs. Human says to rerun with this flag
+    \\  --no-sql-warnings    turn the SQL warnings off. The single comparison
+    \\                       reports them in human, kv and json; --batch and
+    \\                       --suggest do not report them yet. A warning
+    \\                       never changes the verdict or the exit status
+    \\  --ignore-sql-warning <CODE>
+    \\                       turn one SQL warning code off; repeatable. CODE
+    \\                       is function_on_column, leading_wildcard_like,
+    \\                       or_across_columns, large_offset, order_by_random,
+    \\                       or select_star
     \\  --version            print the version and exit with status 0
     \\  --help, -h           print this message and exit with status 0
     \\

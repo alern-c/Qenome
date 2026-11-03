@@ -368,6 +368,8 @@ fn runCaptured(
             .work_parent = parent_path,
             .show_binds = args.show_binds,
             .show_rows = args.show_rows,
+            .sql_warnings = args.sql_warnings,
+            .ignore_sql_warnings = args.ignore_sql_warnings,
             .format = args.format,
             .seed = seed_report,
         };
@@ -394,6 +396,8 @@ const Inputs = struct {
     work_parent: []const u8,
     show_binds: bool = false,
     show_rows: bool = false,
+    sql_warnings: bool = true,
+    ignore_sql_warnings: []const []const u8 = &.{},
     format: cli_args.Format = .human,
     seed: ?report_model.Seed = null,
     progress_interval_ns: u64 = std.time.ns_per_s,
@@ -439,6 +443,8 @@ fn runChecked(
         .work_parent = inputs.work_parent,
         .show_binds = inputs.show_binds,
         .show_rows = inputs.show_rows,
+        .sql_warnings = inputs.sql_warnings,
+        .ignore_sql_warnings = inputs.ignore_sql_warnings,
         .progress_interval_ns = inputs.progress_interval_ns,
     }, &rows, stderr, cleanup_failed, work)) {
         .computed => |value| value,

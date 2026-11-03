@@ -165,3 +165,36 @@ test "the summary keeps its block order without a database" {
         from = at + key.len;
     }
 }
+
+test "the kv summary writes one sql-warning line per finding" {
+    var buffer: [16384]u8 = undefined;
+    var stdout = Io.Writer.fixed(&buffer);
+    const header: Header = .{
+        .database_path = "db.sqlite",
+        .select_path = "select.sql",
+        .index_path = "index.sql",
+        .work_parent = "/tmp",
+        .sqlite_version = "0.0.0",
+        .sqlite_source_id = "test-source-id",
+        .qenome_version = "0.0.0",
+        .binds = &.{},
+        .show_binds = false,
+    };
+    const measurement: model.Measurement = .{
+        .rows = 1,
+        .plan = .{ .rows = @constCast(&scan_line) },
+        .counters = .{ .rows_read = 1, .rows_written = 0, .fullscan_steps = 0, .vm_steps = 2, .sort_ops = 0, .autoindex_rows = 0 },
+        .columns = 1,
+    };
+    const comparison: result.Comparison = .{ .matched = true, .same_order = true };
+    const outcome: model.Outcome = .{ .verdict = .match, .comparison = comparison };
+    const sql_warnings = [_]model.SqlWarning{
+        .{ .code = "function_on_column", .severity = "warning", .message = "A function on a column stops an index.", .line = 3, .column = 7, .plan_checked = true },
+    };
+    const report: Report = .{ .judgement = .{ .verdict = .no_effect }, .sql_warnings = &sql_warnings };
+    try writeSummary(&stdout, testing.allocator, header, measurement, measurement, outcome, report);
+    try testing.expect(std.mem.indexOf(u8, stdout.buffered(), "sql-warning: function_on_column warning select.sql:3:7 A function on a column stops an index.\n") != null);
+    const warning_at = std.mem.indexOf(u8, stdout.buffered(), "sql-warning:") orelse return error.TestUnexpectedResult;
+    const verdict_at = std.mem.indexOf(u8, stdout.buffered(), "verdict:") orelse return error.TestUnexpectedResult;
+    try testing.expect(warning_at < verdict_at);
+}

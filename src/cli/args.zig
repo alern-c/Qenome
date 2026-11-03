@@ -1,5 +1,6 @@
 const std = @import("std");
 const sql_lexer = @import("../sql/lexer.zig");
+const sql_lint = @import("../sql/lint.zig");
 const Io = std.Io;
 const db = @import("../db.zig");
 const build_options = @import("build_options");
@@ -78,6 +79,8 @@ pub const Args = struct {
     runs_given: bool = false,
     show_binds: bool = false,
     show_rows: bool = false,
+    sql_warnings: bool = true,
+    ignore_sql_warnings: []const []const u8 = &.{},
     format: Format = .human,
     n_plus_one_threshold: u32 = default_n_plus_one_threshold,
     n_plus_one_threshold_given: bool = false,
@@ -102,6 +105,7 @@ pub const ParseError = error{
     InvalidFormat,
     InvalidNPlusOneThreshold,
     InvalidScale,
+    InvalidSqlWarningCode,
     ScaleConflict,
     ScaleRequiresSeedData,
     ConflictingDatabase,
@@ -188,6 +192,8 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
 
     var binds: std.ArrayList(db.BindArg) = .empty;
     errdefer binds.deinit(allocator);
+    var ignored_sql_warnings: std.ArrayList([]const u8) = .empty;
+    errdefer ignored_sql_warnings.deinit(allocator);
 
     var positional_only = false;
     var index: usize = 1;
@@ -266,6 +272,13 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
         } else if (std.mem.eql(u8, name, "--show-rows")) {
             if (inline_value != null) return error.UnexpectedValue;
             args.show_rows = true;
+        } else if (std.mem.eql(u8, name, "--no-sql-warnings")) {
+            if (inline_value != null) return error.UnexpectedValue;
+            args.sql_warnings = false;
+        } else if (std.mem.eql(u8, name, "--ignore-sql-warning")) {
+            const raw = try optionValue(argv, &index, inline_value);
+            if (!sql_lint.isCode(raw)) return error.InvalidSqlWarningCode;
+            try ignored_sql_warnings.append(allocator, raw);
         } else if (std.mem.eql(u8, name, "--suggest")) {
             if (inline_value != null) return error.UnexpectedValue;
             args.suggest = true;
@@ -333,6 +346,8 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
             .{ .name = "--timeout-ms", .present = args.timeout_ms != default_timeout_ms },
             .{ .name = "--show-binds", .present = args.show_binds },
             .{ .name = "--show-rows", .present = args.show_rows },
+            .{ .name = "--no-sql-warnings", .present = !args.sql_warnings },
+            .{ .name = "--ignore-sql-warning", .present = ignored_sql_warnings.items.len != 0 },
             .{ .name = "--suggest", .present = args.suggest },
             .{ .name = "--audit-indexes", .present = args.audit_indexes },
             .{ .name = "--rank", .present = args.rank },
@@ -480,6 +495,7 @@ pub fn parseArgsReporting(allocator: std.mem.Allocator, argv: []const [:0]const 
         }
     }
     args.binds = try binds.toOwnedSlice(allocator);
+    if (ignored_sql_warnings.items.len != 0) args.ignore_sql_warnings = try ignored_sql_warnings.toOwnedSlice(allocator);
     return args;
 }
 
@@ -601,6 +617,8 @@ const long_options = [_][]const u8{
     "--timeout-ms",
     "--show-binds",
     "--show-rows",
+    "--no-sql-warnings",
+    "--ignore-sql-warning",
     "--suggest",
     "--audit-indexes",
     "--rank",
@@ -815,6 +833,7 @@ fn parseErrorMessageForMode(err: ParseError) []const u8 {
         error.InvalidRuns => std.fmt.comptimePrint("--runs expects an integer from 0 to {d}", .{max_runs}),
         error.InvalidFormat => "--format expects human, kv or json",
         error.InvalidScale => "--scale expects 2 to 6 strictly increasing row counts, for example --scale 1000,10000 (see --help)",
+        error.InvalidSqlWarningCode => "--ignore-sql-warning expects a SQL warning code from --help (see --help)",
         error.ScaleConflict => "--scale takes only its row counts; remove --batch, --suggest, --migration, --audit-indexes, --rank, --record, or --format kv (see --help)",
         error.ScaleRequiresSeedData => "--scale needs --seed-data (see --help)",
         error.ConflictingDatabase => "use either --db <PATH> or --d1 <BINDING>, not both (see --help)",
@@ -1302,6 +1321,8 @@ test "every known long option is accepted by the parser" {
         &.{ "Qenome", "--timeout-ms", "1" },
         &.{ "Qenome", "--show-binds" },
         &.{ "Qenome", "--show-rows" },
+        &.{ "Qenome", "--no-sql-warnings" },
+        &.{ "Qenome", "--ignore-sql-warning", "select_star" },
         &.{ "Qenome", "--suggest" },
         &.{ "Qenome", "--runs", "1" },
         &.{ "Qenome", "--format", "kv" },
@@ -1326,6 +1347,7 @@ test "every known long option is accepted by the parser" {
     for (cases) |argv| {
         const args = try parseArgs(testing.allocator, argv);
         testing.allocator.free(args.binds);
+        testing.allocator.free(args.ignore_sql_warnings);
     }
 }
 

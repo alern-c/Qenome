@@ -492,3 +492,71 @@ test "small data is named in the summary with the scale command" {
     try testing.expect(std.mem.indexOf(u8, summary, "warning:") == null);
     try testing.expect(std.mem.indexOf(u8, output, "warning: data_too_small: ") != null);
 }
+
+test "the human summary adds the SQL warnings after the warnings" {
+    var buffer: [16384]u8 = undefined;
+    var stdout = Io.Writer.fixed(&buffer);
+    const header: Header = .{
+        .database_path = "app.db",
+        .select_path = "select.sql",
+        .index_path = "index.sql",
+        .work_parent = "/tmp",
+        .sqlite_version = "0.0.0",
+        .sqlite_source_id = "test-source-id",
+        .qenome_version = "0.0.0",
+        .binds = &.{},
+        .show_binds = false,
+    };
+    const measurement: model.Measurement = .{
+        .rows = 1,
+        .plan = .{ .rows = @constCast(&scan_line) },
+        .counters = .{ .rows_read = 12, .rows_written = 0, .fullscan_steps = 12, .vm_steps = 20, .sort_ops = 0, .autoindex_rows = 0 },
+        .columns = 1,
+    };
+    const comparison: result.Comparison = .{ .matched = true, .same_order = true };
+    const outcome: model.Outcome = .{ .verdict = .match, .comparison = comparison };
+    const sql_warnings = [_]model.SqlWarning{
+        .{ .code = "leading_wildcard_like", .severity = "warning", .message = "A LIKE pattern cannot use an index.", .line = 3, .column = 15, .plan_checked = false },
+        .{ .code = "select_star", .severity = "info", .message = "SELECT * reads every column.", .line = 4, .column = 8, .plan_checked = false },
+    };
+    const report: Report = .{
+        .judgement = .{ .verdict = .no_effect },
+        .warnings = .{ .no_analyze_stats = true },
+        .sql_warnings = &sql_warnings,
+    };
+    try writeHumanSummary(&stdout, testing.allocator, header, measurement, measurement, outcome, report);
+    const output = stdout.buffered();
+    const warnings_at = std.mem.indexOf(u8, output, "\nWarnings\n") orelse return error.TestUnexpectedResult;
+    const sql_at = std.mem.indexOf(u8, output, "\nSQL warnings\n") orelse return error.TestUnexpectedResult;
+    try testing.expect(warnings_at < sql_at);
+    try testing.expect(std.mem.indexOf(u8, output, "select.sql:3:15: warning: leading_wildcard_like:") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "select.sql:4:8: info: select_star:") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "plan checked") == null);
+}
+
+test "the human summary keeps the SQL warnings out when there are none" {
+    var buffer: [8192]u8 = undefined;
+    var stdout = Io.Writer.fixed(&buffer);
+    const header: Header = .{
+        .database_path = "app.db",
+        .select_path = "select.sql",
+        .index_path = "index.sql",
+        .work_parent = "/tmp",
+        .sqlite_version = "0.0.0",
+        .sqlite_source_id = "test-source-id",
+        .qenome_version = "0.0.0",
+        .binds = &.{},
+        .show_binds = false,
+    };
+    const measurement: model.Measurement = .{
+        .rows = 1,
+        .plan = .{ .rows = @constCast(&scan_line) },
+        .counters = .{ .rows_read = 1, .rows_written = 0, .fullscan_steps = 0, .vm_steps = 2, .sort_ops = 0, .autoindex_rows = 0 },
+        .columns = 1,
+    };
+    const comparison: result.Comparison = .{ .matched = true, .same_order = true };
+    const outcome: model.Outcome = .{ .verdict = .match, .comparison = comparison };
+    const report: Report = .{ .judgement = .{ .verdict = .no_effect } };
+    try writeHumanSummary(&stdout, testing.allocator, header, measurement, measurement, outcome, report);
+    try testing.expect(std.mem.indexOf(u8, stdout.buffered(), "SQL warnings") == null);
+}

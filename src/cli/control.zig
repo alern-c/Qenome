@@ -111,6 +111,9 @@ pub fn classifyError(message: []const u8) ErrorClass {
     if (std.mem.startsWith(u8, message, "--scale")) {
         return .{ .code = contract.code.usage_scale, .hint = "Use --scale with --seed-data and 2 to 6 strictly increasing row counts, for example --scale 1000,10000. Remove --batch, --suggest, --migration, --audit-indexes, --rank, --record, or --format kv." };
     }
+    if (std.mem.startsWith(u8, message, "--ignore-sql-warning")) {
+        return .{ .code = contract.code.usage_sql_warning, .hint = "Use a SQL warning code from --help, one of function_on_column, leading_wildcard_like, or_across_columns, large_offset, order_by_random, or select_star." };
+    }
     if (std.mem.startsWith(u8, message, "--n-plus-one-threshold expects")) {
         return .{ .code = "usage_n_plus_one_threshold", .hint = "Use 0 to turn the report off, or an integer from 2 to 1000000." };
     }

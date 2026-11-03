@@ -53,6 +53,7 @@
       "message": "The candidate index table has no non-empty sqlite_stat1 entry. Test an ANALYZE'd copy with representative data; this check does not run ANALYZE."
     }
   ],
+  "sql_warnings": [],
   "size_bytes": {
     "baseline": 5087232,
     "variant": 7258112,

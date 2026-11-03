@@ -51,6 +51,36 @@ pub const code = struct {
     pub const batch_write_timeout = "batch_write_timeout";
     pub const no_index_needed = "no_index_needed";
     pub const sqlite_toobig = "sqlite_toobig";
+    pub const function_on_column = "function_on_column";
+    pub const leading_wildcard_like = "leading_wildcard_like";
+    pub const or_across_columns = "or_across_columns";
+    pub const large_offset = "large_offset";
+    pub const order_by_random = "order_by_random";
+    pub const select_star = "select_star";
+    pub const usage_sql_warning = "usage_sql_warning";
+};
+
+pub const sql_warning_severity = struct {
+    pub const warning = "warning";
+    pub const info = "info";
+};
+
+pub const sql_warning_codes = [_][]const u8{
+    code.function_on_column,
+    code.leading_wildcard_like,
+    code.or_across_columns,
+    code.large_offset,
+    code.order_by_random,
+    code.select_star,
+};
+
+pub const sql_warning_messages = struct {
+    pub const function_on_column = "A function or arithmetic on a column in a comparison stops SQLite from using an index on that column. Compare the plain column, or add an expression index for this expression.";
+    pub const leading_wildcard_like = "A LIKE or GLOB pattern that starts with a wildcard cannot use an index. Put a fixed prefix first, or compare the column another way.";
+    pub const or_across_columns = "The OR compares different columns, so one index cannot serve every branch. Split it into separate queries, or add an index for each column.";
+    pub const large_offset = "A large OFFSET reads and discards every skipped row. Page with WHERE id > ? ORDER BY id LIMIT ? instead.";
+    pub const order_by_random = "ORDER BY random() reads and sorts the whole result. Order by a column instead, or pick the random rows another way.";
+    pub const select_star = "SELECT * reads every column, so a covering index cannot serve the query. List the columns you use.";
 };
 
 pub const warning_codes = [_][]const u8{ code.no_analyze_stats, code.data_too_small };

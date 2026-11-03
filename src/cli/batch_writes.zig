@@ -491,7 +491,7 @@ fn compareVariantOnly(
 
     const header = makeHeader(write, candidate, context, 0);
     var rendered: Io.Writer.Allocating = .init(child);
-    report_json.writeJsonVariantOnlyTo(&rendered.writer, child, header, after, report, .minified) catch return .{ .failed = outOfMemoryCode(stderr) };
+    report_json.writeJsonVariantOnlyTo(&rendered.writer, child, header, after, report, .{ .style = .minified, .sql_warnings = false }) catch return .{ .failed = outOfMemoryCode(stderr) };
 
     entry.baseline_missing = true;
     entry.judgement = .not_judged;
@@ -521,7 +521,7 @@ fn renderComparison(
     final_report.warnings.bind_dependent_partial_index = variant.runner.database.findBindDependentPartialIndex(child, after.plan, write.sql, write.binds, control) catch null;
     const header = makeHeader(write, candidate, context, cli_comparison.comparisonExitCode(outcome.verdict));
     var rendered: Io.Writer.Allocating = .init(child);
-    report_json.writeJsonTo(&rendered.writer, child, header, before, after, outcome, final_report, .minified) catch return .{ .failed = outOfMemoryCode(stderr) };
+    report_json.writeJsonTo(&rendered.writer, child, header, before, after, outcome, final_report, .{ .style = .minified, .sql_warnings = false }) catch return .{ .failed = outOfMemoryCode(stderr) };
     entry.outcome = outcome.verdict;
     entry.judgement = final_report.judgement.verdict;
     entry.comparison = arena.dupe(u8, rendered.written()) catch return .{ .failed = outOfMemoryCode(stderr) };

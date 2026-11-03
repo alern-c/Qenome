@@ -12,6 +12,7 @@ const cli_timing = @import("timing.zig");
 const cli_workspace = @import("workspace.zig");
 const cli_write_runner = @import("write_runner.zig");
 const cli_warnings = @import("warnings.zig");
+const cli_sql_warnings = @import("sql_warnings.zig");
 
 const measure = cli_query.measure;
 const decide = cli_comparison.decide;
@@ -41,6 +42,8 @@ pub const Inputs = struct {
     show_binds: bool = false,
     show_rows: bool = false,
     scale_step: bool = false,
+    sql_warnings: bool = true,
+    ignore_sql_warnings: []const []const u8 = &.{},
     progress_interval_ns: u64 = std.time.ns_per_s,
 };
 
@@ -159,6 +162,10 @@ pub fn compute(
         return .{ .failed = .rejected };
     };
     report.warnings.bind_dependent_partial_index = variant.database.findBindDependentPartialIndex(arena, after.plan, inputs.select_sql, inputs.binds, &control) catch null;
+    attachSqlWarnings(arena, &report, inputs, inputs.select_sql, before.plan) catch {
+        stderr.writeAll("error: out of memory\n") catch {};
+        return .{ .failed = .rejected };
+    };
     report.sizes = .{
         .baseline = fileSize(io, inputs.baseline_path, .baseline, stderr) orelse return .{ .failed = .rejected },
         .variant = fileSize(io, inputs.variant_path, .variant, stderr) orelse return .{ .failed = .rejected },
@@ -458,6 +465,10 @@ fn computeWrite(
         tryWriteWarnings(arena, &report, &baseline, candidate_table, before_plan, inputs, &control) catch |err| {
             return .{ .failed = writeDiagnosticFailure(err, &baseline, &control, stderr) };
         };
+        attachSqlWarnings(arena, &report, inputs, write_sql, before_plan) catch {
+            stderr.writeAll("error: out of memory\n") catch {};
+            return .{ .failed = .rejected };
+        };
         return .{ .computed = .{ .before = before, .after = after, .outcome = outcome, .report = report } };
     }
 
@@ -499,6 +510,10 @@ fn computeWrite(
 
     tryWriteWarnings(arena, &report, &baseline, candidate_table, before.plan, inputs, &control) catch |err| {
         return .{ .failed = writeDiagnosticFailure(err, &baseline, &control, stderr) };
+    };
+    attachSqlWarnings(arena, &report, inputs, write_sql, before.plan) catch {
+        stderr.writeAll("error: out of memory\n") catch {};
+        return .{ .failed = .rejected };
     };
 
     if (signalPending()) return .{ .failed = reportInterrupted(stderr) };
@@ -574,4 +589,20 @@ fn writeDiagnosticFailure(err: anyerror, session: *WriteSession, control: *db.St
         },
         else => reportWriteStepFailure(error.StepFailed, session, control.timeout_ms, .baseline, null, stderr),
     };
+}
+
+fn attachSqlWarnings(
+    arena: std.mem.Allocator,
+    report: *report_model.Report,
+    inputs: Inputs,
+    sql: []const u8,
+    plan: db.Plan,
+) std.mem.Allocator.Error!void {
+    if (!inputs.sql_warnings or inputs.scale_step) return;
+    report.sql_warnings = try cli_sql_warnings.collect(arena, .{
+        .sql = sql,
+        .plan = plan,
+        .binds = inputs.binds,
+        .ignored = inputs.ignore_sql_warnings,
+    });
 }
