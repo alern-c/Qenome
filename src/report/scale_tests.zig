@@ -207,6 +207,27 @@ test "a ratio below the shown precision is written as a bound instead of zero" {
     try testing.expect(std.mem.indexOf(u8, output, "2<0.0001x") == null);
 }
 
+test "a variant that reads no rows is written as zero" {
+    var steps = [_]model.ScaleStep{
+        step(1000, .{ .verdict = .improved }, .match, .{}),
+        step(10000, .{ .verdict = .improved }, .match, .{}),
+    };
+    steps[1].after = measurement(10000, 0, 0, &search_line);
+    const report: model.ScaleReport = .{
+        .header = header(null),
+        .seed_path = "seed.json",
+        .scale = &.{ 1000, 10000 },
+        .steps = &steps,
+    };
+    var buffer: [8192]u8 = undefined;
+    const output = try render(report, &buffer);
+
+    try testing.expect(std.mem.indexOf(u8, output, "0x  improved") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "0.0000x") == null);
+    try testing.expect(std.mem.indexOf(u8, output, "<0.0001x") == null);
+    try expectStepsAligned(output);
+}
+
 fn expectStepsAligned(output: []const u8) !void {
     var lines = std.mem.splitScalar(u8, output, '\n');
     var in_steps = false;

@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- The `--scale` `ratio` column writes a variant / baseline ratio below `0.0001` as `<0.0001x` instead of `0.0000x`, which read as if the variant read no rows: a lookup index over 100,000 rows with a variant that reads 2 rows printed `0.0000x`. The column is one character wider so the bound stays clear of the `variant read` count, and a step where the variant reads no rows is `<0.0001x` too. The verdicts, the counters, the exit status, and the JSON report are unchanged. `docs/usage.md` and `docs/ja/usage.md` describe the bound.
+- The `--scale` `ratio` column writes a variant / baseline ratio below `0.0001` as `<0.0001x` instead of `0.0000x`, which read as if the variant read no rows: a lookup index over 100,000 rows with a variant that reads 2 rows printed `0.0000x`. The column is one character wider so the bound stays clear of the `variant read` count, and a variant that reads no rows is `0x`. The verdicts, the counters, the exit status, and the JSON report are unchanged. `docs/usage.md` and `docs/ja/usage.md` describe the bound.
 
 ## [0.4.2] - 2026-11-02
 

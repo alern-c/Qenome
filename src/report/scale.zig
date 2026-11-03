@@ -78,6 +78,7 @@ fn cell(writer: *Io.Writer, baseline: u64, variant: u64, separator: []const u8) 
 
 fn writeRatio(writer: *Io.Writer, baseline: u64, variant: u64) Io.Writer.Error!void {
     if (baseline == 0) return writer.writeAll("n/a");
+    if (variant == 0) return writer.writeAll("0x");
     const ratio = @as(f64, @floatFromInt(variant)) / @as(f64, @floatFromInt(baseline));
     if (ratio >= 1) return writer.print("{d:.2}x", .{ratio});
     if (ratio >= 0.1) return writer.print("{d:.3}x", .{ratio});
