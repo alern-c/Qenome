@@ -81,13 +81,14 @@ fn writeRatio(writer: *Io.Writer, baseline: u64, variant: u64) Io.Writer.Error!v
     const ratio = @as(f64, @floatFromInt(variant)) / @as(f64, @floatFromInt(baseline));
     if (ratio >= 1) return writer.print("{d:.2}x", .{ratio});
     if (ratio >= 0.1) return writer.print("{d:.3}x", .{ratio});
-    return writer.print("{d:.4}x", .{ratio});
+    if (ratio >= 0.0001) return writer.print("{d:.4}x", .{ratio});
+    return writer.writeAll("<0.0001x");
 }
 
 fn writeTable(stdout: *Io.Writer, report: Report) Io.Writer.Error!void {
     const write = report.header.write_path != null;
     try stdout.writeAll("\nSteps\n");
-    try stdout.print("  {s:>12}{s:>14}{s:>13}{s:>8}", .{ "rows", "baseline read", "variant read", "ratio" });
+    try stdout.print("  {s:>12}{s:>14}{s:>13}{s:>9}", .{ "rows", "baseline read", "variant read", "ratio" });
     if (write) try stdout.print("{s:>16}", .{"written"});
     try stdout.print("  {s:<12}{s:<13}{s:<8}{s}\n", .{ "verdict", "result", "plan", "median" });
 
@@ -103,7 +104,7 @@ fn writeTable(stdout: *Io.Writer, report: Report) Io.Writer.Error!void {
         try writeCount(&variant_text, step.after.counters.rows_read);
         try writeRatio(&ratio_text, step.before.counters.rows_read, step.after.counters.rows_read);
         if (write) try cell(&written_text, step.before.counters.rows_written, step.after.counters.rows_written, " -> ");
-        try stdout.print("  {s:>12}{s:>14}{s:>13}{s:>8}", .{
+        try stdout.print("  {s:>12}{s:>14}{s:>13}{s:>9}", .{
             rows_text.buffered(),
             baseline_text.buffered(),
             variant_text.buffered(),

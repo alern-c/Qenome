@@ -145,9 +145,9 @@ sqlite: 3.53.4
 work-dir-parent: <work-dir-parent>
 
 Steps
-          rows baseline read variant read   ratio  verdict     result       plan    median
-         1,000         1,000            2 0.0020x  improved    match        changed -
-        10,000        10,000            2 0.0002x  improved    match        changed -
+          rows baseline read variant read    ratio  verdict     result       plan    median
+         1,000         1,000            2  0.0020x  improved    match        changed -
+        10,000        10,000            2  0.0002x  improved    match        changed -
 
 Trend
   baseline rows read: linear (exponents 1.000)
@@ -163,7 +163,7 @@ note: the rows and the trend come from generated data measured on this machine; 
 are not production D1 billing.
 ```
 
-Each step copies the original database into a new sandbox, seeds that copy, builds the candidate index on the variant, runs the existing comparison, and removes the copies before the next step. The table has one row per step: the rows, the rows read on both copies, the variant / baseline ratio, the rows written with `--write`, the verdict, the result, whether the plan changed, and the median times when `--runs` is not `0`. With `--show-binds`, the header also lists the bind values; with `--show-rows`, a step whose result is not `match` lists the example rows that only one copy returned. A warning is printed only where it differs between the steps, such as `data_too_small` at the smallest one. When the verdict changes between steps, one line says so, for example `The verdict changes between 1,000 and 10,000 rows.`
+Each step copies the original database into a new sandbox, seeds that copy, builds the candidate index on the variant, runs the existing comparison, and removes the copies before the next step. The table has one row per step: the rows, the rows read on both copies, the variant / baseline ratio, the rows written with `--write`, the verdict, the result, whether the plan changed, and the median times when `--runs` is not `0`. The ratio keeps at most four decimals. A ratio below `0.0001`, including one where the variant reads no rows, is written `<0.0001x` rather than `0.0000x`, so a small share never reads as if the variant read nothing. With `--show-binds`, the header also lists the bind values; with `--show-rows`, a step whose result is not `match` lists the example rows that only one copy returned. A warning is printed only where it differs between the steps, such as `data_too_small` at the smallest one. When the verdict changes between steps, one line says so, for example `The verdict changes between 1,000 and 10,000 rows.`
 
 The `Trend` block says how the rows read, and the median time when timed, grow with the data size. For each pair of consecutive steps it computes the exponent `log(later value / earlier value) / log(later rows / earlier rows)` and rounds it to three decimals. Every exponent of a series falls in one band: at most `0.2` is `constant`, at most `0.8` is `sublinear`, at most `1.2` is `linear`, and above `1.2` is `superlinear`. A series is named after a band when every exponent lies in it, so an exponent of `0.5` in every step is `sublinear`; when the exponents span bands, for example because the planner picked another plan, the series is `mixed`. `unknown` means the series cannot be classified: a step whose result is not `match`, a value of `0`, a value at least `2,147,483,648` followed by a smaller one (the 32-bit counter may have wrapped), or fewer than two steps. The `exponents` list is empty for `unknown`. The median times use the same classes, but they come from this machine and move with noise; `--runs 0` prints `not timed` and the JSON time series is `null`.
 

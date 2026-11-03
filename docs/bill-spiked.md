@@ -206,9 +206,9 @@ seed-data: testdata/generated/bill-spiked/seed.json
 sqlite: 3.53.4
 
 Steps
-          rows baseline read variant read   ratio  verdict     result       plan    median
-           100           100            0 0.0000x  improved    match        changed -
-        10,000        10,000            0 0.0000x  improved    match        changed -
+          rows baseline read variant read    ratio  verdict     result       plan    median
+           100           100            0 <0.0001x  improved    match        changed -
+        10,000        10,000            0 <0.0001x  improved    match        changed -
 
 Warnings
   warning at 100 rows: data_too_small: The table "events" has 100 rows, fewer
