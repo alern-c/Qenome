@@ -9,7 +9,6 @@ const report_human = @import("human.zig");
 const report_json = @import("json.zig");
 const scale_trend = @import("scale_trend.zig");
 
-const Verdict = model.Verdict;
 const Warnings = model.Warnings;
 const Step = model.ScaleStep;
 const Report = model.ScaleReport;
@@ -61,14 +60,6 @@ fn writeInputs(stdout: *Io.Writer, report: Report) Io.Writer.Error!void {
         }
         try stdout.writeByte('\n');
     }
-}
-
-fn resultText(verdict: Verdict) []const u8 {
-    return switch (verdict) {
-        .match => "match",
-        .mismatch => "mismatch",
-        .incomparable => "incomparable",
-    };
 }
 
 fn cell(writer: *Io.Writer, baseline: u64, variant: u64, separator: []const u8) Io.Writer.Error!void {
@@ -124,7 +115,7 @@ fn writeTable(stdout: *Io.Writer, report: Report) Io.Writer.Error!void {
         }
         try stdout.print("  {s:<12}{s:<13}{s:<8}{s}\n", .{
             step.judgement.verdict.text(),
-            resultText(step.result),
+            step.result.text(),
             if (step.plan_changed) "changed" else "same",
             median_text.buffered(),
         });
@@ -380,15 +371,6 @@ pub fn writeHumanScale(stdout: *Io.Writer, allocator: std.mem.Allocator, report:
     try stdout.writeByte('\n');
 }
 
-fn writeJsonEntry(json: *std.json.Stringify, allocator: std.mem.Allocator, entry: Found) Error!void {
-    try json.beginObject();
-    try json.objectField("code");
-    try report_json.writeJsonText(json, allocator, entry.code);
-    try json.objectField("message");
-    try report_json.writeJsonText(json, allocator, entry.text);
-    try json.endObject();
-}
-
 fn writeJsonInputs(json: *std.json.Stringify, allocator: std.mem.Allocator, report: Report) Error!void {
     try json.beginObject();
     try json.objectField("database");
@@ -500,7 +482,7 @@ pub fn writeJsonScale(stdout: *Io.Writer, allocator: std.mem.Allocator, report: 
     if (report.unapplied_migrations) |pending| {
         const message = try cli_warnings.unappliedMigrationsMessage(allocator, pending);
         defer allocator.free(message);
-        try writeJsonEntry(&json, allocator, .{ .code = contract.code.unapplied_migrations, .text = message });
+        try report_json.writeJsonWarningObject(&json, allocator, contract.code.unapplied_migrations, message);
     }
     try json.endArray();
     try json.endObject();

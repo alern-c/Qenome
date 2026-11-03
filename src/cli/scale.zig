@@ -16,6 +16,7 @@ const report_scale = @import("../report/scale.zig");
 
 const ExitCode = cli_control.ExitCode;
 const WorkDir = cli_workspace.WorkDir;
+const outOfMemoryCode = cli_control.outOfMemoryCode;
 
 pub const Inputs = struct {
     database_path: [:0]const u8,
@@ -61,11 +62,6 @@ const Session = struct {
     stderr: *Io.Writer,
     cleanup_failed: *bool,
 };
-
-fn outOfMemory(stderr: *Io.Writer) ExitCode {
-    stderr.writeAll("error: out of memory\n") catch {};
-    return .rejected;
-}
 
 fn reportFailure(stderr: *Io.Writer, err: report_model.Error) ExitCode {
     switch (err) {
@@ -231,7 +227,7 @@ fn comparisonJson(session: *const Session, plan: Plan, computed: cli_pair.Comput
         return null;
     };
     return session.arena.dupe(u8, out.written()) catch {
-        _ = outOfMemory(session.stderr);
+        _ = outOfMemoryCode(session.stderr);
         return null;
     };
 }
@@ -345,11 +341,11 @@ pub fn run(
 ) ExitCode {
     const steps = inputs.scale.steps();
     if (validateSteps(stderr, steps)) |code| return code;
-    const plans = buildPlans(arena, inputs.seed, steps) catch return outOfMemory(stderr);
+    const plans = buildPlans(arena, inputs.seed, steps) catch return outOfMemoryCode(stderr);
     if (validateScaled(stderr, plans)) |code| return code;
 
     const write_path = inputs.write_path;
-    const select_path = write_path orelse inputs.select_path orelse return outOfMemory(stderr);
+    const select_path = write_path orelse inputs.select_path orelse return outOfMemoryCode(stderr);
     var cleanup_failed = false;
     const option: []const u8 = if (write_path != null) "--write" else "--select";
     const select_sql = if (inputs.select_sql) |text| text else readSql(io, arena, stderr, option, select_path) orelse return .rejected;
@@ -367,7 +363,7 @@ pub fn run(
         .cleanup_failed = &cleanup_failed,
     };
 
-    const measured = arena.alloc(report_model.ScaleStep, plans.len) catch return outOfMemory(stderr);
+    const measured = arena.alloc(report_model.ScaleStep, plans.len) catch return outOfMemoryCode(stderr);
     var code: ExitCode = .ok;
     for (plans, 0..) |plan, index| {
         switch (runStep(&session, plan)) {

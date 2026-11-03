@@ -9,12 +9,18 @@ const cli_args = @import("args.zig");
 const cli_batch = @import("batch.zig");
 const cli_control = @import("control.zig");
 const cli_query = @import("query.zig");
+const report_format = @import("../report/format.zig");
 const report_human = @import("../report/human.zig");
 const report_json = @import("../report/json.zig");
 const cli_warnings = @import("warnings.zig");
 
 const ExitCode = cli_control.ExitCode;
 const QuerySession = cli_query.QuerySession;
+const outOfMemoryCode = cli_control.outOfMemoryCode;
+const word = report_format.word;
+const writeCell = report_format.writeCell;
+const prepareQuery = cli_query.prepareQuery;
+const reportCaptured = cli_query.reportCaptured;
 
 const rowid_primary_key_name = "INTEGER PRIMARY KEY";
 
@@ -90,7 +96,7 @@ pub fn run(
     var indexed_by = false;
     for (queries) |query| {
         if (cli_control.signalPending()) return cli_control.reportInterrupted(stderr);
-        if (!prepareQuery(&session, query, stderr)) return .rejected;
+        if (!prepareQuery(&session, query.label, query.sql, query.binds, "error: the index audit query '", stderr)) return .rejected;
         if (mentionsIndexedBy(query.sql)) indexed_by = true;
         const plan = session.database.explainPlanBounded(arena, query.sql, query.binds, &control) catch |err| {
             return reportPlanFailure(err, &session, query, inputs.timeout_ms, stderr);
@@ -214,24 +220,6 @@ fn coveredBy(info: db.IndexInfo, cover: Cover) bool {
     return std.mem.order(u8, info.name, cover.name) == .gt;
 }
 
-fn prepareQuery(session: *QuerySession, query: cli_batch.Query, stderr: *Io.Writer) bool {
-    var capture: [4096]u8 = undefined;
-    var sink = Io.Writer.fixed(&capture);
-    var failure: ExitCode = .rejected;
-    if (session.prepare(query.sql, query.binds, .baseline, "", &sink, &failure)) return true;
-    stderr.writeAll("error: the index audit query '") catch {};
-    result_rows.writeEscapedText(stderr, query.label) catch {};
-    reportCaptured(stderr, "': ", sink.buffered());
-    return false;
-}
-
-fn reportCaptured(stderr: *Io.Writer, prefix: []const u8, captured: []const u8) void {
-    var text = std.mem.trimEnd(u8, captured, "\n");
-    if (std.mem.startsWith(u8, text, "error: ")) text = text["error: ".len..];
-    if (text.len == 0) text = "the input was rejected";
-    stderr.print("{s}{s}\n", .{ prefix, text }) catch {};
-}
-
 fn reportCatalogFailure(err: anyerror, session: *QuerySession, timeout_ms: u64, stderr: *Io.Writer) ExitCode {
     return switch (err) {
         error.OutOfMemory => outOfMemoryCode(stderr),
@@ -255,7 +243,8 @@ fn reportPlanFailure(err: anyerror, session: *QuerySession, query: cli_batch.Que
         error.Timeout => {
             stderr.writeAll("error: the index audit query '") catch {};
             result_rows.writeEscapedText(stderr, query.label) catch {};
-            stderr.print("' exceeded the time limit of {d} ms\n", .{timeout_ms}) catch {};
+            stderr.print("' exceeded the time limit of {d} ms", .{timeout_ms}) catch {};
+            cli_query.writeSelectTimeoutAdvice(stderr, false);
             return .timeout;
         },
         else => {
@@ -523,31 +512,12 @@ fn writeJson(
     if (inputs.unapplied_migrations) |pending| {
         const message = try cli_warnings.unappliedMigrationsMessage(allocator, pending);
         defer allocator.free(message);
-        try json.beginObject();
-        try json.objectField("code");
-        try json.write(contract.code.unapplied_migrations);
-        try json.objectField("message");
-        try report_json.writeJsonText(&json, allocator, message);
-        try json.endObject();
+        try report_json.writeJsonWarningObject(&json, allocator, contract.code.unapplied_migrations, message);
     }
     try json.endArray();
     try json.endObject();
     try out.writer.writeByte('\n');
     try stdout.writeAll(out.written());
-}
-
-fn word(count: usize, singular: []const u8, plural: []const u8) []const u8 {
-    return if (count == 1) singular else plural;
-}
-
-fn writeCell(writer: *Io.Writer, text: []const u8, width: usize) !void {
-    try writer.writeAll(text);
-    if (text.len < width) try writer.splatByteAll(' ', width - text.len);
-}
-
-fn outOfMemoryCode(stderr: *Io.Writer) ExitCode {
-    stderr.writeAll("error: out of memory\n") catch {};
-    return .rejected;
 }
 
 fn reportFailure(stderr: *Io.Writer) ExitCode {
@@ -670,4 +640,13 @@ test "the INDEXED BY detector accepts spaces and stays conservative" {
     try testing.expect(mentionsIndexedBy("SELECT * FROM t WHERE b = 'indexed by'"));
     try testing.expect(!mentionsIndexedBy("SELECT * FROM t -- unindexed by the planner"));
     try testing.expect(!mentionsIndexedBy("SELECT * FROM indexed_by"));
+}
+
+test "the audit query timeout names the way past the limit" {
+    var buffer: [256]u8 = undefined;
+    var stderr = Io.Writer.fixed(&buffer);
+    var session: QuerySession = .{};
+    const query: cli_batch.Query = .{ .label = "q/a.sql", .path = "q", .sql = "SELECT 1", .binds = &.{} };
+    try testing.expectEqual(ExitCode.timeout, reportPlanFailure(error.Timeout, &session, query, 1, &stderr));
+    try testing.expectEqualStrings("error: the index audit query 'q/a.sql' exceeded the time limit of 1 ms; raise --timeout-ms, or use --timeout-ms 0 to wait for the SELECT\n", stderr.buffered());
 }
