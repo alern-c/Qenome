@@ -38,6 +38,22 @@ pub fn windowsTempParent(tmp: ?[]const u8, temp: ?[]const u8, userprofile: ?[]co
 
 pub const work_dir_prefix = "qenome-";
 
+extern "c" fn clonefile(source: [*:0]const u8, destination: [*:0]const u8, flags: c_int) c_int;
+
+const filesystem_clones = builtin.os.tag == .macos;
+
+pub fn copyBaselineToVariant(io: Io, baseline: [:0]const u8, variant: [:0]const u8) Io.Dir.CopyFileError!void {
+    if (cloneVariant(io, baseline, variant)) return;
+    return Io.Dir.cwd().copyFile(baseline, Io.Dir.cwd(), variant, io, .{});
+}
+
+fn cloneVariant(io: Io, baseline: [:0]const u8, variant: [:0]const u8) bool {
+    if (!filesystem_clones) return false;
+    if (clonefile(baseline, variant, 0) == 0) return true;
+    Io.Dir.cwd().deleteFile(io, variant) catch {};
+    return false;
+}
+
 const work_dir_permissions: Io.File.Permissions = if (builtin.os.tag == .windows) .default_dir else .fromMode(0o700);
 
 const work_dir_random_bytes = 12;
@@ -147,7 +163,7 @@ pub fn prepareCopies(
     if (signalPending()) return reportInterrupted(stderr);
 
     if (needs_variant) {
-        Io.Dir.cwd().copyFile(work.baseline_path, Io.Dir.cwd(), work.variant_path, io, .{}) catch |err| {
+        copyBaselineToVariant(io, work.baseline_path, work.variant_path) catch |err| {
             stderr.print("error: cannot copy the baseline to the variant: {s}\n", .{@errorName(err)}) catch {};
             return .rejected;
         };
@@ -313,6 +329,101 @@ test "applyCandidate writes the index into the variant copy only" {
     try testing.expect((try entries.next(testing.io)) == null);
     try testing.expect(!cleanup_failed);
     try testing.expectEqualStrings("", stderr.buffered());
+}
+
+const VariantFixture = struct {
+    tmp: testing.TmpDir,
+    dir_path: []const u8,
+    baseline_path: [:0]const u8,
+    variant_path: [:0]const u8,
+    baseline_bytes: []u8,
+
+    fn init(arena: std.mem.Allocator, size: usize) !VariantFixture {
+        var fixture: VariantFixture = .{
+            .tmp = testing.tmpDir(.{}),
+            .dir_path = undefined,
+            .baseline_path = undefined,
+            .variant_path = undefined,
+            .baseline_bytes = undefined,
+        };
+        errdefer fixture.tmp.cleanup();
+        const dir_path = try fixture.tmp.dir.realPathFileAlloc(testing.io, ".", arena);
+        fixture.dir_path = dir_path;
+        fixture.baseline_path = try std.fmt.allocPrintSentinel(arena, "{s}/baseline.db", .{dir_path}, 0);
+        fixture.variant_path = try std.fmt.allocPrintSentinel(arena, "{s}/variant.db", .{dir_path}, 0);
+        fixture.baseline_bytes = try arena.alloc(u8, size);
+        for (fixture.baseline_bytes, 0..) |*byte, index| byte.* = @truncate(index);
+        try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = "baseline.db", .data = fixture.baseline_bytes });
+        return fixture;
+    }
+
+    fn deinit(self: *VariantFixture) void {
+        self.tmp.cleanup();
+    }
+};
+
+test "a variant written after the copy leaves the baseline unchanged" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var fixture = try VariantFixture.init(arena, 1 << 20);
+    defer fixture.deinit();
+
+    try copyBaselineToVariant(testing.io, fixture.baseline_path, fixture.variant_path);
+
+    const variant_before = try Io.Dir.cwd().readFileAlloc(testing.io, fixture.variant_path, arena, .unlimited);
+    try testing.expectEqualSlices(u8, fixture.baseline_bytes, variant_before);
+
+    var variant_file = try Io.Dir.cwd().openFile(testing.io, fixture.variant_path, .{ .mode = .write_only });
+    defer variant_file.close(testing.io);
+    try variant_file.writePositionalAll(testing.io, "changed", 4096);
+
+    const baseline_after = try Io.Dir.cwd().readFileAlloc(testing.io, fixture.baseline_path, arena, .unlimited);
+    try testing.expectEqualSlices(u8, fixture.baseline_bytes, baseline_after);
+    const variant_after = try Io.Dir.cwd().readFileAlloc(testing.io, fixture.variant_path, arena, .unlimited);
+    try testing.expectEqualStrings("changed", variant_after[4096..4103]);
+    try testing.expect(!std.mem.eql(u8, fixture.baseline_bytes, variant_after));
+}
+
+test "the variant is cloned where the filesystem supports a clone and copied where it does not" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var fixture = try VariantFixture.init(arena, 1 << 20);
+    defer fixture.deinit();
+    const probe_path = try std.fmt.allocPrintSentinel(arena, "{s}/probe.db", .{fixture.dir_path}, 0);
+    const probe_copy_path = try std.fmt.allocPrintSentinel(arena, "{s}/probe-copy.db", .{fixture.dir_path}, 0);
+
+    try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = "probe.db", .data = "probe" });
+    const filesystem_cloned = if (filesystem_clones) clonefile(probe_path, probe_copy_path, 0) == 0 else false;
+    const cloned = cloneVariant(testing.io, fixture.baseline_path, fixture.variant_path);
+    try testing.expectEqual(filesystem_cloned, cloned);
+    if (cloned) {
+        const variant = try Io.Dir.cwd().readFileAlloc(testing.io, fixture.variant_path, arena, .unlimited);
+        try testing.expectEqualSlices(u8, fixture.baseline_bytes, variant);
+    } else {
+        try testing.expectError(error.FileNotFound, Io.Dir.cwd().statFile(testing.io, fixture.variant_path, .{}));
+        try copyBaselineToVariant(testing.io, fixture.baseline_path, fixture.variant_path);
+        const variant = try Io.Dir.cwd().readFileAlloc(testing.io, fixture.variant_path, arena, .unlimited);
+        try testing.expectEqualSlices(u8, fixture.baseline_bytes, variant);
+    }
+}
+
+test "a clone that fails falls back to a byte copy" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var fixture = try VariantFixture.init(arena, 1 << 20);
+    defer fixture.deinit();
+    try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = "variant.db", .data = "stale" });
+
+    try copyBaselineToVariant(testing.io, fixture.baseline_path, fixture.variant_path);
+
+    const variant = try Io.Dir.cwd().readFileAlloc(testing.io, fixture.variant_path, arena, .unlimited);
+    try testing.expectEqualSlices(u8, fixture.baseline_bytes, variant);
+    const baseline = try Io.Dir.cwd().readFileAlloc(testing.io, fixture.baseline_path, arena, .unlimited);
+    try testing.expectEqualSlices(u8, fixture.baseline_bytes, baseline);
 }
 
 test "a baseline-only copy leaves the variant absent" {
