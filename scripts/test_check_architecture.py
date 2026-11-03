@@ -55,6 +55,10 @@ CANONICAL_FILES = {
     "src/result.zig": 'const std = @import("std");\nconst sqlite = @import("sqlite.zig");\n',
     "src/sqlite.zig": 'const std = @import("std");\n',
     "src/sql/lexer.zig": 'const std = @import("std");\n',
+    "src/sql/lint.zig": 'const std = @import("std");\n',
+    "src/sql/lint_expr.zig": 'const std = @import("std");\n',
+    "src/sql/lint_model.zig": 'const std = @import("std");\n',
+    "src/sql/lint_tests.zig": 'const std = @import("std");\n',
     "src/contract/values.zig": (
         'const std = @import("std");\n'
         "\n"
@@ -73,6 +77,9 @@ CANONICAL_FILES = {
         'pub const data_too_small_scale_message = "the message";\n'
         'pub const data_too_small_full_scan = "the message";\n'
         'pub const data_too_small_suggested = "the message";\n'
+        'pub const sql_warning_codes = [_][]const u8{"select_star"};\n'
+        'pub const sql_warning_messages = [_][]const u8{"a message"};\n'
+        'pub const sql_warning_severity = [_][]const u8{"warning"};\n'
         "pub const code = struct {\n"
         '    pub const suggest_failed = "suggest_failed";\n'
         '    pub const usage_scale = "usage_scale";\n'
@@ -105,6 +112,8 @@ CANONICAL_FILES = {
         '    _ = @import("cli/tests.zig");\n'
         "}\n"
     ),
+    "src/cli/sql_warnings.zig": 'const std = @import("std");\n',
+    "src/cli/sql_warnings_tests.zig": 'const std = @import("std");\n',
     "src/cli/args.zig": (
         'const std = @import("std");\n'
         'const db = @import("../db.zig");\n'
@@ -448,7 +457,7 @@ def expect_rejected(name, code, output, rule, mention=None):
 def main():
     code, output = case(None)
     expect_clean("the smallest approved tree passes", code, output)
-    expect("the whole tree is checked", "(63 files checked" in output, output.strip())
+    expect("the whole tree is checked", "(69 files checked" in output, output.strip())
 
     code, output = case(lambda root: os.remove(os.path.join(root, "src/cli/tests.zig")))
     expect_rejected("a missing test file fails", code, output, "missing-file", "src/cli/tests.zig")

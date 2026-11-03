@@ -19,6 +19,11 @@
       ]
     },
     "rows_read": "same",
-    "rows_written": "same"
+    "rows_written": "same",
+    "human": {
+      "excludes": [
+        "leading_wildcard_like"
+      ]
+    }
   }
 }

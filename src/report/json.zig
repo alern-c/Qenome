@@ -53,6 +53,11 @@ fn writeJsonD1(json: *std.json.Stringify, allocator: std.mem.Allocator, header: 
 
 pub const JsonStyle = enum { indented, minified };
 
+pub const JsonOptions = struct {
+    style: JsonStyle = .indented,
+    sql_warnings: bool = true,
+};
+
 pub fn writeJsonReport(
     stdout: *Io.Writer,
     allocator: std.mem.Allocator,
@@ -64,7 +69,7 @@ pub fn writeJsonReport(
 ) Error!void {
     var out: Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try writeJsonTo(&out.writer, allocator, header, before, after, outcome, report, .indented);
+    try writeJsonTo(&out.writer, allocator, header, before, after, outcome, report, .{ .style = .indented });
     try out.writer.writeByte('\n');
     try stdout.writeAll(out.written());
 }
@@ -77,9 +82,9 @@ pub fn writeJsonTo(
     after: Measurement,
     outcome: Outcome,
     report: Report,
-    style: JsonStyle,
+    options: JsonOptions,
 ) Error!void {
-    return writeJsonComparison(writer, allocator, header, before, after, outcome, report, style);
+    return writeJsonComparison(writer, allocator, header, before, after, outcome, report, options);
 }
 
 pub fn writeJsonVariantOnlyTo(
@@ -88,9 +93,9 @@ pub fn writeJsonVariantOnlyTo(
     header: Header,
     after: Measurement,
     report: Report,
-    style: JsonStyle,
+    options: JsonOptions,
 ) Error!void {
-    return writeJsonComparison(writer, allocator, header, null, after, null, report, style);
+    return writeJsonComparison(writer, allocator, header, null, after, null, report, options);
 }
 
 pub fn writeJsonEnvironment(json: *std.json.Stringify, allocator: std.mem.Allocator, header: Header) Error!void {
@@ -141,12 +146,12 @@ fn writeJsonComparison(
     after: Measurement,
     outcome: ?Outcome,
     report: Report,
-    style: JsonStyle,
+    options: JsonOptions,
 ) Error!void {
     var json: std.json.Stringify = .{
         .writer = writer,
         .options = .{
-            .whitespace = if (style == .indented) .indent_2 else .minified,
+            .whitespace = if (options.style == .indented) .indent_2 else .minified,
             .escape_unicode = true,
         },
     };
@@ -228,6 +233,27 @@ fn writeJsonComparison(
         try json.endObject();
     }
     try json.endArray();
+    if (options.sql_warnings) {
+        try json.objectField("sql_warnings");
+        try json.beginArray();
+        for (report.sql_warnings) |warning| {
+            try json.beginObject();
+            try json.objectField("code");
+            try json.write(warning.code);
+            try json.objectField("severity");
+            try json.write(warning.severity);
+            try json.objectField("message");
+            try writeJsonText(&json, allocator, warning.message);
+            try json.objectField("line");
+            try json.write(warning.line);
+            try json.objectField("column");
+            try json.write(warning.column);
+            try json.objectField("plan_checked");
+            try json.write(warning.plan_checked);
+            try json.endObject();
+        }
+        try json.endArray();
+    }
     try json.objectField("size_bytes");
     try json.beginObject();
     try json.objectField("baseline");

@@ -633,3 +633,50 @@ test "a small-data warning without a next command omits the key" {
     try testing.expect(try jsonBool(warnings[0], "full_scan"));
     try testing.expectError(error.TestUnexpectedResult, jsonGet(warnings[0], "next_command"));
 }
+
+test "the json report carries the sql warnings and can leave them out" {
+    var buffer: [65536]u8 = undefined;
+    var stdout = Io.Writer.fixed(&buffer);
+    const header: Header = .{
+        .database_path = "app.db",
+        .select_path = "select.sql",
+        .index_path = "index.sql",
+        .work_parent = "/tmp",
+        .sqlite_version = "0.0.0",
+        .sqlite_source_id = "test-source-id",
+        .qenome_version = "0.0.0",
+        .binds = &.{},
+        .show_binds = false,
+    };
+    const measurement: model.Measurement = .{
+        .rows = 1,
+        .plan = .{ .rows = @constCast(&scan_line) },
+        .counters = .{ .rows_read = 1, .rows_written = 0, .fullscan_steps = 0, .vm_steps = 2, .sort_ops = 0, .autoindex_rows = 0 },
+        .columns = 1,
+    };
+    const comparison: result.Comparison = .{ .matched = true, .same_order = true };
+    const outcome: model.Outcome = .{ .verdict = .match, .comparison = comparison };
+    const sql_warnings = [_]model.SqlWarning{
+        .{ .code = "function_on_column", .severity = "warning", .message = "A function on a column stops an index.", .line = 3, .column = 7, .plan_checked = true },
+        .{ .code = "select_star", .severity = "info", .message = "SELECT * reads every column.", .line = 4, .column = 8, .plan_checked = false },
+    };
+    const report: Report = .{ .judgement = .{ .verdict = .no_effect }, .sql_warnings = &sql_warnings };
+    try writeJsonReport(&stdout, testing.allocator, header, measurement, measurement, outcome, report);
+    var parsed = try parseReportJson(stdout.buffered());
+    defer parsed.deinit();
+    const warnings = try jsonItems(parsed.value, "sql_warnings");
+    try testing.expectEqual(@as(usize, 2), warnings.len);
+    try testing.expectEqualStrings("function_on_column", try jsonText(warnings[0], "code"));
+    try testing.expectEqualStrings("warning", try jsonText(warnings[0], "severity"));
+    try testing.expectEqualStrings("A function on a column stops an index.", try jsonText(warnings[0], "message"));
+    try testing.expectEqual(@as(i64, 3), try jsonInt(warnings[0], "line"));
+    try testing.expectEqual(@as(i64, 7), try jsonInt(warnings[0], "column"));
+    try testing.expect(try jsonBool(warnings[0], "plan_checked"));
+    try testing.expectEqualStrings("select_star", try jsonText(warnings[1], "code"));
+    try testing.expect(!try jsonBool(warnings[1], "plan_checked"));
+
+    var out: Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try report_json.writeJsonTo(&out.writer, testing.allocator, header, measurement, measurement, outcome, report, .{ .style = .minified, .sql_warnings = false });
+    try testing.expect(std.mem.indexOf(u8, out.written(), "sql_warnings") == null);
+}

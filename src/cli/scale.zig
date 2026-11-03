@@ -223,7 +223,7 @@ fn comparisonJson(session: *const Session, plan: Plan, computed: cli_pair.Comput
         computed.after,
         computed.outcome,
         computed.report,
-        .minified,
+        .{ .style = .minified, .sql_warnings = false },
     ) catch |err| {
         _ = reportFailure(session.stderr, err);
         return null;

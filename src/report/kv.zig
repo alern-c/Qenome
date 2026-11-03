@@ -154,6 +154,16 @@ pub fn writeFacts(stdout: *Io.Writer, allocator: std.mem.Allocator, header: Head
         try stdout.print("variant-faster-rounds: {d}/{d}\n", .{ timing.variant_faster_rounds, timing.rounds });
     }
     try cli_warnings.writeWarnings(stdout, allocator, report.warnings);
+    for (report.sql_warnings) |warning| {
+        try stdout.print("sql-warning: {s} {s} {s}:{d}:{d} {s}\n", .{
+            warning.code,
+            warning.severity,
+            if (header.write_path) |path| path else header.select_path,
+            warning.line,
+            warning.column,
+            warning.message,
+        });
+    }
     const sizes = report.sizes;
     try stdout.print(
         \\db-bytes-baseline: {d} (the snapshot file)

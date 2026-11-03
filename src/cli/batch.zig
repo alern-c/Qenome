@@ -655,7 +655,7 @@ pub fn run(
                     .d1 = inputs.d1,
                 };
                 var variant_rendered: Io.Writer.Allocating = .init(child);
-                report_json.writeJsonVariantOnlyTo(&variant_rendered.writer, child, variant_header, after, variant_report, .minified) catch |err| return reportWriteFailure(err, stderr);
+                report_json.writeJsonVariantOnlyTo(&variant_rendered.writer, child, variant_header, after, variant_report, .{ .style = .minified, .sql_warnings = false }) catch |err| return reportWriteFailure(err, stderr);
                 const variant_comparison = arena.dupe(u8, variant_rendered.written()) catch return outOfMemoryCode(stderr);
                 summary.not_judged += 1;
                 if (partial_index != null) summary.partial_index_warnings += 1;
@@ -731,7 +731,7 @@ pub fn run(
                 .d1 = inputs.d1,
             };
             var rendered: Io.Writer.Allocating = .init(child);
-            report_json.writeJsonTo(&rendered.writer, child, header, before, after, outcome, report, .minified) catch return reportFailure(stderr);
+            report_json.writeJsonTo(&rendered.writer, child, header, before, after, outcome, report, .{ .style = .minified, .sql_warnings = false }) catch return reportFailure(stderr);
             const comparison = arena.dupe(u8, rendered.written()) catch return outOfMemoryCode(stderr);
             results.append(arena, .{
                 .query = query.label,

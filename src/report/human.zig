@@ -82,6 +82,20 @@ pub fn writeHumanWarning(stdout: *Io.Writer, allocator: std.mem.Allocator, code:
     try stdout.writeByte('\n');
 }
 
+fn writeSqlWarnings(stdout: *Io.Writer, allocator: std.mem.Allocator, path: []const u8, warnings: []const model.SqlWarning) Error!void {
+    if (warnings.len == 0) return;
+    try stdout.writeAll("\nSQL warnings\n");
+    for (warnings) |warning| {
+        const line = try std.fmt.allocPrint(allocator, "{s}:{d}:{d}: {s}: {s}: {s}", .{
+            path, warning.line, warning.column, warning.severity, warning.code, warning.message,
+        });
+        defer allocator.free(line);
+        try writeIndent(stdout, 2);
+        try writeWrapped(stdout, line, 2, 4);
+        try stdout.writeByte('\n');
+    }
+}
+
 fn writeD1Human(stdout: *Io.Writer, header: Header) Io.Writer.Error!void {
     const d1 = header.d1 orelse return;
     try stdout.writeAll("\nD1\n");
@@ -119,6 +133,7 @@ pub fn writeHumanSummary(
         try writeRowsDetail(stdout, outcome, header.show_rows);
     }
     try writeHumanWarnings(stdout, allocator, report.warnings);
+    try writeSqlWarnings(stdout, allocator, if (header.write_path) |path| path else header.select_path, report.sql_warnings);
 }
 
 fn writeOverview(

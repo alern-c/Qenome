@@ -50,6 +50,8 @@ qenome --record qenome-record.log --out qenome-manifest
 - `--format <human|kv|json>`: 出力形式（既定 human）。「出力形式」を参照
 - `--show-binds`: バインド値を出す。付けない場合、human はバインドを出さず、kv と json は番号・型・テキストの長さだけを出し、値をログに残さない
 - `--show-rows`: 片方のコピーだけが返した例の行を出す。付けない場合、どの形式も件数だけを出して行の値をログに残さない。human はこのフラグで再実行するよう案内する
+- `--no-sql-warnings`: `SQL warnings` の節を止める。チェックとコードは [SQL 警告](#sql-警告) にある
+- `--ignore-sql-warning <CODE>`: SQL 警告のコードを1つ止める。複数回指定できる。知らないコードは `usage_sql_warning` の usage エラーで、終了コードは `2`
 - `--help`, `-h`: 使い方を表示して終了コード 0 で終了する
 - `--version`: `build.zig.zon` の版を `qenome <version>` で表示して終了コード 0 で終了する
 
@@ -186,6 +188,25 @@ are not production D1 billing.
 終了コードは、1回の比較と同じ優先順位で、段階の中で最も重いものです（`3`、次に `4`、次に `124`、次に `1`、どれもなければ `0`）。実行できない段階があると、レポートを書く前に実行全体が止まります。
 
 `--format json` では、`scale_schema_version` `1` を持つ別のオブジェクトを出します。`inputs`、`environment`、サイズごとの `steps`（`tables` と `schema_version` 2 の比較全体）、上に説明した `trend` と `findings`、実行全体の `warnings` が入ります。詳細は [docs/json.md](../json.md#scale-report-scale_schema_version-1) にあります。
+
+## SQL 警告
+
+1つの比較（`--write` を含む）は SQL テキストを読み、SQLite がインデックスを使いにくくなる書き方を報告する。助言であり、結果の行、判定、推薦、batch の件数、終了コードは変えない。human の `SQL warnings` の節、kv の `sql-warning` 行、JSON の `sql_warnings` 配列は、測定の警告の後に出る。`--batch`・`--suggest`・`--scale` はまだ報告しない（[#174](https://github.com/alern-c/Qenome/issues/174)）。
+
+| `code` | 重大度 | パターンと次の行動 |
+| --- | --- | --- |
+| `function_on_column` | warning | `WHERE`・`ON`・`HAVING` の比較の片側で、列を関数や演算で包んでいる（`lower(email) = ?`、`price * 2 > ?`）。列をそのまま比べるか、その式の式インデックスを足す。baseline の計画がそのテーブルのインデックスを使っていれば、式インデックスが一致しうるので報告しない |
+| `leading_wildcard_like` | warning | `LIKE` や `GLOB` のパターンがワイルドカード（`%` と `_`、`GLOB` では `*` と `?`）で始まる。固定の接頭辞を先に置くか、別の方法で列を比べる。バインド値は分かるときだけ確認する |
+| `or_across_columns` | warning | `WHERE` のトップレベルの `OR` で、枝が違う列を比べている。クエリを分けるか、列ごとにインデックスを足す。baseline の計画がそのテーブルを完全に `SCAN` するときだけ報告する。SQLite は一部の OR を MULTI-INDEX OR で答えられるため |
+| `large_offset` | warning | `OFFSET n` または `LIMIT n, m` の値が `1000` 以上。`WHERE id > ? ORDER BY id LIMIT ?` でページングする |
+| `order_by_random` | warning | `ORDER BY random()`。列で並べるか、別の方法でランダムな行を選ぶ |
+| `select_star` | info | 一番外側の select リストの `SELECT *` または `t.*`。使う列を並べ、covering インデックスがクエリに使えるようにする |
+
+チェックは SQL テキストを読むだけで、余分な実行はしない。文字列・コメント・引用識別子は照合しない。サブクエリや CTE の中のパターンは、それぞれの `SELECT` として調べる。テキストが曖昧なときは黙る: 列どうしの比較、パラメータ側の関数、`INDEXED BY`、ウィンドウ関数、`CAST`、`COLLATE`、1つのテーブルに特定できない FROM。`implicit_conversion` はまだ報告しない。
+
+行と列は1始まりで、SQL ファイル内のバイト数を数える。パターンの前にマルチバイト文字があれば、列はその分ずれる。ファイルは比較で渡したパス、または `--write` のパス。
+
+`--no-sql-warnings` は全部のチェックを止める。`--ignore-sql-warning CODE` は1つのコードを止め、複数回指定できる。知らないコードは usage エラー（終了コード `2`、エラーコード `usage_sql_warning`）。どちらのフラグも今は1つの比較に効く。`--batch`・`--suggest`・`--scale` はフラグを受け付け、[#174](https://github.com/alern-c/Qenome/issues/174) が入ると警告を報告する。`--record` は受け付けない。
 
 ## D1 のローカルデータベース
 

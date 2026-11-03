@@ -262,6 +262,11 @@
       "type": "array",
       "items": { "$ref": "#/$defs/warning" }
     },
+    "sql_warnings": {
+      "description": "Emitted in the standalone comparison. Advisory findings about the SQL text; they never change the verdict or the exit code. A comparison embedded in a batch, --suggest, or --scale report omits this key.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/sql_warning" }
+    },
     "sqlite": {
       "description": "Reserved. Not emitted yet. Read environment.sqlite_version until bundled_version exists.",
       "type": "object",
@@ -338,6 +343,22 @@
           "type": "string"
         },
         "message": { "type": "string" }
+      }
+    },
+    "sql_warning": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["code", "severity", "message", "line", "column", "plan_checked"],
+      "properties": {
+        "code": {
+          "description": "function_on_column, leading_wildcard_like, or_across_columns, large_offset, order_by_random, or select_star.",
+          "type": "string"
+        },
+        "severity": { "enum": ["warning", "info"] },
+        "message": { "type": "string" },
+        "line": { "type": "integer", "minimum": 1 },
+        "column": { "type": "integer", "minimum": 1 },
+        "plan_checked": { "type": "boolean" }
       }
     }
   }

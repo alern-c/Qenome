@@ -35,6 +35,8 @@ On failure, read the line that starts with `{`. `human` and `kv` do not print th
 | `writes` | array | Present only when the manifest has `writes` (which needs `--migration`): one object per write statement, in manifest order. See [`writes` entries](#writes-entries) |
 | `warnings` | array | `{ "code", "message" }` entries. Holds what `--suggest` dropped or could not do, and, with `--d1`, `unapplied_migrations`. A comparison warning (including `bind_dependent_partial_index`) is in `results[].comparison.warnings`, not here; the `human` report lists each one under `Warnings` as `<query> -> <candidate>: <code>: <message>` |
 
+A batch object does not carry a top-level `sql_warnings` yet, and the comparison objects under `results` and `writes` omit the key. [#174](https://github.com/alern-c/Qenome/issues/174) adds the batch list, with `query` on each entry, and the same list for `--suggest`.
+
 ### `summary` entries
 
 | Key | Type | Meaning |
@@ -154,6 +156,7 @@ Batch error codes:
 | `usage_batch_conflict` | 2 | Put the SELECT, CREATE INDEX, and binds in the manifest; use `--format human` or `json`; do not pass `--runs` |
 | `usage_audit_conflict` | 2 | Use `--audit-indexes` with `--batch` and a manifest that has queries; remove `--suggest`, `--migration`, and `--seed-data` |
 | `usage_rank_conflict` | 2 | Use `--rank` with `--batch` and a manifest of queries; remove `--suggest`, `--migration`, and `--audit-indexes` |
+| `usage_sql_warning` | 2 | `--ignore-sql-warning` needs a code from the SQL warnings table; drop the flag to keep every warning |
 | `rank_query_failed` | 1 | Fix the SELECT in the manifest, or read the SQLite message |
 | `rank_query_timeout` | 124 | Raise `--timeout-ms`, or narrow the SELECT |
 | `audit_query_failed` | 1 | Fix the SELECT in the manifest, or read the SQLite message |
@@ -405,6 +408,7 @@ The object is indented with two spaces and ends with a newline. A missing key th
 | `measurement` | object | `runs_per_copy`, `warmup`, `order`, `scope`, `cache`. With `--write`, `runs_per_copy` is the rolled-back executions per copy and the other values describe the write runs |
 | `binds` | array | `number`, `type`. Text also has `text_bytes`. `value` only with `--show-binds` |
 | `warnings` | array | Emitted. `{ "code": string, "message": string }`. Expected codes: `no_analyze_stats` (no ANALYZE statistics), `data_too_small` (too little data to trust the counts; that object also has `table`, `rows`, `full_scan`, and `next_command`), `bind_dependent_partial_index` (the variant plan uses a partial index only because the bound values satisfy its WHERE clause), `unapplied_migrations` (the local D1 database has not applied every migration in the wrangler config) |
+| `sql_warnings` | array | Emitted in the standalone comparison. `{ "code": string, "severity": string, "message": string, "line": number, "column": number, "plan_checked": boolean }` entries for the SQL text; `severity` is `warning` or `info`; `line` and `column` are 1-based bytes in the SQL file. A comparison embedded in a `--batch`, `--suggest`, or `--scale` report omits this key (see [`sql_warnings`](#sql_warnings)) |
 | `sqlite` | object | Reserved. `bundled_version` (string), `db_header_version` (string) |
 
 `verdict` values:
@@ -506,6 +510,7 @@ The comparison object's `exit_code` is `0`, `3`, or `4`. The process can still e
 | `usage_bind` | 2 | Use `--bind N:TYPE:VALUE` |
 | `usage_scale` | 2 | Use `--scale` with `--seed-data` and 2 to 6 strictly increasing row counts; remove `--batch`, `--suggest`, `--migration`, `--audit-indexes`, `--rank`, `--record`, or `--format kv` |
 | `usage_rank_conflict` | 2 | Use `--rank` with `--batch` and a manifest of queries; remove `--suggest`, `--migration`, and `--audit-indexes` |
+| `usage_sql_warning` | 2 | `--ignore-sql-warning` needs a code from the SQL warnings table; drop the flag to keep every warning |
 | `rank_query_failed` | 1 | Fix the SELECT in the manifest, or read the SQLite message |
 | `rank_query_timeout` | 124 | Raise `--timeout-ms`, or narrow the SELECT |
 | `usage_conflicting_database` | 2 | Pass `--db` or `--d1`, not both |
@@ -574,6 +579,24 @@ The interval is `null` with `unavailable_reason` `too-few-rounds` below six roun
 `unapplied_migrations` names the migration files of the wrangler config that the local D1 database does not record as applied. Qenome reads `migrations_dir` (default `migrations`, beside the config file) and `migrations_table` (default `d1_migrations`) from the `d1_databases` entry of `--d1`, lists the `*.sql` files directly in that directory, and compares them with the `name` values of the record table. Only the files that the table does not name are listed, in wrangler's order: the leading number first, then lexical order, with unnumbered files last. The message names at most 10 files and then how many are left, and gives the command `npx wrangler d1 migrations apply <BINDING> --local`, because a comparison against an older schema can hide the effect of the index and report `no-effect` or `improved` for the wrong schema. The entry is omitted when the record table or the directory does not exist, when the local database cannot be read, when the directory holds no `*.sql` file, or when every file is applied. The check is bounded: a record table with more than 10,000 rows, a directory with more than 10,000 entries, a name longer than 4,096 bytes, or a scan that passes its instruction budget counts as unreadable, and the entry is omitted; a `migrations_pattern` and the bindings under `[env.<name>]` are not read. Qenome opens the local database read-only and only reads the `name` column, so the original database does not change, and the warning never changes the verdict, a batch count, or the exit code. In a single comparison the entry is in `warnings`; in a batch, including `--migration` and `--suggest`, it is in the batch top-level `warnings`; in `--batch --audit-indexes` it is in the audit report's `warnings`.
 
 `bind_dependent_partial_index` names a partial index that the variant plan uses only because the bound values satisfy its `WHERE` clause. Qenome reads the variant plan with the bound values and again with every parameter bound to `NULL`. If the partial index appears in the first plan and not the second, the message names it. `NULL` cannot prove a partial index's `WHERE` clause, so the difference means the index is usable because of the values: another value or parameter style can drop it, and an `improved` result then holds only for this run. The check needs only the variant plan, so it runs in every mode, including a variant-only `--migration` query, and its entry is in `warnings` for that comparison. It is best-effort: when the extra plan or the index catalog cannot be read, including a time limit or an interruption, the warning is omitted and the comparison continues. It never changes the verdict, the exit code, or a batch count. In a batch report the entry is in `results[].comparison.warnings`, not in the batch top-level `warnings`, and the batch `human` output lists it under `Warnings` with the query and candidate.
+
+### `sql_warnings`
+
+The single comparison, including `--write`, reads the SQL text and writes one entry per SQL pattern that usually stops SQLite from using an index. The array is always present in this object, including with `--runs 0` and an incomparable result, and it can be empty. It is separate from `warnings`: `warnings` says that the measurement may not be representative, while `sql_warnings` describes the SQL text itself. Neither changes the verdict, the rows, `recommended`, a batch count, or the exit status.
+
+`severity` is `warning` or `info`. The codes are stable:
+
+| `code` | `severity` | Meaning |
+| --- | --- | --- |
+| `function_on_column` | `warning` | A column is wrapped in a function or arithmetic in a comparison in `WHERE`, `ON`, or `HAVING`. The finding is dropped when the baseline plan uses an index on that table (`plan_checked` is `true` when the finding was kept) |
+| `leading_wildcard_like` | `warning` | A `LIKE` or `GLOB` pattern starts with a wildcard, or a bound text value for the parameter does |
+| `or_across_columns` | `warning` | A top-level `OR` in `WHERE` compares different columns, and the baseline plan has a full `SCAN` of that table (`plan_checked` is `true`) |
+| `large_offset` | `warning` | `OFFSET n` or `LIMIT n, m` uses a value of at least 1000, from a literal or a bound integer |
+| `order_by_random` | `warning` | `ORDER BY random()` |
+| `select_star` | `info` | `SELECT *` or `t.*` in the outermost select list |
+
+`plan_checked` is `true` when the plan check ran and kept the finding. It is `false` when no plan check applies and when the baseline plan was unavailable for a `function_on_column` finding. Strings, comments, and quoted identifiers are not matched; a pattern inside a subquery or a CTE is analysed as its own `SELECT`; and a check stays quiet when the text is ambiguous (a column-to-column comparison, a function on the parameter side, `INDEXED BY`, a window function, `CAST`, `COLLATE`, or a table that cannot be resolved to one source). `implicit_conversion` is not reported. The batch, `--suggest`, and `--scale` objects do not carry `sql_warnings` yet; [#174](https://github.com/alern-c/Qenome/issues/174) adds them, with `query` on each batch entry. The two flags are `--no-sql-warnings` and `--ignore-sql-warning CODE`.
+
 
 ## Remaining reserved fields
 

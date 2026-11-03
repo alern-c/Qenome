@@ -60,11 +60,21 @@ pub const Sizes = struct {
     variant: u64 = 0,
 };
 
+pub const SqlWarning = struct {
+    code: []const u8,
+    severity: []const u8,
+    message: []const u8,
+    line: u32,
+    column: u32,
+    plan_checked: bool,
+};
+
 pub const Report = struct {
     timing: ?TimeSummary = null,
     sizes: Sizes = .{},
     judgement: Judgement,
     warnings: Warnings = .{},
+    sql_warnings: []const SqlWarning = &.{},
     write_runs: u32 = 0,
 };
 
