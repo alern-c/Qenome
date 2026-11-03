@@ -67,11 +67,11 @@ pub fn writeWrapped(writer: *Io.Writer, text: []const u8, column: usize, indent:
     var at = column;
     var first = true;
     var words = std.mem.tokenizeScalar(u8, text, ' ');
-    while (words.next()) |word| {
+    while (words.next()) |token| {
         if (!first) {
-            if (at + 1 + word.len > line_width) {
+            if (at + 1 + token.len > line_width) {
                 try writer.writeByte('\n');
-                const hang: usize = if (indent + word.len > line_width and word.len <= line_width) 0 else indent;
+                const hang: usize = if (indent + token.len > line_width and token.len <= line_width) 0 else indent;
                 try writeIndent(writer, hang);
                 at = hang;
             } else {
@@ -79,10 +79,19 @@ pub fn writeWrapped(writer: *Io.Writer, text: []const u8, column: usize, indent:
                 at += 1;
             }
         }
-        try writer.writeAll(word);
-        at += word.len;
+        try writer.writeAll(token);
+        at += token.len;
         first = false;
     }
+}
+
+pub fn word(count: usize, singular: []const u8, plural: []const u8) []const u8 {
+    return if (count == 1) singular else plural;
+}
+
+pub fn writeCell(writer: *Io.Writer, text: []const u8, width: usize) Io.Writer.Error!void {
+    try writer.writeAll(text);
+    if (text.len < width) try writer.splatByteAll(' ', width - text.len);
 }
 
 pub fn writeCount(writer: *Io.Writer, value: u128) Io.Writer.Error!void {

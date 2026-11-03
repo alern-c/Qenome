@@ -4,6 +4,8 @@ const cli_comparison = @import("../cli/comparison.zig");
 const result = @import("../result.zig");
 const report_json = @import("json.zig");
 const format = @import("format.zig");
+const word = format.word;
+const writeCell = format.writeCell;
 
 pub const Status = enum {
     compared,
@@ -104,7 +106,7 @@ pub fn writeHuman(stdout: *Io.Writer, allocator: std.mem.Allocator, results: []c
             try stdout.writeByte('\n');
             continue;
         }
-        try writeCell(stdout, if (entry.baseline_missing) "variant-only" else resultText(entry.outcome orelse .match), 12);
+        try writeCell(stdout, if (entry.baseline_missing) "variant-only" else (entry.outcome orelse cli_comparison.Verdict.match).text(), 12);
         try stdout.writeAll("  ");
         try writeCell(stdout, entry.judgement.text(), 12);
         try stdout.writeAll("  ");
@@ -148,23 +150,6 @@ fn countVerdicts(results: []const Result) VerdictCounts {
         }
     }
     return counts;
-}
-
-fn resultText(verdict: cli_comparison.Verdict) []const u8 {
-    return switch (verdict) {
-        .match => "match",
-        .mismatch => "mismatch",
-        .incomparable => "incomparable",
-    };
-}
-
-fn word(count: usize, singular: []const u8, plural: []const u8) []const u8 {
-    return if (count == 1) singular else plural;
-}
-
-fn writeCell(writer: *Io.Writer, text: []const u8, width: usize) Io.Writer.Error!void {
-    try writer.writeAll(text);
-    if (text.len < width) try writer.splatByteAll(' ', width - text.len);
 }
 
 test {

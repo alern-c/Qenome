@@ -8,12 +8,16 @@ const cli_args = @import("args.zig");
 const cli_batch = @import("batch.zig");
 const cli_control = @import("control.zig");
 const cli_query = @import("query.zig");
+const report_format = @import("../report/format.zig");
 const report_human = @import("../report/human.zig");
 const report_json = @import("../report/json.zig");
 const cli_warnings = @import("warnings.zig");
 
 const ExitCode = cli_control.ExitCode;
 const QuerySession = cli_query.QuerySession;
+const outOfMemoryCode = cli_control.outOfMemoryCode;
+const word = report_format.word;
+const prepareQuery = cli_query.prepareQuery;
 
 pub const note_text = "rows read x runs is a relative indicator, not a bill";
 
@@ -57,10 +61,10 @@ pub fn run(
     if (!session.openDatabase(inputs.baseline_path, .baseline, stderr, &failure)) return failure;
 
     var control = db.StepControl.init(io, inputs.timeout_ms, cli_control.cancelFlag());
-    const measured = arena.alloc(Measured, queries.len) catch return outOfMemory(stderr);
+    const measured = arena.alloc(Measured, queries.len) catch return outOfMemoryCode(stderr);
     for (queries, 0..) |query, index| {
         if (cli_control.signalPending()) return cli_control.reportInterrupted(stderr);
-        if (!prepareQuery(&session, query, stderr)) return .rejected;
+        if (!prepareQuery(&session, query.label, query.sql, query.binds, "error: the rank query '", stderr)) return .rejected;
         measured[index] = measureQuery(arena, &session, &control, inputs.timeout_ms, query, index, stderr, &failure) orelse return failure;
     }
 
@@ -150,7 +154,7 @@ fn measureQuery(
 ) ?Measured {
     const plan = session.database.explainPlanBounded(arena, query.sql, query.binds, control) catch |err| {
         failure.* = switch (err) {
-            error.OutOfMemory => outOfMemory(stderr),
+            error.OutOfMemory => outOfMemoryCode(stderr),
             error.Interrupted => cli_control.reportInterrupted(stderr),
             error.Timeout => rankTimeout(stderr, query.label, timeout_ms),
             else => blk: {
@@ -175,7 +179,7 @@ fn measureQuery(
     };
 
     const coroutines = collectCoroutines(arena, plan.rows) orelse {
-        failure.* = outOfMemory(stderr);
+        failure.* = outOfMemoryCode(stderr);
         return null;
     };
     const counters = session.counters();
@@ -183,16 +187,16 @@ fn measureQuery(
     for (plan.rows) |row| {
         if (!isTableScan(row.detail, coroutines)) continue;
         const copy = arena.dupe(u8, row.detail) catch {
-            failure.* = outOfMemory(stderr);
+            failure.* = outOfMemoryCode(stderr);
             return null;
         };
         steps.append(arena, copy) catch {
-            failure.* = outOfMemory(stderr);
+            failure.* = outOfMemoryCode(stderr);
             return null;
         };
     }
     const scan_steps = steps.toOwnedSlice(arena) catch {
-        failure.* = outOfMemory(stderr);
+        failure.* = outOfMemoryCode(stderr);
         return null;
     };
     const rows_read: u64 = counters.rows_read;
@@ -208,24 +212,6 @@ fn measureQuery(
         .relative_rows = relativeProduct(rows_read, query.executions),
         .input_index = input_index,
     };
-}
-
-fn prepareQuery(session: *QuerySession, query: cli_batch.Query, stderr: *Io.Writer) bool {
-    var capture: [4096]u8 = undefined;
-    var sink = Io.Writer.fixed(&capture);
-    var failure: ExitCode = .rejected;
-    if (session.prepare(query.sql, query.binds, .baseline, "", &sink, &failure)) return true;
-    stderr.writeAll("error: the rank query '") catch {};
-    result_rows.writeEscapedText(stderr, query.label) catch {};
-    reportCaptured(stderr, "': ", sink.buffered());
-    return false;
-}
-
-fn reportCaptured(stderr: *Io.Writer, prefix: []const u8, captured: []const u8) void {
-    var text = std.mem.trimEnd(u8, captured, "\n");
-    if (std.mem.startsWith(u8, text, "error: ")) text = text["error: ".len..];
-    if (text.len == 0) text = "the input was rejected";
-    stderr.print("{s}{s}\n", .{ prefix, text }) catch {};
 }
 
 fn rankTimeout(stderr: *Io.Writer, label: []const u8, timeout_ms: u64) ExitCode {
@@ -397,12 +383,7 @@ fn writeJson(
     if (inputs.unapplied_migrations) |pending| {
         const message = try cli_warnings.unappliedMigrationsMessage(allocator, pending);
         defer allocator.free(message);
-        try json.beginObject();
-        try json.objectField("code");
-        try json.write(contract.code.unapplied_migrations);
-        try json.objectField("message");
-        try report_json.writeJsonText(&json, allocator, message);
-        try json.endObject();
+        try report_json.writeJsonWarningObject(&json, allocator, contract.code.unapplied_migrations, message);
     }
     try json.endArray();
     try json.endObject();
@@ -423,18 +404,9 @@ fn writeReadRatio(json: *std.json.Stringify, rows_read: u64, rows_returned: u64)
     try json.write(ratio);
 }
 
-fn word(count: usize, singular: []const u8, plural: []const u8) []const u8 {
-    return if (count == 1) singular else plural;
-}
-
-fn outOfMemory(stderr: *Io.Writer) ExitCode {
-    stderr.writeAll("error: out of memory\n") catch {};
-    return .rejected;
-}
-
 fn reportWriteFailure(err: anyerror, stderr: *Io.Writer) ExitCode {
     return switch (err) {
-        error.OutOfMemory => outOfMemory(stderr),
+        error.OutOfMemory => outOfMemoryCode(stderr),
         else => {
             stderr.writeAll("error: the rank report could not be written\n") catch {};
             return .rejected;
