@@ -1216,12 +1216,11 @@ test "binds show only their shape unless --show-binds is given" {
     try testing.expect(contains(shown.stdout, "bind: 1:int:1\nbind: 2:text:'secret'\nbind: 3:null\nbind: 4:real:1.5e0\n"));
 }
 
-fn expectNarrow(text: []const u8, raw: []const []const u8) !void {
+fn expectNarrow(text: []const u8, allowed: []const []const u8) !void {
     var lines = std.mem.splitScalar(u8, text, '\n');
     next: while (lines.next()) |line| {
         if (line.len <= 80) continue;
-        for (raw) |allowed| if (contains(line, allowed)) continue :next;
-        std.debug.print("wider than 80 columns: {s}\n", .{line});
+        for (allowed) |allowed_text| if (contains(line, allowed_text)) continue :next;
         return error.TestUnexpectedResult;
     }
 }
@@ -1282,7 +1281,7 @@ test "the default summary puts the conclusion first and the copies side by side"
     for ([_][]const u8{ "Timing", "Run\n", "Result rows", "time median", "binds", "work dir", "source id" }) |gone| {
         try testing.expect(!contains(result.stdout, gone));
     }
-    try expectNarrow(result.stdout, &.{});
+    try expectNarrow(result.stdout, &.{ fixture.db_path, fixture.select_path, fixture.index_path });
     try fixture.expectNoLeftovers();
 }
 
@@ -1319,7 +1318,7 @@ test "the default summary of a mismatch hides the one-sided rows unless --show-r
     try testing.expect(!contains(result.stdout, "[1, 'y']"));
     try testing.expect(!contains(result.stdout, "time median"));
     try testing.expect(!contains(result.stdout, "row order"));
-    try expectNarrow(result.stdout, &.{});
+    try expectNarrow(result.stdout, &.{ fixture.db_path, fixture.select_path, fixture.index_path });
 
     var shown_stdout: [8192]u8 = undefined;
     var shown_stderr: [1024]u8 = undefined;
@@ -1334,7 +1333,7 @@ test "the default summary of a mismatch hides the one-sided rows unless --show-r
         \\
     ));
     try testing.expect(!contains(shown.stdout, "rerun with --show-rows"));
-    try expectNarrow(shown.stdout, &.{});
+    try expectNarrow(shown.stdout, &.{ fixture.db_path, fixture.select_path, fixture.index_path });
     try fixture.expectNoLeftovers();
 }
 
@@ -1361,7 +1360,7 @@ test "the default summary of an incomparable select pairs each reason with its h
     ));
     try testing.expect(!contains(result.stdout, "the first "));
     try testing.expect(!contains(result.stdout, "row order"));
-    try expectNarrow(result.stdout, &.{});
+    try expectNarrow(result.stdout, &.{ fixture.db_path, fixture.select_path, fixture.index_path });
 }
 
 test "the default summary hides the bind values unless --show-binds is given" {
@@ -1397,7 +1396,7 @@ test "the default summary notes rows in a different order" {
     try testing.expectEqual(ExitCode.ok, result.code);
     try testing.expect(contains(result.stdout, "\nResult rows\n  row order     differs (reference only;"));
     try testing.expect(!contains(result.stdout, "same (reference only"));
-    try expectNarrow(result.stdout, &.{});
+    try expectNarrow(result.stdout, &.{ fixture.db_path, fixture.select_path, fixture.index_path });
     try fixture.expectNoLeftovers();
 }
 
@@ -1849,7 +1848,7 @@ test "a bind error says how many parameters the SELECT has" {
     try fixture.expectNoLeftovers();
 }
 
-test "help fits in 80 columns and names the formats" {
+test "help fits in 80 columns, names the formats and the check fails a wide line" {
     var stdout_buffer: [32768]u8 = undefined;
     var stderr_buffer: [512]u8 = undefined;
     const result = callRun(testing.allocator, &.{ "Qenome", "--help" }, null, &stdout_buffer, &stderr_buffer);
@@ -1858,6 +1857,8 @@ test "help fits in 80 columns and names the formats" {
     try testing.expect(contains(result.stdout, "  --show-rows          print the example rows that only one copy"));
     try testing.expect(contains(result.stdout, "exit status:"));
     try expectNarrow(result.stdout, &.{});
+    try expectNarrow(&@as([81]u8, @splat('x')), &.{"x"});
+    try testing.expectError(error.TestUnexpectedResult, expectNarrow(&@as([81]u8, @splat('x')), &.{"y"}));
 }
 
 test "help puts the usage, options, examples and exit status before the details" {
@@ -4961,7 +4962,7 @@ test "a seed spec rejects a non-deterministic default for an omitted column" {
         \\{"tables": {"d": {"rows": 2, "columns": {"a": {"kind": "sequence"}}}}}
     );
     defer testing.allocator.free(rejected_path);
-    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_buffer: [8192]u8 = undefined;
     var stderr_buffer: [4096]u8 = undefined;
     const rejected = fixture.runFormat("json", &.{ "--seed-data", rejected_path }, &stdout_buffer, &stderr_buffer);
     try testing.expectEqual(ExitCode.rejected, rejected.code);
