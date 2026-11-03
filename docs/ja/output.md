@@ -8,7 +8,7 @@ human は判断に必要なものを出します。
 - baseline と variant の左右比較表: 読んだ行数、書いた行数、結果の行数、フルスキャン行数、VMステップ数、0 でないときはソート回数と autoindex 行数、計測したときは p25 / p75 の時間、データベースファイルのバイト数
 - 両方のコピーの実行計画。`kind` / `covering` / `automatic` は SQLite の文言から読んだヒント
 - 助言の警告があるときは `Warnings` の節に `warning: <code>: <message>` の行
-- SQL テキストのうち、インデックスを使いにくくする書き方があるときは `SQL warnings` の節に `<path>:<line>:<column>: <severity>: <code>: <message>` の行。`Warnings` の後に出し、判定・行・終了コードは変えない
+- SQL テキストのうち、インデックスを使いにくくする書き方があるときは `SQL warnings` の節に `<path>:<line>:<column>: <severity>: <code>: <message>` の行。`Warnings` の後に出し、判定・行・終了コードは変えない。`--batch` と `--suggest` も同じ節を SELECT ごとに1回出し、パスは manifest の `select` 文字列か SELECT ファイル。`--scale` は全ステップに同じ指摘があるときは1行、ステップごとに違うときは出るステップに `warning at <rows> rows: ` を付けて出す
 - `--suggest` のときは `Suggested by SQLite:` の節。提案ごとに `suggested:N: CREATE INDEX ...` と SQL 本文を出し、表の後ろに `warning: <code>: <message>` の行で、捨てたもの・できなかったことを出す
 - `--d1` のときは D1 ブロック: バインディング、設定ファイル、データベース id、ローカルファイル、SQLite の版の違い、本番 D1 についての注意
 
@@ -76,7 +76,7 @@ fi
 | `measurement` | 計時条件（`runs_per_copy`（各コピーの計測ラウンド数。計時しないときは 0）/ `warmup` / `order` / `scope` / `cache`）。`--write` では `runs_per_copy` は各コピーでロールバックしながら実行する回数 |
 | `binds` | `number` / `type`。text は `text_bytes` も持つ。`--show-binds` を付けたときだけ値が `value` に入る |
 | `warnings` | `{code, message}` の配列（`no_analyze_stats`、`data_too_small`、`bind_dependent_partial_index`、`unapplied_migrations`）。判定と終了コードは変えない。`data_too_small` には `table`、`rows`、`full_scan`、`next_command` も付く |
-| `sql_warnings` | 比較した SQL テキストについての `{code, severity, message, line, column, plan_checked}` の配列。判定と終了コードは変えない。`line` と `column` は SQL ファイル内の1始まりのバイト位置。`plan_checked` は baseline の計画を確認して残したとき `true`。`--batch`・`--suggest`・`--scale` レポートに埋め込まれる比較には、このキーは入らない |
+| `sql_warnings` | 比較した SQL テキストについての `{code, severity, message, line, column, plan_checked}` の配列。判定と終了コードは変えない。`line` と `column` は SQL ファイル内の1始まりのバイト位置。`plan_checked` は baseline の計画を確認して残したとき `true`。`--batch`・`--suggest` レポートの `results`・`writes` に埋め込まれる比較には、このキーは入らない（batch オブジェクトが全クエリ分を `query` 付きで持つ）。`--scale` のステップ比較はこのキーを持つ |
 | `sqlite` | 予約済みで、まだ出ない。`bundled_version` と `db_header_version`。それまでは同梱版を `environment.sqlite_version` で読む |
 
 - 文字列値では、バックスラッシュを `\\`、非 UTF-8 のバイトを `\xNN`（バイト 0xFF なら `\xff`）と書いてから JSON としてエスケープします。4文字の `\xff` は `\\xff` になり、バイト 0xFF とは別の文字列です。元のバイト列に戻すときは、`\\` をバックスラッシュ1個、`\xNN` をそのバイト、それ以外の文字をそのまま読みます。入力パス、計画の detail、理由、bind の text がこの規則です。`--show-rows` で出す例の行の TEXT も同じ規則（前後に `'`。例: `'\xff'`。JSON のテキストでは `'\\xff'`）で、BLOB は `x'00ff'` です。200 バイトを超える例の値は切り詰め、`...(N bytes)` を付けます。

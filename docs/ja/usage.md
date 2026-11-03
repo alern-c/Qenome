@@ -43,7 +43,7 @@ qenome --record qenome-record.log --out qenome-manifest
 - `--migration <FILE>`: `--batch` の全クエリを実行する前に、この SQL ファイルを variant にだけ適用する。`--batch` と、`candidates` を持たないマニフェストが必要。`--select` / `--index-sql` / `--bind` / `--runs` / `--suggest` / `--format kv` とは併用できない。`CREATE INDEX`・`CREATE UNIQUE INDEX`・`DROP INDEX`・`CREATE TABLE`（`AS SELECT` を除く）・`ALTER TABLE`（ADD / RENAME / DROP COLUMN と RENAME TO）を受け付け、データ変更・`DROP TABLE`・`ATTACH`・`PRAGMA`・その他の文は文番号付きで拒否する。マイグレーションで消した・名前を変えた列やテーブルを参照するクエリがあると実行全体が終了コード `1` で止まる。列を足す・消すと `SELECT *` は結果の列数が変わるため比較できず、終了コード `4` になる。「まとめて比べる（--batch）」を参照
 - `--seed-data <FILE>`: 比較の前に、この JSON の指定に従ってサンドボックスのコピーのテーブルを決まったダミーデータで置き換える。元のデータベースは変更しない。`--batch`・`--suggest`・`--migration` を含むすべてのモードで使える。「サンドボックス用のデータを作る」を参照
 - `--scale <ROWS,ROWS[,ROWS...]>`: `--seed-data` と組み合わせて、2〜6の狭義増加する行数で同じ比較を1回の実行で行い、結果を並べて出す。各段階はそのサイズの新しいサンドボックスのコピーに seed する。spec の中で最も大きいテーブルがその段階の行数になり、ほかのテーブルも同じ倍率で増える。`--batch`・`--suggest`・`--migration`・`--audit-indexes`・`--rank`・`--record`・`--format kv` とは併用できない。「複数のサイズで測る（--scale）」を参照
-- `--suggest`: インデックスを自分で用意する代わりに、SQLite の expert に候補のインデックスを提案させ、その提案を比べる。`--batch` のときはマニフェストの `candidates` を省略できる。SELECT はファイル、`--sql`、または標準入力の `-` で渡せる。`--runs`、`--format kv`、インデックスのファイル（`--index-sql` または3番目の位置指定パス）とは併用できない。今の計画にインデックスが要らないときは終了コード `0` で、その計画と読んだ行数を出して「no index needed」と報告する。「候補のインデックスを提案させる（--suggest）」を参照
+- `--suggest`: インデックスを自分で用意する代わりに、SQLite の expert に候補のインデックスを提案させ、その提案を比べる。`--batch` のときはマニフェストの `candidates` を省略できる。SELECT はファイル、`--sql`、または標準入力の `-` で渡せる。`--runs`、`--format kv`、インデックスのファイル（`--index-sql` または3番目の位置指定パス）とは併用できない。今の計画にインデックスが要らないときは終了コード `0` で、その計画、読んだ行数、SELECT の SQL 警告を出して「no index needed」と報告する。「候補のインデックスを提案させる（--suggest）」を参照
 - `--bind <N>:<TYPE>[:<VALUE>]`: SELECT のパラメータ N に渡す型付きの値。繰り返し指定できる。N は SQLite のパラメータ番号で、名前付きパラメータは最初に現れたときの番号を共有し、`?NNN` は NNN を使う。TYPE は int / real / text / null（null は値を取らない）。1 からパラメータ数までの各番号をちょうど1回ずつ指定する必要があり、パラメータの無い SELECT に `--bind` は付けられない。値は引数の残り全体なので、text には `:` を含められる
 - `--runs <N>`: 結果が一致したあとの計測ラウンド数。各ラウンドは各コピーで SELECT を1回計測する。既定は 10、0 で計測しないが読んだ行数と判定は残る、最大 1000。1秒を超える計測は進捗を stderr に出す。`--write` では N は各コピーでロールバックしながら実行する回数（最低1回）で、計測は行わず、毎回同じ件数になることを確かめる
 - `--timeout-ms <MS>`: インデックス作成、SELECT 1回、`--write` の1回あたりの制限時間。既定は 30000、0 で無効。1回の実行は全体で、データベースのコピーに加えて `(3 + 4 × runs)` 回分の制限時間に加え、ANALYZE とサイズの診断、SELECT にパラメータがある場合の bind 依存の部分インデックス診断それぞれの制限時間までかかることがある。数 GB のデータベースでは候補の `CREATE INDEX` が既定より長くかかることがあり、そのときは終了コード `124` で止まってこのオプションを名指しするメッセージを出す。`0` を指定すると作成が終わるまで待つ。
@@ -187,11 +187,11 @@ are not production D1 billing.
 
 終了コードは、1回の比較と同じ優先順位で、段階の中で最も重いものです（`3`、次に `4`、次に `124`、次に `1`、どれもなければ `0`）。実行できない段階があると、レポートを書く前に実行全体が止まります。
 
-`--format json` では、`scale_schema_version` `1` を持つ別のオブジェクトを出します。`inputs`、`environment`、サイズごとの `steps`（`tables` と `schema_version` 2 の比較全体）、上に説明した `trend` と `findings`、実行全体の `warnings` が入ります。詳細は [docs/json.md](../json.md#scale-report-scale_schema_version-1) にあります。
+`--format json` では、`scale_schema_version` `1` を持つ別のオブジェクトを出します。`inputs`、`environment`、サイズごとの `steps`（`tables` と `schema_version` 2 の比較全体。その `sql_warnings` がそのステップの指摘を並べる）、上に説明した `trend` と `findings`、実行全体の `warnings` が入ります。詳細は [docs/json.md](../json.md#scale-report-scale_schema_version-1) にあります。
 
 ## SQL 警告
 
-1つの比較（`--write` を含む）は SQL テキストを読み、SQLite がインデックスを使いにくくなる書き方を報告する。助言であり、結果の行、判定、推薦、batch の件数、終了コードは変えない。human の `SQL warnings` の節、kv の `sql-warning` 行、JSON の `sql_warnings` 配列は、測定の警告の後に出る。`--batch`・`--suggest`・`--scale` はまだ報告しない（[#174](https://github.com/alern-c/Qenome/issues/174)）。
+どのモードも SQL テキストを読み、SQLite がインデックスを使いにくくなる書き方を報告する: 1つの比較（`--write` を含む）、`--batch`、`--suggest`、`--scale`。助言であり、結果の行、判定、推薦、batch の件数、終了コードは変えない。human の `SQL warnings` の節、kv の `sql-warning` 行、JSON の `sql_warnings` 配列は、測定の警告の後に出る。`--batch` と `--suggest` は候補より前に SELECT ごとに1回だけ調べるので、候補の数だけ指摘が増えることはない。JSON ではトップレベルに1つの配列を置き、各要素に `query` を付ける。`--scale` は各ステップの比較が配列を持ち、human の節は全ステップに同じ指摘があるとき1行だけ出す。
 
 | `code` | 重大度 | パターンと次の行動 |
 | --- | --- | --- |
@@ -206,7 +206,7 @@ are not production D1 billing.
 
 行と列は1始まりで、SQL ファイル内のバイト数を数える。パターンの前にマルチバイト文字があれば、列はその分ずれる。ファイルは比較で渡したパス、または `--write` のパス。
 
-`--no-sql-warnings` は全部のチェックを止める。`--ignore-sql-warning CODE` は1つのコードを止め、複数回指定できる。知らないコードは usage エラー（終了コード `2`、エラーコード `usage_sql_warning`）。どちらのフラグも今は1つの比較に効く。`--batch`・`--suggest`・`--scale` はフラグを受け付け、[#174](https://github.com/alern-c/Qenome/issues/174) が入ると警告を報告する。`--record` は受け付けない。
+`--no-sql-warnings` は全部のチェックを止める。`--ignore-sql-warning CODE` は1つのコードを止め、複数回指定できる。知らないコードは usage エラー（終了コード `2`、エラーコード `usage_sql_warning`）。どちらのフラグも警告を報告するすべてのモードに効く: 1つの比較、`--write`、`--batch`、`--suggest`、`--scale`。`--record` は受け付けない。
 
 ## D1 のローカルデータベース
 
