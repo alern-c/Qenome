@@ -16,9 +16,11 @@ const cli_query = @import("query.zig");
 const report_model = @import("../report/model.zig");
 const report_json = @import("../report/json.zig");
 const report_batch_writes = @import("../report/batch_writes.zig");
+const report_human = @import("../report/human.zig");
 const cli_recommend = @import("recommend.zig");
 const cli_suggest = @import("suggest.zig");
 const cli_suggest_none = @import("suggest_none.zig");
+const cli_sql_warnings = @import("sql_warnings.zig");
 const cli_warnings = @import("warnings.zig");
 const cli_workspace = @import("workspace.zig");
 
@@ -107,6 +109,8 @@ pub const Inputs = struct {
     format: cli_args.Format = .human,
     suggest: bool = false,
     manifest: bool = true,
+    sql_warnings: bool = true,
+    ignore_sql_warnings: []const []const u8 = &.{},
     seed: ?report_model.Seed = null,
     work_parent: []const u8,
 };
@@ -473,6 +477,12 @@ pub fn run(
     var cache_failure: ExitCode = .rejected;
     if (!fillBaselineCache(arena, allocator, &baseline_cache, &baseline, loaded.queries, baseline_missing, &control, stderr, &cache_failure)) return cache_failure;
 
+    var sql_warnings: std.ArrayList(report_model.QuerySqlWarning) = .empty;
+    for (loaded.queries) |query| {
+        const found = cli_sql_warnings.collectForQuery(arena, &baseline.database, query.sql, query.binds, inputs.sql_warnings, inputs.ignore_sql_warnings) catch return outOfMemoryCode(stderr);
+        for (found) |warning| sql_warnings.append(arena, .{ .query = query.label, .warning = warning }) catch return outOfMemoryCode(stderr);
+    }
+
     const size_measure: SizeMeasure = if (inputs.migration != null) .used else .file;
     var size_failure: ExitCode = .rejected;
     const baseline_size = switch (size_measure) {
@@ -795,10 +805,10 @@ pub fn run(
     const code = batchExitCode(summaries, results.items, write_results.items, migration_report != null);
 
     switch (inputs.format) {
-        .json => cli_batch_report.writeBatchJson(stdout, allocator, summaries, order, results.items, write_results.items, suggest_warnings.items, recommended, migration_report, inputs.seed, code) catch |err| {
+        .json => cli_batch_report.writeBatchJson(stdout, allocator, summaries, order, results.items, write_results.items, suggest_warnings.items, sql_warnings.items, recommended, migration_report, inputs.seed, code) catch |err| {
             return reportWriteFailure(err, stderr);
         },
-        .human => writeBatchHuman(stdout, allocator, inputs, loaded.queries.len, summaries, order, results.items, write_results.items, suggest_warnings.items, recommended, migration_report) catch |err| {
+        .human => writeBatchHuman(stdout, allocator, inputs, loaded.queries.len, summaries, order, results.items, write_results.items, suggest_warnings.items, sql_warnings.items, recommended, migration_report) catch |err| {
             return reportWriteFailure(err, stderr);
         },
         .kv => unreachable,
@@ -1014,7 +1024,7 @@ fn reportSufficient(
     for (queries, 0..) |query, index| {
         selects[index] = .{ .label = query.label, .sql = query.sql, .binds = query.binds };
     }
-    return cli_suggest_none.report(io, arena, baseline, inputs.database_path, inputs.timeout_ms, inputs.format, selects, warnings, stdout, stderr);
+    return cli_suggest_none.report(io, arena, baseline, inputs.database_path, inputs.timeout_ms, inputs.format, selects, warnings, inputs.sql_warnings, inputs.ignore_sql_warnings, stdout, stderr);
 }
 
 fn reportNoCandidates(stderr: *Io.Writer, manifest: bool, rejected: usize) ExitCode {
@@ -1326,6 +1336,7 @@ fn writeBatchHuman(
     results: []const ResultEntry,
     writes: []const report_batch_writes.Result,
     warnings: []const cli_suggest.Warning,
+    sql_warnings: []const report_model.QuerySqlWarning,
     recommended: ?usize,
     migration: ?Migration,
 ) !void {
@@ -1564,6 +1575,7 @@ fn writeBatchHuman(
     }
 
     try cli_warnings.writeRunWarnings(stdout, warnings);
+    try report_human.writeQuerySqlWarnings(stdout, allocator, sql_warnings);
 }
 
 fn smallRankingIndex(summaries: []const CandidateSummary, recommended: ?usize) ?usize {
@@ -1858,7 +1870,7 @@ test "the human batch report keeps the warnings of a candidate whose queries all
         .variant_path = "",
         .timeout_ms = 0,
         .work_parent = "/tmp",
-    }, 1, &summaries, &order, &.{}, &.{}, &.{}, null, null);
+    }, 1, &summaries, &order, &.{}, &.{}, &.{}, &.{}, null, null);
     const output = stdout.buffered();
     try testing.expect(std.mem.indexOf(u8, output, "slow.sql: no_analyze_stats: ") != null);
     try testing.expect(std.mem.indexOf(u8, output, "slow.sql: data_too_small: ") != null);

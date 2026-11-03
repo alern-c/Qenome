@@ -598,7 +598,7 @@ fn attachSqlWarnings(
     sql: []const u8,
     plan: db.Plan,
 ) std.mem.Allocator.Error!void {
-    if (!inputs.sql_warnings or inputs.scale_step) return;
+    if (!inputs.sql_warnings) return;
     report.sql_warnings = try cli_sql_warnings.collect(arena, .{
         .sql = sql,
         .plan = plan,

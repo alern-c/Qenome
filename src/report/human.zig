@@ -85,15 +85,23 @@ pub fn writeHumanWarning(stdout: *Io.Writer, allocator: std.mem.Allocator, code:
 fn writeSqlWarnings(stdout: *Io.Writer, allocator: std.mem.Allocator, path: []const u8, warnings: []const model.SqlWarning) Error!void {
     if (warnings.len == 0) return;
     try stdout.writeAll("\nSQL warnings\n");
-    for (warnings) |warning| {
-        const line = try std.fmt.allocPrint(allocator, "{s}:{d}:{d}: {s}: {s}: {s}", .{
-            path, warning.line, warning.column, warning.severity, warning.code, warning.message,
-        });
-        defer allocator.free(line);
-        try writeIndent(stdout, 2);
-        try writeWrapped(stdout, line, 2, 4);
-        try stdout.writeByte('\n');
-    }
+    for (warnings) |warning| try writeSqlWarningLine(stdout, allocator, "", path, warning);
+}
+
+pub fn writeSqlWarningLine(stdout: *Io.Writer, allocator: std.mem.Allocator, prefix: []const u8, path: []const u8, warning: model.SqlWarning) Error!void {
+    const line = try std.fmt.allocPrint(allocator, "{s}{s}:{d}:{d}: {s}: {s}: {s}", .{
+        prefix, path, warning.line, warning.column, warning.severity, warning.code, warning.message,
+    });
+    defer allocator.free(line);
+    try writeIndent(stdout, 2);
+    try writeWrapped(stdout, line, 2, 4);
+    try stdout.writeByte('\n');
+}
+
+pub fn writeQuerySqlWarnings(stdout: *Io.Writer, allocator: std.mem.Allocator, warnings: []const model.QuerySqlWarning) Error!void {
+    if (warnings.len == 0) return;
+    try stdout.writeAll("\nSQL warnings\n");
+    for (warnings) |entry| try writeSqlWarningLine(stdout, allocator, "", entry.query, entry.warning);
 }
 
 fn writeD1Human(stdout: *Io.Writer, header: Header) Io.Writer.Error!void {

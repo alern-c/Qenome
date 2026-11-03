@@ -560,3 +560,80 @@ test "the human scale output keeps a long trend line within 80 columns" {
     try expectNarrowBetween(output, "\nTrend\n", "\nnote:");
     try testing.expect(std.mem.indexOf(u8, output, "baseline rows read: superlinear") != null);
 }
+
+fn occurrences(haystack: []const u8, needle: []const u8) usize {
+    var total: usize = 0;
+    var start: usize = 0;
+    while (std.mem.indexOfPos(u8, haystack, start, needle)) |at| {
+        total += 1;
+        start = at + needle.len;
+    }
+    return total;
+}
+
+fn sqlWarning(code: []const u8, plan_checked: bool) model.SqlWarning {
+    return .{
+        .code = code,
+        .severity = contract.sql_warning_severity.warning,
+        .message = contract.sql_warning_messages.order_by_random,
+        .line = 3,
+        .column = 10,
+        .plan_checked = plan_checked,
+    };
+}
+
+test "the human scale output writes a SQL warning once when every step has it" {
+    var steps = [_]model.ScaleStep{
+        step(1000, .{ .verdict = .improved }, .match, .{}),
+        step(5000, .{ .verdict = .improved }, .match, .{}),
+    };
+    const found = [_]model.SqlWarning{sqlWarning(contract.code.order_by_random, false)};
+    steps[0].sql_warnings = &found;
+    steps[1].sql_warnings = &found;
+    const report: model.ScaleReport = .{
+        .header = header(null),
+        .seed_path = "seed.json",
+        .scale = &.{ 1000, 5000 },
+        .steps = &steps,
+    };
+    var buffer: [16384]u8 = undefined;
+    const output = try render(report, &buffer);
+    try testing.expect(std.mem.indexOf(u8, output, "\nSQL warnings\n") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "select.sql:3:10: warning: order_by_random:") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "warning at 1,000 rows: select.sql:3:10") == null);
+    try testing.expectEqual(@as(usize, 1), occurrences(output, "order_by_random"));
+}
+
+test "the human scale output names the step where a SQL warning appears" {
+    var steps = [_]model.ScaleStep{
+        step(1000, .{ .verdict = .improved }, .match, .{}),
+        step(5000, .{ .verdict = .improved }, .match, .{}),
+    };
+    const kept = [_]model.SqlWarning{sqlWarning(contract.code.order_by_random, true)};
+    const unplanned = [_]model.SqlWarning{sqlWarning(contract.code.order_by_random, false)};
+    steps[0].sql_warnings = &kept;
+    steps[1].sql_warnings = &unplanned;
+    const report: model.ScaleReport = .{
+        .header = header(null),
+        .seed_path = "seed.json",
+        .scale = &.{ 1000, 5000 },
+        .steps = &steps,
+    };
+    var buffer: [16384]u8 = undefined;
+    const output = try render(report, &buffer);
+    try testing.expect(std.mem.indexOf(u8, output, "warning at 1,000 rows: select.sql:3:10") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "warning at 5,000 rows: select.sql:3:10") != null);
+    try testing.expectEqual(@as(usize, 2), occurrences(output, "order_by_random"));
+
+    steps[1].sql_warnings = &.{};
+    const partial: model.ScaleReport = .{
+        .header = header(null),
+        .seed_path = "seed.json",
+        .scale = &.{ 1000, 5000 },
+        .steps = &steps,
+    };
+    const partial_output = try render(partial, &buffer);
+    try testing.expect(std.mem.indexOf(u8, partial_output, "warning at 1,000 rows: select.sql:3:10") != null);
+    try testing.expect(std.mem.indexOf(u8, partial_output, "warning at 5,000 rows") == null);
+    try testing.expectEqual(@as(usize, 1), occurrences(partial_output, "order_by_random"));
+}

@@ -138,6 +138,27 @@ fn writeSmallDataWarning(json: *std.json.Stringify, allocator: std.mem.Allocator
     try json.endObject();
 }
 
+pub fn writeJsonSqlWarning(json: *std.json.Stringify, allocator: std.mem.Allocator, warning: model.SqlWarning, query: ?[]const u8) Error!void {
+    try json.beginObject();
+    if (query) |label| {
+        try json.objectField("query");
+        try writeJsonText(json, allocator, label);
+    }
+    try json.objectField("code");
+    try json.write(warning.code);
+    try json.objectField("severity");
+    try json.write(warning.severity);
+    try json.objectField("message");
+    try writeJsonText(json, allocator, warning.message);
+    try json.objectField("line");
+    try json.write(warning.line);
+    try json.objectField("column");
+    try json.write(warning.column);
+    try json.objectField("plan_checked");
+    try json.write(warning.plan_checked);
+    try json.endObject();
+}
+
 fn writeJsonComparison(
     writer: *Io.Writer,
     allocator: std.mem.Allocator,
@@ -236,22 +257,7 @@ fn writeJsonComparison(
     if (options.sql_warnings) {
         try json.objectField("sql_warnings");
         try json.beginArray();
-        for (report.sql_warnings) |warning| {
-            try json.beginObject();
-            try json.objectField("code");
-            try json.write(warning.code);
-            try json.objectField("severity");
-            try json.write(warning.severity);
-            try json.objectField("message");
-            try writeJsonText(&json, allocator, warning.message);
-            try json.objectField("line");
-            try json.write(warning.line);
-            try json.objectField("column");
-            try json.write(warning.column);
-            try json.objectField("plan_checked");
-            try json.write(warning.plan_checked);
-            try json.endObject();
-        }
+        for (report.sql_warnings) |warning| try writeJsonSqlWarning(&json, allocator, warning, null);
         try json.endArray();
     }
     try json.objectField("size_bytes");

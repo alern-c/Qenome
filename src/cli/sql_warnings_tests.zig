@@ -392,3 +392,259 @@ test "the write comparison reports the SQL warnings" {
     try testing.expect(std.mem.indexOf(u8, human.stdout, "leading_wildcard_like") != null);
     try testing.expect(std.mem.indexOf(u8, human.stdout, "select.sql:1:") != null);
 }
+
+const batch_sql = "CREATE TABLE t(id INTEGER PRIMARY KEY, a INTEGER, b TEXT);";
+
+const batch_manifest =
+    \\{"queries":[{"select":"select.sql"},{"select":"select2.sql"}],"candidates":[{"index_sql":"index.sql"},{"index_sql":"index2.sql"}]}
+;
+
+const one_candidate_manifest =
+    \\{"queries":[{"select":"select.sql","binds":["1:text:x"]}],"candidates":[{"index_sql":"index.sql"}]}
+;
+
+fn count(haystack: []const u8, needle: []const u8) usize {
+    var total: usize = 0;
+    var start: usize = 0;
+    while (std.mem.indexOfPos(u8, haystack, start, needle)) |at| {
+        total += 1;
+        start = at + needle.len;
+    }
+    return total;
+}
+
+fn runBatchMode(
+    fixture: *Fixture,
+    manifest: [:0]const u8,
+    format: [:0]const u8,
+    extra: []const [:0]const u8,
+    stdout_buffer: []u8,
+    stderr_buffer: []u8,
+) RunResult {
+    var argv: [20][:0]const u8 = undefined;
+    const required = [_][:0]const u8{ "Qenome", "--db", fixture.db_path, "--batch", manifest, "--format", format };
+    @memcpy(argv[0..required.len], &required);
+    @memcpy(argv[required.len..][0..extra.len], extra);
+    var stdout = Io.Writer.fixed(stdout_buffer);
+    var stderr = Io.Writer.fixed(stderr_buffer);
+    const code = cli.run(testing.io, testing.allocator, argv[0 .. required.len + extra.len], .{ .temp_parent = fixture.work_parent }, &stdout, &stderr);
+    return .{ .code = code, .stdout = stdout.buffered(), .stderr = stderr.buffered() };
+}
+
+fn expectSameJsonText(a: std.json.Value, b: std.json.Value, key: []const u8) !void {
+    const left = try jsonGet(a, key);
+    const right = try jsonGet(b, key);
+    try testing.expectEqual(left == .null, right == .null);
+    if (left == .null) return;
+    try testing.expectEqualStrings(try jsonText(a, key), try jsonText(b, key));
+}
+
+fn prepareBatch(fixture: *Fixture) ![:0]u8 {
+    const second_select = try file(&fixture.tmp, "select2.sql", "SELECT * FROM t WHERE a = 1");
+    testing.allocator.free(second_select);
+    return file(&fixture.tmp, "batch.json", batch_manifest);
+}
+
+fn runSuggestMode(
+    fixture: *Fixture,
+    format: [:0]const u8,
+    extra: []const [:0]const u8,
+    stdout_buffer: []u8,
+    stderr_buffer: []u8,
+) RunResult {
+    var argv: [20][:0]const u8 = undefined;
+    const required = [_][:0]const u8{ "Qenome", "--db", fixture.db_path, "--select", fixture.select_path, "--suggest", "--format", format };
+    @memcpy(argv[0..required.len], &required);
+    @memcpy(argv[required.len..][0..extra.len], extra);
+    var stdout = Io.Writer.fixed(stdout_buffer);
+    var stderr = Io.Writer.fixed(stderr_buffer);
+    const code = cli.run(testing.io, testing.allocator, argv[0 .. required.len + extra.len], .{ .temp_parent = fixture.work_parent }, &stdout, &stderr);
+    return .{ .code = code, .stdout = stdout.buffered(), .stderr = stderr.buffered() };
+}
+
+test "a batch report lints each baseline SELECT once and lists the warnings" {
+    var fixture = try Fixture.init(batch_sql, "SELECT * FROM t WHERE b LIKE '%x'", "CREATE INDEX idx_b ON t(b);");
+    defer fixture.deinit();
+    const second_index = try file(&fixture.tmp, "index2.sql", "CREATE INDEX idx_a ON t(a);");
+    defer testing.allocator.free(second_index);
+    const manifest = try prepareBatch(&fixture);
+    defer testing.allocator.free(manifest);
+    var out: [262144]u8 = undefined;
+    var err: [65536]u8 = undefined;
+
+    const human = runBatchMode(&fixture, manifest, "human", &.{}, &out, &err);
+    try testing.expectEqual(cli.ExitCode.ok, human.code);
+    try testing.expectEqualStrings("", human.stderr);
+    try testing.expect(std.mem.indexOf(u8, human.stdout, "\nSQL warnings\n") != null);
+    try testing.expect(std.mem.indexOf(u8, human.stdout, "  select.sql:1:8: info: select_star:") != null);
+    try testing.expectEqual(@as(usize, 1), count(human.stdout, "leading_wildcard_like:"));
+
+    const json = runBatchMode(&fixture, manifest, "json", &.{}, &out, &err);
+    try testing.expectEqual(cli.ExitCode.ok, json.code);
+    var parsed = try parseJson(json.stdout);
+    defer parsed.deinit();
+    const warnings = try jsonItems(parsed.value, "sql_warnings");
+    try testing.expectEqual(@as(usize, 3), warnings.len);
+    try testing.expectEqualStrings("select.sql", try jsonText(warnings[0], "query"));
+    try testing.expectEqualStrings(contract.code.select_star, try jsonText(warnings[0], "code"));
+    try testing.expectEqualStrings(contract.sql_warning_severity.info, try jsonText(warnings[0], "severity"));
+    try testing.expectEqual(@as(i64, 1), try jsonInt(warnings[0], "line"));
+    try testing.expectEqual(@as(i64, 8), try jsonInt(warnings[0], "column"));
+    try testing.expect(!try jsonBool(warnings[0], "plan_checked"));
+    try testing.expectEqualStrings(contract.code.leading_wildcard_like, try jsonText(warnings[1], "code"));
+    try testing.expectEqualStrings("select2.sql", try jsonText(warnings[2], "query"));
+    try testing.expectEqualStrings(contract.code.select_star, try jsonText(warnings[2], "code"));
+    const results = try jsonItems(parsed.value, "results");
+    try testing.expectEqual(@as(usize, 4), results.len);
+    for (results) |entry| {
+        const comparison = try jsonGet(entry, "comparison");
+        try testing.expectError(error.TestUnexpectedResult, jsonGet(comparison, "sql_warnings"));
+    }
+
+    const off_json = runBatchMode(&fixture, manifest, "json", &.{"--no-sql-warnings"}, &out, &err);
+    try testing.expectEqual(cli.ExitCode.ok, off_json.code);
+    var off = try parseJson(off_json.stdout);
+    defer off.deinit();
+    try testing.expectEqual(@as(usize, 0), (try jsonItems(off.value, "sql_warnings")).len);
+    try testing.expectEqual(try jsonInt(parsed.value, "exit_code"), try jsonInt(off.value, "exit_code"));
+    try expectSameJsonText(parsed.value, off.value, "recommended");
+    const on_summary = try jsonItems(parsed.value, "summary");
+    const off_summary = try jsonItems(off.value, "summary");
+    try testing.expectEqual(on_summary.len, off_summary.len);
+    for (on_summary, off_summary) |on_entry, off_entry| {
+        for ([_][]const u8{ "improved", "no_effect", "needs_check", "mismatch", "incomparable", "timeout" }) |key| {
+            try testing.expectEqual(try jsonInt(on_entry, key), try jsonInt(off_entry, key));
+        }
+    }
+}
+
+test "the batch plan check drops a function on a column when the baseline uses an expression index" {
+    const select_sql = "SELECT id FROM t WHERE lower(b) = ?";
+    var plain = try Fixture.init(batch_sql, select_sql, "CREATE INDEX idx_b ON t(b);");
+    defer plain.deinit();
+    const plain_manifest = try file(&plain.tmp, "batch.json", one_candidate_manifest);
+    defer testing.allocator.free(plain_manifest);
+    var out: [262144]u8 = undefined;
+    var err: [65536]u8 = undefined;
+
+    const kept = runBatchMode(&plain, plain_manifest, "human", &.{}, &out, &err);
+    try testing.expectEqual(cli.ExitCode.ok, kept.code);
+    try testing.expect(std.mem.indexOf(u8, kept.stdout, "\nSQL warnings\n") != null);
+    try testing.expect(std.mem.indexOf(u8, kept.stdout, "function_on_column") != null);
+
+    const expression_sql: [:0]const u8 =
+        \\CREATE TABLE t(id INTEGER PRIMARY KEY, a INTEGER, b TEXT);
+        \\CREATE INDEX idx_lower ON t(lower(b));
+    ;
+    var indexed = try Fixture.init(expression_sql, select_sql, "CREATE INDEX idx_b ON t(b);");
+    defer indexed.deinit();
+    const indexed_manifest = try file(&indexed.tmp, "batch.json", one_candidate_manifest);
+    defer testing.allocator.free(indexed_manifest);
+
+    const dropped = runBatchMode(&indexed, indexed_manifest, "human", &.{}, &out, &err);
+    try testing.expectEqual(cli.ExitCode.ok, dropped.code);
+    try testing.expect(std.mem.indexOf(u8, dropped.stdout, "SQL warnings") == null);
+
+    const dropped_json = runBatchMode(&indexed, indexed_manifest, "json", &.{}, &out, &err);
+    try testing.expectEqual(cli.ExitCode.ok, dropped_json.code);
+    var parsed = try parseJson(dropped_json.stdout);
+    defer parsed.deinit();
+    try testing.expectEqual(@as(usize, 0), (try jsonItems(parsed.value, "sql_warnings")).len);
+}
+
+test "a batch honours --ignore-sql-warning for one code" {
+    var fixture = try Fixture.init(batch_sql, "SELECT * FROM t WHERE b LIKE '%x'", "CREATE INDEX idx_b ON t(b);");
+    defer fixture.deinit();
+    const second_index = try file(&fixture.tmp, "index2.sql", "CREATE INDEX idx_a ON t(a);");
+    defer testing.allocator.free(second_index);
+    const manifest = try prepareBatch(&fixture);
+    defer testing.allocator.free(manifest);
+    var out: [262144]u8 = undefined;
+    var err: [65536]u8 = undefined;
+
+    const ignored = runBatchMode(&fixture, manifest, "json", &.{ "--ignore-sql-warning", contract.code.select_star }, &out, &err);
+    try testing.expectEqual(cli.ExitCode.ok, ignored.code);
+    var parsed = try parseJson(ignored.stdout);
+    defer parsed.deinit();
+    const warnings = try jsonItems(parsed.value, "sql_warnings");
+    try testing.expectEqual(@as(usize, 1), warnings.len);
+    try testing.expectEqualStrings(contract.code.leading_wildcard_like, try jsonText(warnings[0], "code"));
+
+    const human = runBatchMode(&fixture, manifest, "human", &.{ "--ignore-sql-warning", contract.code.select_star }, &out, &err);
+    try testing.expectEqual(cli.ExitCode.ok, human.code);
+    try testing.expect(std.mem.indexOf(u8, human.stdout, "\nSQL warnings\n") != null);
+    try testing.expect(std.mem.indexOf(u8, human.stdout, "select_star") == null);
+    try testing.expect(std.mem.indexOf(u8, human.stdout, "leading_wildcard_like") != null);
+}
+
+test "--suggest reports the SQL warnings in human and json" {
+    var fixture = try Fixture.init(batch_sql, "SELECT * FROM t WHERE a = ?", "CREATE INDEX idx_a ON t(a);");
+    defer fixture.deinit();
+    var out: [262144]u8 = undefined;
+    var err: [65536]u8 = undefined;
+
+    const human = runSuggestMode(&fixture, "human", &.{ "--bind", "1:int:1" }, &out, &err);
+    try testing.expectEqual(cli.ExitCode.ok, human.code);
+    try testing.expectEqualStrings("", human.stderr);
+    try testing.expect(std.mem.indexOf(u8, human.stdout, "\nSQL warnings\n") != null);
+    try testing.expect(std.mem.indexOf(u8, human.stdout, "info: select_star:") != null);
+    try testing.expect(std.mem.indexOf(u8, human.stdout, fixture.select_path) != null);
+
+    const json = runSuggestMode(&fixture, "json", &.{ "--bind", "1:int:1" }, &out, &err);
+    try testing.expectEqual(cli.ExitCode.ok, json.code);
+    var parsed = try parseJson(json.stdout);
+    defer parsed.deinit();
+    const warnings = try jsonItems(parsed.value, "sql_warnings");
+    try testing.expectEqual(@as(usize, 1), warnings.len);
+    try testing.expectEqualStrings(fixture.select_path, try jsonText(warnings[0], "query"));
+    try testing.expectEqualStrings(contract.code.select_star, try jsonText(warnings[0], "code"));
+
+    const off = runSuggestMode(&fixture, "json", &.{ "--bind", "1:int:1", "--no-sql-warnings" }, &out, &err);
+    try testing.expectEqual(cli.ExitCode.ok, off.code);
+    var off_parsed = try parseJson(off.stdout);
+    defer off_parsed.deinit();
+    try testing.expectEqual(@as(usize, 0), (try jsonItems(off_parsed.value, "sql_warnings")).len);
+    try testing.expectEqual(try jsonInt(parsed.value, "exit_code"), try jsonInt(off_parsed.value, "exit_code"));
+    try testing.expectEqualStrings(try jsonText(parsed.value, "recommended"), try jsonText(off_parsed.value, "recommended"));
+}
+
+test "--suggest reports the SQL warnings when no index is needed" {
+    var fixture = try Fixture.init(batch_sql, "SELECT * FROM t ORDER BY random() LIMIT 10", "CREATE INDEX idx_a ON t(a);");
+    defer fixture.deinit();
+    var out: [262144]u8 = undefined;
+    var err: [65536]u8 = undefined;
+
+    const human = runSuggestMode(&fixture, "human", &.{}, &out, &err);
+    try testing.expectEqual(cli.ExitCode.ok, human.code);
+    try testing.expectEqualStrings("", human.stderr);
+    try testing.expect(std.mem.indexOf(u8, human.stdout, "no index needed") != null);
+    try testing.expect(std.mem.indexOf(u8, human.stdout, "\nsql warnings:\n") != null);
+    try testing.expect(std.mem.indexOf(u8, human.stdout, "info: select_star:") != null);
+    try testing.expect(std.mem.indexOf(u8, human.stdout, "warning: order_by_random:") != null);
+
+    const json = runSuggestMode(&fixture, "json", &.{}, &out, &err);
+    try testing.expectEqual(cli.ExitCode.ok, json.code);
+    var parsed = try parseJson(json.stdout);
+    defer parsed.deinit();
+    try testing.expect(!try jsonBool(parsed.value, "index_needed"));
+    const warnings = try jsonItems(parsed.value, "sql_warnings");
+    try testing.expectEqual(@as(usize, 2), warnings.len);
+    try testing.expectEqualStrings(fixture.select_path, try jsonText(warnings[0], "query"));
+    try testing.expectEqualStrings(contract.code.select_star, try jsonText(warnings[0], "code"));
+    try testing.expectEqualStrings(contract.code.order_by_random, try jsonText(warnings[1], "code"));
+
+    const off = runSuggestMode(&fixture, "json", &.{"--no-sql-warnings"}, &out, &err);
+    try testing.expectEqual(cli.ExitCode.ok, off.code);
+    var off_parsed = try parseJson(off.stdout);
+    defer off_parsed.deinit();
+    try testing.expectEqual(@as(usize, 0), (try jsonItems(off_parsed.value, "sql_warnings")).len);
+    try testing.expectEqual(try jsonInt(parsed.value, "exit_code"), try jsonInt(off_parsed.value, "exit_code"));
+
+    const ignored = runSuggestMode(&fixture, "json", &.{ "--ignore-sql-warning", contract.code.select_star }, &out, &err);
+    try testing.expectEqual(cli.ExitCode.ok, ignored.code);
+    var ignored_parsed = try parseJson(ignored.stdout);
+    defer ignored_parsed.deinit();
+    const remaining = try jsonItems(ignored_parsed.value, "sql_warnings");
+    try testing.expectEqual(@as(usize, 1), remaining.len);
+    try testing.expectEqualStrings(contract.code.order_by_random, try jsonText(remaining[0], "code"));
+}

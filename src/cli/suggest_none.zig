@@ -4,7 +4,9 @@ const db = @import("../db.zig");
 const cli_args = @import("args.zig");
 const cli_control = @import("control.zig");
 const cli_query = @import("query.zig");
+const cli_sql_warnings = @import("sql_warnings.zig");
 const cli_suggest = @import("suggest.zig");
+const report_model = @import("../report/model.zig");
 const report_suggest = @import("../report/suggest_none.zig");
 
 const ExitCode = cli_control.ExitCode;
@@ -25,6 +27,8 @@ pub fn report(
     format: cli_args.Format,
     queries: []const Select,
     warnings: []const cli_suggest.Warning,
+    sql_warnings: bool,
+    ignored_sql_warnings: []const []const u8,
     stdout: *Io.Writer,
     stderr: *Io.Writer,
 ) ExitCode {
@@ -37,6 +41,7 @@ pub fn report(
         return .rejected;
     };
     var control = db.StepControl.init(io, timeout_ms, cli_control.cancelFlag());
+    var found_warnings: std.ArrayList(report_model.QuerySqlWarning) = .empty;
     for (queries, 0..) |query, index| {
         var failure: ExitCode = .rejected;
         if (!baseline.prepare(query.sql, query.binds, .baseline, "", stderr, &failure)) return failure;
@@ -46,6 +51,20 @@ pub fn report(
             .rows = value.rows,
             .plan = value.plan,
             .counters = value.counters,
+        };
+        const found = cli_sql_warnings.collect(arena, .{
+            .sql = query.sql,
+            .plan = value.plan,
+            .binds = query.binds,
+            .enabled = sql_warnings,
+            .ignored = ignored_sql_warnings,
+        }) catch {
+            stderr.writeAll("error: out of memory\n") catch {};
+            return .rejected;
+        };
+        for (found) |warning| found_warnings.append(arena, .{ .query = query.label, .warning = warning }) catch {
+            stderr.writeAll("error: out of memory\n") catch {};
+            return .rejected;
         };
     }
     const copied = arena.alloc(report_suggest.Warning, warnings.len) catch {
@@ -57,10 +76,11 @@ pub fn report(
         .database_path = database_path,
         .queries = measured,
         .warnings = copied,
+        .sql_warnings = found_warnings.items,
     };
     const written = switch (format) {
         .human => report_suggest.writeHuman(stdout, body),
-        .json => report_suggest.writeJson(stdout, body),
+        .json => report_suggest.writeJson(stdout, arena, body),
         .kv => return .usage,
     };
     written catch |err| {

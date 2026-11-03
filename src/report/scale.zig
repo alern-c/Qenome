@@ -5,6 +5,7 @@ const result = @import("../result.zig");
 const cli_warnings = @import("../cli/warnings.zig");
 const model = @import("model.zig");
 const format = @import("format.zig");
+const report_human = @import("human.zig");
 const report_json = @import("json.zig");
 const scale_trend = @import("scale_trend.zig");
 
@@ -205,6 +206,60 @@ fn writeWarnings(stdout: *Io.Writer, allocator: std.mem.Allocator, report: Repor
     }
 }
 
+fn sameSqlWarning(a: model.SqlWarning, b: model.SqlWarning) bool {
+    return a.line == b.line and a.column == b.column and a.plan_checked == b.plan_checked and
+        std.mem.eql(u8, a.code, b.code) and std.mem.eql(u8, a.severity, b.severity) and std.mem.eql(u8, a.message, b.message);
+}
+
+fn hasSqlWarning(warnings: []const model.SqlWarning, warning: model.SqlWarning) bool {
+    for (warnings) |other| {
+        if (sameSqlWarning(other, warning)) return true;
+    }
+    return false;
+}
+
+fn sqlWarningAtEveryStep(steps: []const Step, warning: model.SqlWarning) bool {
+    for (steps) |step| {
+        if (!hasSqlWarning(step.sql_warnings, warning)) return false;
+    }
+    return true;
+}
+
+fn sqlWarningSeenBefore(steps: []const Step, warning: model.SqlWarning) bool {
+    for (steps) |step| {
+        if (hasSqlWarning(step.sql_warnings, warning)) return true;
+    }
+    return false;
+}
+
+fn writeSqlWarnings(stdout: *Io.Writer, allocator: std.mem.Allocator, report: Report) Error!void {
+    var any = false;
+    for (report.steps) |step| {
+        if (step.sql_warnings.len != 0) any = true;
+    }
+    if (!any) return;
+    const path = if (report.header.write_path) |value| value else report.header.select_path;
+    try stdout.writeAll("\nSQL warnings\n");
+    for (report.steps, 0..) |step, index| {
+        for (step.sql_warnings) |warning| {
+            if (sqlWarningSeenBefore(report.steps[0..index], warning)) continue;
+            if (sqlWarningAtEveryStep(report.steps, warning)) {
+                try report_human.writeSqlWarningLine(stdout, allocator, "", path, warning);
+                continue;
+            }
+            for (report.steps) |other| {
+                if (!hasSqlWarning(other.sql_warnings, warning)) continue;
+                var prefix_buffer: [64]u8 = undefined;
+                var prefix = Io.Writer.fixed(&prefix_buffer);
+                try prefix.writeAll("warning at ");
+                try writeCount(&prefix, other.rows);
+                try prefix.writeAll(" rows: ");
+                try report_human.writeSqlWarningLine(stdout, allocator, prefix.buffered(), path, warning);
+            }
+        }
+    }
+}
+
 fn writeRowDifferences(stdout: *Io.Writer, report: Report) Io.Writer.Error!void {
     if (!report.header.show_rows) return;
     var any = false;
@@ -318,6 +373,7 @@ pub fn writeHumanScale(stdout: *Io.Writer, allocator: std.mem.Allocator, report:
     try writeRowDifferences(stdout, report);
     try writeAnalysis(stdout, allocator, report);
     try writeWarnings(stdout, allocator, report);
+    try writeSqlWarnings(stdout, allocator, report);
     try writeVerdictChange(stdout, report);
     try stdout.writeByte('\n');
     try writeWrapped(stdout, note, 0, 0);

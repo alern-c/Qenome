@@ -212,6 +212,8 @@ fn runCaptured(
             .format = args.format,
             .show_binds = args.show_binds,
             .show_rows = args.show_rows,
+            .sql_warnings = args.sql_warnings,
+            .ignore_sql_warnings = args.ignore_sql_warnings,
             .temp_parent = tempParentPath(temp_parent),
             .seed = spec,
             .scale = scale,
@@ -278,6 +280,8 @@ fn runCaptured(
                 .suggest = args.suggest,
                 .seed = seed_report,
                 .work_parent = parent_path,
+                .sql_warnings = args.sql_warnings,
+                .ignore_sql_warnings = args.ignore_sql_warnings,
             }, loaded, stdout, stderr, &cleanup_failed, &work);
         };
         return finalExitCode(code, cleanup_failed);
@@ -317,6 +321,8 @@ fn runCaptured(
                 .manifest = false,
                 .seed = seed_report,
                 .work_parent = suggest_parent_path,
+                .sql_warnings = args.sql_warnings,
+                .ignore_sql_warnings = args.ignore_sql_warnings,
             }, .{ .queries = &queries, .candidates = &.{} }, stdout, stderr, &suggest_cleanup_failed, &suggest_work);
         };
         return finalExitCode(suggest_code, suggest_cleanup_failed);

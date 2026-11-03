@@ -87,6 +87,7 @@ pub fn writeBatchJson(
     results: []const ResultEntry,
     writes: []const report_batch_writes.Result,
     warnings: []const cli_suggest.Warning,
+    sql_warnings: []const report_model.QuerySqlWarning,
     recommended: ?usize,
     migration: ?Migration,
     seed: ?report_model.Seed,
@@ -208,6 +209,10 @@ pub fn writeBatchJson(
         try report_json.writeJsonText(&json, allocator, warning.message);
         try json.endObject();
     }
+    try json.endArray();
+    try json.objectField("sql_warnings");
+    try json.beginArray();
+    for (sql_warnings) |entry| try report_json.writeJsonSqlWarning(&json, allocator, entry.warning, entry.query);
     try json.endArray();
     try json.endObject();
     try out.writer.writeByte('\n');

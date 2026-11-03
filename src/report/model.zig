@@ -69,6 +69,11 @@ pub const SqlWarning = struct {
     plan_checked: bool,
 };
 
+pub const QuerySqlWarning = struct {
+    query: []const u8,
+    warning: SqlWarning,
+};
+
 pub const Report = struct {
     timing: ?TimeSummary = null,
     sizes: Sizes = .{},
@@ -88,6 +93,7 @@ pub const ScaleStep = struct {
     plan_changed: bool,
     timing: ?TimeSummary = null,
     warnings: Warnings = .{},
+    sql_warnings: []const SqlWarning = &.{},
     baseline_only: usize = 0,
     variant_only: usize = 0,
     baseline_examples: []const []const u8 = &.{},
