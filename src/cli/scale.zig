@@ -275,6 +275,7 @@ fn runStep(session: *const Session, plan: Plan) StepResult {
         .work_parent = session.inputs.temp_parent,
         .show_binds = session.inputs.show_binds,
         .show_rows = session.inputs.show_rows,
+        .scale_step = true,
     }, &rows, session.stderr, session.cleanup_failed, &work)) {
         .computed => |value| value,
         .failed => |failure| return .{ .failed = failure },

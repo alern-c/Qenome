@@ -172,7 +172,7 @@ After the migration is on the remote database, read the same metrics again. [How
 
 ## When the local table is too small
 
-Two hundred rows still show `flag: likely full scan`, and the comparison can say `improved`, while the absolute count stays small. That hides what the same scan costs on a larger table. `data_too_small` means the candidate's table has fewer than 1,000 rows. The warning names the table and its row count, and, when the baseline plan is a bare scan of that table, says that a full scan reads every row. It gives a `next` command that reruns the same files with `--seed-data seed.json --scale 1000,10000`; with `--suggest`, it says to save the suggested SQL as `index.sql` first. The warning does not change the verdict or the exit status. [Accuracy and production D1](accuracy.md#what-the-verdicts-mean) lists every warning.
+Two hundred rows still show `flag: likely full scan`, and the comparison can say `improved`, while the absolute count stays small. That hides what the same scan costs on a larger table. `data_too_small` means the candidate's table has fewer than 1,000 rows. The warning names the table and its row count, and, when the baseline plan is a bare scan of that table, says that a full scan reads every row. It gives a `next` command that reruns the same files with `--seed-data seed.json --scale 1000,10000`; with `--suggest`, it says to save the suggested SQL as `index.sql` first. Inside a `--scale` run the step warning instead says that the step is below 1,000 rows and to read the comparison at a larger step, and its JSON object has no `next_command`. The warning does not change the verdict or the exit status. [Accuracy and production D1](accuracy.md#what-the-verdicts-mean) lists every warning.
 
 `--scale` needs the index as a file, because it does not take `--suggest`, `--batch`, `--migration`, `--rank`, `--record`, or `--format kv`. The seed replaces `events` in the sandbox copy only. Every seeded `note` is `n`, and the query looks for `missing`, so the scan still reads every row and the index reads none.
 
@@ -212,13 +212,9 @@ Steps
 
 Warnings
   warning at 100 rows: data_too_small: The table "events" has 100 rows, fewer
-    than 1000 rows, so this result is not meaningful yet. A full scan reads
-    every row, so a small count does not mean a missing index is harmless. Write
-    a seed spec that lists events and rerun: qenome
-    testdata/generated/bill-spiked/app.db
-    testdata/generated/bill-spiked/manifest/queries/q001.sql
-    testdata/generated/bill-spiked/0002_note.sql --seed-data seed.json --scale
-    1000,10000
+    than 1000 rows, so this step is below the size where the result is
+    meaningful. A full scan reads every row, so a small count does not mean a
+    missing index is harmless. Read the comparison at a larger step.
 
 note: these rows come from generated data measured on this machine; they are not
 production D1 billing.

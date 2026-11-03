@@ -604,6 +604,7 @@ CONTRACT_VALUES = [
     "bind_dependent_partial_index_message",
     "unapplied_migrations_message",
     "data_too_small_message",
+    "data_too_small_scale_message",
     "data_too_small_full_scan",
     "data_too_small_suggested",
 ]

@@ -70,6 +70,7 @@ CANONICAL_FILES = {
         'pub const bind_dependent_partial_index_message = "the message";\n'
         'pub const unapplied_migrations_message = "the message";\n'
         'pub const data_too_small_message = "the message";\n'
+        'pub const data_too_small_scale_message = "the message";\n'
         'pub const data_too_small_full_scan = "the message";\n'
         'pub const data_too_small_suggested = "the message";\n'
         "pub const code = struct {\n"

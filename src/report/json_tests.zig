@@ -584,3 +584,52 @@ test "a small-data warning adds the table, the scan, and the next command" {
     try testing.expectEqualStrings(command, try jsonText(warnings[0], "next_command"));
     try testing.expect(std.mem.indexOf(u8, try jsonText(warnings[0], "message"), "fewer than 1000 rows") != null);
 }
+
+test "a small-data warning without a next command omits the key" {
+    var buffer: [65536]u8 = undefined;
+    var stdout = Io.Writer.fixed(&buffer);
+    const header: Header = .{
+        .database_path = "app.db",
+        .select_path = "select.sql",
+        .index_path = "index.sql",
+        .work_parent = "/tmp",
+        .sqlite_version = "0.0.0",
+        .sqlite_source_id = "test-source-id",
+        .qenome_version = "0.0.0",
+        .binds = &.{},
+        .show_binds = false,
+    };
+    const measurement: model.Measurement = .{
+        .rows = 1,
+        .plan = .{ .rows = @constCast(&scan_line) },
+        .counters = .{ .rows_read = 100, .rows_written = 0, .fullscan_steps = 100, .vm_steps = 20, .sort_ops = 0, .autoindex_rows = 0 },
+        .columns = 1,
+    };
+    const comparison: result.Comparison = .{ .matched = true, .same_order = true };
+    const outcome: model.Outcome = .{ .verdict = .match, .comparison = comparison };
+    const report: Report = .{
+        .sizes = .{ .baseline = 4096, .variant = 4096 },
+        .judgement = .{ .verdict = .improved },
+        .warnings = .{
+            .data_too_small = true,
+            .small_data = .{
+                .table = "events",
+                .rows = 100,
+                .full_scan = true,
+                .suggested = false,
+                .next_command = null,
+                .message = "The table \"events\" has 100 rows, fewer than 1000 rows, so this step is below the size where the result is meaningful.",
+            },
+        },
+    };
+    try writeJsonReport(&stdout, testing.allocator, header, measurement, measurement, outcome, report);
+    var parsed = try parseReportJson(stdout.buffered());
+    defer parsed.deinit();
+    const warnings = try jsonItems(parsed.value, "warnings");
+    try testing.expectEqual(@as(usize, 1), warnings.len);
+    try testing.expectEqualStrings("data_too_small", try jsonText(warnings[0], "code"));
+    try testing.expectEqualStrings("events", try jsonText(warnings[0], "table"));
+    try testing.expectEqual(@as(i64, 100), try jsonInt(warnings[0], "rows"));
+    try testing.expect(try jsonBool(warnings[0], "full_scan"));
+    try testing.expectError(error.TestUnexpectedResult, jsonGet(warnings[0], "next_command"));
+}
