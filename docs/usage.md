@@ -50,6 +50,8 @@ The three paths fill the roles in this order: database, SELECT (or write) file, 
 - `--format <human|kv|json>`: output format (default `human`). See [Output formats](output.md#output-formats).
 - `--show-binds`: print the bind values. Without it, `human` leaves the binds out, and `kv` and `json` print only their numbers, types, and text lengths, so the values stay out of logs.
 - `--show-rows`: print the example rows that only one copy returned. Without it, every format prints only the counts, so row values stay out of logs; `human` says to rerun with this flag.
+- `--no-sql-warnings`: turn off the `SQL warnings` block. The checks and their codes are in [SQL warnings](#sql-warnings).
+- `--ignore-sql-warning <CODE>`: turn off one SQL warning code; repeatable. An unknown code is a usage error with `usage_sql_warning` and exit status `2`.
 - `--help`, `-h`: print the usage and exit with status 0.
 - `--version`: print the version from `build.zig.zon` as `qenome <version>` and exit with status 0.
 
@@ -186,6 +188,25 @@ The steps are 2 to 6 strictly increasing integers, each at most 10,000,000; the 
 The exit status is the heaviest of the steps, in the same order as a single comparison: `3`, then `4`, then `124`, then `1`, otherwise `0`. A step that cannot run stops the run before the report is written.
 
 With `--format json` the output is a separate object with `scale_schema_version` `1`: the `inputs`, the `environment`, one `steps` entry per size (its `tables` and the full `schema_version` 2 comparison), the `trend` and `findings` described above, and the run-wide `warnings`. See [the JSON contract](json.md#scale-report-scale_schema_version-1).
+
+## SQL warnings
+
+The single comparison (including `--write`) reads the SQL text and reports patterns that usually stop SQLite from using an index. They are advisory: a finding never changes the result rows, the verdict, the recommendation, a batch count, or the exit status. The `SQL warnings` block in human output, the `sql-warning` lines in kv, and the `sql_warnings` array in JSON come after the measurement warnings. `--batch`, `--suggest`, and `--scale` do not report them yet; see [#174](https://github.com/alern-c/Qenome/issues/174).
+
+| `code` | Severity | Pattern and next step |
+| --- | --- | --- |
+| `function_on_column` | warning | A column is wrapped in a function or arithmetic on one side of a comparison in `WHERE`, `ON`, or `HAVING` (`lower(email) = ?`, `price * 2 > ?`). Compare the plain column, or add an expression index for the expression. The finding is dropped when the baseline plan uses an index on that table, because an expression index can match |
+| `leading_wildcard_like` | warning | A `LIKE` or `GLOB` pattern that starts with a wildcard (`%` and `_`, or for `GLOB` `*` and `?`). Put a fixed prefix first, or compare the column another way. A bound value is checked when it is known |
+| `or_across_columns` | warning | A top-level `OR` in `WHERE` whose branches compare different columns. Split it into separate queries, or add an index for each column. The finding is reported only when the baseline plan has a full `SCAN` of that table, because SQLite can answer some ORs with a MULTI-INDEX OR |
+| `large_offset` | warning | `OFFSET n` or `LIMIT n, m` with a value of at least `1000`. Page with `WHERE id > ? ORDER BY id LIMIT ?` instead |
+| `order_by_random` | warning | `ORDER BY random()`. Order by a column instead, or pick the random rows another way |
+| `select_star` | info | `SELECT *` or `t.*` in the outermost select list. List the columns you use, so that a covering index can serve the query |
+
+The checks read the SQL text; they do not execute anything extra. Strings, comments, and quoted identifiers are not matched, and a pattern inside a subquery or a CTE is analysed as its own `SELECT`. A check stays quiet when the text is ambiguous: a comparison between two columns, a function on the parameter side, `INDEXED BY`, a window function, `CAST`, `COLLATE`, or a table that cannot be resolved to one source. `implicit_conversion` is not reported yet.
+
+The line and column are 1-based and count bytes in the SQL file, so a multi-byte character before the pattern moves the column. The file is the path you passed in the comparison, or the `--write` path.
+
+`--no-sql-warnings` turns every check off. `--ignore-sql-warning CODE` turns one code off and can be repeated. An unknown code is a usage error (exit status `2`, error code `usage_sql_warning`). Both flags apply to the single comparison today; `--batch`, `--suggest`, and `--scale` accept them and start reporting the warnings when [#174](https://github.com/alern-c/Qenome/issues/174) lands. `--record` does not take them.
 
 ## D1 local databases
 

@@ -264,6 +264,7 @@ Emitted fields an agent should read:
 | `baseline.total_changes` / `variant.total_changes` | With `--write`: changes including triggers and foreign keys. Both `changes` and `total_changes` must match for `result` `match` |
 | `baseline.executions` / `variant.executions` | With `--write`: rolled-back executions per copy |
 | `plan_changed` | Whether the plan text changed |
+| `sql_warnings` | Findings about the SQL text: `code`, `severity` (`warning` or `info`), `message`, `line`, `column`, and `plan_checked`. Read every entry before proposing an index; a `warning` says the SQL stops an index from helping. They never change the verdict or the exit code |
 | `timing` | `null` with `--runs 0`. When present, it is a reference. It does not pick the verdict |
 | `environment.sqlite_version` | Bundled SQLite until `sqlite.bundled_version` exists |
 
@@ -275,6 +276,8 @@ Still reserved; do not require or invent:
 
 - `sqlite.bundled_version`
 - `sqlite.db_header_version`
+
+`sql_warnings` in a comparison object lists the SQL patterns that usually stop SQLite from using an index: `function_on_column`, `leading_wildcard_like`, `or_across_columns`, `large_offset`, `order_by_random`, and `select_star` (`info`). Read every entry with `severity` `warning` before you propose an index, and tell the user what to change in the SQL: compare a plain column, put a fixed prefix before a `LIKE` wildcard, split an `OR` across columns, page instead of using a large `OFFSET`, or list the columns instead of `SELECT *`. Do not present a finding as a problem with the candidate index, and do not change the verdict because of one. `--no-sql-warnings` hides all of them; `--ignore-sql-warning CODE` hides one code. A `plan_checked` of `true` means the baseline plan was checked and the finding was kept. `--batch`, `--suggest`, and `--scale` do not report SQL warnings yet (#174); do not invent them there. If `sql_warnings` is absent, the binary predates the check.
 
 If `warnings` is absent, say the ANALYZE-stats check, the small-data check, and the bind-dependent partial index check are not in this binary yet. If `warnings` is present, repeat every `code` and `message` to the user. Warnings do not change the exit code. Do not keep a `needs-check` index or an exit `3` result because a warning might explain it. A `bind_dependent_partial_index` warning does not disqualify an `improved` index for the values that were tested; it says the plan is not value-independent.
 
@@ -329,7 +332,7 @@ npx qenome --d1 DB select.sql index.sql --runs 0 --format json  # qenome-ci: pen
 ```
 
 ```sh
-npx qenome testdata/skill/app.db testdata/skill/select.sql testdata/skill/index.sql --bind 1:int:1 --runs 6 --format json  # qenome-ci: run exit=0 stdout=report verdict=improved result=match fields=schema_version,exit_code,verdict,warnings,timing.noise_band,timing.confidence_interval,timing.median_difference_ns,timing.effect,timing.unavailable_reason
+npx qenome testdata/skill/app.db testdata/skill/select.sql testdata/skill/index.sql --bind 1:int:1 --runs 6 --format json  # qenome-ci: run exit=0 stdout=report verdict=improved result=match fields=schema_version,exit_code,verdict,warnings,sql_warnings,timing.noise_band,timing.confidence_interval,timing.median_difference_ns,timing.effect,timing.unavailable_reason
 ```
 
 ```sh

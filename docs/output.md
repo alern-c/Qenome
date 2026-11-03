@@ -8,6 +8,7 @@
 - a side-by-side table of baseline and variant: rows read, rows written, result rows, full-scan steps, VM steps, sort operations and autoindex rows when they are not zero, the p25 and p75 times when timed, and the database file bytes;
 - the query plan for both copies, with `kind`, `covering`, and `automatic` as hints read from SQLite's wording;
 - a `Warnings` section with `warning: <code>: <message>` lines when an advisory warning applies;
+- a `SQL warnings` section with `<path>:<line>:<column>: <severity>: <code>: <message>` lines for patterns in the SQL text that stop an index from helping. It comes after `Warnings` and never changes the verdict, the rows, or the exit status;
 - with `--suggest`, a `Suggested by SQLite:` section that lists each proposal as `suggested:N: CREATE INDEX ...` with its SQL text, and `warning: <code>: <message>` lines after the tables for what was dropped or could not be done;
 - with `--d1`, a D1 block: the binding, the config, the database id, the local file, the SQLite version difference, and the caution about production D1.
 
@@ -17,7 +18,7 @@ Input paths other than `--seed-data`, the SQLite and Zig versions, the build mod
 
 ## kv
 
-`--format kv` prints every fact as one `key: value` line, for scripts and logs. It includes the inputs, the SQLite and Zig versions, the build mode, the OS and architecture, the work directory, and the timing conditions, which the human output leaves out. With `--d1` it adds `d1-binding`, `d1-config`, `d1-database-id`, `d1-local-database`, `d1-sqlite-version`, `d1-sqlite-version-note`, and `d1-caution`. With `--seed-data` it adds `seed-data`, `seed`, `seed-rows`, `seed-tables`, and one `seed-table` line per table. With `--write` it prints `write` instead of `select`, adds `result-kind`, `write-changes-baseline`, `write-changes-variant`, `write-total-changes-baseline`, `write-total-changes-variant`, and `write-runs`, and describes the write measurement in the `measure-*` lines. `baseline-only-row` and `variant-only-row` appear only with `--show-rows`.
+`--format kv` prints every fact as one `key: value` line, for scripts and logs. It includes the inputs, the SQLite and Zig versions, the build mode, the OS and architecture, the work directory, and the timing conditions, which the human output leaves out. With `--d1` it adds `d1-binding`, `d1-config`, `d1-database-id`, `d1-local-database`, `d1-sqlite-version`, `d1-sqlite-version-note`, and `d1-caution`. With `--seed-data` it adds `seed-data`, `seed`, `seed-rows`, `seed-tables`, and one `seed-table` line per table. With `--write` it prints `write` instead of `select`, adds `result-kind`, `write-changes-baseline`, `write-changes-variant`, `write-total-changes-baseline`, `write-total-changes-variant`, and `write-runs`, and describes the write measurement in the `measure-*` lines. `baseline-only-row` and `variant-only-row` appear only with `--show-rows`. With a SQL warning, it adds one `sql-warning: <code> <severity> <path>:<line>:<column> <message>` line per finding.
 
 ## json
 
@@ -75,6 +76,7 @@ Main keys:
 | `measurement` | Timing conditions: `runs_per_copy` (timed rounds per copy; `0` when not timed), `warmup`, `order`, `scope`, `cache`. With `--write`, `runs_per_copy` is the number of rolled-back executions per copy |
 | `binds` | `number` and `type`; text also has `text_bytes`. `value` appears only with `--show-binds` |
 | `warnings` | An array of `{code, message}` (`no_analyze_stats`, `data_too_small`, `bind_dependent_partial_index`, `unapplied_migrations`); advisory, never changes verdict or exit. A `data_too_small` object also has `table`, `rows`, `full_scan`, and `next_command` |
+| `sql_warnings` | An array of `{code, severity, message, line, column, plan_checked}` for the SQL text of the comparison; advisory, never changes verdict or exit. `line` and `column` are 1-based bytes in the SQL file. `plan_checked` is `true` when the baseline plan was checked and kept the finding. The comparison embedded in a `--batch`, `--suggest`, or `--scale` report omits this key |
 | `sqlite` | Reserved, not emitted yet. `bundled_version` and `db_header_version`. Until then, the bundled version is `environment.sqlite_version` |
 
 - String values write a backslash as `\\` and each byte that is not valid UTF-8 as `\xNN` (byte 0xFF becomes `\xff`), and the result is then escaped as JSON. A literal four-character `\xff` therefore becomes `\\xff` and is a different string from the byte 0xFF. To recover the original bytes, read `\\` as one backslash and `\xNN` as that byte, and leave everything else as it is. Paths, plan details, reasons, and bind text use this rule. Text values in the example rows use it too, surrounded by single quotes (for example `'\xff'`, which appears as `'\\xff'` in the JSON text); BLOBs are written as `x'00ff'`. Example values longer than 200 bytes are cut and followed by `...(N bytes)`.
