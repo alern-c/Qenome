@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- On macOS the variant copy in the temporary directory is a file-system clone (`clonefile`) instead of a byte copy: for a 3.03 GB database the copy fell from 1.4-3.1 s to under 1 ms and needed no extra disk space, and a `--runs 3 --timeout-ms 0` run went from 65 s to 41 s. Linux and Windows keep the byte copy, a file system that refuses the clone falls back to it, and the report, the JSON, and the exit status are unchanged.
 - A candidate `CREATE INDEX` that reaches `--timeout-ms` now names the way past the limit: a comparison and `--write` print `raise --timeout-ms, or use --timeout-ms 0 to wait for the index build` after the existing time-limit sentence, and a `--batch` candidate or migration failure records the same advice in its `failure.message`. The default of `30000`, the exit status `124`, and every JSON `code` and `schema_version` stay the same.
 
 ### Fixed
