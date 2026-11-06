@@ -28,6 +28,7 @@ EXPECT_KEYS = (
     "rows_written",
     "effect",
     "warnings",
+    "sql_warnings",
     "human",
     "batch",
     "suggest",
@@ -39,6 +40,7 @@ EXPECT_KEYS = (
 PLAN_KEYS = ("contains", "excludes")
 ROWS_KEYS = ("direction", "max_ratio")
 WARNING_KEYS = ("contains", "excludes")
+SQL_WARNING_PREDICATE_KEYS = ("code", "severity", "message", "line", "column", "plan_checked")
 HUMAN_KEYS = ("contains", "excludes")
 BATCH_KEYS = ("recommended", "counts")
 SUGGEST_KEYS = ("recommended", "leads_with")
@@ -223,6 +225,42 @@ def check_warnings(name, value):
     for key in WARNING_KEYS:
         if key in value:
             result[key] = check_string_list(name + "." + key, value[key])
+    require(result, name + " needs contains or excludes")
+    return result
+
+
+def check_sql_warning(name, value):
+    require(isinstance(value, dict), name + " must be an object")
+    unknown_keys(name, value, SQL_WARNING_PREDICATE_KEYS)
+    matched = {}
+    for key in ("code", "severity", "message"):
+        if key in value:
+            require(isinstance(value[key], str) and bool(value[key]), name + "." + key + " must be a non-empty string")
+            matched[key] = value[key]
+    for key in ("line", "column"):
+        if key in value:
+            position = value[key]
+            if isinstance(position, bool) or not isinstance(position, int):
+                raise Unusable(name + "." + key + " must be a whole number")
+            matched[key] = position
+    if "plan_checked" in value:
+        require(isinstance(value["plan_checked"], bool), name + ".plan_checked must be true or false")
+        matched["plan_checked"] = value["plan_checked"]
+    require(matched, name + " needs a check")
+    return matched
+
+
+def check_sql_warnings(name, value):
+    require(isinstance(value, dict), name + " must be an object")
+    unknown_keys(name, value, WARNING_KEYS)
+    result = {}
+    for key in WARNING_KEYS:
+        if key in value:
+            raw = value[key]
+            require(isinstance(raw, list) and bool(raw), name + "." + key + " must be a non-empty array")
+            result[key] = [
+                check_sql_warning(name + "." + key + "[" + str(index) + "]", entry) for index, entry in enumerate(raw)
+            ]
     require(result, name + " needs contains or excludes")
     return result
 
@@ -433,6 +471,8 @@ def load_expect(case_name, value):
         result["effect"] = check_effect(case_name + ": expect.effect", value["effect"])
     if "human" in value:
         result["human"] = check_human(case_name + ": expect.human", value["human"])
+    if "sql_warnings" in value:
+        result["sql_warnings"] = check_sql_warnings(case_name + ": expect.sql_warnings", value["sql_warnings"])
     if "batch" in value:
         result["batch"] = check_batch(case_name + ": expect.batch", value["batch"])
     if "suggest" in value:
@@ -517,6 +557,8 @@ def load_case(root, name):
     for option in HARNESS_OPTIONS:
         require(not has_option(args, option), name + ": args must not hold " + option + "; the harness passes it")
     mode = case_mode(case_dir, args)
+    if "sql_warnings" in expect and (mode != "compare" or has_option(args, "--scale")):
+        raise Unusable(name + ": expect.sql_warnings needs a plain compare case")
     case = Case(name, case_dir, mode, list(args), expect, known_wrong, timing)
     check_files(case)
     return case
@@ -687,7 +729,7 @@ def observation_from(done):
 
 def fail_messages(expect, observation):
     failures = []
-    if [key for key in COMPARISON_KEYS if key in expect]:
+    if [key for key in COMPARISON_KEYS if key in expect] or "sql_warnings" in expect:
         comparison = observation["comparison"]
         if comparison is None:
             if not observation["comparisons"]:
@@ -843,6 +885,8 @@ def comparison_failures(expect, comparison):
             failures += rows_failures(key, comparison, expect[key])
     if "warnings" in expect:
         failures += warning_failures(comparison.get("warnings"), expect["warnings"])
+    if "sql_warnings" in expect:
+        failures += sql_warnings_failures(comparison.get("sql_warnings"), expect["sql_warnings"])
     return failures
 
 
@@ -976,6 +1020,28 @@ def warning_failures(warnings, spec):
         if code in codes:
             failures.append("the warnings hold " + code)
     return failures
+
+
+def sql_warnings_failures(sql_warnings, spec):
+    warnings = [warning for warning in sql_warnings or [] if isinstance(warning, dict)]
+    codes = [str(warning.get("code", "")) for warning in warnings]
+    listed = "; codes: " + json.dumps(codes)
+
+    def matches(predicate):
+        return any(all(warning.get(key) == value for key, value in predicate.items()) for warning in warnings)
+
+    failures = []
+    for predicate in spec.get("contains", []):
+        if not matches(predicate):
+            failures.append("the sql warnings have no " + wanted_warning(predicate) + listed)
+    for predicate in spec.get("excludes", []):
+        if matches(predicate):
+            failures.append("the sql warnings hold " + wanted_warning(predicate) + listed)
+    return failures
+
+
+def wanted_warning(predicate):
+    return predicate["code"] if "code" in predicate else json.dumps(predicate)
 
 
 def batch_failures(spec, batch):

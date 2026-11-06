@@ -828,6 +828,133 @@ def expectation_tests(checker) -> None:
     )
 
 
+def sql_warnings_tests(checker) -> None:
+    reported = comparison(sql_warnings=[{"code": "function_on_column", "plan_checked": True}])
+    good = observation(checker, report=reported)
+    check_pass(
+        checker,
+        "a matching sql warning passes",
+        {"sql_warnings": {"contains": [{"code": "function_on_column", "plan_checked": True}]}},
+        good,
+    )
+    check_pass(
+        checker,
+        "a sql warning predicate matches with extra observed keys",
+        {"sql_warnings": {"contains": [{"code": "function_on_column"}]}},
+        good,
+    )
+    check_pass(
+        checker,
+        "a sql warning predicate matches among many entries in any order",
+        {"sql_warnings": {"contains": [{"plan_checked": True}]}},
+        observation(
+            checker,
+            report=comparison(
+                sql_warnings=[{"code": "data_too_small"}, {"code": "function_on_column", "plan_checked": True}]
+            ),
+        ),
+    )
+    check_pass(
+        checker,
+        "an absent sql warning passes the excludes",
+        {"sql_warnings": {"excludes": [{"code": "select_star"}]}},
+        good,
+    )
+    check_fail(
+        checker,
+        "a different sql warning code fails",
+        {"sql_warnings": {"contains": [{"code": "select_star"}]}},
+        good,
+        "the sql warnings have no select_star; codes:",
+    )
+    check_fail(
+        checker,
+        "a different sql warning plan_checked fails",
+        {"sql_warnings": {"contains": [{"code": "function_on_column", "plan_checked": False}]}},
+        good,
+        "the sql warnings have no function_on_column",
+    )
+    check_fail(
+        checker,
+        "a present sql warning fails the excludes",
+        {"sql_warnings": {"excludes": [{"code": "function_on_column"}]}},
+        good,
+        "the sql warnings hold function_on_column",
+    )
+    check_fail(
+        checker,
+        "a sql warning fails without a comparison object",
+        {"sql_warnings": {"contains": [{"code": "function_on_column"}]}},
+        observation(checker, batch=batch_report()),
+        "there is no comparison object",
+    )
+
+    refuse_expect(
+        checker,
+        "an empty sql_warnings expect is refused",
+        {"sql_warnings": {}},
+        "needs contains or excludes",
+    )
+    refuse_expect(
+        checker,
+        "a sql warning with an unknown key is refused",
+        {"sql_warnings": {"contains": [{"code": "a", "plan": True}]}},
+        "unknown key(s): plan",
+    )
+    refuse_expect(
+        checker,
+        "a sql warning without a check is refused",
+        {"sql_warnings": {"contains": [{}]}},
+        "needs a check",
+    )
+    refuse_expect(
+        checker,
+        "a sql warning code that is not a string is refused",
+        {"sql_warnings": {"contains": [{"code": 7}]}},
+        "code must be a non-empty string",
+    )
+    refuse_expect(
+        checker,
+        "a sql warning message that is not a string is refused",
+        {"sql_warnings": {"contains": [{"message": []}]}},
+        "message must be a non-empty string",
+    )
+    refuse_expect(
+        checker,
+        "a sql warning line that is not a number is refused",
+        {"sql_warnings": {"contains": [{"line": "3"}]}},
+        "line must be a whole number",
+    )
+    refuse_expect(
+        checker,
+        "a sql warning plan_checked that is not a boolean is refused",
+        {"sql_warnings": {"contains": [{"plan_checked": 1}]}},
+        "plan_checked must be true or false",
+    )
+    refuse_expect(
+        checker,
+        "a sql_warnings contains that is not an array is refused",
+        {"sql_warnings": {"contains": "function_on_column"}},
+        "must be a non-empty array",
+    )
+
+    batch_files = {
+        "schema.sql": SCHEMA,
+        "select.sql": SELECT,
+        "candidate.sql": INDEX,
+        "batch.json": batch_manifest([{"index_sql": "candidate.sql"}]),
+        "case.json": document({"exit": 0, "sql_warnings": {"contains": [{"code": "function_on_column"}]}}),
+    }
+    refuse_case(checker, "a batch case refuses sql_warnings", batch_files, "needs a plain compare case")
+    scale_files = with_case(
+        document(
+            {"exit": 0, "sql_warnings": {"contains": [{"code": "function_on_column"}]}},
+            args=["--scale", "10,100"],
+        )
+    )
+    refuse_case(checker, "a scale case refuses sql_warnings", scale_files, "needs a plain compare case")
+
+
 def repeat_tests(checker) -> None:
     first = observation(checker, report=comparison())
     failures = checker.repeat_failures(first, first, 2)
@@ -1497,6 +1624,7 @@ def main() -> int:
     parser_value_tests(checker)
     scale_expect_tests(checker)
     expectation_tests(checker)
+    sql_warnings_tests(checker)
     repeat_tests(checker)
     effect_tests(checker)
     timing_tests(checker)

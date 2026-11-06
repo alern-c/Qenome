@@ -20,6 +20,14 @@
     },
     "rows_read": "same",
     "rows_written": "same",
+    "sql_warnings": {
+      "contains": [
+        {
+          "code": "function_on_column",
+          "plan_checked": true
+        }
+      ]
+    },
     "human": {
       "contains": [
         "SQL warnings",

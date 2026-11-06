@@ -16,6 +16,13 @@
     },
     "rows_read": "same",
     "rows_written": "same",
+    "sql_warnings": {
+      "excludes": [
+        {
+          "code": "function_on_column"
+        }
+      ]
+    },
     "human": {
       "excludes": [
         "SQL warnings",
