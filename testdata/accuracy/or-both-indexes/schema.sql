@@ -1,0 +1,10 @@
+CREATE TABLE events (
+  id INTEGER PRIMARY KEY,
+  customer_id INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  note TEXT,
+  name TEXT
+);
+CREATE INDEX idx_customer ON events(customer_id);
+CREATE INDEX idx_created ON events(created_at);

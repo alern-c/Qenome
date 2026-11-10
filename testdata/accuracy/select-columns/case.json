@@ -1,0 +1,48 @@
+{
+  "description": "An explicit column list is not the SELECT * warning, and the candidate index still improves the rows read.",
+  "args": [
+    "--bind",
+    "1:int:7"
+  ],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "verdict": "improved",
+    "plan_changed": true,
+    "baseline_plan": {
+      "contains": [
+        "SCAN events"
+      ],
+      "excludes": [
+        "SEARCH events"
+      ]
+    },
+    "variant_plan": {
+      "contains": [
+        "SEARCH events USING INDEX idx_customer (customer_id=?)"
+      ],
+      "excludes": [
+        "SCAN events"
+      ]
+    },
+    "rows_read": {
+      "direction": "decrease",
+      "max_ratio": 0.01
+    },
+    "rows_written": "same",
+    "sql_warnings": {
+      "excludes": [
+        {
+          "code": "select_star"
+        }
+      ]
+    },
+    "human": {
+      "excludes": [
+        "SQL warnings",
+        "select_star"
+      ]
+    }
+  }
+}

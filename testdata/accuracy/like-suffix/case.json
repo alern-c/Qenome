@@ -20,6 +20,14 @@
     },
     "rows_read": "same",
     "rows_written": "same",
+    "sql_warnings": {
+      "contains": [
+        {
+          "code": "leading_wildcard_like",
+          "plan_checked": false
+        }
+      ]
+    },
     "human": {
       "contains": [
         "SQL warnings",

@@ -1,0 +1,49 @@
+{
+  "description": "Both sides of the OR already have an index, so the baseline is a MULTI-INDEX OR plan: the OR warning is not reported.",
+  "args": [
+    "--bind",
+    "1:int:7",
+    "--bind",
+    "2:int:19001"
+  ],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "verdict": "no-effect",
+    "plan_changed": false,
+    "baseline_plan": {
+      "contains": [
+        "MULTI-INDEX OR",
+        "SEARCH events USING INDEX idx_customer",
+        "SEARCH events USING INDEX idx_created"
+      ],
+      "excludes": [
+        "SCAN events"
+      ]
+    },
+    "variant_plan": {
+      "contains": [
+        "MULTI-INDEX OR"
+      ],
+      "excludes": [
+        "SCAN events"
+      ]
+    },
+    "rows_read": "same",
+    "rows_written": "same",
+    "sql_warnings": {
+      "excludes": [
+        {
+          "code": "or_across_columns"
+        }
+      ]
+    },
+    "human": {
+      "excludes": [
+        "SQL warnings",
+        "or_across_columns"
+      ]
+    }
+  }
+}
