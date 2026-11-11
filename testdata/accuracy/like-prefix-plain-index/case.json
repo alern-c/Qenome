@@ -20,6 +20,13 @@
     },
     "rows_read": "same",
     "rows_written": "same",
+    "sql_warnings": {
+      "excludes": [
+        {
+          "code": "leading_wildcard_like"
+        }
+      ]
+    },
     "human": {
       "excludes": [
         "leading_wildcard_like"

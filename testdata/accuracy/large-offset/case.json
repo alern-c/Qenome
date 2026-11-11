@@ -1,0 +1,47 @@
+{
+  "description": "An OFFSET of 1000 skips 1000 rows, and the warning is reported even though the index removes the sort.",
+  "args": [],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "verdict": "improved",
+    "plan_changed": true,
+    "baseline_plan": {
+      "contains": [
+        "SCAN events",
+        "USE TEMP B-TREE FOR ORDER BY"
+      ],
+      "excludes": [
+        "USING INDEX idx_created"
+      ]
+    },
+    "variant_plan": {
+      "contains": [
+        "SCAN events USING INDEX idx_created"
+      ],
+      "excludes": [
+        "USE TEMP B-TREE FOR ORDER BY"
+      ]
+    },
+    "rows_read": {
+      "direction": "decrease",
+      "max_ratio": 0.1
+    },
+    "rows_written": "same",
+    "sql_warnings": {
+      "contains": [
+        {
+          "code": "large_offset",
+          "plan_checked": false
+        }
+      ]
+    },
+    "human": {
+      "contains": [
+        "SQL warnings",
+        "large_offset"
+      ]
+    }
+  }
+}

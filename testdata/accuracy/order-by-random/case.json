@@ -1,0 +1,48 @@
+{
+  "description": "ORDER BY random() is reported, and the rows stay incomparable so the verdict is not judged and the exit stays 4.",
+  "args": [
+    "--bind",
+    "1:int:7"
+  ],
+  "expect": {
+    "exit": 4,
+    "exit_code": 4,
+    "result": "incomparable",
+    "verdict": "not-judged",
+    "plan_changed": true,
+    "baseline_plan": {
+      "contains": [
+        "SCAN events",
+        "USE TEMP B-TREE FOR ORDER BY"
+      ],
+      "excludes": [
+        "SEARCH events"
+      ]
+    },
+    "variant_plan": {
+      "contains": [
+        "SEARCH events USING INDEX idx_customer (customer_id=?)",
+        "USE TEMP B-TREE FOR ORDER BY"
+      ]
+    },
+    "rows_read": {
+      "direction": "decrease",
+      "max_ratio": 0.01
+    },
+    "rows_written": "same",
+    "sql_warnings": {
+      "contains": [
+        {
+          "code": "order_by_random",
+          "plan_checked": false
+        }
+      ]
+    },
+    "human": {
+      "contains": [
+        "SQL warnings",
+        "order_by_random"
+      ]
+    }
+  }
+}

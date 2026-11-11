@@ -22,6 +22,14 @@
     },
     "rows_read": "same",
     "rows_written": "same",
+    "sql_warnings": {
+      "contains": [
+        {
+          "code": "or_across_columns",
+          "plan_checked": true
+        }
+      ]
+    },
     "human": {
       "contains": [
         "SQL warnings",

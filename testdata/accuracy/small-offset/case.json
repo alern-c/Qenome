@@ -1,0 +1,46 @@
+{
+  "description": "The same query with an OFFSET of 999 stays under the threshold, so the large OFFSET warning is not reported.",
+  "args": [],
+  "expect": {
+    "exit": 0,
+    "exit_code": 0,
+    "result": "match",
+    "verdict": "improved",
+    "plan_changed": true,
+    "baseline_plan": {
+      "contains": [
+        "SCAN events",
+        "USE TEMP B-TREE FOR ORDER BY"
+      ],
+      "excludes": [
+        "USING INDEX idx_created"
+      ]
+    },
+    "variant_plan": {
+      "contains": [
+        "SCAN events USING INDEX idx_created"
+      ],
+      "excludes": [
+        "USE TEMP B-TREE FOR ORDER BY"
+      ]
+    },
+    "rows_read": {
+      "direction": "decrease",
+      "max_ratio": 0.1
+    },
+    "rows_written": "same",
+    "sql_warnings": {
+      "excludes": [
+        {
+          "code": "large_offset"
+        }
+      ]
+    },
+    "human": {
+      "excludes": [
+        "SQL warnings",
+        "large_offset"
+      ]
+    }
+  }
+}
