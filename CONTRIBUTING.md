@@ -13,7 +13,7 @@ Open a bug or a suggestion in [Issues](https://github.com/alern-c/Qenome/issues)
 
 ## Build from source
 
-Qenome needs Zig 0.17.0, the `minimum_zig_version` in `build.zig.zon` (CI builds with exactly this version). SQLite is vendored in `vendor/sqlite3` and compiled in, so no system SQLite is needed.
+Qenome needs Zig 0.17.1, the `minimum_zig_version` in `build.zig.zon` (CI builds with exactly this version). SQLite is vendored in `vendor/sqlite3` and compiled in, so no system SQLite is needed.
 
 ```sh
 zig build
@@ -24,7 +24,7 @@ zig build
 
 ## Quick start
 
-This walkthrough creates the test database, builds Qenome, and runs seven examples. Run the commands from the repository root, one block at a time, on Linux or macOS. They need Zig 0.17.0 (see [Build from source](#build-from-source)) and the `sqlite3` command-line tool, which loads the SQL files into the new database.
+This walkthrough creates the test database, builds Qenome, and runs seven examples. Run the commands from the repository root, one block at a time, on Linux or macOS. They need Zig 0.17.1 (see [Build from source](#build-from-source)) and the `sqlite3` command-line tool, which loads the SQL files into the new database.
 
 Create the test database from `testdata/schema.sql` and `testdata/seed.sql`. `verify.sql` prints one `ok` line for each of its 17 checks, and fails the load when a value is not the expected one.
 

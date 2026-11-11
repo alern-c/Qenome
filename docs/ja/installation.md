@@ -75,4 +75,4 @@ macOS で、公証されていないバイナリという理由で実行を拒�
 
 ## ソースからビルド
 
-ソースからビルドする手順は [CONTRIBUTING.md](../../CONTRIBUTING.md) の [Build from source](../../CONTRIBUTING.md#build-from-source) にあります。Zig 0.17.0 が必要で、SQLite は同梱しているためシステムの SQLite は不要です。
+ソースからビルドする手順は [CONTRIBUTING.md](../../CONTRIBUTING.md) の [Build from source](../../CONTRIBUTING.md#build-from-source) にあります。Zig 0.17.1 が必要で、SQLite は同梱しているためシステムの SQLite は不要です。

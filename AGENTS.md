@@ -9,7 +9,7 @@ Commit messages, PR titles and bodies, issues, CHANGELOG and code comments are w
 ## Build and test
 
 - Build with `zig build` and test with `zig build test`.
-- The Zig version is pinned by `minimum_zig_version` in `build.zig.zon` (currently 0.17.0); the checks fail when `zig version` differs.
+- The Zig version is pinned by `minimum_zig_version` in `build.zig.zon` (currently 0.17.1); the checks fail when `zig version` differs.
 
 ## Checks before you finish
 
