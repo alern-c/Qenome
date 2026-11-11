@@ -75,4 +75,4 @@ If macOS refuses to run the binary because it is not notarized, allow it in Syst
 
 ## From source
 
-To build the binary from source, follow [Build from source](../CONTRIBUTING.md#build-from-source). It needs Zig 0.17.0; SQLite is vendored, so no system SQLite is needed.
+To build the binary from source, follow [Build from source](../CONTRIBUTING.md#build-from-source). It needs Zig 0.17.1; SQLite is vendored, so no system SQLite is needed.

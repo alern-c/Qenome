@@ -68,7 +68,7 @@
     "qenome_version": "<version>",
     "sqlite_version": "3.53.4",
     "sqlite_source_id": "2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc",
-    "zig_version": "0.17.0",
+    "zig_version": "0.17.1",
     "build_mode": "<build-mode>",
     "os": "<os>",
     "arch": "<arch>",

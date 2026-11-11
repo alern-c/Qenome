@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Building from source needs Zig 0.17.1 instead of 0.17.0: `minimum_zig_version` in `build.zig.zon`, which CI resolves the exact compiler from and `scripts/check_all.py` compares with `zig version`, and the same version in `AGENTS.md`, `CONTRIBUTING.md`, and `docs/installation.md`. Zig 0.17.1 is a bug fix release for the 0.17 series ([announcement](https://ziglang.org/news/0.17.1-released/)), so no source change was needed, and the binary, the output, the JSON, and the exit statuses stay the same; a source build on 0.17.0 now fails the version check instead of the build.
+
 ## [0.4.3] - 2026-11-03
 
 ### Added
